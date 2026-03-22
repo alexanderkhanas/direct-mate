@@ -9,6 +9,7 @@ import {
   Package,
   LogOut,
   Zap,
+  GraduationCap,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { cn } from '../lib/cn';
@@ -18,6 +19,7 @@ const nav = [
   { to: '/conversations', label: 'Conversations', icon: MessageSquare },
   { to: '/catalog', label: 'Catalog', icon: Package },
   { to: '/connections', label: 'Connections', icon: Plug },
+  { to: '/training', label: 'Training', icon: GraduationCap },
   { to: '/settings', label: 'Settings', icon: Settings },
   { to: '/logs', label: 'Logs', icon: ScrollText },
 ];

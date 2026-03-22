@@ -106,3 +106,56 @@ export interface AuditLog {
   details: Record<string, unknown> | null;
   createdAt: string;
 }
+
+export interface ScreenshotImportJob {
+  id: string;
+  status: string;
+  totalFiles: number;
+  processedFiles: number;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface ScreenshotImportFile {
+  id: string;
+  fileName: string;
+  fileUrl: string;
+  mimeType: string;
+  ocrStatus: string;
+  extractionStatus: string;
+}
+
+export interface TranscriptTurn {
+  speaker: 'manager' | 'customer';
+  text: string;
+}
+
+export interface ExtractedFragment {
+  id: string;
+  transcriptJson: TranscriptTurn[];
+  scenarioSuggestion: string | null;
+  confidenceScore: number;
+  reviewStatus: string;
+  createdAt: string;
+  file?: ScreenshotImportFile;
+  phrases?: ExtractedPhrase[];
+  voiceSignals?: ExtractedVoiceSignal[];
+}
+
+export interface ExtractedPhrase {
+  id: string;
+  phrase: string;
+  phraseType: string;
+  scenario: string | null;
+  confidenceScore: number;
+  approvalStatus: string;
+}
+
+export interface ExtractedVoiceSignal {
+  id: string;
+  signalType: string;
+  signalValue: string;
+  evidenceText: string | null;
+  confidenceScore: number;
+  approvalStatus: string;
+}

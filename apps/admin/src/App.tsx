@@ -7,6 +7,7 @@ import ConnectionsPage from './pages/ConnectionsPage';
 import SettingsPage from './pages/SettingsPage';
 import LogsPage from './pages/LogsPage';
 import CatalogPage from './pages/CatalogPage';
+import TrainingPage from './pages/TrainingPage';
 import Layout from './components/Layout';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -32,6 +33,7 @@ export default function App() {
           <Route path="conversations/:id" element={<ConversationDetailPage />} />
           <Route path="catalog" element={<CatalogPage />} />
           <Route path="connections" element={<ConnectionsPage />} />
+          <Route path="training" element={<TrainingPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="logs" element={<LogsPage />} />
         </Route>
