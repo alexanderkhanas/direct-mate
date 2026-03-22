@@ -36,6 +36,7 @@ export declare class InstagramService {
     private readonly integrationsService;
     private readonly cryptoService;
     private readonly logger;
+    private readonly pendingReplies;
     constructor(config: ConfigService, conversationsService: ConversationsService, replyEngineService: ReplyEngineService, integrationsService: IntegrationsService, cryptoService: CryptoService);
     private sendMetaMessage;
     verifySignature(rawBody: Buffer, signature: string): boolean;
@@ -43,6 +44,7 @@ export declare class InstagramService {
     private fetchMessageFromApi;
     handleWebhook(payload: MetaWebhookPayload): Promise<void>;
     private handleIncomingMessage;
+    private flushPending;
     private processInbound;
 }
 export {};

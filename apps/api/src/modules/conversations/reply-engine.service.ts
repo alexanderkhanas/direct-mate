@@ -59,6 +59,7 @@ interface AssistantMemory {
   awaitingField?: string;
   selectedCategory?: string;
   failedTurns?: number;
+  orderItems?: string[];
 }
 
 // ─── Tool definition ─────────────────────────────────────────────
@@ -415,22 +416,32 @@ export class ReplyEngineService {
 
       // Core rules
       `\nCONVERSATION RULES:`,
-      `1. NEVER repeat what you already said. If you showed a product list or recommended something, don't repeat it.`,
-      `2. SHORT REPLIES from the user (e.g. "підкажіть", "цей", "рожевий", "так", "добре", "давайте", "блиск") must be interpreted in context of your LAST question/action.`,
-      `3. If you showed options and user asks for recommendation → recommend specific product(s) with a reason, don't re-ask.`,
-      `4. If user says a color/variant name → match it to the products you already showed.`,
-      `5. When presenting products: be conversational, not tabular. Group by price if same. Highlight differences.`,
-      `6. NEVER say "contact manager" or reveal you are AI.`,
-      `7. If product not found, say you'll check and follow up.`,
-      `8. Lead the conversation forward — always give the user a clear next step.`,
+      `1. NEVER repeat what you already said. Don't re-list products, don't re-describe, don't re-greet.`,
+      `2. SHORT REPLIES ("підкажіть", "цей", "рожевий", "так", "добре", "давайте") = interpreted in context of your LAST action.`,
+      `3. If you showed options and user asks for recommendation → recommend with a reason. Don't re-ask.`,
+      `4. When presenting products: ALWAYS include the price. Be conversational, not tabular.`,
+      `5. NEVER say "contact manager", "зараз перевірю ціну" (you already HAVE the price data), or reveal you are AI.`,
+      `6. If product not found in database, say you'll check and follow up.`,
+      `7. Lead the conversation forward — always give the user a clear next step.`,
+      `8. NEVER greet mid-conversation. "Привіт/Вітаю" only at the very start.`,
       ``,
-      `CRITICAL FLOW AFTER RECOMMENDATION:`,
-      `- After you recommend a specific product and user AGREES ("добре", "так", "давайте", "ок", "цей") → immediately ask "Оформлюємо замовлення? 💛" Do NOT repeat the product description again.`,
-      `- After user confirms order ("так", "давайте", "оформлюємо", "давайте оформимо") → immediately ask for delivery details (name, phone, city, Nova Poshta). Do NOT re-describe the product.`,
-      `- NEVER ask the same question twice. If user already agreed, MOVE FORWARD.`,
+      `PRICING RULE:`,
+      `- Product prices are in the "Product data" section and in the ASSISTANT MEMORY "Products shown to customer" section.`,
+      `- When user asks about price, answer IMMEDIATELY from this data. NEVER say "зараз перевірю/уточню ціну".`,
+      `- Always mention price when presenting or recommending products.`,
+      ``,
+      `MULTI-PRODUCT ORDERS:`,
+      `- If customer is mid-order (collecting delivery info) and asks about ANOTHER product → do NOT reset the order.`,
+      `- Say "Звісно! Давайте додамо до замовлення." then recommend the new product.`,
+      `- Keep the existing order items in context.`,
+      ``,
+      `FLOW AFTER RECOMMENDATION:`,
+      `- User AGREES ("добре", "так", "давайте") → immediately ask "Оформлюємо замовлення? 💛" Do NOT repeat description.`,
+      `- User confirms order → immediately ask for delivery details. Do NOT re-describe.`,
+      `- NEVER ask the same question twice.`,
 
       `\nExtract product_keywords for product-related intents. Include the customer's term AND the closest matching category name(s).`,
-      `\nSet next_action to "search_products" when you need product data from the database. Set it to other values when you already have the data or don't need it.`,
+      `\nSet next_action to "search_products" ONLY when you need NEW product data not already in memory. If product info is in "Products shown to customer" memory, use it directly.`,
 
       `\nCall plan_and_reply with your analysis and response.`,
     ].filter(Boolean).join('\n');
@@ -476,14 +487,21 @@ export class ReplyEngineService {
   private buildMemoryContext(memory: AssistantMemory): string {
     if (!memory.lastAction) return '';
 
-    const parts = [`\nASSISTANT MEMORY (what happened before):`];
+    const parts = [`\nASSISTANT MEMORY (what happened before in this conversation):`];
     parts.push(`Last action: ${memory.lastAction}`);
 
     if (memory.lastPresentedProducts?.length) {
-      parts.push(`Products shown to customer:`);
+      parts.push(`Products shown to customer (USE THIS DATA for prices and variants):`);
       for (const p of memory.lastPresentedProducts) {
         const variants = p.variants.join(', ');
-        parts.push(`  • ${p.title} (${variants}) — ${p.price}`);
+        parts.push(`  • ${p.title} — Price: ${p.price} — Variants: ${variants}`);
+      }
+    }
+
+    if (memory.orderItems?.length) {
+      parts.push(`Current order items:`);
+      for (const item of memory.orderItems) {
+        parts.push(`  • ${item}`);
       }
     }
 

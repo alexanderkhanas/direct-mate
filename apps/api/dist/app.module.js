@@ -25,6 +25,7 @@ const integrations_module_1 = require("./modules/integrations/integrations.modul
 const settings_module_1 = require("./modules/settings/settings.module");
 const audit_module_1 = require("./modules/audit/audit.module");
 const internal_module_1 = require("./modules/internal/internal.module");
+const screenshot_training_module_1 = require("./modules/screenshot-training/screenshot-training.module");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
@@ -51,6 +52,7 @@ exports.AppModule = AppModule = __decorate([
             settings_module_1.SettingsModule,
             audit_module_1.AuditModule,
             internal_module_1.InternalModule,
+            screenshot_training_module_1.ScreenshotTrainingModule,
         ],
     })
 ], AppModule);

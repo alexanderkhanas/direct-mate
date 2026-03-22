@@ -19,6 +19,7 @@ const reply_engine_service_1 = require("../../conversations/reply-engine.service
 const integrations_service_1 = require("../../integrations/integrations.service");
 const crypto_service_1 = require("../../../common/crypto.service");
 const shared_1 = require("@direct-mate/shared");
+const DEBOUNCE_MS = 5_000;
 let InstagramService = InstagramService_1 = class InstagramService {
     constructor(config, conversationsService, replyEngineService, integrationsService, cryptoService) {
         this.config = config;
@@ -27,6 +28,7 @@ let InstagramService = InstagramService_1 = class InstagramService {
         this.integrationsService = integrationsService;
         this.cryptoService = cryptoService;
         this.logger = new common_1.Logger(InstagramService_1.name);
+        this.pendingReplies = new Map();
     }
     async sendMetaMessage(recipientId, text, pageAccessToken) {
         const res = await fetch('https://graph.instagram.com/v21.0/me/messages', {
@@ -129,24 +131,53 @@ let InstagramService = InstagramService_1 = class InstagramService {
             this.logger.warn(`No connected Instagram account for ${channelAccountId} — skipping`);
             return;
         }
-        try {
-            await this.processInbound({
-                tenantId: connection.tenantId,
+        const customer = await this.conversationsService.findOrCreateCustomer(connection.tenantId, 'instagram', externalUserId);
+        const { conversation } = await this.conversationsService.findOrCreateConversation(connection.tenantId, customer.id, 'instagram', channelAccountId);
+        await this.conversationsService.saveMessage(conversation.id, connection.tenantId, shared_1.MessageDirection.Inbound, shared_1.MessageRole.User, messageText, messageId);
+        const debounceKey = `${externalUserId}:${channelAccountId}`;
+        const existing = this.pendingReplies.get(debounceKey);
+        if (existing) {
+            clearTimeout(existing.timer);
+            existing.messages.push({ messageId, text: messageText });
+            this.logger.log(`Debounce: added message #${existing.messages.length} for ${debounceKey}, resetting timer`);
+            existing.timer = setTimeout(() => this.flushPending(debounceKey), DEBOUNCE_MS);
+        }
+        else {
+            this.logger.log(`Debounce: first message for ${debounceKey}, waiting ${DEBOUNCE_MS / 1000}s`);
+            const pending = {
+                timer: setTimeout(() => this.flushPending(debounceKey), DEBOUNCE_MS),
+                messages: [{ messageId, text: messageText }],
                 externalUserId,
                 channelAccountId,
-                messageId,
-                messageText,
                 connection,
+                tenantId: connection.tenantId,
+            };
+            this.pendingReplies.set(debounceKey, pending);
+        }
+    }
+    async flushPending(debounceKey) {
+        const pending = this.pendingReplies.get(debounceKey);
+        if (!pending)
+            return;
+        this.pendingReplies.delete(debounceKey);
+        const combinedText = pending.messages.map((m) => m.text).join('\n');
+        this.logger.log(`Debounce: processing ${pending.messages.length} message(s) for ${debounceKey}: "${combinedText.substring(0, 100)}"`);
+        try {
+            await this.processInbound({
+                tenantId: pending.tenantId,
+                externalUserId: pending.externalUserId,
+                channelAccountId: pending.channelAccountId,
+                messageText: combinedText,
+                connection: pending.connection,
             });
         }
         catch (err) {
-            this.logger.error(`Failed to process message ${messageId}`, err);
+            this.logger.error(`Failed to process debounced messages for ${debounceKey}`, err);
         }
     }
     async processInbound(params) {
         const customer = await this.conversationsService.findOrCreateCustomer(params.tenantId, 'instagram', params.externalUserId);
         const { conversation, state } = await this.conversationsService.findOrCreateConversation(params.tenantId, customer.id, 'instagram', params.channelAccountId);
-        await this.conversationsService.saveMessage(conversation.id, params.tenantId, shared_1.MessageDirection.Inbound, shared_1.MessageRole.User, params.messageText, params.messageId);
         const recentMessages = (await this.conversationsService.findById(conversation.id)).messages
             .slice(-10)
             .map((m) => ({ role: m.role, text: m.text }));

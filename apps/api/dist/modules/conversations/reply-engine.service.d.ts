@@ -37,9 +37,11 @@ export declare class ReplyEngineService {
     private readonly logger;
     private readonly openai;
     private readonly model;
+    private logToFile;
     constructor(settingsRepo: Repository<TenantSettings>, examplesRepo: Repository<ManagerExample>, availabilityService: AvailabilityService, auditService: AuditService, config: ConfigService);
     process(input: ReplyEngineInput): Promise<ReplyEngineOutput>;
-    private getSelectedProductContext;
-    private runAvailabilityCheck;
-    private generateReply;
+    private planResponse;
+    private buildMemoryContext;
+    private searchProducts;
+    private doHandoff;
 }

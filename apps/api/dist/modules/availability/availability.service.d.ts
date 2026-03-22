@@ -30,7 +30,28 @@ export declare class AvailabilityService {
     private readonly stockRepo;
     constructor(variantRepo: Repository<ProductVariant>, stockRepo: Repository<StockBalance>);
     private extractSearchTerms;
+    getCategories(tenantId: string): Promise<string[]>;
     check(tenantId: string, dto: CheckAvailabilityDto): Promise<AvailabilityResult>;
+    private searchByTitle;
+    private searchByCategory;
+    private searchByTrigram;
+    checkAll(tenantId: string, dto: CheckAvailabilityDto): Promise<Array<{
+        product: {
+            id: string;
+            title: string;
+        };
+        variants: Array<{
+            id: string;
+            size: string | null;
+            color: string | null;
+            price: number;
+            currency: string;
+            effectiveAvailable: number;
+        }>;
+    }>>;
+    private searchAllByTitle;
+    private searchAllByCategory;
+    private searchAllByCategoryTrigram;
     getByProductId(productId: string, variantId?: string): Promise<{
         title: string;
         variant: {

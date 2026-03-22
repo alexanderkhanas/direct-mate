@@ -26,6 +26,7 @@ async function bootstrap() {
     const document = swagger_1.SwaggerModule.createDocument(app, config);
     swagger_1.SwaggerModule.setup('docs', app, document);
     app.useStaticAssets((0, path_1.join)(__dirname, '..', 'src'), { prefix: '/static' });
+    app.useStaticAssets((0, path_1.join)(process.cwd(), 'uploads'), { prefix: '/uploads' });
     const port = process.env.PORT ?? 3000;
     await app.listen(port);
     console.log(`API running on http://localhost:${port}`);

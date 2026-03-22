@@ -6,7 +6,9 @@ A configurable AI sales assistant platform for Instagram DMs. Not a single chatb
 
 **Core principle: One engine. Many stores. Each store defines behavior through configuration.**
 
-The goal is **70-80% automated order completion** from Instagram DMs, saving stores the cost of full-time sales managers.
+The product goal is to maximize **safe automation** of routine Instagram DM conversations while preserving trust, conversion quality, and fast human handoff for risky or unclear cases.
+
+DirectMate should automate repetitive, low-risk interactions and escalate uncertain, sensitive, or business-critical cases to a human manager.
 
 ## Architecture
 

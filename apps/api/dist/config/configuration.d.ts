@@ -19,6 +19,7 @@ declare const _default: () => {
     openai: {
         apiKey: string;
         model: string;
+        fallbackModel: string;
     };
     internal: {
         apiKey: string;
