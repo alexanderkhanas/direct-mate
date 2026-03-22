@@ -17,6 +17,7 @@ import { SettingsModule } from './modules/settings/settings.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { InternalModule } from './modules/internal/internal.module';
 import { ScreenshotTrainingModule } from './modules/screenshot-training/screenshot-training.module';
+import { EngineModule } from './modules/engine/engine.module';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { ScreenshotTrainingModule } from './modules/screenshot-training/screensh
     AuditModule,
     InternalModule,
     ScreenshotTrainingModule,
+    EngineModule,
   ],
 })
 export class AppModule {}

@@ -8,8 +8,19 @@ import * as path from 'path';
 import { TenantSettings } from '../tenants/entities/tenant-settings.entity';
 import { ManagerExample } from '../settings/entities/manager-example.entity';
 import { ConversationState } from './entities/conversation-state.entity';
+import { StoreConfig } from '../engine/entities/store-config.entity';
 import { AvailabilityService } from '../availability/availability.service';
 import { AuditService } from '../audit/audit.service';
+import {
+  ClassifierService,
+  ClassificationResult,
+  AssistantMemory,
+} from '../engine/classifier.service';
+import {
+  TemplateEngineService,
+  ProductSearchResult,
+} from '../engine/template-engine.service';
+import { PolicyEngineService } from '../engine/policy-engine.service';
 import {
   AuditLogType,
   ConversationStateStatus,
@@ -34,118 +45,6 @@ export interface ReplyEngineOutput {
   stateUpdate: Partial<ConversationState> | null;
 }
 
-// ─── AI structured output ────────────────────────────────────────
-
-interface AIPlan {
-  intent: string;
-  dialogue_act: string;
-  dialogue_state: string;
-  product_keywords: string[];
-  next_action: string;
-  needs_handoff: boolean;
-  handoff_reason: string | null;
-  reply: string;
-}
-
-// ─── Assistant action memory (stored in contextJson) ─────────────
-
-interface AssistantMemory {
-  lastAction?: string;
-  lastPresentedProducts?: Array<{
-    title: string;
-    variants: string[];
-    price: string;
-  }>;
-  awaitingField?: string;
-  selectedCategory?: string;
-  failedTurns?: number;
-  orderItems?: string[];
-}
-
-// ─── Tool definition ─────────────────────────────────────────────
-
-const PLAN_AND_REPLY_TOOL: OpenAI.Chat.ChatCompletionTool = {
-  type: 'function',
-  function: {
-    name: 'plan_and_reply',
-    description: 'Analyze the conversation context, plan the next action, and generate a reply',
-    parameters: {
-      type: 'object',
-      properties: {
-        intent: {
-          type: 'string',
-          enum: [
-            'greeting', 'product_inquiry', 'category_browse', 'availability_check',
-            'price_inquiry', 'order_intent', 'order_details', 'delivery_question',
-            'payment_question', 'general_question', 'complaint', 'thanks', 'unknown',
-          ],
-        },
-        dialogue_act: {
-          type: 'string',
-          enum: [
-            'new_inquiry',
-            'ask_recommendation',
-            'confirm_choice',
-            'provide_details',
-            'ask_about_shown_products',
-            'short_contextual_reply',
-            'clarification',
-            'general_chat',
-          ],
-          description: 'What the user is actually doing in the conversation context. "short_contextual_reply" = user gave a brief answer to the bot\'s previous question. "ask_recommendation" = user wants the bot to suggest from already shown options. "confirm_choice" = user is saying yes/agreeing.',
-        },
-        dialogue_state: {
-          type: 'string',
-          enum: [
-            'idle',
-            'product_category_selected',
-            'product_list_shown',
-            'waiting_for_choice',
-            'product_selected',
-            'checkout_started',
-            'collecting_delivery_info',
-          ],
-          description: 'The current state of the conversation AFTER processing this message.',
-        },
-        product_keywords: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Product names/categories to search in the database. Include the customer\'s original term AND closest matching categories from the available list. Empty only for non-product intents.',
-        },
-        next_action: {
-          type: 'string',
-          enum: [
-            'search_products',
-            'present_options',
-            'recommend_from_shown',
-            'confirm_selection',
-            'start_checkout',
-            'ask_delivery_details',
-            'answer_question',
-            'greet',
-            'clarify',
-            'handoff',
-          ],
-          description: 'What the bot should do next.',
-        },
-        needs_handoff: {
-          type: 'boolean',
-          description: 'True ONLY for truly impossible requests (complex complaints, refunds, completely outside scope). False for everything else.',
-        },
-        handoff_reason: { type: 'string', nullable: true },
-        reply: {
-          type: 'string',
-          description: 'The reply to send to the customer. Must follow the conversation flow rules.',
-        },
-      },
-      required: [
-        'intent', 'dialogue_act', 'dialogue_state', 'product_keywords',
-        'next_action', 'needs_handoff', 'reply',
-      ],
-    },
-  },
-};
-
 const LOG_FILE = path.join(process.cwd(), 'conversations.log');
 
 // ─── Service ─────────────────────────────────────────────────────
@@ -157,7 +56,8 @@ export class ReplyEngineService {
   private readonly model: string;
 
   private logToFile(entry: Record<string, unknown>) {
-    const line = JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n';
+    const line =
+      JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n';
     fs.appendFile(LOG_FILE, line, () => {});
   }
 
@@ -166,132 +66,221 @@ export class ReplyEngineService {
     private readonly settingsRepo: Repository<TenantSettings>,
     @InjectRepository(ManagerExample)
     private readonly examplesRepo: Repository<ManagerExample>,
+    @InjectRepository(StoreConfig)
+    private readonly storeConfigRepo: Repository<StoreConfig>,
     private readonly availabilityService: AvailabilityService,
     private readonly auditService: AuditService,
+    private readonly classifierService: ClassifierService,
+    private readonly templateEngine: TemplateEngineService,
+    private readonly policyEngine: PolicyEngineService,
     private readonly config: ConfigService,
   ) {
-    this.openai = new OpenAI({ apiKey: this.config.get<string>('openai.apiKey') });
+    this.openai = new OpenAI({
+      apiKey: this.config.get<string>('openai.apiKey'),
+    });
     this.model = this.config.get<string>('openai.model') ?? 'gpt-4o';
   }
 
-  // ─── Main entry point ────────────────────────────────────────
+  // ─── Main entry point ──────────────────────────────────────────
 
   async process(input: ReplyEngineInput): Promise<ReplyEngineOutput> {
-    const settings = await this.settingsRepo.findOne({
-      where: { tenantId: input.tenantId },
-    });
+    // 1. Load store config, settings, examples, categories
+    const [settings, storeConfig, examples, categories] = await Promise.all([
+      this.settingsRepo.findOne({ where: { tenantId: input.tenantId } }),
+      this.storeConfigRepo.findOne({ where: { tenantId: input.tenantId } }),
+      this.examplesRepo.find({
+        where: { tenantId: input.tenantId, isActive: true },
+        take: 10,
+      }),
+      this.availabilityService.getCategories(input.tenantId),
+    ]);
 
-    const memory: AssistantMemory = (input.state.contextJson as AssistantMemory) ?? {};
+    const memory: AssistantMemory =
+      (input.state.contextJson as AssistantMemory) ?? {};
     const maxFailedTurns = settings?.handoffRules?.maxFailedTurns ?? 5;
 
+    // Pre-check: max failed turns
     if ((memory.failedTurns ?? 0) >= maxFailedTurns) {
       return this.doHandoff(input, 'max_failed_turns');
     }
 
-    const [examples, categories] = await Promise.all([
-      this.examplesRepo.find({ where: { tenantId: input.tenantId, isActive: true }, take: 10 }),
-      this.availabilityService.getCategories(input.tenantId),
-    ]);
+    // Use a default store config if none exists
+    const effectiveConfig = storeConfig ??
+      ({
+        escalationConfig: {},
+        fallbackConfig: {
+          mode: 'template_first_with_safe_fallback',
+        },
+        brandConfig: {},
+      } as unknown as StoreConfig);
 
-    // ── Step 1: AI plans the response ──────────────────────────
-    let plan: AIPlan;
+    // 2. AI Classifier: classify intent + extract entities (NO reply text)
+    let classification: ClassificationResult;
     try {
-      plan = await this.planResponse({
-        brandTone: settings?.brandTonePrompt ?? '',
-        examples,
+      classification = await this.classifierService.classify({
         messageText: input.messageText,
         recentMessages: input.recentMessages,
         memory,
         categories,
-        language: settings?.supportedLanguages?.[0] ?? 'uk',
+        currentStage: this.getCurrentStage(input.state),
       });
     } catch (err) {
-      this.logger.error('AI plan failed', err);
+      this.logger.error('AI classification failed', err);
       return this.doHandoff(input, 'ai_failure');
     }
 
     this.logger.log(
-      `Plan: intent=${plan.intent} act=${plan.dialogue_act} state=${plan.dialogue_state} action=${plan.next_action} keywords=[${plan.product_keywords.join(',')}] handoff=${plan.needs_handoff}`,
+      `Classification: intent=${classification.primaryIntent} stage=${classification.conversationStage} ` +
+        `action=${classification.recommendedAction} confidence=${classification.confidence} sentiment=${classification.sentiment}`,
     );
 
     this.logToFile({
-      event: 'plan',
+      event: 'classification',
       conversationId: input.conversationId,
       inbound: input.messageText,
-      plan: {
-        intent: plan.intent,
-        dialogueAct: plan.dialogue_act,
-        dialogueState: plan.dialogue_state,
-        nextAction: plan.next_action,
-        keywords: plan.product_keywords,
-        handoff: plan.needs_handoff,
+      classification: {
+        intent: classification.primaryIntent,
+        entities: classification.entities,
+        stage: classification.conversationStage,
+        sentiment: classification.sentiment,
+        confidence: classification.confidence,
+        dialogueAct: classification.dialogueAct,
+        action: classification.recommendedAction,
       },
       memory,
     });
 
-    // ── Handoff verification with stronger model ───────────────
-    if (plan.needs_handoff) {
+    // 3. Policy Engine: check escalation rules
+    const policy = this.policyEngine.evaluate({
+      classification,
+      storeConfig: effectiveConfig,
+      state: {
+        failedTurns: memory.failedTurns ?? 0,
+        maxFailedTurns,
+      },
+    });
+
+    // 4. If escalate -> handoff verification with fallback model, then return handoff
+    if (policy.action === 'escalate') {
+      // Handoff verification with stronger model
       const fallbackModel = this.config.get<string>('openai.fallbackModel');
       if (fallbackModel) {
         try {
-          const secondOpinion = await this.planResponse({
-            brandTone: settings?.brandTonePrompt ?? '',
-            examples,
-            messageText: input.messageText,
-            recentMessages: input.recentMessages,
-            memory,
-            categories,
-            language: settings?.supportedLanguages?.[0] ?? 'uk',
-            modelOverride: fallbackModel,
-          });
+          const secondOpinion =
+            await this.classifierService.classifyWithFallback({
+              messageText: input.messageText,
+              recentMessages: input.recentMessages,
+              memory,
+              categories,
+              currentStage: this.getCurrentStage(input.state),
+            });
 
           this.logToFile({
             event: 'handoff_verification',
             conversationId: input.conversationId,
-            miniSaysHandoff: true,
-            fallbackSaysHandoff: secondOpinion.needs_handoff,
-            fallbackReply: secondOpinion.reply,
+            primarySaysEscalate: true,
+            fallbackIntent: secondOpinion.primaryIntent,
+            fallbackAction: secondOpinion.recommendedAction,
+            fallbackConfidence: secondOpinion.confidence,
           });
 
-          if (!secondOpinion.needs_handoff) {
-            this.logger.log(`Fallback model overrode handoff`);
-            plan = secondOpinion;
+          // If fallback model disagrees with escalation, override
+          const fallbackPolicy = this.policyEngine.evaluate({
+            classification: secondOpinion,
+            storeConfig: effectiveConfig,
+            state: {
+              failedTurns: memory.failedTurns ?? 0,
+              maxFailedTurns,
+            },
+          });
+
+          if (fallbackPolicy.action !== 'escalate') {
+            this.logger.log(`Fallback model overrode escalation`);
+            classification = secondOpinion;
+            // Continue processing instead of escalating
+          } else {
+            return this.doHandoff(input, policy.reason ?? 'policy_escalation');
           }
         } catch {
           this.logger.warn('Fallback verification failed');
+          return this.doHandoff(input, policy.reason ?? 'policy_escalation');
         }
+      } else {
+        return this.doHandoff(input, policy.reason ?? 'policy_escalation');
       }
     }
 
-    if (plan.needs_handoff) {
-      return this.doHandoff(input, plan.handoff_reason ?? plan.intent);
-    }
-
-    // ── Step 2: Product search if needed ────────────────────────
-    const stateUpdate: Partial<ConversationState> = {};
-    let finalReply = plan.reply;
-
-    const needsSearch = plan.next_action === 'search_products' && plan.product_keywords.length > 0;
+    // 5. Product search if needed (based on classification entities/keywords)
+    let productData: ProductSearchResult[] | undefined;
+    const needsSearch = this.shouldSearchProducts(classification);
 
     if (needsSearch) {
-      const searchResult = await this.searchProducts(
+      const searchKeywords = this.extractSearchKeywords(classification);
+      productData = await this.searchProducts(
         input.tenantId,
         input.conversationId,
-        plan.product_keywords,
+        searchKeywords,
       );
 
       this.logToFile({
         event: 'product_search',
         conversationId: input.conversationId,
-        keywords: plan.product_keywords,
-        found: searchResult.found,
-        products: searchResult.presentedProducts?.map((p) => p.title),
+        keywords: searchKeywords,
+        found: productData ? productData.length : 0,
       });
 
-      if (searchResult.found) {
-        // ── Step 3: Re-generate reply with real product data ───
+      if (productData && productData.length > 0) {
+        // Update memory with presented products
+        memory.lastAction = 'presented_product_options';
+        memory.lastPresentedProducts = productData.map((p) => ({
+          title: p.product.title,
+          variants: p.variants.map((v) =>
+            [v.size, v.color].filter(Boolean).join(', ') || 'standard',
+          ),
+          price: [
+            ...new Set(p.variants.map((v) => `${v.price} ${v.currency}`)),
+          ].join(' / '),
+        }));
+        memory.awaitingField = 'product_choice_or_recommendation_request';
+        memory.selectedCategory =
+          classification.entities.category ?? searchKeywords[0];
+      }
+    }
+
+    // 6. Template Engine: select + render template
+    const recentTemplateIds = memory.recentTemplateIds ?? [];
+    const templateResult = await this.templateEngine.render({
+      tenantId: input.tenantId,
+      classification,
+      productData,
+      memory,
+      recentTemplateIds,
+    });
+
+    let finalReply: string;
+    let usedTemplateId: string | undefined;
+
+    if (templateResult) {
+      // 7. Template found -> use it
+      finalReply = templateResult.text;
+      usedTemplateId = templateResult.templateId;
+
+      // Track for anti-repetition
+      memory.recentTemplateIds = [
+        templateResult.templateId,
+        ...recentTemplateIds,
+      ].slice(0, 10);
+
+      this.logger.log(`Template selected: ${templateResult.templateId}`);
+    } else {
+      // 8. No template -> check if AI fallback is allowed
+      if (
+        policy.action === 'fallback' ||
+        this.policyEngine.isFallbackAllowed(classification, effectiveConfig)
+      ) {
+        this.logger.log('No template matched, using AI fallback');
         try {
-          const enriched = await this.planResponse({
+          finalReply = await this.aiFallbackReply({
             brandTone: settings?.brandTonePrompt ?? '',
             examples,
             messageText: input.messageText,
@@ -299,50 +288,52 @@ export class ReplyEngineService {
             memory,
             categories,
             language: settings?.supportedLanguages?.[0] ?? 'uk',
-            productContext: searchResult.context,
+            productData,
+            classification,
           });
-          finalReply = enriched.reply;
-          plan.dialogue_state = enriched.dialogue_state;
-          plan.next_action = enriched.next_action;
-        } catch { /* use plan reply */ }
-
-        stateUpdate.selectedVariantId = searchResult.variantId;
-        stateUpdate.selectedProductId = searchResult.productId;
-
-        // Update memory with presented products
-        memory.lastAction = 'presented_product_options';
-        memory.lastPresentedProducts = searchResult.presentedProducts;
-        memory.awaitingField = 'product_choice_or_recommendation_request';
-        memory.selectedCategory = plan.product_keywords[0];
+        } catch (err) {
+          this.logger.error('AI fallback failed', err);
+          memory.failedTurns = (memory.failedTurns ?? 0) + 1;
+          return this.doHandoff(input, 'ai_fallback_failure');
+        }
+      } else {
+        // Strict mode: no template + no fallback = escalate
+        this.logger.log(
+          'No template and fallback not allowed, escalating',
+        );
+        return this.doHandoff(input, 'no_template_strict_mode');
       }
     }
 
-    // ── Update conversation state ──────────────────────────────
-    const stateMap: Record<string, ConversationStateStatus> = {
-      'product_list_shown': ConversationStateStatus.StockConfirmed,
-      'waiting_for_choice': ConversationStateStatus.StockConfirmed,
-      'product_selected': ConversationStateStatus.StockConfirmed,
-      'checkout_started': ConversationStateStatus.CollectingCustomerInfo,
-      'collecting_delivery_info': ConversationStateStatus.CollectingCustomerInfo,
+    // 9. Update conversation state + memory
+    const stateUpdate: Partial<ConversationState> = {};
+
+    // Map classification stage to conversation state status
+    const stageStatusMap: Record<string, ConversationStateStatus> = {
+      showing_options: ConversationStateStatus.StockConfirmed,
+      selection_help: ConversationStateStatus.StockConfirmed,
+      product_selected: ConversationStateStatus.StockConfirmed,
+      checkout_started: ConversationStateStatus.CollectingCustomerInfo,
+      collecting_customer_info: ConversationStateStatus.CollectingCustomerInfo,
+      order_confirmation: ConversationStateStatus.CollectingCustomerInfo,
     };
-    const mappedStatus = stateMap[plan.dialogue_state];
+    const mappedStatus = stageStatusMap[classification.conversationStage];
     if (mappedStatus) {
       stateUpdate.stateStatus = mappedStatus;
     }
 
-    // Update memory based on what the bot just did
-    if (plan.next_action === 'recommend_from_shown') {
-      memory.lastAction = 'gave_recommendation';
-      memory.awaitingField = 'product_choice';
-    } else if (plan.next_action === 'confirm_selection') {
-      memory.lastAction = 'confirmed_product';
-      memory.awaitingField = 'order_confirmation';
-    } else if (plan.next_action === 'ask_delivery_details') {
-      memory.lastAction = 'asked_delivery_details';
-      memory.awaitingField = 'delivery_info';
-    } else if (plan.next_action === 'greet') {
-      memory.lastAction = 'greeted';
-      memory.awaitingField = 'product_inquiry';
+    // Update memory based on recommended action
+    this.updateMemoryFromAction(classification, memory);
+
+    // Set product IDs if product search found results
+    if (productData && productData.length > 0) {
+      const first = productData[0];
+      stateUpdate.selectedProductId = first.product.id;
+      const inStockVariant = first.variants.find(
+        (v) => v.effectiveAvailable > 0,
+      );
+      stateUpdate.selectedVariantId =
+        inStockVariant?.id ?? first.variants[0]?.id;
     }
 
     stateUpdate.contextJson = memory as any;
@@ -353,9 +344,10 @@ export class ReplyEngineService {
       type: AuditLogType.AiDecision,
       details: {
         decision: ReplyDecision.Reply,
-        intent: plan.intent,
-        dialogueAct: plan.dialogue_act,
-        nextAction: plan.next_action,
+        intent: classification.primaryIntent,
+        dialogueAct: classification.dialogueAct,
+        action: classification.recommendedAction,
+        templateId: usedTemplateId ?? 'ai_fallback',
       },
     });
 
@@ -364,8 +356,9 @@ export class ReplyEngineService {
       conversationId: input.conversationId,
       inbound: input.messageText,
       outbound: finalReply,
-      dialogueState: plan.dialogue_state,
-      nextAction: plan.next_action,
+      templateId: usedTemplateId ?? 'ai_fallback',
+      stage: classification.conversationStage,
+      action: classification.recommendedAction,
       memory,
     });
 
@@ -377,9 +370,120 @@ export class ReplyEngineService {
     };
   }
 
-  // ─── AI planning call ────────────────────────────────────────
+  // ─── Product search helpers ────────────────────────────────────
 
-  private async planResponse(params: {
+  private shouldSearchProducts(classification: ClassificationResult): boolean {
+    const searchActions = [
+      'show_products',
+      'recommend',
+      'show_price',
+      'confirm_selection',
+    ];
+    const searchIntents = [
+      'product_inquiry',
+      'category_browse',
+      'ask_price',
+      'availability_check',
+      'ask_recommendation',
+    ];
+
+    return (
+      searchActions.includes(classification.recommendedAction) ||
+      searchIntents.includes(classification.primaryIntent)
+    );
+  }
+
+  private extractSearchKeywords(
+    classification: ClassificationResult,
+  ): string[] {
+    const keywords: string[] = [];
+    if (classification.entities.productName)
+      keywords.push(classification.entities.productName);
+    if (classification.entities.category)
+      keywords.push(classification.entities.category);
+    if (classification.entities.color)
+      keywords.push(classification.entities.color);
+    return keywords.length > 0 ? keywords : [''];
+  }
+
+  private async searchProducts(
+    tenantId: string,
+    conversationId: string,
+    keywords: string[],
+  ): Promise<ProductSearchResult[] | undefined> {
+    for (const keyword of keywords) {
+      if (!keyword) continue;
+      const results = await this.availabilityService.checkAll(tenantId, {
+        query: keyword,
+      });
+
+      await this.auditService.log({
+        tenantId,
+        conversationId,
+        type: AuditLogType.AvailabilityCheck,
+        details: { keyword, productsFound: results.length },
+      });
+
+      if (results.length > 0) {
+        return results.map((r) => ({
+          product: r.product,
+          variants: r.variants,
+        }));
+      }
+    }
+    return undefined;
+  }
+
+  // ─── Memory update based on action ─────────────────────────────
+
+  private updateMemoryFromAction(
+    classification: ClassificationResult,
+    memory: AssistantMemory,
+  ): void {
+    switch (classification.recommendedAction) {
+      case 'recommend':
+        memory.lastAction = 'gave_recommendation';
+        memory.awaitingField = 'product_choice';
+        break;
+      case 'confirm_selection':
+        memory.lastAction = 'confirmed_product';
+        memory.awaitingField = 'order_confirmation';
+        break;
+      case 'ask_delivery':
+      case 'start_checkout':
+        memory.lastAction = 'asked_delivery_details';
+        memory.awaitingField = 'delivery_info';
+        break;
+      case 'greet':
+        memory.lastAction = 'greeted';
+        memory.awaitingField = 'product_inquiry';
+        break;
+      case 'show_products':
+        memory.lastAction = 'presented_product_options';
+        memory.awaitingField = 'product_choice_or_recommendation_request';
+        break;
+      case 'show_price':
+        memory.lastAction = 'showed_price';
+        memory.awaitingField = 'order_decision';
+        break;
+    }
+  }
+
+  // ─── Get current stage from state ──────────────────────────────
+
+  private getCurrentStage(state: ConversationState): string {
+    const statusStageMap: Record<string, string> = {
+      [ConversationStateStatus.Browsing]: 'need_discovery',
+      [ConversationStateStatus.StockConfirmed]: 'showing_options',
+      [ConversationStateStatus.CollectingCustomerInfo]:
+        'collecting_customer_info',
+    };
+    return statusStageMap[state.stateStatus] ?? 'greeting';
+  }
+
+  // ─── AI fallback reply generation ──────────────────────────────
+
+  private async aiFallbackReply(params: {
     brandTone: string;
     examples: ManagerExample[];
     messageText: string;
@@ -387,64 +491,45 @@ export class ReplyEngineService {
     memory: AssistantMemory;
     categories: string[];
     language: string;
-    productContext?: string;
-    modelOverride?: string;
-  }): Promise<AIPlan> {
+    productData?: ProductSearchResult[];
+    classification: ClassificationResult;
+  }): Promise<string> {
     const lang = params.language ?? 'uk';
     const langMap: Record<string, string> = { uk: 'Ukrainian', en: 'English' };
     const langName = langMap[lang] ?? lang;
 
-    // Build memory context for the AI
+    const productContext = params.productData
+      ? this.buildProductContext(params.productData)
+      : '';
+
     const memoryContext = this.buildMemoryContext(params.memory);
 
     const systemPrompt = [
       `You are a sales manager for an online store. Reply ONLY in ${langName}.`,
       params.brandTone ? `\nTone:\n${params.brandTone}` : '',
-
-      // Product data
-      params.productContext
-        ? `\nProduct data from database:\n${params.productContext}`
-        : '',
-
-      // Categories
+      productContext ? `\nProduct data from database:\n${productContext}` : '',
       params.categories.length
         ? `\nAvailable categories: ${params.categories.join(', ')}.`
         : '',
-
-      // Assistant memory — what happened before
       memoryContext ? `\n${memoryContext}` : '',
-
-      // Core rules
       `\nCONVERSATION RULES:`,
       `1. NEVER repeat what you already said. Don't re-list products, don't re-describe, don't re-greet.`,
-      `2. SHORT REPLIES ("підкажіть", "цей", "рожевий", "так", "добре", "давайте") = interpreted in context of your LAST action.`,
-      `3. If you showed options and user asks for recommendation → recommend with a reason. Don't re-ask.`,
+      `2. SHORT REPLIES = interpreted in context of your LAST action.`,
+      `3. If you showed options and user asks for recommendation -> recommend with a reason. Don't re-ask.`,
       `4. When presenting products: ALWAYS include the price. Be conversational, not tabular.`,
-      `5. NEVER say "contact manager", "зараз перевірю ціну" (you already HAVE the price data), or reveal you are AI.`,
-      `6. If product not found in database, say you'll check and follow up.`,
-      `7. Lead the conversation forward — always give the user a clear next step.`,
-      `8. NEVER greet mid-conversation. "Привіт/Вітаю" only at the very start.`,
-      ``,
-      `PRICING RULE:`,
-      `- Product prices are in the "Product data" section and in the ASSISTANT MEMORY "Products shown to customer" section.`,
-      `- When user asks about price, answer IMMEDIATELY from this data. NEVER say "зараз перевірю/уточню ціну".`,
-      `- Always mention price when presenting or recommending products.`,
-      ``,
-      `MULTI-PRODUCT ORDERS:`,
-      `- If customer is mid-order (collecting delivery info) and asks about ANOTHER product → do NOT reset the order.`,
-      `- Say "Звісно! Давайте додамо до замовлення." then recommend the new product.`,
-      `- Keep the existing order items in context.`,
-      ``,
-      `FLOW AFTER RECOMMENDATION:`,
-      `- User AGREES ("добре", "так", "давайте") → immediately ask "Оформлюємо замовлення? 💛" Do NOT repeat description.`,
-      `- User confirms order → immediately ask for delivery details. Do NOT re-describe.`,
-      `- NEVER ask the same question twice.`,
-
-      `\nExtract product_keywords for product-related intents. Include the customer's term AND the closest matching category name(s).`,
-      `\nSet next_action to "search_products" ONLY when you need NEW product data not already in memory. If product info is in "Products shown to customer" memory, use it directly.`,
-
-      `\nCall plan_and_reply with your analysis and response.`,
-    ].filter(Boolean).join('\n');
+      `5. NEVER say "contact manager", "зараз перевірю ціну", or reveal you are AI.`,
+      `6. If product not found, say you'll check and follow up.`,
+      `7. Lead the conversation forward.`,
+      `8. NEVER greet mid-conversation.`,
+      `9. Keep replies SHORT (1-3 sentences max).`,
+      `\nClassification context:`,
+      `Intent: ${params.classification.primaryIntent}`,
+      `Stage: ${params.classification.conversationStage}`,
+      `Action: ${params.classification.recommendedAction}`,
+      `\nGenerate a natural, helpful reply. Keep it concise.`,
+    ]
+      .filter(Boolean)
+      .join('\n');
 
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
@@ -460,49 +545,60 @@ export class ReplyEngineService {
       messages.push({ role, content: msg.text ?? '' });
     }
 
-    const completion = await this.openai.chat.completions.create({
-      model: params.modelOverride ?? this.model,
+    messages.push({ role: 'user', content: params.messageText });
+
+    const completion = await (this.openai.chat.completions.create as any)({
+      model: this.model,
       messages,
-      tools: [PLAN_AND_REPLY_TOOL],
-      tool_choice: { type: 'function', function: { name: 'plan_and_reply' } },
-      max_completion_tokens: 600,
+      max_completion_tokens: 300,
       temperature: 0.3,
-    } as any);
+    });
 
-    const toolCall = completion.choices[0]?.message?.tool_calls?.[0];
-    if (!toolCall) {
-      return {
-        intent: 'unknown', dialogue_act: 'general_chat', dialogue_state: 'idle',
-        product_keywords: [], next_action: 'clarify', needs_handoff: false,
-        handoff_reason: null,
-        reply: completion.choices[0]?.message?.content?.trim() ?? '',
-      };
+    const reply = completion.choices[0]?.message?.content?.trim();
+    if (!reply) {
+      throw new Error('Empty AI fallback response');
     }
-
-    return JSON.parse((toolCall as any).function.arguments) as AIPlan;
+    return reply;
   }
 
-  // ─── Memory context builder ──────────────────────────────────
+  // ─── Helper: build product context string ──────────────────────
+
+  private buildProductContext(productData: ProductSearchResult[]): string {
+    const parts: string[] = [];
+    for (const p of productData) {
+      const variantDescs = p.variants.map((v) => {
+        const details = [v.size, v.color].filter(Boolean).join(', ');
+        const stock =
+          v.effectiveAvailable > 0 ? 'в наявності' : 'немає';
+        return `${details || 'standard'}: ${v.price} ${v.currency} (${stock})`;
+      });
+      parts.push(`- ${p.product.title}: ${variantDescs.join('; ')}`);
+    }
+    return `Products found:\n${parts.join('\n')}`;
+  }
+
+  // ─── Helper: build memory context string ───────────────────────
 
   private buildMemoryContext(memory: AssistantMemory): string {
     if (!memory.lastAction) return '';
 
-    const parts = [`\nASSISTANT MEMORY (what happened before in this conversation):`];
-    parts.push(`Last action: ${memory.lastAction}`);
+    const parts = [
+      `\nASSISTANT MEMORY (what happened before):`,
+      `Last action: ${memory.lastAction}`,
+    ];
 
     if (memory.lastPresentedProducts?.length) {
-      parts.push(`Products shown to customer (USE THIS DATA for prices and variants):`);
+      parts.push(`Products shown to customer:`);
       for (const p of memory.lastPresentedProducts) {
         const variants = p.variants.join(', ');
-        parts.push(`  • ${p.title} — Price: ${p.price} — Variants: ${variants}`);
+        parts.push(
+          `  - ${p.title} — Price: ${p.price} — Variants: ${variants}`,
+        );
       }
     }
 
     if (memory.orderItems?.length) {
-      parts.push(`Current order items:`);
-      for (const item of memory.orderItems) {
-        parts.push(`  • ${item}`);
-      }
+      parts.push(`Current order items: ${memory.orderItems.join(', ')}`);
     }
 
     if (memory.awaitingField) {
@@ -515,70 +611,12 @@ export class ReplyEngineService {
     return parts.join('\n');
   }
 
-  // ─── Product search ──────────────────────────────────────────
+  // ─── Handoff helper ────────────────────────────────────────────
 
-  private async searchProducts(
-    tenantId: string,
-    conversationId: string,
-    keywords: string[],
-  ): Promise<{
-    found: boolean;
-    context?: string;
-    variantId?: string;
-    productId?: string;
-    presentedProducts?: Array<{ title: string; variants: string[]; price: string }>;
-  }> {
-    for (const keyword of keywords) {
-      const results = await this.availabilityService.checkAll(tenantId, { query: keyword });
-
-      await this.auditService.log({
-        tenantId, conversationId,
-        type: AuditLogType.AvailabilityCheck,
-        details: { keyword, productsFound: results.length },
-      });
-
-      if (results.length > 0) {
-        const contextParts: string[] = [];
-        const presentedProducts: Array<{ title: string; variants: string[]; price: string }> = [];
-
-        for (const r of results) {
-          const variantDescs: string[] = [];
-          const variantNames: string[] = [];
-          for (const v of r.variants) {
-            const details = [v.size, v.color].filter(Boolean).join(', ');
-            const stock = v.effectiveAvailable > 0 ? 'в наявності' : 'немає';
-            variantDescs.push(`${details || 'standard'}: ${v.price} ${v.currency} (${stock})`);
-            variantNames.push(details || 'standard');
-          }
-          contextParts.push(`- ${r.product.title}: ${variantDescs.join('; ')}`);
-
-          const prices = [...new Set(r.variants.map((v) => `${v.price} ${v.currency}`))];
-          presentedProducts.push({
-            title: r.product.title,
-            variants: variantNames,
-            price: prices.join(' / '),
-          });
-        }
-
-        const firstResult = results[0];
-        const firstInStock = firstResult.variants.find((v) => v.effectiveAvailable > 0);
-
-        return {
-          found: true,
-          context: `Products found:\n${contextParts.join('\n')}`,
-          variantId: firstInStock?.id ?? firstResult.variants[0]?.id,
-          productId: firstResult.product.id,
-          presentedProducts,
-        };
-      }
-    }
-
-    return { found: false };
-  }
-
-  // ─── Handoff helper ──────────────────────────────────────────
-
-  private async doHandoff(input: ReplyEngineInput, reason: string): Promise<ReplyEngineOutput> {
+  private async doHandoff(
+    input: ReplyEngineInput,
+    reason: string,
+  ): Promise<ReplyEngineOutput> {
     await this.auditService.log({
       tenantId: input.tenantId,
       conversationId: input.conversationId,
