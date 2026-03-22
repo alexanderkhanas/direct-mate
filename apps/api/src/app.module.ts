@@ -16,6 +16,7 @@ import { IntegrationsModule } from './modules/integrations/integrations.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { InternalModule } from './modules/internal/internal.module';
+import { ScreenshotTrainingModule } from './modules/screenshot-training/screenshot-training.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { InternalModule } from './modules/internal/internal.module';
     SettingsModule,
     AuditModule,
     InternalModule,
+    ScreenshotTrainingModule,
   ],
 })
 export class AppModule {}

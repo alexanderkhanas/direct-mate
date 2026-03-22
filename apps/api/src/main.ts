@@ -35,6 +35,9 @@ async function bootstrap() {
   // Serve static files (privacy policy, etc.)
   app.useStaticAssets(join(__dirname, '..', 'src'), { prefix: '/static' });
 
+  // Serve uploaded files
+  app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads' });
+
   const port = process.env.PORT ?? 3000;
   await app.listen(port);
   console.log(`API running on http://localhost:${port}`);
