@@ -1,0 +1,60 @@
+import {
+  Column,
+  CreateDateColumn,
+  Entity,
+  Index,
+  ManyToOne,
+  OneToOne,
+  PrimaryGeneratedColumn,
+  UpdateDateColumn,
+} from 'typeorm';
+import { Product } from './product.entity';
+import { StockBalance } from './stock-balance.entity';
+
+@Entity('product_variants')
+@Index(['productId'])
+@Index(['color'])
+@Index(['size'])
+export class ProductVariant {
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
+
+  @Column({ type: 'uuid' })
+  productId!: string;
+
+  @Column({ type: 'text', nullable: true })
+  externalVariantId!: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  sku!: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  color!: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  size!: string | null;
+
+  @Column({ type: 'numeric', precision: 10, scale: 2 })
+  price!: number;
+
+  @Column({ type: 'text', default: 'UAH' })
+  currency!: string;
+
+  @Column({ type: 'boolean', default: true })
+  active!: boolean;
+
+  @Column({ type: 'jsonb', nullable: true })
+  metadata!: Record<string, unknown> | null;
+
+  @CreateDateColumn({ type: 'timestamptz' })
+  createdAt!: Date;
+
+  @UpdateDateColumn({ type: 'timestamptz' })
+  updatedAt!: Date;
+
+  @ManyToOne(() => Product, (p) => p.variants, { onDelete: 'CASCADE' })
+  product!: Product;
+
+  @OneToOne(() => StockBalance, (s) => s.variant)
+  stockBalance!: StockBalance;
+}

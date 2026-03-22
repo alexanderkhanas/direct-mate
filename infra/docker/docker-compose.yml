@@ -1,0 +1,51 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: directmate
+    ports:
+      - '5433:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ../../apps/api
+      dockerfile: ../../infra/docker/api.Dockerfile
+    ports:
+      - '3000:3000'
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/directmate
+      JWT_SECRET: dev-secret
+      JWT_EXPIRES_IN: 7d
+      META_WEBHOOK_VERIFY_TOKEN: dev-verify-token
+      INTERNAL_API_KEY: dev-internal-key
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ../../apps/api:/app
+      - /app/node_modules
+
+  admin:
+    build:
+      context: ../../apps/admin
+      dockerfile: ../../infra/docker/admin.Dockerfile
+    ports:
+      - '5173:5173'
+    volumes:
+      - ../../apps/admin:/app
+      - /app/node_modules
+
+volumes:
+  postgres_data:
