@@ -52,6 +52,21 @@ export class AvailabilityService {
       .filter((w) => w.length > 2 && !stopWords.has(w));
   }
 
+  /**
+   * Get distinct product categories for a tenant (used as AI context).
+   */
+  async getCategories(tenantId: string): Promise<string[]> {
+    const rows = await this.variantRepo
+      .createQueryBuilder('v')
+      .innerJoin('v.product', 'p')
+      .select('DISTINCT p.category', 'category')
+      .where('p.tenant_id = :tenantId', { tenantId })
+      .andWhere('p.status = :status', { status: 'active' })
+      .andWhere('p.category IS NOT NULL')
+      .getRawMany();
+    return rows.map((r: any) => r.category).filter(Boolean);
+  }
+
   async check(tenantId: string, dto: CheckAvailabilityDto): Promise<AvailabilityResult> {
     const searchTerms = this.extractSearchTerms(dto.query);
 
@@ -59,29 +74,36 @@ export class AvailabilityService {
       return { matchType: 'none', product: null, variant: null, stock: null };
     }
 
-    // Try exact phrase match first, then individual word matches
-    const searches = [
-      searchTerms.join(' '),  // full phrase
-      ...searchTerms,         // individual words
-    ];
+    const fullPhrase = searchTerms.join(' ');
 
-    let variant: ProductVariant | null = null;
+    // Strategy 1: ILIKE on title (exact phrase, then individual words)
+    let variant = await this.searchByTitle(tenantId, fullPhrase, dto);
+    if (!variant) {
+      for (const term of searchTerms) {
+        variant = await this.searchByTitle(tenantId, term, dto);
+        if (variant) break;
+      }
+    }
 
-    for (const term of searches) {
-      const qb = this.variantRepo
-        .createQueryBuilder('v')
-        .innerJoinAndSelect('v.product', 'p')
-        .leftJoinAndSelect('v.stockBalance', 's')
-        .where('p.tenant_id = :tenantId', { tenantId })
-        .andWhere('p.status = :status', { status: 'active' })
-        .andWhere('v.active = true')
-        .andWhere('p.title ILIKE :q', { q: `%${term}%` });
+    // Strategy 2: ILIKE on category
+    if (!variant) {
+      variant = await this.searchByCategory(tenantId, fullPhrase, dto);
+      if (!variant) {
+        for (const term of searchTerms) {
+          variant = await this.searchByCategory(tenantId, term, dto);
+          if (variant) break;
+        }
+      }
+    }
 
-      if (dto.size) qb.andWhere('v.size ILIKE :size', { size: dto.size });
-      if (dto.color) qb.andWhere('v.color ILIKE :color', { color: dto.color });
+    // Strategy 3: Trigram fuzzy search on title (catches олійка→олія, тоналка→тональна)
+    if (!variant) {
+      variant = await this.searchByTrigram(tenantId, fullPhrase, dto);
+    }
 
-      variant = await qb.getOne();
-      if (variant) break;
+    // Strategy 4: Trigram on category
+    if (!variant) {
+      variant = await this.searchByTrigram(tenantId, fullPhrase, dto);
     }
 
     if (!variant) {
@@ -119,6 +141,206 @@ export class AvailabilityService {
         isFresh,
       },
     };
+  }
+
+  private async searchByTitle(
+    tenantId: string,
+    term: string,
+    dto: CheckAvailabilityDto,
+  ): Promise<ProductVariant | null> {
+    const qb = this.variantRepo
+      .createQueryBuilder('v')
+      .innerJoinAndSelect('v.product', 'p')
+      .leftJoinAndSelect('v.stockBalance', 's')
+      .where('p.tenant_id = :tenantId', { tenantId })
+      .andWhere('p.status = :status', { status: 'active' })
+      .andWhere('v.active = true')
+      .andWhere('p.title ILIKE :q', { q: `%${term}%` });
+    if (dto.size) qb.andWhere('v.size ILIKE :size', { size: dto.size });
+    if (dto.color) qb.andWhere('v.color ILIKE :color', { color: dto.color });
+    return qb.getOne();
+  }
+
+  private async searchByCategory(
+    tenantId: string,
+    term: string,
+    dto: CheckAvailabilityDto,
+  ): Promise<ProductVariant | null> {
+    const qb = this.variantRepo
+      .createQueryBuilder('v')
+      .innerJoinAndSelect('v.product', 'p')
+      .leftJoinAndSelect('v.stockBalance', 's')
+      .where('p.tenant_id = :tenantId', { tenantId })
+      .andWhere('p.status = :status', { status: 'active' })
+      .andWhere('v.active = true')
+      .andWhere('p.category ILIKE :q', { q: `%${term}%` });
+    if (dto.size) qb.andWhere('v.size ILIKE :size', { size: dto.size });
+    if (dto.color) qb.andWhere('v.color ILIKE :color', { color: dto.color });
+    return qb.getOne();
+  }
+
+  private async searchByTrigram(
+    tenantId: string,
+    term: string,
+    dto: CheckAvailabilityDto,
+  ): Promise<ProductVariant | null> {
+    if (term.length < 4) return null;
+    const qb = this.variantRepo
+      .createQueryBuilder('v')
+      .innerJoinAndSelect('v.product', 'p')
+      .leftJoinAndSelect('v.stockBalance', 's')
+      .addSelect('similarity(p.category, :q)', 'sim')
+      .where('p.tenant_id = :tenantId', { tenantId })
+      .andWhere('p.status = :status', { status: 'active' })
+      .andWhere('v.active = true')
+      .andWhere('similarity(p.category, :q) > 0.3', { q: term })
+      .orderBy('sim', 'DESC')
+      .setParameter('q', term);
+    if (dto.size) qb.andWhere('v.size ILIKE :size', { size: dto.size });
+    if (dto.color) qb.andWhere('v.color ILIKE :color', { color: dto.color });
+    return qb.getOne();
+  }
+
+  /**
+   * Search for all matching products with all their variants.
+   */
+  async checkAll(
+    tenantId: string,
+    dto: CheckAvailabilityDto,
+  ): Promise<
+    Array<{
+      product: { id: string; title: string };
+      variants: Array<{
+        id: string;
+        size: string | null;
+        color: string | null;
+        price: number;
+        currency: string;
+        effectiveAvailable: number;
+      }>;
+    }>
+  > {
+    const searchTerms = this.extractSearchTerms(dto.query);
+    if (searchTerms.length === 0) return [];
+
+    const fullPhrase = searchTerms.join(' ');
+
+    // Try all search strategies in priority order, stop at first match
+    let variants: ProductVariant[] = [];
+
+    // Priority 1: ILIKE on title (most precise)
+    variants = await this.searchAllByTitle(tenantId, fullPhrase);
+    if (!variants.length) {
+      for (const t of searchTerms) {
+        variants = await this.searchAllByTitle(tenantId, t);
+        if (variants.length) break;
+      }
+    }
+
+    // Priority 2: ILIKE on category
+    if (!variants.length) {
+      variants = await this.searchAllByCategory(tenantId, fullPhrase);
+      if (!variants.length) {
+        for (const t of searchTerms) {
+          variants = await this.searchAllByCategory(tenantId, t);
+          if (variants.length) break;
+        }
+      }
+    }
+
+    // Priority 3: Trigram on category only (NOT title — title trigram is too noisy)
+    // with a higher threshold (0.3)
+    if (!variants.length) {
+      for (const t of searchTerms) {
+        if (t.length < 4) continue; // skip short words for trigram
+        variants = await this.searchAllByCategoryTrigram(tenantId, t);
+        if (variants.length) break;
+      }
+    }
+
+    if (variants.length === 0) return [];
+
+    // Group by product
+    const productMap = new Map<
+      string,
+      {
+        product: { id: string; title: string };
+        variants: Array<{
+          id: string;
+          size: string | null;
+          color: string | null;
+          price: number;
+          currency: string;
+          effectiveAvailable: number;
+        }>;
+      }
+    >();
+
+    for (const v of variants) {
+      const pid = v.product.id;
+      if (!productMap.has(pid)) {
+        productMap.set(pid, {
+          product: { id: pid, title: v.product.title },
+          variants: [],
+        });
+      }
+      const stock = v.stockBalance;
+      const effectiveAvailable = stock
+        ? stock.availableQty - stock.reservedQty - stock.pendingCheckoutQty
+        : 0;
+      productMap.get(pid)!.variants.push({
+        id: v.id,
+        size: v.size,
+        color: v.color,
+        price: Number(v.price),
+        currency: v.currency,
+        effectiveAvailable,
+      });
+    }
+
+    return Array.from(productMap.values()).slice(0, 5);
+  }
+
+  private async searchAllByTitle(tenantId: string, term: string): Promise<ProductVariant[]> {
+    return this.variantRepo
+      .createQueryBuilder('v')
+      .innerJoinAndSelect('v.product', 'p')
+      .leftJoinAndSelect('v.stockBalance', 's')
+      .where('p.tenant_id = :tenantId', { tenantId })
+      .andWhere('p.status = :status', { status: 'active' })
+      .andWhere('v.active = true')
+      .andWhere('p.title ILIKE :q', { q: `%${term}%` })
+      .take(20)
+      .getMany();
+  }
+
+  private async searchAllByCategory(tenantId: string, term: string): Promise<ProductVariant[]> {
+    return this.variantRepo
+      .createQueryBuilder('v')
+      .innerJoinAndSelect('v.product', 'p')
+      .leftJoinAndSelect('v.stockBalance', 's')
+      .where('p.tenant_id = :tenantId', { tenantId })
+      .andWhere('p.status = :status', { status: 'active' })
+      .andWhere('v.active = true')
+      .andWhere('p.category ILIKE :q', { q: `%${term}%` })
+      .take(20)
+      .getMany();
+  }
+
+  private async searchAllByCategoryTrigram(tenantId: string, term: string): Promise<ProductVariant[]> {
+    return this.variantRepo
+      .createQueryBuilder('v')
+      .innerJoinAndSelect('v.product', 'p')
+      .leftJoinAndSelect('v.stockBalance', 's')
+      .addSelect('similarity(p.category, :q)', 'sim')
+      .where('p.tenant_id = :tenantId', { tenantId })
+      .andWhere('p.status = :status', { status: 'active' })
+      .andWhere('v.active = true')
+      .andWhere('similarity(p.category, :q) > 0.3', { q: term })
+      .orderBy('sim', 'DESC')
+      .setParameter('q', term)
+      .take(20)
+      .getMany();
   }
 
   async getByProductId(

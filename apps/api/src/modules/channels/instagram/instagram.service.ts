@@ -6,7 +6,7 @@ import { ReplyEngineService } from '../../conversations/reply-engine.service';
 import { IntegrationsService } from '../../integrations/integrations.service';
 import { CryptoService } from '../../../common/crypto.service';
 import { Connection } from '../../integrations/entities/connection.entity';
-import { ConnectionType, MessageDirection, MessageRole, ReplyDecision } from '@direct-mate/shared';
+import { ConnectionType, MessageDirection, MessageRole } from '@direct-mate/shared';
 
 interface MetaMessagingEvent {
   sender?: { id: string };
@@ -27,9 +27,26 @@ interface MetaWebhookPayload {
   entry: MetaMessagingEntry[];
 }
 
+const DEBOUNCE_MS = 5_000; // 5 seconds
+
+interface PendingMessage {
+  messageId: string;
+  text: string;
+}
+
+interface PendingReply {
+  timer: ReturnType<typeof setTimeout>;
+  messages: PendingMessage[];
+  externalUserId: string;
+  channelAccountId: string;
+  connection: Connection;
+  tenantId: string;
+}
+
 @Injectable()
 export class InstagramService {
   private readonly logger = new Logger(InstagramService.name);
+  private readonly pendingReplies = new Map<string, PendingReply>();
 
   constructor(
     private readonly config: ConfigService,
@@ -191,17 +208,76 @@ export class InstagramService {
       return;
     }
 
-    try {
-      await this.processInbound({
-        tenantId: connection.tenantId,
+    // Save message immediately to DB
+    const customer = await this.conversationsService.findOrCreateCustomer(
+      connection.tenantId,
+      'instagram',
+      externalUserId,
+    );
+
+    const { conversation } = await this.conversationsService.findOrCreateConversation(
+      connection.tenantId,
+      customer.id,
+      'instagram',
+      channelAccountId,
+    );
+
+    await this.conversationsService.saveMessage(
+      conversation.id,
+      connection.tenantId,
+      MessageDirection.Inbound,
+      MessageRole.User,
+      messageText,
+      messageId,
+    );
+
+    // Debounce: wait for more messages before processing
+    const debounceKey = `${externalUserId}:${channelAccountId}`;
+    const existing = this.pendingReplies.get(debounceKey);
+
+    if (existing) {
+      // More messages coming — reset timer, accumulate
+      clearTimeout(existing.timer);
+      existing.messages.push({ messageId, text: messageText });
+      this.logger.log(
+        `Debounce: added message #${existing.messages.length} for ${debounceKey}, resetting timer`,
+      );
+      existing.timer = setTimeout(() => this.flushPending(debounceKey), DEBOUNCE_MS);
+    } else {
+      // First message — start debounce timer
+      this.logger.log(`Debounce: first message for ${debounceKey}, waiting ${DEBOUNCE_MS / 1000}s`);
+      const pending: PendingReply = {
+        timer: setTimeout(() => this.flushPending(debounceKey), DEBOUNCE_MS),
+        messages: [{ messageId, text: messageText }],
         externalUserId,
         channelAccountId,
-        messageId,
-        messageText,
         connection,
+        tenantId: connection.tenantId,
+      };
+      this.pendingReplies.set(debounceKey, pending);
+    }
+  }
+
+  private async flushPending(debounceKey: string): Promise<void> {
+    const pending = this.pendingReplies.get(debounceKey);
+    if (!pending) return;
+    this.pendingReplies.delete(debounceKey);
+
+    const combinedText = pending.messages.map((m) => m.text).join('\n');
+    this.logger.log(
+      `Debounce: processing ${pending.messages.length} message(s) for ${debounceKey}: "${combinedText.substring(0, 100)}"`,
+    );
+
+    try {
+      await this.processInbound({
+        tenantId: pending.tenantId,
+        externalUserId: pending.externalUserId,
+        channelAccountId: pending.channelAccountId,
+        messageText: combinedText,
+        connection: pending.connection,
       });
     } catch (err) {
-      this.logger.error(`Failed to process message ${messageId}`, err);
+      this.logger.error(`Failed to process debounced messages for ${debounceKey}`, err);
     }
   }
 
@@ -209,7 +285,6 @@ export class InstagramService {
     tenantId: string;
     externalUserId: string;
     channelAccountId: string;
-    messageId: string;
     messageText: string;
     connection: Connection;
   }): Promise<void> {
@@ -224,15 +299,6 @@ export class InstagramService {
       customer.id,
       'instagram',
       params.channelAccountId,
-    );
-
-    await this.conversationsService.saveMessage(
-      conversation.id,
-      params.tenantId,
-      MessageDirection.Inbound,
-      MessageRole.User,
-      params.messageText,
-      params.messageId,
     );
 
     const recentMessages = (
