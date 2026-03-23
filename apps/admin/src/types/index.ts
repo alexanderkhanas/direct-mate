@@ -159,3 +159,33 @@ export interface ExtractedVoiceSignal {
   confidenceScore: number;
   approvalStatus: string;
 }
+
+export interface ResponseTemplate {
+  id: string;
+  scenario: string;
+  stage: string | null;
+  blocks: string[];
+  requiredVariables: string[];
+  toneTags: string[];
+  priority: number;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PhraseBlock {
+  id: string;
+  type: string;
+  text: string;
+  scenarioTags: string[];
+  active: boolean;
+  createdAt: string;
+}
+
+export interface FaqItem {
+  id: string;
+  questionTags: string[];
+  answerTemplate: string;
+  active: boolean;
+  createdAt: string;
+}

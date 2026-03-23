@@ -129,6 +129,9 @@ export class ReplyEngineService {
       return this.doHandoff(input, 'ai_failure');
     }
 
+    // 2.5. Short reply resolver: override low-confidence classification using memory context
+    this.resolveShortReply(classification, memory, input.messageText);
+
     this.logger.log(
       `Classification: intent=${classification.primaryIntent} stage=${classification.conversationStage} ` +
         `action=${classification.recommendedAction} confidence=${classification.confidence} sentiment=${classification.sentiment}`,
@@ -212,7 +215,8 @@ export class ReplyEngineService {
 
     // 5. Product search if needed (based on classification entities/keywords)
     let productData: ProductSearchResult[] | undefined;
-    const needsSearch = this.shouldSearchProducts(classification);
+    let isFirstProductPresentation = false;
+    const needsSearch = this.shouldSearchProducts(classification, memory);
 
     if (needsSearch) {
       const searchKeywords = this.extractSearchKeywords(classification);
@@ -230,8 +234,10 @@ export class ReplyEngineService {
       });
 
       if (productData && productData.length > 0) {
-        // Update memory with presented products
-        memory.lastAction = 'presented_product_options';
+        // Check if this is the first time showing products in this conversation
+        isFirstProductPresentation = !memory.lastPresentedProducts?.length;
+
+        // Update memory with presented products BEFORE template selection
         memory.lastPresentedProducts = productData.map((p) => ({
           title: p.product.title,
           variants: p.variants.map((v) =>
@@ -241,7 +247,6 @@ export class ReplyEngineService {
             ...new Set(p.variants.map((v) => `${v.price} ${v.currency}`)),
           ].join(' / '),
         }));
-        memory.awaitingField = 'product_choice_or_recommendation_request';
         memory.selectedCategory =
           classification.entities.category ?? searchKeywords[0];
       }
@@ -255,15 +260,19 @@ export class ReplyEngineService {
       productData,
       memory,
       recentTemplateIds,
+      isFirstProductPresentation,
     });
 
     let finalReply: string;
     let usedTemplateId: string | undefined;
+    let actualAction: string; // What ACTUALLY happened (not what classifier wanted)
 
     if (templateResult) {
       // 7. Template found -> use it
       finalReply = templateResult.text;
       usedTemplateId = templateResult.templateId;
+      // Use the template's actual scenario for memory tracking (may differ from classifier due to stage gates)
+      actualAction = this.scenarioToAction(templateResult.scenario);
 
       // Track for anti-repetition
       memory.recentTemplateIds = [
@@ -291,6 +300,7 @@ export class ReplyEngineService {
             productData,
             classification,
           });
+          actualAction = 'ai_fallback_clarification';
         } catch (err) {
           this.logger.error('AI fallback failed', err);
           memory.failedTurns = (memory.failedTurns ?? 0) + 1;
@@ -308,7 +318,7 @@ export class ReplyEngineService {
     // 9. Update conversation state + memory
     const stateUpdate: Partial<ConversationState> = {};
 
-    // Map classification stage to conversation state status
+    // Map what actually happened to conversation state
     const stageStatusMap: Record<string, ConversationStateStatus> = {
       showing_options: ConversationStateStatus.StockConfirmed,
       selection_help: ConversationStateStatus.StockConfirmed,
@@ -322,8 +332,8 @@ export class ReplyEngineService {
       stateUpdate.stateStatus = mappedStatus;
     }
 
-    // Update memory based on recommended action
-    this.updateMemoryFromAction(classification, memory);
+    // Update memory based on what ACTUALLY happened, not classifier's recommendation
+    this.updateMemoryFromAction(actualAction, memory);
 
     // Set product IDs if product search found results
     if (productData && productData.length > 0) {
@@ -372,12 +382,130 @@ export class ReplyEngineService {
 
   // ─── Product search helpers ────────────────────────────────────
 
-  private shouldSearchProducts(classification: ClassificationResult): boolean {
+  // ─── Scenario to action mapping ────────────────────────────────
+
+  private scenarioToAction(scenario: string): string {
+    const map: Record<string, string> = {
+      greeting: 'greet',
+      show_products: 'show_products',
+      show_price: 'show_price',
+      recommend_product: 'recommend',
+      ask_recommendation_from_shown: 'recommend',
+      confirm_selection: 'confirm_selection',
+      collect_checkout_info: 'start_checkout',
+      order_confirmed_ask_delivery: 'ask_delivery',
+      confirm_order: 'confirm_order',
+      answer_delivery: 'answer_faq',
+      answer_payment: 'answer_faq',
+      out_of_stock: 'show_products',
+      ask_variant_choice: 'show_products',
+    };
+    return map[scenario] ?? scenario;
+  }
+
+  // ─── Short reply resolver ─────────────────────────────────────
+
+  private resolveShortReply(
+    classification: ClassificationResult,
+    memory: AssistantMemory,
+    messageText: string,
+  ): void {
+    const text = messageText.trim().toLowerCase();
+    const isShort = text.length < 20;
+    const isLowConfidence = classification.confidence < 0.7;
+    const isConfirmation = /^(так|да|давайте|ок|добре|звісно|ага|угу|yes|ok|окей|гуд|го|ладно|канєшно)$/i.test(text);
+    const isNegation = /^(ні|нет|не|не хочу|не треба|no)$/i.test(text);
+
+    if (!isShort && !isLowConfidence) return;
+
+    // Short confirmation — interpret based on what we're awaiting
+    if (isConfirmation) {
+      switch (memory.awaitingField) {
+        case 'order_confirmation':
+        case 'order_decision':
+          // "Так" after "Оформлюємо X?" → start checkout
+          classification.primaryIntent = 'ready_to_order';
+          classification.dialogueAct = 'confirm_choice';
+          classification.recommendedAction = 'start_checkout';
+          classification.conversationStage = 'checkout_started';
+          classification.confidence = 0.95;
+          this.logger.log('Short reply resolved: confirmation → start_checkout');
+          return;
+
+        case 'delivery_info':
+          // "Так" after delivery question → probably confirming, not providing info
+          classification.primaryIntent = 'confirm_choice';
+          classification.dialogueAct = 'confirm_choice';
+          classification.recommendedAction = 'start_checkout';
+          classification.conversationStage = 'checkout_started';
+          classification.confidence = 0.95;
+          this.logger.log('Short reply resolved: confirmation → checkout');
+          return;
+
+        case 'product_choice_or_recommendation_request':
+          // "Так" / "Добре" after product list → wants recommendation
+          classification.primaryIntent = 'ask_recommendation';
+          classification.dialogueAct = 'ask_recommendation';
+          classification.recommendedAction = 'recommend';
+          classification.conversationStage = 'selection_help';
+          classification.confidence = 0.9;
+          this.logger.log('Short reply resolved: confirmation after products → ask_recommendation');
+          return;
+
+        case 'product_choice':
+          // "Так" after recommendation → confirm that product
+          classification.primaryIntent = 'confirm_choice';
+          classification.dialogueAct = 'confirm_choice';
+          classification.recommendedAction = 'confirm_selection';
+          classification.conversationStage = 'product_selected';
+          classification.confidence = 0.95;
+          this.logger.log('Short reply resolved: confirmation after recommendation → confirm_selection');
+          return;
+
+        case 'clarification':
+          // "Так" after clarification question → confirm
+          classification.primaryIntent = 'confirm_choice';
+          classification.dialogueAct = 'confirm_choice';
+          classification.recommendedAction = 'confirm_selection';
+          classification.confidence = 0.9;
+          this.logger.log('Short reply resolved: confirmation after clarification');
+          return;
+      }
+    }
+
+    // Short negation
+    if (isNegation) {
+      if (memory.awaitingField === 'order_confirmation' || memory.awaitingField === 'order_decision') {
+        classification.primaryIntent = 'decline';
+        classification.dialogueAct = 'decline';
+        classification.recommendedAction = 'show_products';
+        classification.confidence = 0.9;
+        this.logger.log('Short reply resolved: negation → show_products');
+        return;
+      }
+    }
+
+    // "Підкажіть" / "Порадьте" after product list → ask recommendation
+    if (/^(підкажіть|порадьте|порадь|підкажи|яку|який|яке)/i.test(text) && memory.lastPresentedProducts?.length) {
+      classification.primaryIntent = 'ask_recommendation';
+      classification.dialogueAct = 'ask_recommendation';
+      classification.recommendedAction = 'recommend';
+      classification.conversationStage = 'selection_help';
+      classification.confidence = 0.95;
+      this.logger.log('Short reply resolved: recommendation request after product list');
+      return;
+    }
+  }
+
+  // ─── Product search helpers ────────────────────────────────────
+
+  private shouldSearchProducts(classification: ClassificationResult, memory: AssistantMemory): boolean {
     const searchActions = [
       'show_products',
       'recommend',
       'show_price',
       'confirm_selection',
+      'start_checkout',
     ];
     const searchIntents = [
       'product_inquiry',
@@ -385,11 +513,18 @@ export class ReplyEngineService {
       'ask_price',
       'availability_check',
       'ask_recommendation',
+      'ready_to_order',
+      'confirm_choice',
     ];
+
+    // Always search if user mentions a product/category and we haven't shown products yet
+    const hasEntities = !!(classification.entities.category || classification.entities.productName || classification.entities.color);
+    const noProductsShownYet = !memory.lastPresentedProducts?.length;
 
     return (
       searchActions.includes(classification.recommendedAction) ||
-      searchIntents.includes(classification.primaryIntent)
+      searchIntents.includes(classification.primaryIntent) ||
+      (hasEntities && noProductsShownYet)
     );
   }
 
@@ -437,10 +572,10 @@ export class ReplyEngineService {
   // ─── Memory update based on action ─────────────────────────────
 
   private updateMemoryFromAction(
-    classification: ClassificationResult,
+    actualAction: string,
     memory: AssistantMemory,
   ): void {
-    switch (classification.recommendedAction) {
+    switch (actualAction) {
       case 'recommend':
         memory.lastAction = 'gave_recommendation';
         memory.awaitingField = 'product_choice';
@@ -465,6 +600,10 @@ export class ReplyEngineService {
       case 'show_price':
         memory.lastAction = 'showed_price';
         memory.awaitingField = 'order_decision';
+        break;
+      case 'ai_fallback_clarification':
+        memory.lastAction = 'asked_clarification';
+        memory.awaitingField = 'clarification';
         break;
     }
   }

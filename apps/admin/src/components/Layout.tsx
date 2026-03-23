@@ -10,6 +10,7 @@ import {
   LogOut,
   Zap,
   GraduationCap,
+  FileText,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { cn } from '../lib/cn';
@@ -20,6 +21,7 @@ const nav = [
   { to: '/catalog', label: 'Catalog', icon: Package },
   { to: '/connections', label: 'Connections', icon: Plug },
   { to: '/training', label: 'Training', icon: GraduationCap },
+  { to: '/templates', label: 'Templates', icon: FileText },
   { to: '/settings', label: 'Settings', icon: Settings },
   { to: '/logs', label: 'Logs', icon: ScrollText },
 ];
