@@ -1,0 +1,19 @@
+name: "Recommendation flow"
+messages:
+  - customer: "Хочу помаду"
+    expect:
+      scenario: show_products
+  - customer: "підкажіть"
+    expect:
+      scenario_in:
+        - recommend_product
+        - ask_recommendation_from_shown
+  - customer: "давайте"
+    expect:
+      scenario_in:
+        - ask_variant_choice
+        - confirm_selection
+        - ai_fallback
+      not_scenario:
+        - show_products
+      contains_any: ["відтінок", "варіант", "обираєте", "Оформлюємо"]

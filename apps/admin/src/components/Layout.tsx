@@ -11,6 +11,7 @@ import {
   Zap,
   GraduationCap,
   FileText,
+  FlaskConical,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { cn } from '../lib/cn';
@@ -22,6 +23,7 @@ const nav = [
   { to: '/connections', label: 'Connections', icon: Plug },
   { to: '/training', label: 'Training', icon: GraduationCap },
   { to: '/templates', label: 'Templates', icon: FileText },
+  { to: '/testing', label: 'Testing', icon: FlaskConical },
   { to: '/settings', label: 'Settings', icon: Settings },
   { to: '/logs', label: 'Logs', icon: ScrollText },
 ];

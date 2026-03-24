@@ -1,0 +1,5 @@
+name: "Explicit handoff request"
+messages:
+  - customer: "Хочу поговорити з менеджером"
+    expect:
+      not_scenario: show_products

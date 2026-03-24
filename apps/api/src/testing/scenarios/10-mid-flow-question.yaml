@@ -1,0 +1,13 @@
+name: "Question during flow"
+messages:
+  - customer: "Хочу Silk Color помаду Nude Pink"
+    expect:
+      scenario_in:
+        - show_products
+        - confirm_selection
+  - customer: "як доставка?"
+    expect:
+      scenario_in:
+        - answer_delivery
+        - faq
+      contains_any: ["Нова Пошта", "Новою Поштою", "Нової Пошти"]

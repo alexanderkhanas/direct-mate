@@ -1,0 +1,6 @@
+name: "Multiple messages combined (debounce simulation)"
+messages:
+  - customer: "Привіт\nХочу замовити\nПомаду\nЯкі є?"
+    expect:
+      scenario: show_products
+      contains: "варіанти"

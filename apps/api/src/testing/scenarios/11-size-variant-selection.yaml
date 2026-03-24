@@ -1,0 +1,16 @@
+name: "Size variant selection (serum)"
+messages:
+  - customer: "Хочу сироватку"
+    expect:
+      scenario: show_products
+      contains: "варіанти"
+
+  - customer: "Calm Barrier"
+    expect:
+      scenario_in: [confirm_selection, ask_variant_choice]
+      contains: "Calm Barrier"
+
+  - customer: "30 мл"
+    expect:
+      scenario: confirm_selection
+      contains: ["Calm Barrier", "30"]

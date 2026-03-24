@@ -1,0 +1,16 @@
+name: "Short replies in context"
+messages:
+  - customer: "Хочу помаду"
+    expect:
+      scenario: show_products
+  - customer: "так"
+    expect:
+      scenario_in:
+        - recommend_product
+        - ask_recommendation_from_shown
+        - ask_variant_choice
+        - ai_fallback
+      contains_any: ["радила", "рекомендую", "Рекомендую", "підійде", "раджу", "порадила", "варіант", "відтінок", "Який"]
+  - customer: "добре"
+    expect:
+      not_scenario: show_products

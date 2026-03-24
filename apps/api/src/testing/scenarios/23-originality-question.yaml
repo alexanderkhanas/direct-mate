@@ -1,0 +1,5 @@
+name: "General question about authenticity"
+messages:
+  - customer: "У вас оригінальна продукція?"
+    expect:
+      not_scenario: collect_checkout_info

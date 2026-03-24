@@ -1,0 +1,6 @@
+name: "Transliteration variant matching"
+messages:
+  - customer: "Хочу помаду Silk Color, терракота"
+    expect:
+      scenario_in: [show_products, confirm_selection]
+      contains_any: ["Silk Color", "Terracotta", "терракота"]

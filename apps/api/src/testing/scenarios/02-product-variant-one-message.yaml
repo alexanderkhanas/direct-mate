@@ -1,0 +1,13 @@
+name: "Product + variant in one message"
+messages:
+  - customer: "Привіт, хочу замовити Silk Color помаду в кольорі Rosewood"
+    expect:
+      scenario_in:
+        - show_products
+        - confirm_selection
+  - customer: "так"
+    expect:
+      scenario_in:
+        - confirm_selection
+        - collect_checkout_info
+        - order_confirmed_ask_delivery

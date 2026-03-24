@@ -1,0 +1,11 @@
+name: "Ask about two different product categories"
+messages:
+  - customer: "Які є помади?"
+    expect:
+      scenario: show_products
+      contains: "варіанти"
+
+  - customer: "А сироватки?"
+    expect:
+      scenario: show_products
+      contains_any: ["варіанти", "Сироватка", "Serum"]

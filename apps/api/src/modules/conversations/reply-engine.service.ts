@@ -234,6 +234,25 @@ export class ReplyEngineService {
         found: productData ? productData.length : 0,
       });
 
+      // Product not found → try product_not_found template, then handoff
+      if ((!productData || productData.length === 0) &&
+          ['product_inquiry', 'ready_to_order', 'availability_check', 'category_browse'].includes(classification.primaryIntent)) {
+        this.logger.log('Product not found — using product_not_found template + handoff');
+        classification.recommendedAction = 'product_not_found';
+
+        // Try to use product_not_found template for a soft message
+        const pnfResult = await this.templateEngine.render({
+          tenantId: input.tenantId,
+          classification,
+          memory,
+          recentTemplateIds: memory.recentTemplateIds ?? [],
+          messageText: input.messageText,
+        });
+
+        const softMessage = pnfResult?.text ?? 'Секунду, уточню наявність 💛';
+        return this.doHandoff(input, 'product_not_found', softMessage);
+      }
+
       if (productData && productData.length > 0) {
         // Check if this is the first time showing products in this conversation
         isFirstProductPresentation = !memory.lastPresentedProducts?.length;
@@ -325,14 +344,62 @@ export class ReplyEngineService {
         } else {
           // No confident match → ask for variant
           memory.selectionState = 'awaiting_variant';
+          classification.primaryIntent = 'ask_variant_choice';
           classification.recommendedAction = 'ask_variant_choice';
           this.logger.log('Variant not matched confidently, asking user');
         }
       } else if (variants.length > 1) {
         // Multiple variants, user didn't specify → ask
         memory.selectionState = 'awaiting_variant';
+        classification.primaryIntent = 'ask_variant_choice';
         classification.recommendedAction = 'ask_variant_choice';
         this.logger.log(`Multiple variants (${variants.length}), asking user to choose`);
+      }
+    }
+
+    // 5.5c Variant check for fills_missing_slot: user picked a product, check if variant needed
+    if (
+      classification.slotAction === 'fills_missing_slot' &&
+      memory.selectedProductId &&
+      !memory.selectedVariantId &&
+      productData && productData.length === 1
+    ) {
+      const variants = productData[0].variants.filter(v => v.effectiveAvailable > 0);
+      if (variants.length > 1) {
+        const userColor = classification.entities.color;
+        const userSize = classification.entities.size;
+        if (userColor || userSize) {
+          const matched = this.matchVariant(
+            variants.map(v => ({ id: v.id, name: [...new Set([v.color, v.size].filter(Boolean))].join(', '), color: v.color, size: v.size })),
+            userColor, userSize,
+          );
+          if (matched) {
+            memory.selectedVariantId = matched.id;
+            memory.selectedVariantName = matched.name;
+            memory.selectionState = 'awaiting_confirmation';
+            classification.recommendedAction = 'confirm_selection';
+          } else {
+            memory.selectionState = 'awaiting_variant';
+            classification.primaryIntent = 'ask_variant_choice';
+            classification.recommendedAction = 'ask_variant_choice';
+          }
+        } else {
+          memory.selectionState = 'awaiting_variant';
+          memory.availableVariants = variants.map(v => ({
+            id: v.id,
+            name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+            color: v.color,
+            size: v.size,
+          }));
+          classification.primaryIntent = 'ask_variant_choice';
+          classification.recommendedAction = 'ask_variant_choice';
+          this.logger.log(`5.5c: Product selected, ${variants.length} variants — asking user`);
+        }
+      } else if (variants.length === 1) {
+        memory.selectedVariantId = variants[0].id;
+        memory.selectedVariantName = [...new Set([variants[0].color, variants[0].size].filter(Boolean))].join(', ') || 'standard';
+        memory.selectionState = 'awaiting_confirmation';
+        classification.recommendedAction = 'confirm_selection';
       }
     }
 
@@ -345,6 +412,7 @@ export class ReplyEngineService {
       memory,
       recentTemplateIds,
       isFirstProductPresentation,
+      messageText: input.messageText,
     });
 
     let finalReply: string;
@@ -385,6 +453,13 @@ export class ReplyEngineService {
       this.logger.log(`Template selected: ${templateResult.templateId}`);
     } else {
       // 8. No template -> check if AI fallback is allowed
+      // Check if product-related intent but no products found → handoff
+      const productIntents = ['product_inquiry', 'ready_to_order', 'availability_check', 'category_browse', 'ask_price'];
+      if (productIntents.includes(classification.primaryIntent) && (!productData || productData.length === 0)) {
+        this.logger.log('No template + no products found for product intent → handoff');
+        return this.doHandoff(input, 'product_not_found', 'Секунду, уточню наявність 💛');
+      }
+
       if (
         policy.action === 'fallback' ||
         this.policyEngine.isFallbackAllowed(classification, effectiveConfig)
@@ -443,10 +518,12 @@ export class ReplyEngineService {
       memory.selectedVariantName = classification.entities.color ?? classification.entities.size ?? memory.selectedVariantName;
     }
 
-    // Set product IDs if product search found results
+    // Set product IDs if product search found results — sync to BOTH state and memory
     if (productData && productData.length > 0) {
       const first = productData[0];
       stateUpdate.selectedProductId = first.product.id;
+      memory.selectedProductId = first.product.id;
+      memory.selectedProductTitle = memory.selectedProductTitle || first.product.title;
       const inStockVariant = first.variants.find(
         (v) => v.effectiveAvailable > 0,
       );
@@ -475,6 +552,7 @@ export class ReplyEngineService {
       inbound: input.messageText,
       outbound: finalReply,
       templateId: usedTemplateId ?? 'ai_fallback',
+      templateScenario: templateResult?.scenario ?? 'ai_fallback',
       stage: classification.conversationStage,
       action: classification.recommendedAction,
       memory,
@@ -873,6 +951,7 @@ export class ReplyEngineService {
   private async doHandoff(
     input: ReplyEngineInput,
     reason: string,
+    softMessage?: string,
   ): Promise<ReplyEngineOutput> {
     await this.auditService.log({
       tenantId: input.tenantId,
@@ -885,10 +964,11 @@ export class ReplyEngineService {
       conversationId: input.conversationId,
       inbound: input.messageText,
       reason,
+      softMessage,
     });
     return {
       decision: ReplyDecision.Handoff,
-      reply: null,
+      reply: softMessage ? { text: softMessage, sendNow: true } : null,
       handoff: { required: true, reason },
       stateUpdate: null,
     };

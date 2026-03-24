@@ -1,0 +1,13 @@
+name: "Greeting then immediate order intent"
+messages:
+  - customer: "Доброго дня"
+    expect:
+      scenario: greeting
+      contains_any: ["допомогти", "цікавить"]
+
+  - customer: "Хочу замовити тональну основу"
+    expect:
+      scenario: show_products
+      contains: "варіанти"
+      memory:
+        selectionState: awaiting_product

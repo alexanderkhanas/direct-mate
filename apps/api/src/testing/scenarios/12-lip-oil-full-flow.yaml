@@ -1,0 +1,17 @@
+name: "Lip oil: full order with Ukrainian variant"
+messages:
+  - customer: "Є олійка для губ?"
+    expect:
+      scenario: show_products
+      contains: "варіанти"
+
+  - customer: "Juice Gloss Essence, трояндовий"
+    expect:
+      scenario: confirm_selection
+      contains_any: ["Juice Gloss", "Трояндовий", "трояндовий"]
+
+  - customer: "так"
+    expect:
+      scenario_in: [collect_checkout_info, order_confirmed_ask_delivery]
+      memory:
+        selectionState: confirmed

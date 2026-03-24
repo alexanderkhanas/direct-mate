@@ -1,0 +1,6 @@
+name: "Return policy question"
+messages:
+  - customer: "Чи можна повернути товар?"
+    expect:
+      scenario_in: [faq, answer_delivery]
+      contains_any: ["повернення", "обмін", "14 днів"]

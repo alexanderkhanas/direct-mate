@@ -1,0 +1,13 @@
+name: "Change mind mid-flow"
+messages:
+  - customer: "Хочу помаду Silk Color, Rosewood"
+    expect:
+      scenario_in: [show_products, confirm_selection]
+      contains_any: ["Silk Color", "Rosewood"]
+
+  - customer: "Ні, хочу олійку для губ"
+    expect:
+      scenario: show_products
+      not_scenario: confirm_selection
+      memory:
+        selectionState: awaiting_product

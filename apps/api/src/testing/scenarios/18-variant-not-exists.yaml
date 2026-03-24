@@ -1,0 +1,11 @@
+name: "Variant that doesn't exist"
+messages:
+  - customer: "Хочу помаду Silk Color"
+    expect:
+      scenario_in: [show_products, confirm_selection, ask_variant_choice]
+      contains: "Silk Color"
+
+  - customer: "фіолетову"
+    expect:
+      not_scenario: collect_checkout_info
+      not_contains: "Оформлюємо"

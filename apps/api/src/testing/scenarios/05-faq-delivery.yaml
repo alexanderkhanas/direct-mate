@@ -1,0 +1,8 @@
+name: "FAQ: delivery question"
+messages:
+  - customer: "Як здійснюється доставка?"
+    expect:
+      scenario_in:
+        - answer_delivery
+        - faq
+      contains_any: ["Нова Пошта", "Новою Поштою", "Нової Пошти"]

@@ -1,0 +1,31 @@
+name: "Happy path: full order flow"
+messages:
+  - customer: "Привіт"
+    expect:
+      scenario: greeting
+      contains: "допомогти"
+  - customer: "Хочу помаду"
+    expect:
+      scenario: show_products
+      contains: "варіанти"
+      memory:
+        selectionState: awaiting_product
+  - customer: "Silk Color, Nude Pink"
+    expect:
+      scenario: confirm_selection
+      contains:
+        - "Silk Color"
+        - "Nude Pink"
+      memory:
+        selectionState: awaiting_confirmation
+  - customer: "так"
+    expect:
+      scenario_in:
+        - collect_checkout_info
+        - order_confirmed_ask_delivery
+      memory:
+        selectionState: confirmed
+  - customer: "Іван Петренко, 0991234567, Київ, НП 5"
+    expect:
+      scenario: confirm_order
+      contains: "Іван Петренко"

@@ -1,0 +1,6 @@
+name: "Recommendation with skin type context"
+messages:
+  - customer: "Порадьте зволожувальний крем для сухої шкіри"
+    expect:
+      scenario_in: [show_products, recommend_product, ask_recommendation_from_shown]
+      contains_any: ["варіанти", "радила", "рекомендую", "крем"]

@@ -1,0 +1,13 @@
+name: "Variant correction"
+messages:
+  - customer: "Хочу Silk Color помаду, Nude Pink"
+    expect:
+      scenario_in:
+        - show_products
+        - confirm_selection
+      contains: "Silk Color"
+  - customer: "ні, я хочу Rosewood"
+    expect:
+      scenario: confirm_selection
+      contains: "Rosewood"
+      not_contains: "Nude Pink"

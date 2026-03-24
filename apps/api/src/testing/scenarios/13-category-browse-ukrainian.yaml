@@ -1,0 +1,8 @@
+name: "Category browse in Ukrainian"
+messages:
+  - customer: "Що є з зволожувальних кремів?"
+    expect:
+      scenario: show_products
+      contains: "варіанти"
+      memory:
+        selectionState: awaiting_product

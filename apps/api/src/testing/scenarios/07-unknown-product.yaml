@@ -1,0 +1,6 @@
+name: "Unknown product"
+messages:
+  - customer: "Хочу купити парфуми"
+    expect:
+      scenario_in: [product_not_found, ai_fallback, handoff]
+      contains_any: ["уточню", "наявність", "перевірю", "Секунду"]

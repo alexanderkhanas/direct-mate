@@ -41,6 +41,8 @@ const INTENT_TO_SCENARIO: Record<string, string> = {
   delivery_question: 'answer_delivery',
   payment_question: 'answer_payment',
   availability_check: 'show_products',
+  ask_variant_choice: 'ask_variant_choice',
+  product_not_found: 'product_not_found',
 };
 
 // ─── Action-to-scenario fallback mapping ─────────────────────────
@@ -54,6 +56,8 @@ const ACTION_TO_SCENARIO: Record<string, string> = {
   show_price: 'show_price',
   answer_faq: 'answer_delivery',
   greet: 'greeting',
+  ask_variant_choice: 'ask_variant_choice',
+  product_not_found: 'product_not_found',
 };
 
 // ─── Service ─────────────────────────────────────────────────────
@@ -82,8 +86,9 @@ export class TemplateEngineService {
     memory: AssistantMemory;
     recentTemplateIds: string[];
     isFirstProductPresentation?: boolean;
+    messageText?: string;
   }): Promise<TemplateRenderResult | null> {
-    const { tenantId, classification, productData, memory, recentTemplateIds, isFirstProductPresentation } =
+    const { tenantId, classification, productData, memory, recentTemplateIds, isFirstProductPresentation, messageText } =
       params;
 
     // 0. If products were just found for the first time, force show_products
@@ -93,7 +98,7 @@ export class TemplateEngineService {
     }
 
     // 1. Check if this is an FAQ question first
-    const faqResult = await this.tryFaqMatch(tenantId, classification);
+    const faqResult = await this.tryFaqMatch(tenantId, classification, messageText);
     if (faqResult) return faqResult;
 
     // 2. Determine scenario from classification
@@ -143,6 +148,13 @@ export class TemplateEngineService {
         return `${t.id.slice(0, 8)}(needs: ${miss.join(',')})`;
       });
       this.logger.warn(`No templates have all required variables for scenario=${scenario}. Missing: ${missing.join('; ')}`);
+
+      // Fallback: if confirm_selection fails due to missing variant_name, try ask_variant_choice
+      if (scenario === 'confirm_selection' && !variables['variant_name']) {
+        this.logger.log('confirm_selection missing variant_name — falling back to ask_variant_choice');
+        return this.renderScenario(tenantId, 'ask_variant_choice', classification, productData, memory, recentTemplateIds);
+      }
+
       return null;
     }
 
@@ -164,6 +176,7 @@ export class TemplateEngineService {
   private async tryFaqMatch(
     tenantId: string,
     classification: ClassificationResult,
+    messageText?: string,
   ): Promise<TemplateRenderResult | null> {
     // Only check FAQ for question-type intents
     const faqIntents = [
@@ -192,19 +205,30 @@ export class TemplateEngineService {
     };
 
     const keywords = intentKeywords[classification.primaryIntent] ?? [];
+    // Use original message text for tag matching (falls back to entity values)
+    const userMessage = (messageText || '').toLowerCase();
 
     for (const item of faqItems) {
       const tags = item.questionTags as string[];
-      const matched = tags.some(
+
+      // Match by intent keywords
+      const matchedByKeywords = tags.some(
         (tag) =>
           keywords.some((kw) => tag.toLowerCase().includes(kw.toLowerCase())) ||
-          keywords.some((kw) =>
-            kw.toLowerCase().includes(tag.toLowerCase()),
-          ),
+          keywords.some((kw) => kw.toLowerCase().includes(tag.toLowerCase())),
       );
-      if (matched) {
-        const faqScenario = classification.primaryIntent === 'delivery_question' ? 'answer_delivery' :
-                           classification.primaryIntent === 'payment_question' ? 'answer_payment' : 'answer_faq';
+
+      // Match by FAQ tags against user's original message text
+      const matchedByTags = tags.some(
+        (tag) => userMessage.includes(tag.toLowerCase()),
+      );
+
+      if (matchedByKeywords || matchedByTags) {
+        const faqScenario = tags.some(t => ['delivery', 'shipping', 'доставка', 'відправка'].includes(t.toLowerCase()))
+          ? 'answer_delivery'
+          : tags.some(t => ['payment', 'оплата'].includes(t.toLowerCase()))
+          ? 'answer_payment'
+          : 'faq';
         return { text: item.answerTemplate, templateId: item.id, scenario: faqScenario };
       }
     }
@@ -277,21 +301,25 @@ export class TemplateEngineService {
       !!classification.entities.phone ||
       !!classification.entities.city;
 
+    // ── FAST PATH: selection confirmed → allow checkout/order scenarios through
+    if (selectionState === 'confirmed') {
+      this.logger.debug(`Selection confirmed — allowing scenario: ${scenario}`);
+      return scenario;
+    }
+
     // ── HARD CHECKOUT GATE ──────────────────────────────────────
     // Cannot enter checkout unless selection is fully confirmed
     if (['collect_checkout_info', 'order_confirmed_ask_delivery'].includes(scenario)) {
-      if (selectionState !== 'confirmed') {
-        if (!memory.selectedProductId) {
-          this.logger.debug('Checkout blocked: missing_product_selection');
-          return hasProductShown ? 'show_products' : 'show_products';
-        }
-        if (!memory.selectedVariantId) {
-          this.logger.debug('Checkout blocked: missing_variant_selection');
-          return 'ask_variant_choice';
-        }
-        this.logger.debug('Checkout blocked: selection_not_confirmed');
-        return 'confirm_selection';
+      if (!memory.selectedProductId) {
+        this.logger.debug('Checkout blocked: missing_product_selection');
+        return hasProductShown ? 'show_products' : 'show_products';
       }
+      if (!memory.selectedVariantId) {
+        this.logger.debug('Checkout blocked: missing_variant_selection');
+        return 'ask_variant_choice';
+      }
+      this.logger.debug('Checkout blocked: selection_not_confirmed');
+      return 'confirm_selection';
     }
 
     // ── SELECTION FLOW GATES ────────────────────────────────────
@@ -353,10 +381,26 @@ export class TemplateEngineService {
       vars['size'] = classification.entities.size;
     if (classification.entities.customerName)
       vars['customer_name'] = classification.entities.customerName;
-    // Build variant_name from entities if user specified color/size (deduplicated)
-    const entityParts = [classification.entities.color, classification.entities.size].filter(Boolean);
-    const dedupedParts = [...new Set(entityParts)];
-    if (dedupedParts.length > 0) vars['variant_name'] = dedupedParts.join(', ');
+    // NOTE: variant_name is set ONLY from matched product data or memory, not from raw entities
+    // This prevents confirming a variant that doesn't exist in the catalog
+    if (!vars['variant_name'] && memory?.selectedVariantName) {
+      vars['variant_name'] = memory.selectedVariantName;
+    }
+
+    // From memory (fallback for recommendation scenarios)
+    if (!vars['product_name'] && memory?.selectedProductTitle) {
+      vars['product_name'] = memory.selectedProductTitle;
+    }
+    if (!vars['product_name'] && memory?.lastPresentedProducts?.length) {
+      vars['product_name'] = memory.lastPresentedProducts[0].title;
+    }
+    if (!vars['reason']) {
+      vars['reason'] = 'чудова якість та гарні відгуки';
+    }
+    // Price from memory (for recommendations when no product data in current turn)
+    if (!vars['price'] && memory?.lastPresentedProducts?.length) {
+      vars['price'] = memory.lastPresentedProducts[0].price;
+    }
 
     // From product data
     if (productData && productData.length > 0) {
@@ -508,7 +552,7 @@ export class TemplateEngineService {
       // If only 1 variant and no distinguishing attributes, just show price
       if (inStock.length === 1) {
         const v = inStock[0];
-        const detail = [v.color, v.size].filter(Boolean).join(', ');
+        const detail = [...new Set([v.color, v.size].filter(Boolean))].join(', ');
         if (!samePriceForAll) {
           productLine += detail ? ` (${detail}) — ${v.price} ${v.currency}` : ` — ${v.price} ${v.currency}`;
         } else if (detail) {
@@ -518,14 +562,15 @@ export class TemplateEngineService {
       } else {
         lines.push(productLine);
 
-        // Variant names list
+        // Variant names list (deduplicated: color===size shows once)
         const variantNames = inStock
-          .map((v) => [v.color, v.size].filter(Boolean).join(', '))
+          .map((v) => [...new Set([v.color, v.size].filter(Boolean))].join(', '))
           .filter(Boolean);
+        const uniqueVariantNames = [...new Set(variantNames)];
 
-        if (variantNames.length > 0) {
+        if (uniqueVariantNames.length > 0) {
           const label = variantType;
-          lines.push(`${label}: ${variantNames.join(', ')}`);
+          lines.push(`${label}: ${uniqueVariantNames.join(', ')}`);
         }
 
         // Show per-product price only if different from others

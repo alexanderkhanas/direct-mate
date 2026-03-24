@@ -1,0 +1,7 @@
+name: "Fuzzy variant matching"
+messages:
+  - customer: "Хочу Silk Color помаду, червону"
+    expect:
+      contains_any:
+        - "Ягідно-червоний"
+        - "Silk Color"

@@ -1,0 +1,8 @@
+name: "FAQ: payment question"
+messages:
+  - customer: "Які способи оплати?"
+    expect:
+      scenario_in:
+        - answer_payment
+        - faq
+      contains: "оплат"

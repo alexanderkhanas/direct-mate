@@ -16,7 +16,8 @@
     "migration:run": "typeorm-ts-node-commonjs migration:run -d src/database/data-source.ts",
     "migration:revert": "typeorm-ts-node-commonjs migration:revert -d src/database/data-source.ts",
     "seed": "ts-node -r tsconfig-paths/register src/database/seed.ts",
-    "replay": "ts-node src/testing/replay.ts"
+    "replay": "ts-node src/testing/replay.ts",
+    "test:conversations": "ts-node -r tsconfig-paths/register src/testing/run-conversation-tests.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
@@ -40,9 +41,11 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "typeorm": "^0.3.21",
+    "js-yaml": "^4.1.0",
     "typeorm-naming-strategies": "^4.1.0"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@nestjs/cli": "^11.0.0",
     "@nestjs/schematics": "^11.0.0",
     "@nestjs/testing": "^11.0.1",

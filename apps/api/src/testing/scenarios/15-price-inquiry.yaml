@@ -1,0 +1,6 @@
+name: "Price inquiry before ordering"
+messages:
+  - customer: "Скільки коштує помада?"
+    expect:
+      scenario_in: [show_products, show_price]
+      contains_any: ["UAH", "грн", "варіанти", "ціна"]
