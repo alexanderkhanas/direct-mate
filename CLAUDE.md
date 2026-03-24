@@ -264,6 +264,11 @@ cd packages/shared && npm run build
 # Reset conversations
 docker exec docker-postgres-1 psql -U postgres -d directmate -c "DELETE FROM audit_logs; DELETE FROM messages; DELETE FROM conversation_state; DELETE FROM conversations; DELETE FROM customers;"
 
+# Replay last conversation (debugging tool)
+cd apps/api && npm run replay
+cd apps/api && npm run replay -- --last 3
+cd apps/api && npm run replay -- --id <uuid>
+
 # Check conversation logs
 cat apps/api/conversations.log | jq .
 tail -f apps/api/conversations.log | jq .
