@@ -23,6 +23,7 @@ export interface ClassificationResult {
   confidence: number;
   dialogueAct: string;
   recommendedAction: string;
+  slotAction: 'new_inquiry' | 'fills_missing_slot' | 'correction' | 'confirmation' | 'rejection' | 'adds_to_cart' | 'asks_question';
 }
 
 // ─── Assistant memory (shared with reply engine) ──────────────────
@@ -39,6 +40,12 @@ export interface AssistantMemory {
   failedTurns?: number;
   orderItems?: string[];
   recentTemplateIds?: string[];
+  selectionState?: string;
+  selectedProductId?: string;
+  selectedProductTitle?: string;
+  selectedVariantId?: string;
+  selectedVariantName?: string;
+  availableVariants?: Array<{ id: string; name: string; color?: string | null; size?: string | null }> | string;
 }
 
 // ─── OpenAI tool definition ──────────────────────────────────────
@@ -140,6 +147,20 @@ const CLASSIFY_MESSAGE_TOOL: OpenAI.Chat.ChatCompletionTool = {
             'answer_faq',
           ],
         },
+        slot_action: {
+          type: 'string',
+          enum: [
+            'new_inquiry',
+            'fills_missing_slot',
+            'correction',
+            'confirmation',
+            'rejection',
+            'adds_to_cart',
+            'asks_question',
+          ],
+          description:
+            'What the user is doing in terms of slot-filling flow',
+        },
       },
       required: [
         'primary_intent',
@@ -149,6 +170,7 @@ const CLASSIFY_MESSAGE_TOOL: OpenAI.Chat.ChatCompletionTool = {
         'confidence',
         'dialogue_act',
         'recommended_action',
+        'slot_action',
       ],
     },
   },
@@ -204,6 +226,17 @@ export class ClassifierService {
       `- If products were shown and user gives a short reply, they are likely selecting or confirming.`,
       `- If awaiting delivery info and user provides text, it's likely provide_details.`,
       `- Extract ALL relevant entities from the message.`,
+      ``,
+      `SLOT ACTION RULES:`,
+      `- 'confirmation' ONLY for pure confirmations without new information: "так", "беру", "підходить", "давайте", "добре", "ок"`,
+      `- 'correction' when user starts with negation AND provides new value: "ні, я хочу Rosewood", "не, краще червону"`,
+      `- 'fills_missing_slot' when user provides a value we asked for: a color name after "який відтінок?", a product name after showing options`,
+      `- 'rejection' for pure negation without new info: "ні", "не хочу", "не треба"`,
+      `- 'new_inquiry' for starting a new topic or asking about something new`,
+      `- 'adds_to_cart' when user wants to add another product: "і ще крем", "ще хочу..."`,
+      `- 'asks_question' for questions about current selection or general: "скільки коштує?", "а яка різниця?"`,
+      ``,
+      `CRITICAL: Do NOT use 'confirmation' for messages that contain new information. "Ягідно-червоний" is 'fills_missing_slot', not 'confirmation'.`,
       ``,
       `Call classify_message with your analysis.`,
     ]
@@ -262,6 +295,7 @@ export class ClassifierService {
       confidence: raw.confidence ?? 0.5,
       dialogueAct: raw.dialogue_act ?? 'general_chat',
       recommendedAction: raw.recommended_action ?? 'clarify',
+      slotAction: raw.slot_action ?? 'new_inquiry',
     };
   }
 
@@ -319,6 +353,19 @@ export class ClassifierService {
       parts.push(`Selected category: ${memory.selectedCategory}`);
     }
 
+    // Enriched conversation state context
+    parts.push(``);
+    parts.push(`CONVERSATION STATE:`);
+    parts.push(`- Selection state: ${memory.selectionState || 'none'}`);
+    parts.push(`- Selected product: ${memory.selectedProductTitle || 'not selected'}`);
+    parts.push(`- Selected variant: ${memory.selectedVariantName || 'not selected'}`);
+    const variantStr = Array.isArray(memory.availableVariants)
+      ? memory.availableVariants.map(v => v.name).join(', ')
+      : (memory.availableVariants || 'unknown');
+    parts.push(`- Available variants: ${variantStr}`);
+    parts.push(`- Last bot action: ${memory.lastAction || 'none'}`);
+    parts.push(`- Waiting for: ${memory.awaitingField || 'nothing specific'}`);
+
     return parts.join('\n');
   }
 
@@ -331,6 +378,7 @@ export class ClassifierService {
       confidence: 0.3,
       dialogueAct: 'general_chat',
       recommendedAction: 'clarify',
+      slotAction: 'new_inquiry',
     };
   }
 }

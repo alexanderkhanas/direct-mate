@@ -24,6 +24,7 @@ export interface TemplateRenderResult {
   text: string;
   templateId: string;
   scenario: string; // The actual scenario that was rendered
+  matchedVariantId?: string; // If variant was matched during variable building
 }
 
 // ─── Intent-to-scenario mapping ──────────────────────────────────
@@ -119,21 +120,29 @@ export class TemplateEngineService {
     memory?: AssistantMemory,
     recentTemplateIds: string[] = [],
   ): Promise<TemplateRenderResult | null> {
+    this.logger.debug(`renderScenario: scenario=${scenario} tenantId=${tenantId?.slice(0, 8)}`);
+
     const templates = await this.templateRepo.find({
       where: { tenantId, scenario, active: true },
       order: { priority: 'DESC' },
     });
 
     if (templates.length === 0) {
-      this.logger.debug(`No active templates for scenario=${scenario}`);
+      this.logger.warn(`No active templates for scenario=${scenario}`);
       return null;
     }
 
     const variables = this.buildVariableMap(classification, productData, memory);
+    this.logger.debug(`renderScenario: ${templates.length} templates found, variables: ${Object.keys(variables).join(', ')}`);
 
     const viable = templates.filter((t) => this.hasRequiredVariables(t, variables));
     if (viable.length === 0) {
-      this.logger.debug(`No templates have all required variables for scenario=${scenario}`);
+      const missing = templates.map((t) => {
+        const req = (t.requiredVariables as string[]) || [];
+        const miss = req.filter((v) => !variables[v]);
+        return `${t.id.slice(0, 8)}(needs: ${miss.join(',')})`;
+      });
+      this.logger.warn(`No templates have all required variables for scenario=${scenario}. Missing: ${missing.join('; ')}`);
       return null;
     }
 
@@ -147,7 +156,7 @@ export class TemplateEngineService {
     const selected = topCandidates[Math.floor(Math.random() * topCandidates.length)];
 
     const text = this.interpolateTemplate(selected, variables);
-    return { text, templateId: selected.id, scenario };
+    return { text, templateId: selected.id, scenario, matchedVariantId: variables['matched_variant_id'] };
   }
 
   // ─── FAQ matching ──────────────────────────────────────────────
@@ -261,53 +270,57 @@ export class TemplateEngineService {
   ): string {
     const hasProductShown = !!memory.lastPresentedProducts?.length;
     const hasProductsJustFound = !!productData && productData.length > 0;
-    const hasProductSelected = memory.lastAction === 'confirmed_product' || memory.lastAction === 'gave_recommendation';
+    const selectionState = memory.selectionState;
+    const slotAction = (classification as any).slotAction;
     const hasDeliveryInfo =
       !!classification.entities.customerName ||
       !!classification.entities.phone ||
       !!classification.entities.city;
 
-    // If products were just found but not yet shown to customer, force show_products
+    // ── HARD CHECKOUT GATE ──────────────────────────────────────
+    // Cannot enter checkout unless selection is fully confirmed
+    if (['collect_checkout_info', 'order_confirmed_ask_delivery'].includes(scenario)) {
+      if (selectionState !== 'confirmed') {
+        if (!memory.selectedProductId) {
+          this.logger.debug('Checkout blocked: missing_product_selection');
+          return hasProductShown ? 'show_products' : 'show_products';
+        }
+        if (!memory.selectedVariantId) {
+          this.logger.debug('Checkout blocked: missing_variant_selection');
+          return 'ask_variant_choice';
+        }
+        this.logger.debug('Checkout blocked: selection_not_confirmed');
+        return 'confirm_selection';
+      }
+    }
+
+    // ── SELECTION FLOW GATES ────────────────────────────────────
+
+    // If products just found but not shown yet, always show first
     if (hasProductsJustFound && !hasProductShown) {
-      if (['confirm_selection', 'collect_checkout_info', 'order_confirmed_ask_delivery', 'recommend_product', 'confirm_order'].includes(scenario)) {
+      if (['confirm_selection', 'recommend_product', 'confirm_order', 'ask_variant_choice'].includes(scenario)) {
         this.logger.debug(`Stage gate: ${scenario} blocked — products found but not shown yet`);
         return 'show_products';
       }
     }
 
-    // CRITICAL: After "Оформлюємо X?" (confirmed_product) + user confirms → collect delivery info, not confirm again
-    if (scenario === 'confirm_selection' && memory.lastAction === 'confirmed_product') {
-      this.logger.debug('Stage gate: confirm_selection after confirmed_product → collect_checkout_info');
-      return 'collect_checkout_info';
-    }
-
-    // After asked_delivery_details + user confirms → also collect_checkout_info
-    if (scenario === 'confirm_selection' && memory.lastAction === 'asked_delivery_details') {
-      this.logger.debug('Stage gate: confirm_selection after asked_delivery → collect_checkout_info');
-      return 'collect_checkout_info';
+    // Correction: user corrects variant/product → re-confirm, don't advance
+    if (slotAction === 'correction') {
+      if (selectionState === 'awaiting_confirmation') {
+        this.logger.debug('Stage gate: correction received — re-confirming selection');
+        return 'confirm_selection';
+      }
     }
 
     // Can't confirm selection if no products were shown
-    if (scenario === 'confirm_selection' && !hasProductShown) {
+    if (scenario === 'confirm_selection' && !hasProductShown && !hasProductsJustFound) {
       this.logger.debug('Stage gate: confirm_selection blocked — no products shown yet');
-      return 'show_products';
-    }
-
-    // Can't start checkout if no product was selected/recommended
-    if (
-      (scenario === 'collect_checkout_info' || scenario === 'order_confirmed_ask_delivery') &&
-      !hasProductSelected && !hasProductShown
-    ) {
-      this.logger.debug('Stage gate: checkout blocked — no product selected');
       return 'show_products';
     }
 
     // Can't confirm order if no delivery details provided
     if (scenario === 'confirm_order' && !hasDeliveryInfo) {
       this.logger.debug('Stage gate: confirm_order blocked — no delivery info');
-      if (hasProductSelected || hasProductShown) {
-        return 'order_confirmed_ask_delivery';
-      }
       return 'collect_checkout_info';
     }
 
@@ -340,6 +353,10 @@ export class TemplateEngineService {
       vars['size'] = classification.entities.size;
     if (classification.entities.customerName)
       vars['customer_name'] = classification.entities.customerName;
+    // Build variant_name from entities if user specified color/size (deduplicated)
+    const entityParts = [classification.entities.color, classification.entities.size].filter(Boolean);
+    const dedupedParts = [...new Set(entityParts)];
+    if (dedupedParts.length > 0) vars['variant_name'] = dedupedParts.join(', ');
 
     // From product data
     if (productData && productData.length > 0) {
@@ -357,24 +374,62 @@ export class TemplateEngineService {
       // Build smart product list for show_products scenario
       vars['product_list'] = this.formatProductList(productData);
 
-      // Build variants string for single product
+      // Build variants string for single product (deduplicated)
       const allVariants = first.variants
         .filter((v) => v.effectiveAvailable > 0)
-        .map((v) => [v.color, v.size].filter(Boolean).join(', '))
+        .map((v) => [...new Set([v.color, v.size].filter(Boolean))].join(', '))
         .filter(Boolean);
-      if (allVariants.length > 0) {
-        vars['variants'] = allVariants.join(', ');
+      const uniqueVariants = [...new Set(allVariants)];
+      if (uniqueVariants.length > 0) {
+        vars['variants'] = uniqueVariants.join(', ');
       }
 
-      // Build variant_list for ask_variant_choice scenario
+      // Build variant_name — hybrid matching against user's requested color/size
+      const userColor = classification.entities.color ?? '';
+      const userSize = classification.entities.size ?? '';
+      const userVariantInput = userColor || userSize;
+
+      if (userVariantInput) {
+        const inStockVariants = first.variants.filter((v) => v.effectiveAvailable > 0);
+        const match = this.matchVariant(userVariantInput, inStockVariants);
+        if (match) {
+          const variantDetail = [match.variant.color, match.variant.size].filter(Boolean).join(', ');
+          vars['variant_name'] = variantDetail;
+          vars['matched_variant_id'] = match.variant.id;
+          vars['variant_match_confidence'] = String(match.confidence);
+        }
+        // NO fallback to first variant — if no match, variant_name stays unset
+        // This forces ask_variant_choice template
+      } else if (first.variants.length === 1) {
+        // Single variant product — auto-select
+        const only = first.variants[0];
+        if (only.effectiveAvailable > 0) {
+          const variantDetail = [only.color, only.size].filter(Boolean).join(', ');
+          if (variantDetail) vars['variant_name'] = variantDetail;
+          vars['matched_variant_id'] = only.id;
+        }
+      }
+      // If multiple variants and no user input → variant_name stays unset → ask_variant_choice
+
+      // Build variant_list for ask_variant_choice scenario (deduplicated)
       if (first.variants.length > 1) {
         const variantType = this.detectVariantType(first.variants);
         vars['variant_type'] = variantType;
-        vars['variant_list'] = first.variants
+        const variantNames = first.variants
           .filter((v) => v.effectiveAvailable > 0)
-          .map((v) => [v.color, v.size].filter(Boolean).join(', '))
-          .filter(Boolean)
-          .join(', ');
+          .map((v) => [...new Set([v.color, v.size].filter(Boolean))].join(', '))
+          .filter(Boolean);
+        vars['variant_list'] = [...new Set(variantNames)].join(', ');
+      }
+    }
+
+    // From memory: variant_list fallback (if not built from productData)
+    if (!vars['variant_list'] && Array.isArray(memory?.availableVariants) && memory.availableVariants.length > 0) {
+      vars['variant_list'] = [...new Set(memory.availableVariants.map((v: any) => v.name))].join(', ');
+      if (!vars['variant_type']) {
+        vars['variant_type'] = this.detectVariantType(
+          memory.availableVariants.map((v: any) => ({ color: v.color, size: v.size })) as any,
+        );
       }
     }
 
@@ -540,6 +595,82 @@ export class TemplateEngineService {
     if (hasNumbers) return 'Розміри';
 
     return 'Відтінки';
+  }
+
+  // ─── Hybrid variant matching ────────────────────────────────────
+
+  private matchVariant(
+    userInput: string,
+    variants: Array<{ id: string; color: string | null; size: string | null; effectiveAvailable: number }>,
+  ): { variant: typeof variants[0]; confidence: number } | null {
+    const input = userInput.toLowerCase().trim();
+    if (!input) return null;
+
+    const getLabel = (v: typeof variants[0]) => (v.color || v.size || '').toLowerCase();
+
+    // 1. Exact match
+    const exact = variants.find((v) => getLabel(v) === input);
+    if (exact) return { variant: exact, confidence: 1.0 };
+
+    // 2. Partial/contains match ("червон" in "ягідно-червоний")
+    const partial = variants.filter(
+      (v) => getLabel(v).includes(input) || input.includes(getLabel(v)),
+    );
+    if (partial.length === 1) return { variant: partial[0], confidence: 0.9 };
+
+    // 3. Normalized match (strip common prefixes/suffixes)
+    const normalize = (s: string) =>
+      s.toLowerCase().replace(/[ьіїєґ']/g, '').replace(/\s+/g, ' ').trim();
+    const normalizedInput = normalize(input);
+    const normMatch = variants.find((v) => normalize(getLabel(v)) === normalizedInput);
+    if (normMatch) return { variant: normMatch, confidence: 0.85 };
+
+    // 4. Word overlap match — "червоний" matches "Ягідно-червоний"
+    const inputWords = normalizedInput.split(/[\s-]+/);
+    const wordMatches = variants
+      .map((v) => {
+        const labelWords = normalize(getLabel(v)).split(/[\s-]+/);
+        const overlap = inputWords.filter((w) =>
+          labelWords.some((lw) => lw.includes(w) || w.includes(lw)),
+        ).length;
+        return { variant: v, overlap };
+      })
+      .filter((x) => x.overlap > 0)
+      .sort((a, b) => b.overlap - a.overlap);
+    if (wordMatches.length === 1) return { variant: wordMatches[0].variant, confidence: 0.8 };
+    if (wordMatches.length > 1 && wordMatches[0].overlap > wordMatches[1].overlap) {
+      return { variant: wordMatches[0].variant, confidence: 0.75 };
+    }
+
+    // 5. Levenshtein distance (fuzzy)
+    const levenshtein = (a: string, b: string): number => {
+      const matrix: number[][] = [];
+      for (let i = 0; i <= a.length; i++) matrix[i] = [i];
+      for (let j = 0; j <= b.length; j++) matrix[0][j] = j;
+      for (let i = 1; i <= a.length; i++) {
+        for (let j = 1; j <= b.length; j++) {
+          const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+          matrix[i][j] = Math.min(
+            matrix[i - 1][j] + 1,
+            matrix[i][j - 1] + 1,
+            matrix[i - 1][j - 1] + cost,
+          );
+        }
+      }
+      return matrix[a.length][b.length];
+    };
+
+    const fuzzy = variants
+      .map((v) => ({ variant: v, dist: levenshtein(normalizedInput, normalize(getLabel(v))) }))
+      .filter((x) => x.dist <= 3)
+      .sort((a, b) => a.dist - b.dist);
+    if (fuzzy.length === 1) return { variant: fuzzy[0].variant, confidence: 0.7 };
+    if (fuzzy.length > 1 && fuzzy[0].dist < fuzzy[1].dist) {
+      return { variant: fuzzy[0].variant, confidence: 0.65 };
+    }
+
+    // 6. No confident match
+    return null;
   }
 
   // ─── Variable availability check ──────────────────────────────

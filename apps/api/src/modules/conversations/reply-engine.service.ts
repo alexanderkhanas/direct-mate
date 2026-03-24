@@ -149,6 +149,7 @@ export class ReplyEngineService {
         confidence: classification.confidence,
         dialogueAct: classification.dialogueAct,
         action: classification.recommendedAction,
+        slotAction: classification.slotAction,
       },
       memory,
     });
@@ -240,15 +241,98 @@ export class ReplyEngineService {
         // Update memory with presented products BEFORE template selection
         memory.lastPresentedProducts = productData.map((p) => ({
           title: p.product.title,
-          variants: p.variants.map((v) =>
-            [v.size, v.color].filter(Boolean).join(', ') || 'standard',
-          ),
+          variants: [...new Set(p.variants.map((v) =>
+            [...new Set([v.size, v.color].filter(Boolean))].join(', ') || 'standard',
+          ))],
           price: [
             ...new Set(p.variants.map((v) => `${v.price} ${v.currency}`)),
           ].join(' / '),
         }));
         memory.selectedCategory =
           classification.entities.category ?? searchKeywords[0];
+
+        // Store available variant names for classifier context
+        if (productData.length === 1) {
+          memory.availableVariants = productData[0].variants
+            .filter((v) => v.effectiveAvailable > 0)
+            .map((v) => [v.color, v.size].filter(Boolean).join(', '))
+            .filter(Boolean)
+            .join(', ');
+
+          // Single product match — set product ID in memory
+          memory.selectedProductId = productData[0].product.id;
+          memory.selectedProductTitle = productData[0].product.title;
+        }
+
+        // Selection state management
+        if (isFirstProductPresentation) {
+          memory.selectionState = 'awaiting_product';
+        }
+      }
+    }
+
+    // 5.5a Full selection confirmed: product + variant both set + user confirms → proceed to checkout
+    this.logger.log(`5.5a check: slotAction=${classification.slotAction} selState=${memory.selectionState} prodId=${!!memory.selectedProductId} varId=${!!memory.selectedVariantId}`);
+    if (
+      classification.slotAction === 'confirmation' &&
+      memory.selectionState === 'awaiting_confirmation' &&
+      memory.selectedProductId &&
+      memory.selectedVariantId
+    ) {
+      memory.selectionState = 'confirmed';
+      classification.primaryIntent = 'ready_to_order';
+      classification.recommendedAction = 'start_checkout';
+      classification.conversationStage = 'checkout_started';
+      this.logger.log('5.5a FIRED: Selection fully confirmed, proceeding to checkout');
+      this.logToFile({
+        event: 'selection_confirmed',
+        conversationId: input.conversationId,
+        selectionState: memory.selectionState,
+        selectedProductId: memory.selectedProductId,
+        selectedVariantId: memory.selectedVariantId,
+        action: 'start_checkout',
+      });
+    }
+
+    // 5.5b Variant check: after recommendation + confirmation, check if variant selection needed
+    if (
+      classification.slotAction === 'confirmation' &&
+      memory.selectionState === 'awaiting_confirmation' &&
+      memory.selectedProductId &&
+      !memory.selectedVariantId
+    ) {
+      const rawVariants = memory.availableVariants;
+      const variants = Array.isArray(rawVariants) ? rawVariants : [];
+      const userColor = classification.entities.color;
+      const userSize = classification.entities.size;
+
+      if (variants.length === 1) {
+        // Single variant → auto-select, proceed to confirm
+        memory.selectedVariantId = variants[0].id;
+        memory.selectedVariantName = variants[0].name;
+        memory.selectionState = 'awaiting_confirmation';
+        classification.recommendedAction = 'confirm_selection';
+        this.logger.log('Single variant → auto-selected, proceeding to confirm_selection');
+      } else if (variants.length > 1 && (userColor || userSize)) {
+        // User specified a variant — try to match
+        const matched = this.matchVariant(variants, userColor, userSize);
+        if (matched) {
+          memory.selectedVariantId = matched.id;
+          memory.selectedVariantName = matched.name;
+          memory.selectionState = 'awaiting_confirmation';
+          classification.recommendedAction = 'confirm_selection';
+          this.logger.log(`Variant matched: ${matched.name}`);
+        } else {
+          // No confident match → ask for variant
+          memory.selectionState = 'awaiting_variant';
+          classification.recommendedAction = 'ask_variant_choice';
+          this.logger.log('Variant not matched confidently, asking user');
+        }
+      } else if (variants.length > 1) {
+        // Multiple variants, user didn't specify → ask
+        memory.selectionState = 'awaiting_variant';
+        classification.recommendedAction = 'ask_variant_choice';
+        this.logger.log(`Multiple variants (${variants.length}), asking user to choose`);
       }
     }
 
@@ -273,6 +357,24 @@ export class ReplyEngineService {
       usedTemplateId = templateResult.templateId;
       // Use the template's actual scenario for memory tracking (may differ from classifier due to stage gates)
       actualAction = this.scenarioToAction(templateResult.scenario);
+
+      // Log if stage gate overrode the classifier's recommendation
+      const classifierAction = classification.recommendedAction;
+      if (actualAction !== classifierAction) {
+        const reason = !memory.selectedProductId ? 'checkout_blocked_no_product'
+          : !memory.selectedVariantId ? 'missing_variant_selection'
+          : memory.selectionState !== 'confirmed' ? 'selection_not_confirmed'
+          : (classification as any).slotAction === 'correction' ? 'correction_received'
+          : 'stage_gate_override';
+        this.logToFile({
+          event: 'flow_override',
+          conversationId: input.conversationId,
+          reason,
+          classifierSaid: classifierAction,
+          engineDid: actualAction,
+          selectionState: memory.selectionState,
+        });
+      }
 
       // Track for anti-repetition
       memory.recentTemplateIds = [
@@ -333,7 +435,13 @@ export class ReplyEngineService {
     }
 
     // Update memory based on what ACTUALLY happened, not classifier's recommendation
-    this.updateMemoryFromAction(actualAction, memory);
+    this.updateMemoryFromAction(actualAction, memory, templateResult, classification, productData);
+
+    // Update selected variant ID from template variable matching
+    if (templateResult?.matchedVariantId) {
+      memory.selectedVariantId = templateResult.matchedVariantId;
+      memory.selectedVariantName = classification.entities.color ?? classification.entities.size ?? memory.selectedVariantName;
+    }
 
     // Set product IDs if product search found results
     if (productData && productData.length > 0) {
@@ -398,106 +506,79 @@ export class ReplyEngineService {
       answer_delivery: 'answer_faq',
       answer_payment: 'answer_faq',
       out_of_stock: 'show_products',
-      ask_variant_choice: 'show_products',
+      ask_variant_choice: 'ask_variant_choice',
+      product_not_found: 'ai_fallback_clarification',
     };
     return map[scenario] ?? scenario;
   }
 
   // ─── Short reply resolver ─────────────────────────────────────
 
+  /**
+   * Minimal safety net for truly ambiguous single-word messages.
+   * The enriched classifier + slotAction should handle most cases now.
+   * This only patches cases where the classifier can't determine meaning.
+   */
   private resolveShortReply(
     classification: ClassificationResult,
     memory: AssistantMemory,
     messageText: string,
   ): void {
     const text = messageText.trim().toLowerCase();
-    const isShort = text.length < 20;
-    const isLowConfidence = classification.confidence < 0.7;
-    const isConfirmation = /^(так|да|давайте|ок|добре|звісно|ага|угу|yes|ok|окей|гуд|го|ладно|канєшно)$/i.test(text);
-    const isNegation = /^(ні|нет|не|не хочу|не треба|no)$/i.test(text);
 
-    if (!isShort && !isLowConfidence) return;
+    // Only intervene on very short messages with low confidence
+    if (text.length > 8 || classification.confidence >= 0.8) return;
 
-    // Short confirmation — interpret based on what we're awaiting
+    const isConfirmation = /^(так|да|ок|добре|беру|го|давайте|звісно)$/i.test(text);
+    const isRejection = /^(ні|нет|не)$/i.test(text);
+
     if (isConfirmation) {
-      switch (memory.awaitingField) {
-        case 'order_confirmation':
-        case 'order_decision':
-          // "Так" after "Оформлюємо X?" → start checkout
-          classification.primaryIntent = 'ready_to_order';
-          classification.dialogueAct = 'confirm_choice';
-          classification.recommendedAction = 'start_checkout';
-          classification.conversationStage = 'checkout_started';
-          classification.confidence = 0.95;
-          this.logger.log('Short reply resolved: confirmation → start_checkout');
-          return;
-
-        case 'delivery_info':
-          // "Так" after delivery question → probably confirming, not providing info
-          classification.primaryIntent = 'confirm_choice';
-          classification.dialogueAct = 'confirm_choice';
-          classification.recommendedAction = 'start_checkout';
-          classification.conversationStage = 'checkout_started';
-          classification.confidence = 0.95;
-          this.logger.log('Short reply resolved: confirmation → checkout');
-          return;
-
-        case 'product_choice_or_recommendation_request':
-          // "Так" / "Добре" after product list → wants recommendation
-          classification.primaryIntent = 'ask_recommendation';
-          classification.dialogueAct = 'ask_recommendation';
-          classification.recommendedAction = 'recommend';
-          classification.conversationStage = 'selection_help';
-          classification.confidence = 0.9;
-          this.logger.log('Short reply resolved: confirmation after products → ask_recommendation');
-          return;
-
-        case 'product_choice':
-          // "Так" after recommendation → confirm that product
-          classification.primaryIntent = 'confirm_choice';
-          classification.dialogueAct = 'confirm_choice';
-          classification.recommendedAction = 'confirm_selection';
-          classification.conversationStage = 'product_selected';
-          classification.confidence = 0.95;
-          this.logger.log('Short reply resolved: confirmation after recommendation → confirm_selection');
-          return;
-
-        case 'clarification':
-          // "Так" after clarification question → confirm
-          classification.primaryIntent = 'confirm_choice';
-          classification.dialogueAct = 'confirm_choice';
-          classification.recommendedAction = 'confirm_selection';
-          classification.confidence = 0.9;
-          this.logger.log('Short reply resolved: confirmation after clarification');
-          return;
-      }
-    }
-
-    // Short negation
-    if (isNegation) {
-      if (memory.awaitingField === 'order_confirmation' || memory.awaitingField === 'order_decision') {
-        classification.primaryIntent = 'decline';
-        classification.dialogueAct = 'decline';
-        classification.recommendedAction = 'show_products';
-        classification.confidence = 0.9;
-        this.logger.log('Short reply resolved: negation → show_products');
-        return;
-      }
-    }
-
-    // "Підкажіть" / "Порадьте" after product list → ask recommendation
-    if (/^(підкажіть|порадьте|порадь|підкажи|яку|який|яке)/i.test(text) && memory.lastPresentedProducts?.length) {
-      classification.primaryIntent = 'ask_recommendation';
-      classification.dialogueAct = 'ask_recommendation';
-      classification.recommendedAction = 'recommend';
-      classification.conversationStage = 'selection_help';
+      (classification as any).slotAction = 'confirmation';
       classification.confidence = 0.95;
-      this.logger.log('Short reply resolved: recommendation request after product list');
-      return;
+      this.logger.log(`Short reply safety net: "${text}" → confirmation`);
+    } else if (isRejection) {
+      (classification as any).slotAction = 'rejection';
+      classification.confidence = 0.95;
+      this.logger.log(`Short reply safety net: "${text}" → rejection`);
     }
   }
 
   // ─── Product search helpers ────────────────────────────────────
+
+  private matchVariant(
+    variants: Array<{ id: string; name: string; color?: string | null; size?: string | null }>,
+    userColor?: string,
+    userSize?: string,
+  ): { id: string; name: string } | null {
+    const normalize = (s: string) => s.toLowerCase().replace(/[ʼ'ь]/g, '').trim();
+
+    for (const v of variants) {
+      // Exact match on color or size
+      if (userColor && v.color && normalize(v.color) === normalize(userColor)) return v;
+      if (userColor && v.size && normalize(v.size) === normalize(userColor)) return v;
+      if (userSize && v.size && normalize(v.size) === normalize(userSize)) return v;
+      if (userSize && v.color && normalize(v.color) === normalize(userSize)) return v;
+    }
+
+    // Partial/contains match
+    for (const v of variants) {
+      const val = normalize(v.color || v.size || v.name);
+      if (userColor && val.includes(normalize(userColor))) return v;
+      if (userColor && normalize(userColor).includes(val)) return v;
+      if (userSize && val.includes(normalize(userSize))) return v;
+    }
+
+    // Word overlap
+    for (const v of variants) {
+      const val = normalize(v.color || v.size || v.name);
+      const userWords = normalize(userColor || userSize || '').split(/\s+/);
+      for (const w of userWords) {
+        if (w.length > 2 && val.includes(w)) return v;
+      }
+    }
+
+    return null; // No confident match — ask user
+  }
 
   private shouldSearchProducts(classification: ClassificationResult, memory: AssistantMemory): boolean {
     const searchActions = [
@@ -574,28 +655,53 @@ export class ReplyEngineService {
   private updateMemoryFromAction(
     actualAction: string,
     memory: AssistantMemory,
+    templateResult?: { text: string; templateId: string; scenario: string } | null,
+    classification?: any,
+    productData?: any[],
   ): void {
     switch (actualAction) {
       case 'recommend':
         memory.lastAction = 'gave_recommendation';
         memory.awaitingField = 'product_choice';
+        memory.selectionState = 'awaiting_confirmation';
+        // Store the recommended product in memory
+        if (productData && productData.length > 0) {
+          const recommended = productData[0];
+          memory.selectedProductId = recommended.product.id;
+          memory.selectedProductTitle = recommended.product.title;
+          memory.availableVariants = recommended.variants.map((v: any) => ({
+            id: v.id,
+            name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+            color: v.color,
+            size: v.size,
+          }));
+        }
         break;
       case 'confirm_selection':
         memory.lastAction = 'confirmed_product';
         memory.awaitingField = 'order_confirmation';
+        memory.selectionState = 'awaiting_confirmation';
+        // Store selected product/variant from template variables
+        if (templateResult && classification) {
+          memory.selectedProductTitle = classification.entities?.productName ?? memory.selectedProductTitle;
+          memory.selectedVariantName = classification.entities?.color ?? classification.entities?.size ?? memory.selectedVariantName;
+        }
         break;
       case 'ask_delivery':
       case 'start_checkout':
         memory.lastAction = 'asked_delivery_details';
         memory.awaitingField = 'delivery_info';
+        memory.selectionState = 'confirmed';
         break;
       case 'greet':
         memory.lastAction = 'greeted';
         memory.awaitingField = 'product_inquiry';
+        memory.selectionState = undefined;
         break;
       case 'show_products':
         memory.lastAction = 'presented_product_options';
         memory.awaitingField = 'product_choice_or_recommendation_request';
+        memory.selectionState = 'awaiting_product';
         break;
       case 'show_price':
         memory.lastAction = 'showed_price';
@@ -604,6 +710,18 @@ export class ReplyEngineService {
       case 'ai_fallback_clarification':
         memory.lastAction = 'asked_clarification';
         memory.awaitingField = 'clarification';
+        break;
+      case 'ask_variant_choice':
+        memory.lastAction = 'asked_variant';
+        memory.awaitingField = 'variant_selection';
+        memory.selectionState = 'awaiting_variant';
+        break;
+      case 'answer_faq':
+        memory.lastAction = 'answered_faq';
+        break;
+      case 'confirm_order':
+        memory.lastAction = 'confirmed_order';
+        memory.awaitingField = 'order_finalized';
         break;
     }
   }

@@ -47,7 +47,7 @@ infra/docker/    — Docker Compose (Postgres on port 5433)
 - Auth (JWT + passport-jwt), tenant/user model
 - Full database schema (18+ tables) with initial migration
 - Instagram webhook handler with debouncing (5s), message_edit fallback, echo filtering
-- AI reply engine v2 with state machine, dialogue acts, assistant memory
+- **Template-based reply engine** with slot-filling flow, AI classification only
 - Product catalog with multi-strategy search (ILIKE + trigram fuzzy on title/category)
 - Availability service with stock checking
 - Crypto service (AES-256-GCM) for encrypting access tokens
@@ -57,8 +57,9 @@ infra/docker/    — Docker Compose (Postgres on port 5433)
 - Conversation logging to `conversations.log`
 
 ### Admin Panel (apps/admin)
-- Login, Dashboard, Conversations, Connections, Settings, Training, Logs pages
+- Login, Dashboard, Conversations, Catalog, Connections, Training, Templates, Settings, Logs pages
 - Settings: brand tone editor, handoff rules, manager examples (Q&A pairs)
+- Templates: CRUD for response templates, phrase blocks, FAQ items with scenario badges
 - Connections: Instagram + Shopify connection management
 - Training: screenshot upload with drag-and-drop, extraction review with chat-style transcript display
 
@@ -70,84 +71,123 @@ infra/docker/    — Docker Compose (Postgres on port 5433)
 - **OpenCart: Inventory Poll Sync** — REST API, paginated
 - **OpenCart: Connection Health Check** — API login verification
 
-## Current AI Architecture (NEEDS REFACTORING)
+## AI Architecture — Template-Based with Slot-Filling
 
-The current reply engine uses generative AI for responses. This produces inconsistent, "bot-sounding" replies. The spec in `direct_mate.md` defines the correct architecture.
+### Core principle
+**AI classifies only. Templates generate replies. Slot-filling drives the conversation.**
 
-### Current (broken) flow:
+### Reply engine flow
 ```
-message → AI classifies + generates reply → send
-```
-
-### Target architecture (from direct_mate.md):
-```
-message → AI classification only (intent, entities, stage)
-  → engine picks scenario from store config
-  → engine selects template
-  → engine interpolates variables
-  → anti-repetition check
-  → safety validation
-  → send reply
+message → Classifier (AI: intent + entities + slotAction)
+  → Policy Engine (escalation check)
+  → Product Search (if entities contain product/category)
+  → Selection State Machine (manage product → variant → confirmation slots)
+  → Template Engine (pick template by scenario, interpolate {variables})
+  → If no template → AI Fallback (only if fallback config allows)
+  → Send reply
 ```
 
-**AI should do: classification, entity extraction, stage detection**
-**AI should NOT do: writing reply text**
-
-Reply text comes from **templates** configured per store.
-
-## Key Configurations (Per Store)
-
-From `direct_mate.md`, each store configures:
-
-1. **Brand Config** — language, formality, emoji policy, allowed/disallowed phrases
-2. **Flow Config** — enabled stages, transitions, progression
-3. **Scenario Config** — intent-to-scenario mapping, template groups per scenario
-4. **Template Config** — editable templates with variables, blocks, priorities, variants
-5. **Phrase Blocks** — reusable openers, CTAs, reassurance phrases
-6. **Checkout Config** — fields to collect, order, validation, single vs step-by-step
-7. **Escalation Config** — always-escalate intents, confidence thresholds, sentiment triggers
-8. **Catalog Mapping** — source type, field mapping, price format
-9. **Recommendation Config** — mode (single/top-3), attribute priority
-10. **Handoff Config** — notification channel (Telegram), pause behavior, summary
-11. **FAQ Config** — delivery, payment, returns, custom answers
-12. **Fallback Config** — strict_templates_only / template_first_with_safe_fallback
-
-## Conversation Flow Stages
-
-```
-greeting → need_discovery → product_discovery → showing_options
-  → selection_help → product_selected → checkout_started
-  → collecting_customer_info → order_confirmation
-  → post_order_support | handoff_to_manager
-```
-
-## AI Understanding Contract
-
-AI returns structured data, NOT reply text:
+### Classifier output (structured, no reply text)
 ```json
 {
   "primary_intent": "product_inquiry",
-  "entities": { "category": "сукня", "color": "чорна" },
-  "conversation_stage": "product_discovery",
+  "entities": { "category": "помада", "color": "червона" },
+  "conversation_stage": "showing_options",
   "sentiment": "neutral",
-  "confidence": 0.88,
-  "recommended_next_action": "show_matching_products"
+  "confidence": 0.95,
+  "dialogue_act": "fills_missing_slot",
+  "recommended_action": "confirm_selection",
+  "slot_action": "fills_missing_slot"
 }
 ```
 
-## Template System
+### Slot Actions (critical for understanding user intent)
+- `new_inquiry` — first time asking about something
+- `fills_missing_slot` — provides info we asked for (color after variant question)
+- `correction` — "ні, я хочу Rosewood" — replaces a previous value
+- `confirmation` — ONLY pure "так", "беру", "добре" — no new information
+- `rejection` — pure "ні" without new info
+- `adds_to_cart` — "і ще крем"
+- `asks_question` — "скільки коштує?"
 
+### Selection States (slot-filling flow)
+```
+awaiting_product       — products shown, user must pick one
+awaiting_variant       — product picked, must pick variant (color/size)
+awaiting_confirmation  — product + variant resolved, must confirm
+confirmed              — all slots filled, ready for checkout
+```
+
+**Hard rule: Cannot enter checkout until product + variant + confirmation are all resolved.**
+
+### Variant Matching (hybrid 5-strategy)
+1. Exact match
+2. Partial/contains ("червон" in "Ягідно-червоний")
+3. Normalized match (accent/case insensitive)
+4. Word overlap ("червоний" matches "Ягідно-червоний")
+5. Fuzzy (Levenshtein distance ≤ 3)
+
+**No fallback to first variant.** If no confident match → ask user to clarify.
+
+### Template System
 Templates are store-configurable with variables:
 ```json
 {
   "scenario": "show_price",
-  "blocks": [
-    "Ціна на {product_name} — {price} грн 💛",
-    "Якщо хочете, можу одразу допомогти з оформленням"
-  ],
+  "blocks": ["Ціна на {product_name} — {price} 💛"],
   "required_variables": ["product_name", "price"]
 }
 ```
+
+Available variables:
+```
+{product_name}, {category}, {color}, {size}, {price}
+{product_list}, {variants}, {variant_type}, {variant_list}, {variant_name}
+{customer_name}, {phone}, {city}, {delivery_branch}
+{order_summary}, {reason}, {matched_variant_id}
+```
+
+### Scenarios (template scenarios with Ukrainian labels)
+```
+greeting                      — Привітання
+show_products                 — Показ товарів
+show_price                    — Показ ціни
+recommend_product             — Рекомендація товару
+ask_recommendation_from_shown — Рекомендація зі списку
+confirm_selection             — Підтвердження вибору
+ask_variant_choice            — Вибір варіанту
+collect_checkout_info         — Збір даних для замовлення
+confirm_order                 — Підтвердження замовлення
+order_confirmed_ask_delivery  — Запит даних доставки
+answer_delivery               — Відповідь про доставку
+answer_payment                — Відповідь про оплату
+out_of_stock                  — Немає в наявності
+product_not_found             — Товар не знайдено
+```
+
+### Engine modules
+```
+apps/api/src/modules/engine/
+  classifier.service.ts       — AI classification only (OpenAI function calling)
+  template-engine.service.ts  — Template selection, variable interpolation, stage gates
+  policy-engine.service.ts    — Escalation rules, confidence thresholds
+  store-config.controller.ts  — CRUD for templates, phrase blocks, FAQ, store config
+  entities/                   — StoreConfig, ResponseTemplate, PhraseBlock, FaqItem
+```
+
+## Key Configurations (Per Store)
+
+Each store configures via `store_configs` table (jsonb columns):
+
+1. **Brand Config** — language, formality, emoji policy, allowed/disallowed phrases
+2. **Flow Config** — enabled stages, transitions, progression
+3. **Checkout Config** — fields to collect (ПІБ, телефон, місто, НП), collection style
+4. **Escalation Config** — always-escalate intents, confidence thresholds, sentiment triggers
+5. **Recommendation Config** — mode (single/top-3), attribute priority
+6. **Handoff Config** — notification channel (Telegram), pause behavior, summary
+7. **Fallback Config** — `strict_templates_only` / `template_first_with_safe_fallback`
+
+Templates, phrase blocks, and FAQ items are separate tables per tenant.
 
 ## Screenshot Training Pipeline
 
@@ -166,30 +206,39 @@ Templates are store-configurable with variables:
 - `external_account_id` = Instagram Business Account ID from webhook entry.id
 - Messages sent via `graph.instagram.com/v21.0/me/messages`
 - Both sender and receiver must be app testers in development mode
+- Message debouncing: 5s window, collects multiple messages before processing
 
 ## Known Issues / TODOs
 
 ### Critical — Next Steps
-- **Refactor reply engine to template-based system** (current generative approach sounds "bot-like")
-  - AI only classifies (intent, entities, stage)
-  - Engine selects template from store config
-  - Engine interpolates variables
-  - Fallback to AI generation only when no template matches
-- **Template management in admin panel** — CRUD for templates, phrase blocks, scenarios
-- **Store configuration system** — brand config, flow config, checkout config, escalation config
+- **Test selection flow end-to-end** — variant matching, corrections, checkout gate
+- **Order persistence** — save orders to DB, create draft order in Shopify
+- **Telegram handoff notifications** — notify manager when bot escalates
+- **Manager reply detection** — detect is_echo from manager, pause bot
 
 ### Important
-- Telegram notification on handoff (TODO in instagram.service.ts)
 - Long-lived Instagram token exchange (current tokens expire in ~1 hour)
+- Multi-product orders (cart with multiple items before checkout)
 - Product search: also search in `description` field
-- Multi-product orders (cart concept)
-- Order persistence and status tracking
+- Cross-sell templates after order confirmation
+- Admin panel analytics dashboard (conversion, automation rate, response time)
 
 ### Technical Debt
 - `apps/api/dist/` files were tracked in git (now gitignored)
-- `17841400073793607` webhook entries logged as "No connected Instagram account" — this is the second IG Business Account ID, harmless but noisy
+- `17841400073793607` webhook entries logged as "No connected Instagram account" — second IG Business Account ID, harmless but noisy
 - ConnectionsPage has pre-existing TypeScript errors
 - Some `as any` casts on TypeORM jsonb column updates
+- Shopify sync stores colors in `size` field (selectedOptions[0] → size mapping)
+
+## Issue Triage Protocol
+
+When encountering a conversation issue, ALWAYS classify it first before fixing:
+
+1. **Bug** — code doesn't do what the architecture intended (missing memory write, wrong variable, typo). Quick fix.
+2. **AI went wrong** — classifier returned wrong intent/slotAction/entities. Fix by improving prompt, adding examples, or enriching context.
+3. **Architectural** — the design can't handle this case (missing state, no template for scenario, flow doesn't support this path). Needs refactor/plan.
+
+State the classification before proposing a fix. This prevents over-engineering bugs and under-engineering architectural gaps.
 
 ## Dev Commands
 
