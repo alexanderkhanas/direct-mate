@@ -38,6 +38,18 @@ export class Order {
   @Column({ type: 'text', default: 'instagram_ai' })
   source!: string;
 
+  @Column({ type: 'text', default: 'none' })
+  externalSyncStatus!: string;
+
+  @Column({ type: 'jsonb', nullable: true })
+  externalOrderMetadata!: Record<string, unknown> | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  externalSyncTriggeredAt!: Date | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  externalSyncCompletedAt!: Date | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt!: Date;
 

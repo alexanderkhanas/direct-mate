@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Connection } from './entities/connection.entity';
@@ -113,6 +113,12 @@ export class IntegrationsService {
     });
   }
 
+  async remove(id: string): Promise<void> {
+    const conn = await this.connectionRepo.findOne({ where: { id } });
+    if (!conn) throw new NotFoundException('Connection not found');
+    await this.connectionRepo.delete(id);
+  }
+
   async queueSyncJob(
     tenantId: string,
     connectionId: string,
@@ -174,5 +180,69 @@ export class IntegrationsService {
         errorMessage: errorMessage ?? null,
       });
     }
+  }
+
+  // ─── Resolve credentials (server-to-server) ─────────────────
+
+  private readonly ALLOWED_PURPOSES = ['create_order', 'sync_catalog', 'sync_stock', 'health_check'];
+
+  async resolveCredentials(dto: {
+    connectionId: string;
+    tenantId: string;
+    platform: string;
+    purpose: string;
+  }) {
+    // Validate purpose
+    if (!this.ALLOWED_PURPOSES.includes(dto.purpose)) {
+      throw new BadRequestException(`Invalid purpose: ${dto.purpose}`);
+    }
+
+    // Load connection
+    const connection = await this.connectionRepo.findOne({
+      where: { id: dto.connectionId },
+    });
+
+    if (!connection) {
+      throw new NotFoundException(`Connection ${dto.connectionId} not found`);
+    }
+
+    // Validate tenant ownership
+    if (connection.tenantId !== dto.tenantId) {
+      throw new ForbiddenException('Connection does not belong to tenant');
+    }
+
+    // Validate platform matches
+    if (connection.type !== dto.platform) {
+      throw new BadRequestException(`Platform mismatch: connection is ${connection.type}, requested ${dto.platform}`);
+    }
+
+    // Validate connection is active
+    if (connection.status !== ConnectionStatus.Connected) {
+      throw new BadRequestException(`Connection is not active (status: ${connection.status})`);
+    }
+
+    // Decrypt and return minimal credentials
+    const accessToken = connection.accessTokenEncrypted
+      ? this.crypto.decrypt(connection.accessTokenEncrypted)
+      : '';
+
+    const metadata = (connection.metadata ?? {}) as Record<string, any>;
+
+    if (dto.platform === 'shopify') {
+      return {
+        type: 'shopify',
+        shopDomain: metadata.shopDomain ?? connection.externalAccountId,
+        accessToken,
+        apiVersion: '2024-07',
+      };
+    }
+
+    // Generic fallback for other platforms
+    return {
+      type: connection.type,
+      externalAccountId: connection.externalAccountId,
+      accessToken,
+      metadata,
+    };
   }
 }

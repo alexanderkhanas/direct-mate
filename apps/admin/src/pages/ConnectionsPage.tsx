@@ -1,8 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Instagram, Plug } from 'lucide-react';
+import { Instagram, ShoppingBag, Plug, Plus, Trash2 } from 'lucide-react';
 import { api } from '../lib/api';
-import { Connection } from '../types';
 import { Card } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
@@ -19,7 +18,7 @@ function statusVariant(status: string): BadgeVariant {
   return 'disconnected';
 }
 
-function ConnectInstagramForm({ onSuccess }: { onSuccess: () => void }) {
+function ConnectInstagramForm({ onSuccess, onCancel }: { onSuccess: () => void; onCancel: () => void }) {
   const [pageId, setPageId] = useState('');
   const [token, setToken] = useState('');
   const [accountName, setAccountName] = useState('');
@@ -38,47 +37,120 @@ function ConnectInstagramForm({ onSuccess }: { onSuccess: () => void }) {
   });
 
   return (
-    <div className="p-4 bg-gray-50 rounded-xl border border-gray-200 space-y-3">
-      <p className="text-sm font-medium text-gray-700">Connect Instagram account</p>
-      <Input
-        label="Instagram Page ID"
-        value={pageId}
-        onChange={(e) => setPageId(e.target.value)}
-        placeholder="e.g. 123456789"
-      />
-      <Input
-        label="Page Access Token"
-        value={token}
-        onChange={(e) => setToken(e.target.value)}
-        placeholder="EAABwzLix…"
-        type="password"
-      />
-      <Input
-        label="Account name (optional)"
-        value={accountName}
-        onChange={(e) => setAccountName(e.target.value)}
-        placeholder="e.g. My Store"
-      />
-      {error && <p className="text-xs text-red-500">{error}</p>}
-      <div className="flex gap-2">
-        <Button
-          size="sm"
-          onClick={() => connect.mutate()}
-          loading={connect.isPending}
-          disabled={!pageId || !token}
-        >
-          Connect
-        </Button>
+    <Card>
+      <p className="text-sm font-medium text-gray-700 mb-3">Connect Instagram account</p>
+      <div className="space-y-3">
+        <Input
+          label="Instagram Page ID"
+          value={pageId}
+          onChange={(e) => setPageId(e.target.value)}
+          placeholder="e.g. 17841442494632364"
+        />
+        <Input
+          label="Page Access Token"
+          value={token}
+          onChange={(e) => setToken(e.target.value)}
+          placeholder="EAABwzLix…"
+          type="password"
+        />
+        <Input
+          label="Account name (optional)"
+          value={accountName}
+          onChange={(e) => setAccountName(e.target.value)}
+          placeholder="e.g. my_store"
+        />
+        {error && <p className="text-xs text-red-500">{error}</p>}
+        <div className="flex gap-2">
+          <Button size="sm" onClick={() => connect.mutate()} loading={connect.isPending} disabled={!pageId || !token}>
+            Connect
+          </Button>
+          <Button size="sm" variant="secondary" onClick={onCancel}>Cancel</Button>
+        </div>
       </div>
-    </div>
+    </Card>
   );
+}
+
+function ConnectShopifyForm({ onSuccess, onCancel }: { onSuccess: () => void; onCancel: () => void }) {
+  const [shopDomain, setShopDomain] = useState('');
+  const [token, setToken] = useState('');
+  const [shopName, setShopName] = useState('');
+  const [error, setError] = useState('');
+
+  const connect = useMutation({
+    mutationFn: () =>
+      api.post('/connections/shopify', { shopDomain, accessToken: token, shopName }),
+    onSuccess: () => {
+      setShopDomain('');
+      setToken('');
+      setShopName('');
+      onSuccess();
+    },
+    onError: () => setError('Failed to connect — check the domain and token'),
+  });
+
+  return (
+    <Card>
+      <p className="text-sm font-medium text-gray-700 mb-3">Connect Shopify store</p>
+      <div className="space-y-3">
+        <Input
+          label="Shop domain"
+          value={shopDomain}
+          onChange={(e) => setShopDomain(e.target.value)}
+          placeholder="my-store.myshopify.com"
+        />
+        <Input
+          label="Admin API Access Token"
+          value={token}
+          onChange={(e) => setToken(e.target.value)}
+          placeholder="shpat_xxxxx"
+          type="password"
+        />
+        <Input
+          label="Store name (optional)"
+          value={shopName}
+          onChange={(e) => setShopName(e.target.value)}
+          placeholder="e.g. Beauty Store"
+        />
+        {error && <p className="text-xs text-red-500">{error}</p>}
+        <div className="flex gap-2">
+          <Button size="sm" onClick={() => connect.mutate()} loading={connect.isPending} disabled={!shopDomain || !token}>
+            Connect
+          </Button>
+          <Button size="sm" variant="secondary" onClick={onCancel}>Cancel</Button>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function ConnectionIcon({ type }: { type: string }) {
+  if (type === 'instagram') return <Instagram className="h-4 w-4 text-pink-500" />;
+  if (type === 'shopify') return <ShoppingBag className="h-4 w-4 text-green-600" />;
+  return <Plug className="h-4 w-4 text-gray-500" />;
+}
+
+function connectionLabel(conn: any): string {
+  if (conn.type === 'instagram') return conn.metadata?.accountName || 'Instagram';
+  if (conn.type === 'shopify') return conn.metadata?.shopName || conn.metadata?.shopDomain || 'Shopify';
+  return conn.type;
+}
+
+function connectionSubtext(conn: any): string {
+  if (conn.type === 'shopify' && conn.metadata?.shopDomain) {
+    return conn.metadata.shopDomain;
+  }
+  if (conn.externalAccountId) {
+    return `ID: ${conn.externalAccountId}`;
+  }
+  return conn.type;
 }
 
 export default function ConnectionsPage() {
   const qc = useQueryClient();
-  const [showConnectForm, setShowConnectForm] = useState(false);
+  const [showForm, setShowForm] = useState<'instagram' | 'shopify' | null>(null);
 
-  const { data, isLoading } = useQuery<Connection[]>({
+  const { data, isLoading } = useQuery<any[]>({
     queryKey: ['connections'],
     queryFn: () => api.get('/connections').then((r) => r.data),
   });
@@ -88,9 +160,17 @@ export default function ConnectionsPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['connections'] }),
   });
 
-  const hasInstagram = data.some(
-    (c) => c.type === 'instagram' && c.status === 'connected',
-  );
+  const deleteConn = useMutation({
+    mutationFn: (id: string) => api.delete(`/connections/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['connections'] }),
+  });
+
+  const connections = data ?? [];
+
+  const handleSuccess = () => {
+    setShowForm(null);
+    qc.invalidateQueries({ queryKey: ['connections'] });
+  };
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -99,53 +179,57 @@ export default function ConnectionsPage() {
           <h1 className="text-2xl font-semibold text-gray-900">Connections</h1>
           <p className="text-sm text-gray-500 mt-1">Manage your integrations</p>
         </div>
-        {!hasInstagram && (
+        <div className="flex gap-2">
           <Button
             variant="secondary"
             size="sm"
-            onClick={() => setShowConnectForm((v) => !v)}
+            onClick={() => setShowForm(showForm === 'instagram' ? null : 'instagram')}
           >
             <Instagram className="h-4 w-4" />
-            Connect Instagram
+            Instagram
           </Button>
-        )}
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setShowForm(showForm === 'shopify' ? null : 'shopify')}
+          >
+            <ShoppingBag className="h-4 w-4" />
+            Shopify
+          </Button>
+        </div>
       </div>
 
-      {showConnectForm && (
-        <ConnectInstagramForm
-          onSuccess={() => {
-            setShowConnectForm(false);
-            qc.invalidateQueries({ queryKey: ['connections'] });
-          }}
-        />
+      {showForm === 'instagram' && (
+        <ConnectInstagramForm onSuccess={handleSuccess} onCancel={() => setShowForm(null)} />
+      )}
+      {showForm === 'shopify' && (
+        <ConnectShopifyForm onSuccess={handleSuccess} onCancel={() => setShowForm(null)} />
       )}
 
       {isLoading ? (
         <LoadingState />
       ) : (
         <Card padding={false}>
-          {data.length === 0 ? (
+          {connections.length === 0 ? (
             <EmptyState
               icon={Plug}
               title="No connections"
-              description="Connect your Instagram account to get started"
+              description="Connect your Instagram or Shopify account to get started"
             />
           ) : (
             <div className="divide-y divide-gray-100">
-              {data.map((conn) => (
+              {connections.map((conn: any) => (
                 <div key={conn.id} className="flex items-center justify-between px-5 py-4">
                   <div className="flex items-center gap-3">
                     <div className="h-9 w-9 rounded-lg bg-gray-100 flex items-center justify-center">
-                      <Instagram className="h-4 w-4 text-gray-500" />
+                      <ConnectionIcon type={conn.type} />
                     </div>
                     <div>
-                      <p className="text-sm font-medium text-gray-900 capitalize">
-                        {conn.metadata?.accountName ?? conn.type}
+                      <p className="text-sm font-medium text-gray-900">
+                        {connectionLabel(conn)}
                       </p>
                       <p className="text-xs text-gray-400 mt-0.5">
-                        {conn.externalAccountId
-                          ? `ID: ${conn.externalAccountId}`
-                          : conn.type}
+                        {connectionSubtext(conn)}
                         {conn.lastSyncAt
                           ? ` · Last sync: ${new Date(conn.lastSyncAt).toLocaleString()}`
                           : ' · Never synced'}
@@ -157,11 +241,21 @@ export default function ConnectionsPage() {
                     {conn.status === 'connected' && (
                       <button
                         onClick={() => disconnect.mutate(conn.id)}
-                        className="text-xs text-gray-400 hover:text-red-500 transition-colors"
+                        className="text-xs text-gray-400 hover:text-orange-500 transition-colors"
                       >
                         Disconnect
                       </button>
                     )}
+                    <button
+                      onClick={() => {
+                        if (confirm(`Remove ${connectionLabel(conn)} connection?`)) {
+                          deleteConn.mutate(conn.id);
+                        }
+                      }}
+                      className="text-gray-300 hover:text-red-500 transition-colors"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
                   </div>
                 </div>
               ))}

@@ -12,12 +12,14 @@ import {
   GraduationCap,
   FileText,
   FlaskConical,
+  ShoppingCart,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { cn } from '../lib/cn';
 
 const nav = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, exact: true },
+  { to: '/orders', label: 'Orders', icon: ShoppingCart },
   { to: '/conversations', label: 'Conversations', icon: MessageSquare },
   { to: '/catalog', label: 'Catalog', icon: Package },
   { to: '/connections', label: 'Connections', icon: Plug },

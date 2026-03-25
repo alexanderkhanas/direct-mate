@@ -4,9 +4,10 @@ import * as crypto from 'crypto';
 import { ConversationsService } from '../../conversations/conversations.service';
 import { ReplyEngineService } from '../../conversations/reply-engine.service';
 import { IntegrationsService } from '../../integrations/integrations.service';
+import { OrdersService } from '../../orders/orders.service';
 import { CryptoService } from '../../../common/crypto.service';
 import { Connection } from '../../integrations/entities/connection.entity';
-import { ConnectionType, MessageDirection, MessageRole } from '@direct-mate/shared';
+import { ConnectionType, MessageDirection, MessageRole, ReplyDecision } from '@direct-mate/shared';
 
 interface MetaMessagingEvent {
   sender?: { id: string };
@@ -53,6 +54,7 @@ export class InstagramService {
     private readonly conversationsService: ConversationsService,
     private readonly replyEngineService: ReplyEngineService,
     private readonly integrationsService: IntegrationsService,
+    private readonly ordersService: OrdersService,
     private readonly cryptoService: CryptoService,
   ) {}
 
@@ -347,6 +349,7 @@ export class InstagramService {
       return;
     }
 
+    // Send reply to customer (common for Reply and CreateDraftOrder)
     if (result.reply?.sendNow && result.reply.text) {
       await this.conversationsService.saveMessage(
         conversation.id,
@@ -368,6 +371,34 @@ export class InstagramService {
         }
       } else {
         this.logger.warn(`No access token for connection — cannot send message to Meta`);
+      }
+    }
+
+    // Handle draft order creation
+    if (result.decision === ReplyDecision.CreateDraftOrder && result.orderPayload) {
+      try {
+        // Override customerId with the actual customer from this conversation
+        const orderPayload = {
+          ...result.orderPayload,
+          customerId: customer.id,
+        };
+
+        const order = await this.ordersService.createFromConversation(orderPayload);
+        this.logger.log(`Order created: ${order.id} for conversation ${conversation.id}`);
+
+        // Trigger external sync (async, fire-and-forget)
+        this.ordersService.triggerExternalSync(order).catch((err) => {
+          this.logger.error(
+            `External sync trigger failed for order ${order.id}`,
+            (err as Error).message,
+          );
+        });
+      } catch (err) {
+        this.logger.error(
+          `Order creation failed for conversation ${conversation.id}`,
+          (err as Error).message,
+        );
+        // Don't block the conversation — order can be created manually
       }
     }
   }

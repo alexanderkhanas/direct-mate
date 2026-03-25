@@ -27,6 +27,7 @@ import {
   MessageRole,
   ReplyDecision,
 } from '@direct-mate/shared';
+import { OrderPayload } from '../orders/interfaces/order-payload.interface';
 
 // ─── Public interfaces ───────────────────────────────────────────
 
@@ -43,6 +44,7 @@ export interface ReplyEngineOutput {
   reply: { text: string; sendNow: boolean } | null;
   handoff: { required: boolean; reason: string | null };
   stateUpdate: Partial<ConversationState> | null;
+  orderPayload?: OrderPayload;
 }
 
 const LOG_FILE = path.join(process.cwd(), 'conversations.log');
@@ -533,6 +535,46 @@ export class ReplyEngineService {
 
     stateUpdate.contextJson = memory as any;
 
+    // 10. Check if this is a confirmed order → emit CreateDraftOrder decision
+    // Idempotency: only create order once per conversation
+    const alreadyOrdered = memory.lastAction === 'confirmed_order' || memory.orderCreated === true;
+    if (actualAction === 'confirm_order' && !alreadyOrdered) {
+      memory.orderCreated = true;
+      const orderPayload = this.buildOrderPayload(input, memory, classification);
+
+      await this.auditService.log({
+        tenantId: input.tenantId,
+        conversationId: input.conversationId,
+        type: AuditLogType.DraftOrderCreated,
+        details: {
+          decision: ReplyDecision.CreateDraftOrder,
+          intent: classification.primaryIntent,
+          action: actualAction,
+          templateId: usedTemplateId ?? 'ai_fallback',
+          hasOrderPayload: !!orderPayload,
+        },
+      });
+
+      this.logToFile({
+        event: 'create_draft_order',
+        conversationId: input.conversationId,
+        inbound: input.messageText,
+        outbound: finalReply,
+        templateId: usedTemplateId ?? 'ai_fallback',
+        templateScenario: templateResult?.scenario ?? 'ai_fallback',
+        orderPayload: orderPayload ? { items: orderPayload.items.length, customerInfo: orderPayload.customerInfo } : null,
+        memory,
+      });
+
+      return {
+        decision: ReplyDecision.CreateDraftOrder,
+        reply: { text: finalReply, sendNow: true },
+        handoff: { required: false, reason: null },
+        stateUpdate,
+        orderPayload: orderPayload ?? undefined,
+      };
+    }
+
     await this.auditService.log({
       tenantId: input.tenantId,
       conversationId: input.conversationId,
@@ -802,6 +844,79 @@ export class ReplyEngineService {
         memory.awaitingField = 'order_finalized';
         break;
     }
+  }
+
+  // ─── Build order payload from memory + classification ─────────
+
+  private buildOrderPayload(
+    input: ReplyEngineInput,
+    memory: AssistantMemory,
+    classification: ClassificationResult,
+  ): OrderPayload | null {
+    const productId = memory.selectedProductId;
+    const variantId = memory.selectedVariantId;
+
+    if (!productId || !variantId) {
+      this.logger.warn(
+        `Cannot build order payload: missing productId=${productId} variantId=${variantId}`,
+      );
+      return null;
+    }
+
+    const customerName =
+      classification.entities.customerName ?? '';
+    const phone = classification.entities.phone ?? '';
+    const city = classification.entities.city ?? '';
+    const deliveryBranch = classification.entities.deliveryBranch ?? '';
+
+    // Find variant price from available variants in memory
+    let unitPrice = 0;
+    let externalProductId: string | null = null;
+    let externalVariantId: string | null = null;
+    const variants = memory.availableVariants;
+    if (Array.isArray(variants)) {
+      const matchedVariant = variants.find((v) => v.id === variantId) as any;
+      if (matchedVariant) {
+        unitPrice = matchedVariant.price ?? 0;
+        externalProductId = matchedVariant.externalProductId ?? null;
+        externalVariantId = matchedVariant.externalVariantId ?? null;
+      }
+    }
+
+    // Try to parse price from lastPresentedProducts if not found in variants
+    if (unitPrice === 0 && memory.lastPresentedProducts?.length) {
+      const priceStr = memory.lastPresentedProducts[0].price;
+      const priceMatch = priceStr?.match(/[\d.]+/);
+      if (priceMatch) {
+        unitPrice = parseFloat(priceMatch[0]);
+      }
+    }
+
+    return {
+      tenantId: input.tenantId,
+      conversationId: input.conversationId,
+      customerId: input.state.conversationId, // Will be resolved by InstagramService from customer lookup
+      items: [
+        {
+          productId,
+          variantId,
+          externalProductId,
+          externalVariantId,
+          title: memory.selectedProductTitle ?? '',
+          variantTitle: memory.selectedVariantName ?? '',
+          quantity: 1,
+          unitPrice,
+          currency: 'UAH',
+        },
+      ],
+      customerInfo: {
+        fullName: customerName,
+        phone,
+        city,
+        deliveryBranch,
+      },
+      source: 'instagram_ai',
+    };
   }
 
   // ─── Get current stage from state ──────────────────────────────

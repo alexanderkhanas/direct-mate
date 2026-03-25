@@ -1,7 +1,8 @@
-import { Body, Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, UseGuards, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { ApiBearerAuth, ApiProperty, ApiTags } from '@nestjs/swagger';
-import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, IsIn } from 'class-validator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { InternalApiKeyGuard } from '../../common/guards/internal-api-key.guard';
 import { CurrentUser, JwtPayload } from '../../common/decorators/current-user.decorator';
 import { IntegrationsService } from './integrations.service';
 
@@ -80,5 +81,44 @@ export class IntegrationsController {
   @Post(':id/disconnect')
   disconnect(@Param('id') id: string) {
     return this.integrationsService.disconnect(id);
+  }
+
+  @Delete(':id')
+  remove(@Param('id') id: string) {
+    return this.integrationsService.remove(id);
+  }
+}
+
+// ─── Resolve Credentials DTO ────────────────────────────────
+
+class ResolveCredentialsDto {
+  @IsString()
+  @IsNotEmpty()
+  connectionId!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  tenantId!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  platform!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  purpose!: string;
+}
+
+// ─── Internal Controller (server-to-server, no user auth) ───
+
+@ApiTags('internal/connections')
+@UseGuards(InternalApiKeyGuard)
+@Controller('internal/connections')
+export class InternalConnectionsController {
+  constructor(private readonly integrationsService: IntegrationsService) {}
+
+  @Post('resolve-credentials')
+  async resolveCredentials(@Body() dto: ResolveCredentialsDto) {
+    return this.integrationsService.resolveCredentials(dto);
   }
 }

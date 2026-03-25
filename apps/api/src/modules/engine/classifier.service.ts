@@ -46,6 +46,7 @@ export interface AssistantMemory {
   selectedVariantId?: string;
   selectedVariantName?: string;
   availableVariants?: Array<{ id: string; name: string; color?: string | null; size?: string | null }> | string;
+  orderCreated?: boolean;
 }
 
 // ─── OpenAI tool definition ──────────────────────────────────────

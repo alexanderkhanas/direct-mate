@@ -10,6 +10,7 @@ import CatalogPage from './pages/CatalogPage';
 import TrainingPage from './pages/TrainingPage';
 import TemplatesPage from './pages/TemplatesPage';
 import TestingPage from './pages/TestingPage';
+import OrdersPage from './pages/OrdersPage';
 import Layout from './components/Layout';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -31,6 +32,7 @@ export default function App() {
           }
         >
           <Route index element={<DashboardPage />} />
+          <Route path="orders" element={<OrdersPage />} />
           <Route path="conversations" element={<ConversationsPage />} />
           <Route path="conversations/:id" element={<ConversationDetailPage />} />
           <Route path="catalog" element={<CatalogPage />} />

@@ -76,11 +76,34 @@ export interface ProductRow {
 
 export interface Order {
   id: string;
+  tenantId: string;
   status: string;
-  customerName?: string;
   totalAmount: number | null;
   currency: string;
+  source: string;
+  externalOrderId: string | null;
+  externalSyncStatus: string;
+  externalOrderMetadata: Record<string, unknown> | null;
   createdAt: string;
+  updatedAt: string;
+  customer: {
+    fullName: string | null;
+    phone: string | null;
+    city: string | null;
+    branch: string | null;
+  } | null;
+  items: OrderItem[];
+}
+
+export interface OrderItem {
+  id: string;
+  productId: string;
+  variantId: string;
+  qty: number;
+  unitPrice: number;
+  currency: string;
+  productTitle: string | null;
+  variantTitle: string | null;
 }
 
 export interface TenantSettings {

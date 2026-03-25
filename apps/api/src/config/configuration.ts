@@ -24,4 +24,7 @@ export default () => ({
   internal: {
     apiKey: process.env.INTERNAL_API_KEY ?? '',
   },
+  n8n: {
+    orderSyncWebhookUrl: process.env.N8N_ORDER_SYNC_WEBHOOK_URL ?? '',
+  },
 });
