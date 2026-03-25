@@ -248,9 +248,12 @@ export class TemplateEngineService {
     const entities = classification.entities;
 
     // Special case: provide_details with actual delivery info → confirm order
+    // BUT only if a product is already selected and checkout is in progress
     if (
       intent === 'provide_details' &&
-      (entities.customerName || entities.phone || entities.city)
+      (entities.customerName || entities.phone || entities.city) &&
+      memory?.selectedProductId &&
+      (memory?.selectionState === 'confirmed' || memory?.lastAction === 'asked_delivery_details')
     ) {
       return 'confirm_order';
     }

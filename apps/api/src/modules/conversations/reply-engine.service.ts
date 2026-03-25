@@ -462,7 +462,15 @@ export class ReplyEngineService {
         return this.doHandoff(input, 'product_not_found', 'Секунду, уточню наявність 💛');
       }
 
-      if (
+      // Layer 1: Pre-check — block order-like messages when no active checkout
+      const hasActiveCheckout = !!(memory.selectedProductId &&
+        (memory.selectionState === 'confirmed' || memory.lastAction === 'asked_delivery_details'));
+
+      if (classification.primaryIntent === 'provide_details' && !hasActiveCheckout) {
+        this.logger.log('Pre-check: provide_details without active checkout → clarification');
+        finalReply = 'Дякую 💛 Підкажіть, будь ласка, який товар вас цікавить?';
+        actualAction = 'greeting';
+      } else if (
         policy.action === 'fallback' ||
         this.policyEngine.isFallbackAllowed(classification, effectiveConfig)
       ) {
@@ -480,6 +488,17 @@ export class ReplyEngineService {
             classification,
           });
           actualAction = 'ai_fallback_clarification';
+
+          // Layer 3: Output safety — block fake order confirmations
+          if (!hasActiveCheckout) {
+            const orderPhrases = ['замовлення оформлено', 'вже в обробці', 'надішлю підтвердження',
+              'очікуйте відправку', 'замовлення прийнято', 'дані отримала', 'замовлення створено'];
+            const hasOrderLanguage = orderPhrases.some(p => finalReply.toLowerCase().includes(p));
+            if (hasOrderLanguage) {
+              finalReply = 'Дякую 💛 Підкажіть, будь ласка, який товар вас цікавить?';
+              this.logger.warn('Output safety: blocked fake order confirmation from AI fallback');
+            }
+          }
         } catch (err) {
           this.logger.error('AI fallback failed', err);
           memory.failedTurns = (memory.failedTurns ?? 0) + 1;
@@ -537,7 +556,8 @@ export class ReplyEngineService {
 
     // 10. Check if this is a confirmed order → emit CreateDraftOrder decision
     // Idempotency: only create order once per conversation
-    const alreadyOrdered = memory.lastAction === 'confirmed_order' || memory.orderCreated === true;
+    // Use orderCreated flag only — lastAction is already updated by updateMemoryFromAction above
+    const alreadyOrdered = memory.orderCreated === true;
     if (actualAction === 'confirm_order' && !alreadyOrdered) {
       memory.orderCreated = true;
       const orderPayload = this.buildOrderPayload(input, memory, classification);
@@ -933,6 +953,16 @@ export class ReplyEngineService {
 
   // ─── AI fallback reply generation ──────────────────────────────
 
+  private buildOrderStateContext(memory: AssistantMemory): string {
+    if (memory.selectedProductId && (memory.selectionState === 'confirmed' || memory.lastAction === 'asked_delivery_details')) {
+      return `\nORDER STATE: Active checkout — Product: ${memory.selectedProductTitle ?? 'unknown'} (${memory.selectedVariantName ?? ''}). Awaiting delivery details.`;
+    }
+    if (memory.selectedProductId) {
+      return `\nORDER STATE: Product browsing — ${memory.selectedProductTitle ?? 'product selected'}, not yet confirmed for order.`;
+    }
+    return `\nORDER STATE: No active order. No product selected. Do NOT confirm any order.`;
+  }
+
   private async aiFallbackReply(params: {
     brandTone: string;
     examples: ManagerExample[];
@@ -972,6 +1002,8 @@ export class ReplyEngineService {
       `7. Lead the conversation forward.`,
       `8. NEVER greet mid-conversation.`,
       `9. Keep replies SHORT (1-3 sentences max).`,
+      `10. NEVER confirm an order, say "замовлення оформлено", "в обробці", "дані отримала", or imply an order exists unless ALL of these are true: selectedProductId exists, checkout is in progress, system is expecting delivery details.`,
+      this.buildOrderStateContext(params.memory),
       `\nClassification context:`,
       `Intent: ${params.classification.primaryIntent}`,
       `Stage: ${params.classification.conversationStage}`,

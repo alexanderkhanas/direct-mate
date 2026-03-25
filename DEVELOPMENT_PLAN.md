@@ -182,8 +182,18 @@ Test full conversation flow:
 ### 5.2 OpenCart order integration
 - Same as Shopify but via OpenCart REST API
 
-### 5.3 Advanced AI
-- Product image analysis (customer sends photo → bot identifies product)
+### 5.3 Instagram Content-to-Product Linking
+- Parse media references from webhook (story replies, post shares, carousel items)
+- `instagram_media_mappings` table linking media IDs to products
+- Bulk import: fetch posts + highlights via Graph API on onboarding
+- SKU matching from captions (automatic)
+- AI-assisted caption-to-product matching (GPT suggests, human confirms)
+- Periodic story fetch (cron every 4h, stories expire after 24h but mapping persists)
+- Admin UI for manual linking and confirming AI suggestions
+- Unlinked media → silent handoff (never ask customer to clarify)
+- See: [INSTAGRAM_CONTENT_LINKING.md](INSTAGRAM_CONTENT_LINKING.md) for full spec
+
+### 5.4 Advanced AI
 - Voice message transcription
 - Multi-language support (if expanding beyond Ukraine)
 
@@ -191,11 +201,11 @@ Test full conversation flow:
 
 ## Immediate Next Steps (what to build right now)
 
-1. **Fix remaining reply engine bugs** (Phase 1.1 — the bugs from log analysis)
-2. **Test full conversation flow end-to-end** (Phase 1.2 verification)
-3. **Order persistence + Shopify draft order** (Phase 2.1-2.2)
-4. **Telegram handoff** (Phase 2.3)
-5. **Manager reply detection** (Phase 2.4)
+1. **Telegram handoff notifications** (Phase 2.3)
+2. **Manager reply detection** (Phase 2.4)
+3. **Admin panel polish** — analytics dashboard, conversation viewer (Phase 3)
+4. **Instagram content linking** (Phase 5.3)
+5. **Production deployment** (Phase 4)
 
 ---
 
