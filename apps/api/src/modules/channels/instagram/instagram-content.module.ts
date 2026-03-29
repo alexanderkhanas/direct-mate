@@ -8,9 +8,13 @@ import { StoreConfig } from '../../engine/entities/store-config.entity';
 import { InstagramContentService } from './instagram-content.service';
 import { InstagramContentController, InternalInstagramContentController } from './instagram-content.controller';
 import { CryptoService } from '../../../common/crypto.service';
+import { IntegrationsModule } from '../../integrations/integrations.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([InstagramMediaMapping, Connection, Product, ProductVariant, StoreConfig])],
+  imports: [
+    TypeOrmModule.forFeature([InstagramMediaMapping, Connection, Product, ProductVariant, StoreConfig]),
+    IntegrationsModule,
+  ],
   controllers: [InstagramContentController, InternalInstagramContentController],
   providers: [InstagramContentService, CryptoService],
   exports: [InstagramContentService],

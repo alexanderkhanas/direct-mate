@@ -14,6 +14,7 @@ import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { InternalApiKeyGuard } from '../../../common/guards/internal-api-key.guard';
 import { CurrentUser, JwtPayload } from '../../../common/decorators/current-user.decorator';
 import { InstagramContentService } from './instagram-content.service';
+import { IntegrationsService } from '../../integrations/integrations.service';
 
 @ApiTags('instagram')
 @UseGuards(JwtAuthGuard)
@@ -78,7 +79,10 @@ export class InstagramContentController {
 @UseGuards(InternalApiKeyGuard)
 @Controller('internal/instagram')
 export class InternalInstagramContentController {
-  constructor(private readonly contentService: InstagramContentService) {}
+  constructor(
+    private readonly contentService: InstagramContentService,
+    private readonly integrationsService: IntegrationsService,
+  ) {}
 
   @Post('fetch-content')
   fetchContent(@Body() body?: { tenantId?: string }) {
@@ -86,5 +90,10 @@ export class InternalInstagramContentController {
       return this.contentService.fetchContent(body.tenantId);
     }
     return this.contentService.fetchContentForAllTenants();
+  }
+
+  @Post('refresh-tokens')
+  refreshTokens() {
+    return this.integrationsService.refreshExpiringTokens();
   }
 }

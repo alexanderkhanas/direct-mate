@@ -30,6 +30,9 @@ export class Connection {
   @Column({ type: 'text', nullable: true })
   refreshTokenEncrypted!: string | null;
 
+  @Column({ type: 'timestamptz', nullable: true })
+  tokenExpiresAt!: Date | null;
+
   @Column({ type: 'jsonb', nullable: true })
   metadata!: Record<string, unknown> | null;
 
