@@ -19,50 +19,26 @@ function statusVariant(status: string): BadgeVariant {
 }
 
 function ConnectInstagramForm({ onSuccess, onCancel }: { onSuccess: () => void; onCancel: () => void }) {
-  const [pageId, setPageId] = useState('');
-  const [token, setToken] = useState('');
-  const [accountName, setAccountName] = useState('');
   const [error, setError] = useState('');
 
-  const connect = useMutation({
-    mutationFn: () =>
-      api.post('/connections/instagram', { pageId, accessToken: token, accountName }),
-    onSuccess: () => {
-      setPageId('');
-      setToken('');
-      setAccountName('');
-      onSuccess();
+  const startOAuth = useMutation({
+    mutationFn: () => api.post('/connections/instagram/oauth/start').then(r => r.data),
+    onSuccess: (data: { redirectUrl: string }) => {
+      window.location.href = data.redirectUrl;
     },
-    onError: () => setError('Failed to connect — check the page ID and token'),
+    onError: () => setError('Failed to start Instagram login'),
   });
 
   return (
     <Card>
       <p className="text-sm font-medium text-gray-700 mb-3">Connect Instagram account</p>
       <div className="space-y-3">
-        <Input
-          label="Instagram Page ID"
-          value={pageId}
-          onChange={(e) => setPageId(e.target.value)}
-          placeholder="e.g. 17841442494632364"
-        />
-        <Input
-          label="Page Access Token"
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
-          placeholder="EAABwzLix…"
-          type="password"
-        />
-        <Input
-          label="Account name (optional)"
-          value={accountName}
-          onChange={(e) => setAccountName(e.target.value)}
-          placeholder="e.g. my_store"
-        />
+        <p className="text-xs text-gray-500">You'll be redirected to Instagram to grant access.</p>
         {error && <p className="text-xs text-red-500">{error}</p>}
         <div className="flex gap-2">
-          <Button size="sm" onClick={() => connect.mutate()} loading={connect.isPending} disabled={!pageId || !token}>
-            Connect
+          <Button size="sm" onClick={() => startOAuth.mutate()} loading={startOAuth.isPending}>
+            <Instagram className="h-4 w-4" />
+            Connect with Instagram
           </Button>
           <Button size="sm" variant="secondary" onClick={onCancel}>Cancel</Button>
         </div>
@@ -309,6 +285,22 @@ function connectionSubtext(conn: any): string {
 export default function ConnectionsPage() {
   const qc = useQueryClient();
   const [showForm, setShowForm] = useState<'instagram' | 'shopify' | null>(null);
+  const [oauthMessage, setOauthMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Check for OAuth callback result in URL params
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const igStatus = params.get('instagram');
+    if (igStatus === 'connected') {
+      setOauthMessage({ type: 'success', text: 'Instagram connected successfully!' });
+      qc.invalidateQueries({ queryKey: ['connections'] });
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (igStatus === 'error') {
+      const reason = params.get('reason') ?? 'unknown';
+      setOauthMessage({ type: 'error', text: `Instagram connection failed: ${reason}` });
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, [qc]);
 
   const { data, isLoading } = useQuery<any[]>({
     queryKey: ['connections'],
@@ -334,6 +326,12 @@ export default function ConnectionsPage() {
 
   return (
     <div className="space-y-6 max-w-2xl">
+      {oauthMessage && (
+        <div className={`px-4 py-3 rounded-lg text-sm ${oauthMessage.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+          {oauthMessage.text}
+          <button onClick={() => setOauthMessage(null)} className="ml-2 text-xs opacity-60 hover:opacity-100">×</button>
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">Connections</h1>

@@ -1,6 +1,8 @@
-import { Body, Controller, Delete, Get, Param, Post, UseGuards, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Query, Res, UseGuards, BadRequestException, ForbiddenException, NotFoundException, Logger } from '@nestjs/common';
 import { ApiBearerAuth, ApiProperty, ApiTags } from '@nestjs/swagger';
+import { ConfigService } from '@nestjs/config';
 import { IsNotEmpty, IsOptional, IsString, IsIn } from 'class-validator';
+import { Response } from 'express';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { InternalApiKeyGuard } from '../../common/guards/internal-api-key.guard';
 import { CurrentUser, JwtPayload } from '../../common/decorators/current-user.decorator';
@@ -120,5 +122,86 @@ export class InternalConnectionsController {
   @Post('resolve-credentials')
   async resolveCredentials(@Body() dto: ResolveCredentialsDto) {
     return this.integrationsService.resolveCredentials(dto);
+  }
+}
+
+// ─── Instagram OAuth Controller ─────────────────────────────
+
+@ApiTags('connections')
+@Controller()
+export class InstagramOAuthController {
+  private readonly logger = new Logger(InstagramOAuthController.name);
+
+  constructor(
+    private readonly integrationsService: IntegrationsService,
+    private readonly config: ConfigService,
+  ) {}
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Post('connections/instagram/oauth/start')
+  async start(@CurrentUser() user: JwtPayload) {
+    const appId = this.config.get<string>('meta.appId');
+    const redirectUri = this.config.get<string>('meta.oauthRedirectUri');
+    if (!appId || !redirectUri) {
+      throw new BadRequestException('Instagram OAuth not configured');
+    }
+
+    // Generate state token and save to DB (reuse telegram_connect_tokens table)
+    const state = await this.integrationsService.createOAuthState(user.tenantId);
+
+    const scopes = [
+      'instagram_business_basic',
+      'instagram_business_manage_messages',
+      'instagram_business_content_publish',
+      'instagram_business_manage_comments',
+    ].join(',');
+
+    const redirectUrl = `https://www.instagram.com/oauth/authorize?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scopes}&response_type=code&state=${state}`;
+
+    return { redirectUrl };
+  }
+
+  @Get('auth/instagram/callback')
+  async callback(
+    @Query('code') code: string,
+    @Query('state') state: string,
+    @Res() res: Response,
+  ) {
+    const adminBaseUrl = this.config.get<string>('admin.baseUrl') ?? 'http://localhost:5173';
+
+    if (!code || !state) {
+      return res.redirect(`${adminBaseUrl}/connections?instagram=error&reason=missing_params`);
+    }
+
+    try {
+      // Validate state and get tenantId
+      const tenantId = await this.integrationsService.validateOAuthState(state);
+      if (!tenantId) {
+        return res.redirect(`${adminBaseUrl}/connections?instagram=error&reason=invalid_state`);
+      }
+
+      // Exchange code for token
+      const { accessToken, userId } = await this.integrationsService.exchangeCodeForToken(code);
+
+      // Get username
+      let username: string | undefined;
+      try {
+        const profileRes = await fetch(`https://graph.instagram.com/me?fields=user_id,username&access_token=${accessToken}`);
+        if (profileRes.ok) {
+          const profile = await profileRes.json() as { username?: string };
+          username = profile.username;
+        }
+      } catch { /* non-critical */ }
+
+      // Connect (exchanges short → long-lived automatically)
+      await this.integrationsService.connectInstagram(tenantId, userId, accessToken, username);
+
+      this.logger.log(`Instagram OAuth connected for tenant ${tenantId}, user ${userId}`);
+      return res.redirect(`${adminBaseUrl}/connections?instagram=connected`);
+    } catch (err) {
+      this.logger.error('Instagram OAuth callback failed', (err as Error).message);
+      return res.redirect(`${adminBaseUrl}/connections?instagram=error&reason=exchange_failed`);
+    }
   }
 }

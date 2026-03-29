@@ -1,9 +1,11 @@
 import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { LessThan, Repository } from 'typeorm';
+import { IsNull, LessThan, MoreThan, Repository } from 'typeorm';
+import * as crypto from 'crypto';
 import { Connection } from './entities/connection.entity';
 import { SyncJob } from './entities/sync-job.entity';
+import { TelegramConnectToken } from '../notifications/entities/telegram-connect-token.entity';
 import { ConnectionStatus, ConnectionType } from '@direct-mate/shared';
 import { CryptoService } from '../../common/crypto.service';
 
@@ -16,6 +18,8 @@ export class IntegrationsService {
     private readonly connectionRepo: Repository<Connection>,
     @InjectRepository(SyncJob)
     private readonly syncJobRepo: Repository<SyncJob>,
+    @InjectRepository(TelegramConnectToken)
+    private readonly connectTokenRepo: Repository<TelegramConnectToken>,
     private readonly crypto: CryptoService,
     private readonly config: ConfigService,
   ) {}
@@ -263,6 +267,57 @@ export class IntegrationsService {
       accessToken,
       metadata,
     };
+  }
+
+  // ─── Instagram OAuth ─────────────────────────────────────────────
+
+  async createOAuthState(tenantId: string): Promise<string> {
+    const token = crypto.randomBytes(16).toString('hex');
+    await this.connectTokenRepo.save(this.connectTokenRepo.create({
+      tenantId,
+      token,
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 minutes
+    }));
+    return token;
+  }
+
+  async validateOAuthState(state: string): Promise<string | null> {
+    const record = await this.connectTokenRepo.findOne({
+      where: { token: state, usedAt: IsNull(), expiresAt: MoreThan(new Date()) },
+    });
+    if (!record) return null;
+
+    record.usedAt = new Date();
+    await this.connectTokenRepo.save(record);
+    return record.tenantId;
+  }
+
+  async exchangeCodeForToken(code: string): Promise<{ accessToken: string; userId: string }> {
+    const appId = this.config.get<string>('meta.appId');
+    const appSecret = this.config.get<string>('meta.appSecret');
+    const redirectUri = this.config.get<string>('meta.oauthRedirectUri');
+
+    const body = new URLSearchParams({
+      client_id: appId ?? '',
+      client_secret: appSecret ?? '',
+      grant_type: 'authorization_code',
+      redirect_uri: redirectUri ?? '',
+      code,
+    });
+
+    const res = await fetch('https://api.instagram.com/oauth/access_token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+
+    if (!res.ok) {
+      const errBody = await res.text();
+      throw new Error(`Code exchange failed: ${res.status} — ${errBody}`);
+    }
+
+    const data = await res.json() as { access_token: string; user_id: number };
+    return { accessToken: data.access_token, userId: String(data.user_id) };
   }
 
   // ─── Instagram token exchange & refresh ─────────────────────────

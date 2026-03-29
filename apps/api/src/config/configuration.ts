@@ -12,6 +12,10 @@ export default () => ({
     appSecret: process.env.META_APP_SECRET ?? '',
     webhookVerifyToken: process.env.META_WEBHOOK_VERIFY_TOKEN ?? '',
     appId: process.env.META_APP_ID ?? '',
+    oauthRedirectUri: process.env.INSTAGRAM_OAUTH_REDIRECT_URI ?? '',
+  },
+  admin: {
+    baseUrl: process.env.ADMIN_BASE_URL ?? 'http://localhost:5173',
   },
   encryption: {
     key: process.env.ENCRYPTION_KEY ?? '',
