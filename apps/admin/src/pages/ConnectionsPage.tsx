@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Instagram, ShoppingBag, Plug, Plus, Trash2 } from 'lucide-react';
+import { Instagram, ShoppingBag, Plug, Plus, Trash2, Send, CheckCircle, ExternalLink } from 'lucide-react';
 import { api } from '../lib/api';
 import { Card } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
@@ -124,6 +124,166 @@ function ConnectShopifyForm({ onSuccess, onCancel }: { onSuccess: () => void; on
   );
 }
 
+function TelegramConnectSection() {
+  const [polling, setPolling] = useState(false);
+  const [deepLink, setDeepLink] = useState('');
+  const [error, setError] = useState('');
+
+  const { data: status, refetch } = useQuery<{ connected: boolean; chatIds: string[] }>({
+    queryKey: ['telegram-status'],
+    queryFn: () => api.get('/connections/telegram/status').then(r => r.data),
+    refetchInterval: polling ? 3000 : false,
+  });
+
+  const connect = useMutation({
+    mutationFn: () => api.post('/connections/telegram/connect'),
+    onSuccess: (res: any) => {
+      setDeepLink(res.data.deepLink);
+      setPolling(true);
+      setError('');
+    },
+    onError: () => setError('Failed to generate connect link'),
+  });
+
+  useEffect(() => {
+    if (status?.connected && polling) {
+      setPolling(false);
+      setDeepLink('');
+    }
+  }, [status?.connected, polling]);
+
+  const removeTg = useMutation({
+    mutationFn: (chatId: string) => api.delete(`/connections/telegram/${chatId}`),
+    onSuccess: () => refetch(),
+  });
+
+  if (status?.connected) {
+    return (
+      <Card>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="h-9 w-9 rounded-lg bg-blue-50 flex items-center justify-center">
+              <Send className="h-4 w-4 text-blue-500" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <p className="text-sm font-medium text-gray-900">Telegram</p>
+                <CheckCircle className="h-4 w-4 text-green-500" />
+              </div>
+              <p className="text-xs text-gray-400">{status.chatIds.length} {status.chatIds.length === 1 ? 'connection' : 'connections'}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Badge variant="connected">connected</Badge>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => connect.mutate()}
+              loading={connect.isPending}
+            >
+              + Add
+            </Button>
+          </div>
+        </div>
+        {status.chatIds.length > 0 && (
+          <div className="mt-3 pt-3 border-t border-gray-100 space-y-1">
+            {status.chatIds.map((id: string) => (
+              <div key={id} className="flex items-center justify-between py-1">
+                <span className="text-xs text-gray-500 font-mono">Chat ID: {id}</span>
+                <button
+                  onClick={() => {
+                    if (confirm(`Remove Telegram connection ${id}?`)) {
+                      removeTg.mutate(id);
+                    }
+                  }}
+                  className="text-gray-300 hover:text-red-500 transition-colors"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    );
+  }
+
+  // Show deep link if just generated while already connected
+  if (deepLink) {
+    return (
+      <Card>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="h-9 w-9 rounded-lg bg-blue-50 flex items-center justify-center">
+              <Send className="h-4 w-4 text-blue-500" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <p className="text-sm font-medium text-gray-900">Telegram</p>
+                <CheckCircle className="h-4 w-4 text-green-500" />
+              </div>
+              <p className="text-xs text-gray-400">{status.chatIds.length} connections</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {polling && <span className="text-xs text-gray-400 animate-pulse">Waiting...</span>}
+            <a
+              href={deepLink}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors"
+            >
+              Open Telegram
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="h-9 w-9 rounded-lg bg-gray-100 flex items-center justify-center">
+            <Send className="h-4 w-4 text-gray-500" />
+          </div>
+          <div>
+            <p className="text-sm font-medium text-gray-900">Telegram</p>
+            <p className="text-xs text-gray-400">Manager notifications</p>
+          </div>
+        </div>
+        {!deepLink ? (
+          <Button
+            size="sm"
+            onClick={() => connect.mutate()}
+            loading={connect.isPending}
+          >
+            Connect
+          </Button>
+        ) : (
+          <div className="flex items-center gap-2">
+            {polling && (
+              <span className="text-xs text-gray-400 animate-pulse">Waiting for connection...</span>
+            )}
+            <a
+              href={deepLink}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors"
+            >
+              Open Telegram
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          </div>
+        )}
+      </div>
+      {error && <p className="text-xs text-red-500 mt-2">{error}</p>}
+    </Card>
+  );
+}
+
 function ConnectionIcon({ type }: { type: string }) {
   if (type === 'instagram') return <Instagram className="h-4 w-4 text-pink-500" />;
   if (type === 'shopify') return <ShoppingBag className="h-4 w-4 text-green-600" />;
@@ -205,6 +365,8 @@ export default function ConnectionsPage() {
       {showForm === 'shopify' && (
         <ConnectShopifyForm onSuccess={handleSuccess} onCancel={() => setShowForm(null)} />
       )}
+
+      <TelegramConnectSection />
 
       {isLoading ? (
         <LoadingState />

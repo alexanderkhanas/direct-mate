@@ -216,6 +216,43 @@ export class ReplyEngineService {
       }
     }
 
+    // 4.5. Post-order state management
+    const POST_ORDER_PASSIVE_INTENTS = ['gratitude', 'thanks', 'small_talk', 'confirmation', 'goodbye'];
+
+    if (memory.orderCreated) {
+      if (POST_ORDER_PASSIVE_INTENTS.includes(classification.primaryIntent)) {
+        // Passive message after order → acknowledge without resetting state
+        this.logger.log('Post-order passive intent: ' + classification.primaryIntent);
+        const ackReply = 'Будь ласка 💛 Якщо захочете ще щось — пишіть!';
+        const stateUpdate: Partial<ConversationState> = {};
+        stateUpdate.contextJson = memory as any;
+        return {
+          decision: ReplyDecision.Reply,
+          reply: { text: ackReply, sendNow: true },
+          handoff: { required: false, reason: null },
+          stateUpdate,
+        };
+      }
+
+      if (
+        classification.slotAction === 'new_inquiry' ||
+        ['product_inquiry', 'ready_to_order', 'category_browse', 'greeting'].includes(classification.primaryIntent)
+      ) {
+        // New inquiry after completed order → reset state
+        memory.selectedProductId = undefined;
+        memory.selectedProductTitle = undefined;
+        memory.selectedVariantId = undefined;
+        memory.selectedVariantName = undefined;
+        memory.selectionState = undefined;
+        memory.lastPresentedProducts = undefined;
+        memory.availableVariants = undefined;
+        memory.lastAction = undefined;
+        memory.awaitingField = undefined;
+        memory.orderCreated = undefined;
+        this.logger.log('State reset: new inquiry after completed order');
+      }
+    }
+
     // 5. Product search if needed (based on classification entities/keywords)
     let productData: ProductSearchResult[] | undefined;
     let isFirstProductPresentation = false;
