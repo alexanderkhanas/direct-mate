@@ -52,13 +52,11 @@ export class ConversationsService {
     channelAccountId: string,
   ): Promise<{ conversation: Conversation; state: ConversationState }> {
     let conversation = await this.conversationRepo.findOne({
-      where: {
-        tenantId,
-        customerId,
-        channel,
-        channelAccountId,
-        status: ConversationStatus.Active,
-      },
+      where: [
+        { tenantId, customerId, channel, channelAccountId, status: ConversationStatus.Active },
+        { tenantId, customerId, channel, channelAccountId, status: ConversationStatus.HumanInControl },
+      ],
+      order: { lastMessageAt: 'DESC' },
     });
 
     if (!conversation) {

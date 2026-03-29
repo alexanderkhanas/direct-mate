@@ -194,6 +194,9 @@ export class InstagramService implements OnModuleInit {
       const entryId = entry.id;
 
       for (const messaging of entry.messaging ?? []) {
+        // Debug: log raw messaging event
+        this.logger.debug(`Webhook messaging: is_echo=${messaging.message?.is_echo}, sender=${messaging.sender?.id}, text="${messaging.message?.text?.substring(0, 30)}"`);
+
         // Echo detection — before standard message handling
         if (messaging.message?.is_echo) {
           const mid = messaging.message.mid;
@@ -568,14 +571,6 @@ export class InstagramService implements OnModuleInit {
     if (conversation.status !== ConversationStatus.HumanInControl) {
       await this.conversationsService.escalate(conversation.id, 'manager_reply_detected');
       this.logger.log(`Manager reply detected → conversation ${conversation.id} set to human_in_control`);
-
-      // Notify via Telegram that manager took over
-      this.telegramService.notifyHandoff({
-        tenantId: connection.tenantId,
-        customerName: customer.username ? `@${customer.username}` : customer.fullName || customerId,
-        reason: 'manager_took_over',
-        conversationId: conversation.id,
-      }).catch(() => {});
     }
 
     // Reset auto-resume timer
