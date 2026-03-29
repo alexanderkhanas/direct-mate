@@ -39,6 +39,9 @@ let ConversationsService = class ConversationsService {
         await this.customerRepo.update(customer.id, { lastSeenAt: new Date() });
         return customer;
     }
+    async updateCustomer(id, data) {
+        await this.customerRepo.update(id, data);
+    }
     async findOrCreateConversation(tenantId, customerId, channel, channelAccountId) {
         let conversation = await this.conversationRepo.findOne({
             where: {
@@ -89,7 +92,7 @@ let ConversationsService = class ConversationsService {
             .createQueryBuilder('c')
             .innerJoinAndSelect('c.customer', 'cust')
             .where('c.tenant_id = :tenantId', { tenantId })
-            .orderBy('c.last_message_at', 'DESC')
+            .orderBy('c.lastMessageAt', 'DESC')
             .skip((page - 1) * limit)
             .take(limit);
         if (filters.status)

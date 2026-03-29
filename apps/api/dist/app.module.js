@@ -26,6 +26,9 @@ const settings_module_1 = require("./modules/settings/settings.module");
 const audit_module_1 = require("./modules/audit/audit.module");
 const internal_module_1 = require("./modules/internal/internal.module");
 const screenshot_training_module_1 = require("./modules/screenshot-training/screenshot-training.module");
+const engine_module_1 = require("./modules/engine/engine.module");
+const testing_module_1 = require("./modules/testing/testing.module");
+const notifications_module_1 = require("./modules/notifications/notifications.module");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
@@ -53,6 +56,9 @@ exports.AppModule = AppModule = __decorate([
             audit_module_1.AuditModule,
             internal_module_1.InternalModule,
             screenshot_training_module_1.ScreenshotTrainingModule,
+            engine_module_1.EngineModule,
+            testing_module_1.TestingModule,
+            notifications_module_1.NotificationsModule,
         ],
     })
 ], AppModule);

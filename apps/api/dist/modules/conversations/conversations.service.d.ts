@@ -11,6 +11,10 @@ export declare class ConversationsService {
     private readonly stateRepo;
     constructor(conversationRepo: Repository<Conversation>, customerRepo: Repository<Customer>, messageRepo: Repository<Message>, stateRepo: Repository<ConversationState>);
     findOrCreateCustomer(tenantId: string, channel: string, externalUserId: string): Promise<Customer>;
+    updateCustomer(id: string, data: {
+        username?: string | null;
+        fullName?: string | null;
+    }): Promise<void>;
     findOrCreateConversation(tenantId: string, customerId: string, channel: string, channelAccountId: string): Promise<{
         conversation: Conversation;
         state: ConversationState;

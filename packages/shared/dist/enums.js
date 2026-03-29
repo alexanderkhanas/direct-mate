@@ -103,6 +103,8 @@ var OrderStatus;
     OrderStatus["Draft"] = "draft";
     OrderStatus["AwaitingManagerConfirmation"] = "awaiting_manager_confirmation";
     OrderStatus["Confirmed"] = "confirmed";
+    OrderStatus["Shipped"] = "shipped";
+    OrderStatus["Delivered"] = "delivered";
     OrderStatus["Cancelled"] = "cancelled";
 })(OrderStatus || (exports.OrderStatus = OrderStatus = {}));
 var AuditLogType;

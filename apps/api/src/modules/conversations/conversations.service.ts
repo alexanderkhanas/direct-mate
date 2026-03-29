@@ -41,6 +41,10 @@ export class ConversationsService {
     return customer;
   }
 
+  async updateCustomer(id: string, data: { username?: string | null; fullName?: string | null }): Promise<void> {
+    await this.customerRepo.update(id, data as any);
+  }
+
   async findOrCreateConversation(
     tenantId: string,
     customerId: string,
@@ -111,7 +115,7 @@ export class ConversationsService {
       .createQueryBuilder('c')
       .innerJoinAndSelect('c.customer', 'cust')
       .where('c.tenant_id = :tenantId', { tenantId })
-      .orderBy('c.last_message_at', 'DESC')
+      .orderBy('c.lastMessageAt', 'DESC')
       .skip((page - 1) * limit)
       .take(limit);
 

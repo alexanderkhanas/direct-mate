@@ -108,7 +108,7 @@ export default function DashboardPage() {
                     <div className="w-1 h-8 rounded-full bg-amber-400" />
                     <div>
                       <p className="text-sm font-medium text-gray-900">
-                        {conv.customerName ?? 'Unknown'}
+                        {conv.customer?.username ? `@${conv.customer.username}` : conv.customer?.fullName ?? 'Unknown'}
                       </p>
                       <p className="text-xs text-gray-500">{conv.channel}</p>
                     </div>

@@ -12,13 +12,15 @@ const instagram_controller_1 = require("./instagram/instagram.controller");
 const instagram_service_1 = require("./instagram/instagram.service");
 const conversations_module_1 = require("../conversations/conversations.module");
 const integrations_module_1 = require("../integrations/integrations.module");
+const orders_module_1 = require("../orders/orders.module");
 const crypto_service_1 = require("../../common/crypto.service");
+const notifications_module_1 = require("../notifications/notifications.module");
 let ChannelsModule = class ChannelsModule {
 };
 exports.ChannelsModule = ChannelsModule;
 exports.ChannelsModule = ChannelsModule = __decorate([
     (0, common_1.Module)({
-        imports: [conversations_module_1.ConversationsModule, integrations_module_1.IntegrationsModule],
+        imports: [conversations_module_1.ConversationsModule, integrations_module_1.IntegrationsModule, orders_module_1.OrdersModule, notifications_module_1.NotificationsModule],
         controllers: [instagram_controller_1.InstagramController],
         providers: [instagram_service_1.InstagramService, crypto_service_1.CryptoService],
     })

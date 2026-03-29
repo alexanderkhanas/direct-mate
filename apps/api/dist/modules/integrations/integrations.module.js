@@ -20,7 +20,7 @@ exports.IntegrationsModule = IntegrationsModule;
 exports.IntegrationsModule = IntegrationsModule = __decorate([
     (0, common_1.Module)({
         imports: [typeorm_1.TypeOrmModule.forFeature([connection_entity_1.Connection, sync_job_entity_1.SyncJob])],
-        controllers: [integrations_controller_1.IntegrationsController],
+        controllers: [integrations_controller_1.IntegrationsController, integrations_controller_1.InternalConnectionsController],
         providers: [integrations_service_1.IntegrationsService, crypto_service_1.CryptoService],
         exports: [integrations_service_1.IntegrationsService],
     })

@@ -25,6 +25,7 @@ let IntegrationsService = class IntegrationsService {
         this.connectionRepo = connectionRepo;
         this.syncJobRepo = syncJobRepo;
         this.crypto = crypto;
+        this.ALLOWED_PURPOSES = ['create_order', 'sync_catalog', 'sync_stock', 'health_check'];
     }
     async connectInstagram(tenantId, pageId, accessToken, accountName) {
         let conn = await this.connectionRepo.findOne({
@@ -99,6 +100,12 @@ let IntegrationsService = class IntegrationsService {
             refreshTokenEncrypted: null,
         });
     }
+    async remove(id) {
+        const conn = await this.connectionRepo.findOne({ where: { id } });
+        if (!conn)
+            throw new common_1.NotFoundException('Connection not found');
+        await this.connectionRepo.delete(id);
+    }
     async queueSyncJob(tenantId, connectionId, syncType, mode) {
         const job = this.syncJobRepo.create({
             tenantId,
@@ -146,6 +153,44 @@ let IntegrationsService = class IntegrationsService {
                 errorMessage: errorMessage ?? null,
             });
         }
+    }
+    async resolveCredentials(dto) {
+        if (!this.ALLOWED_PURPOSES.includes(dto.purpose)) {
+            throw new common_1.BadRequestException(`Invalid purpose: ${dto.purpose}`);
+        }
+        const connection = await this.connectionRepo.findOne({
+            where: { id: dto.connectionId },
+        });
+        if (!connection) {
+            throw new common_1.NotFoundException(`Connection ${dto.connectionId} not found`);
+        }
+        if (connection.tenantId !== dto.tenantId) {
+            throw new common_1.ForbiddenException('Connection does not belong to tenant');
+        }
+        if (connection.type !== dto.platform) {
+            throw new common_1.BadRequestException(`Platform mismatch: connection is ${connection.type}, requested ${dto.platform}`);
+        }
+        if (connection.status !== shared_1.ConnectionStatus.Connected) {
+            throw new common_1.BadRequestException(`Connection is not active (status: ${connection.status})`);
+        }
+        const accessToken = connection.accessTokenEncrypted
+            ? this.crypto.decrypt(connection.accessTokenEncrypted)
+            : '';
+        const metadata = (connection.metadata ?? {});
+        if (dto.platform === 'shopify') {
+            return {
+                type: 'shopify',
+                shopDomain: metadata.shopDomain ?? connection.externalAccountId,
+                accessToken,
+                apiVersion: '2024-07',
+            };
+        }
+        return {
+            type: connection.type,
+            externalAccountId: connection.externalAccountId,
+            accessToken,
+            metadata,
+        };
     }
 };
 exports.IntegrationsService = IntegrationsService;

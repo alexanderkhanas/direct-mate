@@ -19,6 +19,7 @@ import { InternalModule } from './modules/internal/internal.module';
 import { ScreenshotTrainingModule } from './modules/screenshot-training/screenshot-training.module';
 import { EngineModule } from './modules/engine/engine.module';
 import { TestingModule } from './modules/testing/testing.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 
 @Module({
   imports: [
@@ -45,6 +46,7 @@ import { TestingModule } from './modules/testing/testing.module';
     ScreenshotTrainingModule,
     EngineModule,
     TestingModule,
+    NotificationsModule,
   ],
 })
 export class AppModule {}

@@ -10,6 +10,10 @@ export declare class Order {
     totalAmount: number | null;
     currency: string;
     source: string;
+    externalSyncStatus: string;
+    externalOrderMetadata: Record<string, unknown> | null;
+    externalSyncTriggeredAt: Date | null;
+    externalSyncCompletedAt: Date | null;
     createdAt: Date;
     updatedAt: Date;
     items: OrderItem[];

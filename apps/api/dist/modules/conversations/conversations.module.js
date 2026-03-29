@@ -15,12 +15,14 @@ const message_entity_1 = require("./entities/message.entity");
 const conversation_state_entity_1 = require("./entities/conversation-state.entity");
 const tenant_settings_entity_1 = require("../tenants/entities/tenant-settings.entity");
 const manager_example_entity_1 = require("../settings/entities/manager-example.entity");
+const store_config_entity_1 = require("../engine/entities/store-config.entity");
 const conversations_service_1 = require("./conversations.service");
 const reply_engine_service_1 = require("./reply-engine.service");
 const conversations_controller_1 = require("./conversations.controller");
 const conversation_reply_controller_1 = require("./conversation-reply.controller");
 const availability_module_1 = require("../availability/availability.module");
 const audit_module_1 = require("../audit/audit.module");
+const engine_module_1 = require("../engine/engine.module");
 let ConversationsModule = class ConversationsModule {
 };
 exports.ConversationsModule = ConversationsModule;
@@ -34,9 +36,11 @@ exports.ConversationsModule = ConversationsModule = __decorate([
                 conversation_state_entity_1.ConversationState,
                 tenant_settings_entity_1.TenantSettings,
                 manager_example_entity_1.ManagerExample,
+                store_config_entity_1.StoreConfig,
             ]),
             availability_module_1.AvailabilityModule,
             audit_module_1.AuditModule,
+            engine_module_1.EngineModule,
         ],
         controllers: [conversations_controller_1.ConversationsController, conversation_reply_controller_1.ConversationReplyController],
         providers: [conversations_service_1.ConversationsService, reply_engine_service_1.ReplyEngineService],

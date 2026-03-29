@@ -64,6 +64,7 @@ __decorate([
 ], Conversation.prototype, "updatedAt", void 0);
 __decorate([
     (0, typeorm_1.ManyToOne)(() => customer_entity_1.Customer, (c) => c.conversations),
+    (0, typeorm_1.JoinColumn)({ name: 'customer_id' }),
     __metadata("design:type", customer_entity_1.Customer)
 ], Conversation.prototype, "customer", void 0);
 __decorate([

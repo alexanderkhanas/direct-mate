@@ -6,6 +6,7 @@ import { ReplyEngineService } from '../../conversations/reply-engine.service';
 import { IntegrationsService } from '../../integrations/integrations.service';
 import { OrdersService } from '../../orders/orders.service';
 import { CryptoService } from '../../../common/crypto.service';
+import { TelegramService } from '../../notifications/telegram.service';
 import { Connection } from '../../integrations/entities/connection.entity';
 import { ConnectionType, MessageDirection, MessageRole, ReplyDecision } from '@direct-mate/shared';
 
@@ -56,6 +57,7 @@ export class InstagramService {
     private readonly integrationsService: IntegrationsService,
     private readonly ordersService: OrdersService,
     private readonly cryptoService: CryptoService,
+    private readonly telegramService: TelegramService,
   ) {}
 
   private async sendMetaMessage(
@@ -296,6 +298,28 @@ export class InstagramService {
       params.externalUserId,
     );
 
+    // One-time fetch of Instagram username if not yet populated
+    if (!customer.username && params.connection.accessTokenEncrypted) {
+      try {
+        const token = this.cryptoService.decrypt(params.connection.accessTokenEncrypted);
+        const res = await fetch(
+          `https://graph.instagram.com/v21.0/${params.externalUserId}?fields=username,name`,
+          { headers: { Authorization: `Bearer ${token}` } },
+        );
+        if (res.ok) {
+          const profile = await res.json() as { username?: string; name?: string };
+          if (profile.username) customer.username = profile.username;
+          if (profile.name) customer.fullName = profile.name;
+          await this.conversationsService.updateCustomer(customer.id, {
+            username: profile.username ?? null,
+            fullName: profile.name ?? null,
+          });
+        }
+      } catch {
+        // Non-critical — continue without username
+      }
+    }
+
     const { conversation, state } = await this.conversationsService.findOrCreateConversation(
       params.tenantId,
       customer.id,
@@ -344,7 +368,15 @@ export class InstagramService {
         });
       }
 
-      // TODO: send Telegram notification to manager
+      // Notify manager via Telegram
+      this.telegramService.notifyHandoff({
+        tenantId: params.tenantId,
+        customerName: customer.username ? `@${customer.username}` : customer.fullName || params.externalUserId,
+        reason: result.handoff.reason ?? 'unknown',
+        conversationId: conversation.id,
+        lastMessage: params.messageText,
+      }).catch(err => this.logger.error('Telegram notification failed', err));
+
       this.logger.log(`HANDOFF: conversation ${conversation.id}, reason: ${result.handoff.reason}`);
       return;
     }

@@ -2,7 +2,9 @@ import { ConfigService } from '@nestjs/config';
 import { ConversationsService } from '../../conversations/conversations.service';
 import { ReplyEngineService } from '../../conversations/reply-engine.service';
 import { IntegrationsService } from '../../integrations/integrations.service';
+import { OrdersService } from '../../orders/orders.service';
 import { CryptoService } from '../../../common/crypto.service';
+import { TelegramService } from '../../notifications/telegram.service';
 interface MetaMessagingEvent {
     sender?: {
         id: string;
@@ -34,10 +36,12 @@ export declare class InstagramService {
     private readonly conversationsService;
     private readonly replyEngineService;
     private readonly integrationsService;
+    private readonly ordersService;
     private readonly cryptoService;
+    private readonly telegramService;
     private readonly logger;
     private readonly pendingReplies;
-    constructor(config: ConfigService, conversationsService: ConversationsService, replyEngineService: ReplyEngineService, integrationsService: IntegrationsService, cryptoService: CryptoService);
+    constructor(config: ConfigService, conversationsService: ConversationsService, replyEngineService: ReplyEngineService, integrationsService: IntegrationsService, ordersService: OrdersService, cryptoService: CryptoService, telegramService: TelegramService);
     private sendMetaMessage;
     verifySignature(rawBody: Buffer, signature: string): boolean;
     verifyWebhook(mode: string, token: string, challenge: string): string;

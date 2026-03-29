@@ -9,10 +9,9 @@ import { StoreConfig } from '../engine/entities/store-config.entity';
 interface HandoffParams {
   tenantId: string;
   customerName: string;
-  customerPhone?: string;
   reason: string;
-  recentMessages: Array<{ role: string; text: string }>;
   conversationId: string;
+  lastMessage?: string;
 }
 
 interface NewOrderParams {
@@ -170,19 +169,16 @@ export class TelegramService {
   }
 
   async notifyHandoff(params: HandoffParams): Promise<void> {
-    const recentMessagesText = params.recentMessages
-      .map((m) => `— ${m.role === 'user' ? 'Клієнт' : 'Бот'}: ${m.text}`)
-      .join('\n');
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const timeStr = now.toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' });
 
     const message = [
       '🔔 Нове звернення',
       '',
-      `👤 Клієнт: ${params.customerName}`,
-      `📱 Телефон: ${params.customerPhone || 'не вказано'}`,
-      `💬 Причина: ${this.humanReadableReason(params.reason)}`,
-      '',
-      'Останні повідомлення:',
-      recentMessagesText,
+      `👤 ${params.customerName}`,
+      `🕐 ${dateStr} ${timeStr}`,
+      `💬 ${this.humanReadableReason(params.reason)}`,
     ].join('\n');
 
     await this.sendToAll(params.tenantId, message);

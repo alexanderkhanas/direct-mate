@@ -23,199 +23,379 @@ const fs = require("fs");
 const path = require("path");
 const tenant_settings_entity_1 = require("../tenants/entities/tenant-settings.entity");
 const manager_example_entity_1 = require("../settings/entities/manager-example.entity");
+const store_config_entity_1 = require("../engine/entities/store-config.entity");
 const availability_service_1 = require("../availability/availability.service");
 const audit_service_1 = require("../audit/audit.service");
+const classifier_service_1 = require("../engine/classifier.service");
+const template_engine_service_1 = require("../engine/template-engine.service");
+const policy_engine_service_1 = require("../engine/policy-engine.service");
 const shared_1 = require("@direct-mate/shared");
-const PLAN_AND_REPLY_TOOL = {
-    type: 'function',
-    function: {
-        name: 'plan_and_reply',
-        description: 'Analyze the conversation context, plan the next action, and generate a reply',
-        parameters: {
-            type: 'object',
-            properties: {
-                intent: {
-                    type: 'string',
-                    enum: [
-                        'greeting', 'product_inquiry', 'category_browse', 'availability_check',
-                        'price_inquiry', 'order_intent', 'order_details', 'delivery_question',
-                        'payment_question', 'general_question', 'complaint', 'thanks', 'unknown',
-                    ],
-                },
-                dialogue_act: {
-                    type: 'string',
-                    enum: [
-                        'new_inquiry',
-                        'ask_recommendation',
-                        'confirm_choice',
-                        'provide_details',
-                        'ask_about_shown_products',
-                        'short_contextual_reply',
-                        'clarification',
-                        'general_chat',
-                    ],
-                    description: 'What the user is actually doing in the conversation context. "short_contextual_reply" = user gave a brief answer to the bot\'s previous question. "ask_recommendation" = user wants the bot to suggest from already shown options. "confirm_choice" = user is saying yes/agreeing.',
-                },
-                dialogue_state: {
-                    type: 'string',
-                    enum: [
-                        'idle',
-                        'product_category_selected',
-                        'product_list_shown',
-                        'waiting_for_choice',
-                        'product_selected',
-                        'checkout_started',
-                        'collecting_delivery_info',
-                    ],
-                    description: 'The current state of the conversation AFTER processing this message.',
-                },
-                product_keywords: {
-                    type: 'array',
-                    items: { type: 'string' },
-                    description: 'Product names/categories to search in the database. Include the customer\'s original term AND closest matching categories from the available list. Empty only for non-product intents.',
-                },
-                next_action: {
-                    type: 'string',
-                    enum: [
-                        'search_products',
-                        'present_options',
-                        'recommend_from_shown',
-                        'confirm_selection',
-                        'start_checkout',
-                        'ask_delivery_details',
-                        'answer_question',
-                        'greet',
-                        'clarify',
-                        'handoff',
-                    ],
-                    description: 'What the bot should do next.',
-                },
-                needs_handoff: {
-                    type: 'boolean',
-                    description: 'True ONLY for truly impossible requests (complex complaints, refunds, completely outside scope). False for everything else.',
-                },
-                handoff_reason: { type: 'string', nullable: true },
-                reply: {
-                    type: 'string',
-                    description: 'The reply to send to the customer. Must follow the conversation flow rules.',
-                },
-            },
-            required: [
-                'intent', 'dialogue_act', 'dialogue_state', 'product_keywords',
-                'next_action', 'needs_handoff', 'reply',
-            ],
-        },
-    },
-};
 const LOG_FILE = path.join(process.cwd(), 'conversations.log');
 let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
     logToFile(entry) {
         const line = JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n';
         fs.appendFile(LOG_FILE, line, () => { });
     }
-    constructor(settingsRepo, examplesRepo, availabilityService, auditService, config) {
+    constructor(settingsRepo, examplesRepo, storeConfigRepo, availabilityService, auditService, classifierService, templateEngine, policyEngine, config) {
         this.settingsRepo = settingsRepo;
         this.examplesRepo = examplesRepo;
+        this.storeConfigRepo = storeConfigRepo;
         this.availabilityService = availabilityService;
         this.auditService = auditService;
+        this.classifierService = classifierService;
+        this.templateEngine = templateEngine;
+        this.policyEngine = policyEngine;
         this.config = config;
         this.logger = new common_1.Logger(ReplyEngineService_1.name);
-        this.openai = new openai_1.default({ apiKey: this.config.get('openai.apiKey') });
+        this.openai = new openai_1.default({
+            apiKey: this.config.get('openai.apiKey'),
+        });
         this.model = this.config.get('openai.model') ?? 'gpt-4o';
     }
     async process(input) {
-        const settings = await this.settingsRepo.findOne({
-            where: { tenantId: input.tenantId },
-        });
+        const [settings, storeConfig, examples, categories] = await Promise.all([
+            this.settingsRepo.findOne({ where: { tenantId: input.tenantId } }),
+            this.storeConfigRepo.findOne({ where: { tenantId: input.tenantId } }),
+            this.examplesRepo.find({
+                where: { tenantId: input.tenantId, isActive: true },
+                take: 10,
+            }),
+            this.availabilityService.getCategories(input.tenantId),
+        ]);
         const memory = input.state.contextJson ?? {};
         const maxFailedTurns = settings?.handoffRules?.maxFailedTurns ?? 5;
         if ((memory.failedTurns ?? 0) >= maxFailedTurns) {
             return this.doHandoff(input, 'max_failed_turns');
         }
-        const [examples, categories] = await Promise.all([
-            this.examplesRepo.find({ where: { tenantId: input.tenantId, isActive: true }, take: 10 }),
-            this.availabilityService.getCategories(input.tenantId),
-        ]);
-        let plan;
+        const effectiveConfig = storeConfig ??
+            {
+                escalationConfig: {},
+                fallbackConfig: {
+                    mode: 'template_first_with_safe_fallback',
+                },
+                brandConfig: {},
+            };
+        let classification;
         try {
-            plan = await this.planResponse({
-                brandTone: settings?.brandTonePrompt ?? '',
-                examples,
+            classification = await this.classifierService.classify({
                 messageText: input.messageText,
                 recentMessages: input.recentMessages,
                 memory,
                 categories,
-                language: settings?.supportedLanguages?.[0] ?? 'uk',
+                currentStage: this.getCurrentStage(input.state),
             });
         }
         catch (err) {
-            this.logger.error('AI plan failed', err);
+            this.logger.error('AI classification failed', err);
             return this.doHandoff(input, 'ai_failure');
         }
-        this.logger.log(`Plan: intent=${plan.intent} act=${plan.dialogue_act} state=${plan.dialogue_state} action=${plan.next_action} keywords=[${plan.product_keywords.join(',')}] handoff=${plan.needs_handoff}`);
+        this.resolveShortReply(classification, memory, input.messageText);
+        this.logger.log(`Classification: intent=${classification.primaryIntent} stage=${classification.conversationStage} ` +
+            `action=${classification.recommendedAction} confidence=${classification.confidence} sentiment=${classification.sentiment}`);
         this.logToFile({
-            event: 'plan',
+            event: 'classification',
             conversationId: input.conversationId,
             inbound: input.messageText,
-            plan: {
-                intent: plan.intent,
-                dialogueAct: plan.dialogue_act,
-                dialogueState: plan.dialogue_state,
-                nextAction: plan.next_action,
-                keywords: plan.product_keywords,
-                handoff: plan.needs_handoff,
+            classification: {
+                intent: classification.primaryIntent,
+                entities: classification.entities,
+                stage: classification.conversationStage,
+                sentiment: classification.sentiment,
+                confidence: classification.confidence,
+                dialogueAct: classification.dialogueAct,
+                action: classification.recommendedAction,
+                slotAction: classification.slotAction,
             },
             memory,
         });
-        if (plan.needs_handoff) {
+        const policy = this.policyEngine.evaluate({
+            classification,
+            storeConfig: effectiveConfig,
+            state: {
+                failedTurns: memory.failedTurns ?? 0,
+                maxFailedTurns,
+            },
+        });
+        if (policy.action === 'escalate') {
             const fallbackModel = this.config.get('openai.fallbackModel');
             if (fallbackModel) {
                 try {
-                    const secondOpinion = await this.planResponse({
-                        brandTone: settings?.brandTonePrompt ?? '',
-                        examples,
+                    const secondOpinion = await this.classifierService.classifyWithFallback({
                         messageText: input.messageText,
                         recentMessages: input.recentMessages,
                         memory,
                         categories,
-                        language: settings?.supportedLanguages?.[0] ?? 'uk',
-                        modelOverride: fallbackModel,
+                        currentStage: this.getCurrentStage(input.state),
                     });
                     this.logToFile({
                         event: 'handoff_verification',
                         conversationId: input.conversationId,
-                        miniSaysHandoff: true,
-                        fallbackSaysHandoff: secondOpinion.needs_handoff,
-                        fallbackReply: secondOpinion.reply,
+                        primarySaysEscalate: true,
+                        fallbackIntent: secondOpinion.primaryIntent,
+                        fallbackAction: secondOpinion.recommendedAction,
+                        fallbackConfidence: secondOpinion.confidence,
                     });
-                    if (!secondOpinion.needs_handoff) {
-                        this.logger.log(`Fallback model overrode handoff`);
-                        plan = secondOpinion;
+                    const fallbackPolicy = this.policyEngine.evaluate({
+                        classification: secondOpinion,
+                        storeConfig: effectiveConfig,
+                        state: {
+                            failedTurns: memory.failedTurns ?? 0,
+                            maxFailedTurns,
+                        },
+                    });
+                    if (fallbackPolicy.action !== 'escalate') {
+                        this.logger.log(`Fallback model overrode escalation`);
+                        classification = secondOpinion;
+                    }
+                    else {
+                        return this.doHandoff(input, policy.reason ?? 'policy_escalation');
                     }
                 }
                 catch {
                     this.logger.warn('Fallback verification failed');
+                    return this.doHandoff(input, policy.reason ?? 'policy_escalation');
                 }
             }
+            else {
+                return this.doHandoff(input, policy.reason ?? 'policy_escalation');
+            }
         }
-        if (plan.needs_handoff) {
-            return this.doHandoff(input, plan.handoff_reason ?? plan.intent);
+        const POST_ORDER_PASSIVE_INTENTS = ['gratitude', 'thanks', 'small_talk', 'confirmation', 'goodbye'];
+        if (memory.orderCreated) {
+            if (POST_ORDER_PASSIVE_INTENTS.includes(classification.primaryIntent)) {
+                this.logger.log('Post-order passive intent: ' + classification.primaryIntent);
+                const ackReply = 'Будь ласка 💛 Якщо захочете ще щось — пишіть!';
+                const stateUpdate = {};
+                stateUpdate.contextJson = memory;
+                return {
+                    decision: shared_1.ReplyDecision.Reply,
+                    reply: { text: ackReply, sendNow: true },
+                    handoff: { required: false, reason: null },
+                    stateUpdate,
+                };
+            }
+            if (classification.slotAction === 'new_inquiry' ||
+                ['product_inquiry', 'ready_to_order', 'category_browse', 'greeting'].includes(classification.primaryIntent)) {
+                memory.selectedProductId = undefined;
+                memory.selectedProductTitle = undefined;
+                memory.selectedVariantId = undefined;
+                memory.selectedVariantName = undefined;
+                memory.selectionState = undefined;
+                memory.lastPresentedProducts = undefined;
+                memory.availableVariants = undefined;
+                memory.lastAction = undefined;
+                memory.awaitingField = undefined;
+                memory.orderCreated = undefined;
+                this.logger.log('State reset: new inquiry after completed order');
+            }
         }
-        const stateUpdate = {};
-        let finalReply = plan.reply;
-        const needsSearch = plan.next_action === 'search_products' && plan.product_keywords.length > 0;
+        let productData;
+        let isFirstProductPresentation = false;
+        const needsSearch = this.shouldSearchProducts(classification, memory);
         if (needsSearch) {
-            const searchResult = await this.searchProducts(input.tenantId, input.conversationId, plan.product_keywords);
+            const searchKeywords = this.extractSearchKeywords(classification);
+            productData = await this.searchProducts(input.tenantId, input.conversationId, searchKeywords);
             this.logToFile({
                 event: 'product_search',
                 conversationId: input.conversationId,
-                keywords: plan.product_keywords,
-                found: searchResult.found,
-                products: searchResult.presentedProducts?.map((p) => p.title),
+                keywords: searchKeywords,
+                found: productData ? productData.length : 0,
             });
-            if (searchResult.found) {
+            if ((!productData || productData.length === 0) &&
+                ['product_inquiry', 'ready_to_order', 'availability_check', 'category_browse'].includes(classification.primaryIntent)) {
+                this.logger.log('Product not found — using product_not_found template + handoff');
+                classification.recommendedAction = 'product_not_found';
+                const pnfResult = await this.templateEngine.render({
+                    tenantId: input.tenantId,
+                    classification,
+                    memory,
+                    recentTemplateIds: memory.recentTemplateIds ?? [],
+                    messageText: input.messageText,
+                });
+                const softMessage = pnfResult?.text ?? 'Секунду, уточню наявність 💛';
+                return this.doHandoff(input, 'product_not_found', softMessage);
+            }
+            if (productData && productData.length > 0) {
+                isFirstProductPresentation = !memory.lastPresentedProducts?.length;
+                memory.lastPresentedProducts = productData.map((p) => ({
+                    title: p.product.title,
+                    variants: [...new Set(p.variants.map((v) => [...new Set([v.size, v.color].filter(Boolean))].join(', ') || 'standard'))],
+                    price: [
+                        ...new Set(p.variants.map((v) => `${v.price} ${v.currency}`)),
+                    ].join(' / '),
+                }));
+                memory.selectedCategory =
+                    classification.entities.category ?? searchKeywords[0];
+                if (productData.length === 1) {
+                    memory.availableVariants = productData[0].variants
+                        .filter((v) => v.effectiveAvailable > 0)
+                        .map((v) => [v.color, v.size].filter(Boolean).join(', '))
+                        .filter(Boolean)
+                        .join(', ');
+                    memory.selectedProductId = productData[0].product.id;
+                    memory.selectedProductTitle = productData[0].product.title;
+                }
+                if (isFirstProductPresentation) {
+                    memory.selectionState = 'awaiting_product';
+                }
+            }
+        }
+        this.logger.log(`5.5a check: slotAction=${classification.slotAction} selState=${memory.selectionState} prodId=${!!memory.selectedProductId} varId=${!!memory.selectedVariantId}`);
+        if (classification.slotAction === 'confirmation' &&
+            memory.selectionState === 'awaiting_confirmation' &&
+            memory.selectedProductId &&
+            memory.selectedVariantId) {
+            memory.selectionState = 'confirmed';
+            classification.primaryIntent = 'ready_to_order';
+            classification.recommendedAction = 'start_checkout';
+            classification.conversationStage = 'checkout_started';
+            this.logger.log('5.5a FIRED: Selection fully confirmed, proceeding to checkout');
+            this.logToFile({
+                event: 'selection_confirmed',
+                conversationId: input.conversationId,
+                selectionState: memory.selectionState,
+                selectedProductId: memory.selectedProductId,
+                selectedVariantId: memory.selectedVariantId,
+                action: 'start_checkout',
+            });
+        }
+        if (classification.slotAction === 'confirmation' &&
+            memory.selectionState === 'awaiting_confirmation' &&
+            memory.selectedProductId &&
+            !memory.selectedVariantId) {
+            const rawVariants = memory.availableVariants;
+            const variants = Array.isArray(rawVariants) ? rawVariants : [];
+            const userColor = classification.entities.color;
+            const userSize = classification.entities.size;
+            if (variants.length === 1) {
+                memory.selectedVariantId = variants[0].id;
+                memory.selectedVariantName = variants[0].name;
+                memory.selectionState = 'awaiting_confirmation';
+                classification.recommendedAction = 'confirm_selection';
+                this.logger.log('Single variant → auto-selected, proceeding to confirm_selection');
+            }
+            else if (variants.length > 1 && (userColor || userSize)) {
+                const matched = this.matchVariant(variants, userColor, userSize);
+                if (matched) {
+                    memory.selectedVariantId = matched.id;
+                    memory.selectedVariantName = matched.name;
+                    memory.selectionState = 'awaiting_confirmation';
+                    classification.recommendedAction = 'confirm_selection';
+                    this.logger.log(`Variant matched: ${matched.name}`);
+                }
+                else {
+                    memory.selectionState = 'awaiting_variant';
+                    classification.primaryIntent = 'ask_variant_choice';
+                    classification.recommendedAction = 'ask_variant_choice';
+                    this.logger.log('Variant not matched confidently, asking user');
+                }
+            }
+            else if (variants.length > 1) {
+                memory.selectionState = 'awaiting_variant';
+                classification.primaryIntent = 'ask_variant_choice';
+                classification.recommendedAction = 'ask_variant_choice';
+                this.logger.log(`Multiple variants (${variants.length}), asking user to choose`);
+            }
+        }
+        if (classification.slotAction === 'fills_missing_slot' &&
+            memory.selectedProductId &&
+            !memory.selectedVariantId &&
+            productData && productData.length === 1) {
+            const variants = productData[0].variants.filter(v => v.effectiveAvailable > 0);
+            if (variants.length > 1) {
+                const userColor = classification.entities.color;
+                const userSize = classification.entities.size;
+                if (userColor || userSize) {
+                    const matched = this.matchVariant(variants.map(v => ({ id: v.id, name: [...new Set([v.color, v.size].filter(Boolean))].join(', '), color: v.color, size: v.size })), userColor, userSize);
+                    if (matched) {
+                        memory.selectedVariantId = matched.id;
+                        memory.selectedVariantName = matched.name;
+                        memory.selectionState = 'awaiting_confirmation';
+                        classification.recommendedAction = 'confirm_selection';
+                    }
+                    else {
+                        memory.selectionState = 'awaiting_variant';
+                        classification.primaryIntent = 'ask_variant_choice';
+                        classification.recommendedAction = 'ask_variant_choice';
+                    }
+                }
+                else {
+                    memory.selectionState = 'awaiting_variant';
+                    memory.availableVariants = variants.map(v => ({
+                        id: v.id,
+                        name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+                        color: v.color,
+                        size: v.size,
+                    }));
+                    classification.primaryIntent = 'ask_variant_choice';
+                    classification.recommendedAction = 'ask_variant_choice';
+                    this.logger.log(`5.5c: Product selected, ${variants.length} variants — asking user`);
+                }
+            }
+            else if (variants.length === 1) {
+                memory.selectedVariantId = variants[0].id;
+                memory.selectedVariantName = [...new Set([variants[0].color, variants[0].size].filter(Boolean))].join(', ') || 'standard';
+                memory.selectionState = 'awaiting_confirmation';
+                classification.recommendedAction = 'confirm_selection';
+            }
+        }
+        const recentTemplateIds = memory.recentTemplateIds ?? [];
+        const templateResult = await this.templateEngine.render({
+            tenantId: input.tenantId,
+            classification,
+            productData,
+            memory,
+            recentTemplateIds,
+            isFirstProductPresentation,
+            messageText: input.messageText,
+        });
+        let finalReply;
+        let usedTemplateId;
+        let actualAction;
+        if (templateResult) {
+            finalReply = templateResult.text;
+            usedTemplateId = templateResult.templateId;
+            actualAction = this.scenarioToAction(templateResult.scenario);
+            const classifierAction = classification.recommendedAction;
+            if (actualAction !== classifierAction) {
+                const reason = !memory.selectedProductId ? 'checkout_blocked_no_product'
+                    : !memory.selectedVariantId ? 'missing_variant_selection'
+                        : memory.selectionState !== 'confirmed' ? 'selection_not_confirmed'
+                            : classification.slotAction === 'correction' ? 'correction_received'
+                                : 'stage_gate_override';
+                this.logToFile({
+                    event: 'flow_override',
+                    conversationId: input.conversationId,
+                    reason,
+                    classifierSaid: classifierAction,
+                    engineDid: actualAction,
+                    selectionState: memory.selectionState,
+                });
+            }
+            memory.recentTemplateIds = [
+                templateResult.templateId,
+                ...recentTemplateIds,
+            ].slice(0, 10);
+            this.logger.log(`Template selected: ${templateResult.templateId}`);
+        }
+        else {
+            const productIntents = ['product_inquiry', 'ready_to_order', 'availability_check', 'category_browse', 'ask_price'];
+            if (productIntents.includes(classification.primaryIntent) && (!productData || productData.length === 0)) {
+                this.logger.log('No template + no products found for product intent → handoff');
+                return this.doHandoff(input, 'product_not_found', 'Секунду, уточню наявність 💛');
+            }
+            const hasActiveCheckout = !!(memory.selectedProductId &&
+                (memory.selectionState === 'confirmed' || memory.lastAction === 'asked_delivery_details'));
+            if (classification.primaryIntent === 'provide_details' && !hasActiveCheckout) {
+                this.logger.log('Pre-check: provide_details without active checkout → clarification');
+                finalReply = 'Дякую 💛 Підкажіть, будь ласка, який товар вас цікавить?';
+                actualAction = 'greeting';
+            }
+            else if (policy.action === 'fallback' ||
+                this.policyEngine.isFallbackAllowed(classification, effectiveConfig)) {
+                this.logger.log('No template matched, using AI fallback');
                 try {
-                    const enriched = await this.planResponse({
+                    finalReply = await this.aiFallbackReply({
                         brandTone: settings?.brandTonePrompt ?? '',
                         examples,
                         messageText: input.messageText,
@@ -223,58 +403,103 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                         memory,
                         categories,
                         language: settings?.supportedLanguages?.[0] ?? 'uk',
-                        productContext: searchResult.context,
+                        productData,
+                        classification,
                     });
-                    finalReply = enriched.reply;
-                    plan.dialogue_state = enriched.dialogue_state;
-                    plan.next_action = enriched.next_action;
+                    actualAction = 'ai_fallback_clarification';
+                    if (!hasActiveCheckout) {
+                        const orderPhrases = ['замовлення оформлено', 'вже в обробці', 'надішлю підтвердження',
+                            'очікуйте відправку', 'замовлення прийнято', 'дані отримала', 'замовлення створено'];
+                        const hasOrderLanguage = orderPhrases.some(p => finalReply.toLowerCase().includes(p));
+                        if (hasOrderLanguage) {
+                            finalReply = 'Дякую 💛 Підкажіть, будь ласка, який товар вас цікавить?';
+                            this.logger.warn('Output safety: blocked fake order confirmation from AI fallback');
+                        }
+                    }
                 }
-                catch { }
-                stateUpdate.selectedVariantId = searchResult.variantId;
-                stateUpdate.selectedProductId = searchResult.productId;
-                memory.lastAction = 'presented_product_options';
-                memory.lastPresentedProducts = searchResult.presentedProducts;
-                memory.awaitingField = 'product_choice_or_recommendation_request';
-                memory.selectedCategory = plan.product_keywords[0];
+                catch (err) {
+                    this.logger.error('AI fallback failed', err);
+                    memory.failedTurns = (memory.failedTurns ?? 0) + 1;
+                    return this.doHandoff(input, 'ai_fallback_failure');
+                }
+            }
+            else {
+                this.logger.log('No template and fallback not allowed, escalating');
+                return this.doHandoff(input, 'no_template_strict_mode');
             }
         }
-        const stateMap = {
-            'product_list_shown': shared_1.ConversationStateStatus.StockConfirmed,
-            'waiting_for_choice': shared_1.ConversationStateStatus.StockConfirmed,
-            'product_selected': shared_1.ConversationStateStatus.StockConfirmed,
-            'checkout_started': shared_1.ConversationStateStatus.CollectingCustomerInfo,
-            'collecting_delivery_info': shared_1.ConversationStateStatus.CollectingCustomerInfo,
+        const stateUpdate = {};
+        const stageStatusMap = {
+            showing_options: shared_1.ConversationStateStatus.StockConfirmed,
+            selection_help: shared_1.ConversationStateStatus.StockConfirmed,
+            product_selected: shared_1.ConversationStateStatus.StockConfirmed,
+            checkout_started: shared_1.ConversationStateStatus.CollectingCustomerInfo,
+            collecting_customer_info: shared_1.ConversationStateStatus.CollectingCustomerInfo,
+            order_confirmation: shared_1.ConversationStateStatus.CollectingCustomerInfo,
         };
-        const mappedStatus = stateMap[plan.dialogue_state];
+        const mappedStatus = stageStatusMap[classification.conversationStage];
         if (mappedStatus) {
             stateUpdate.stateStatus = mappedStatus;
         }
-        if (plan.next_action === 'recommend_from_shown') {
-            memory.lastAction = 'gave_recommendation';
-            memory.awaitingField = 'product_choice';
+        this.updateMemoryFromAction(actualAction, memory, templateResult, classification, productData);
+        if (templateResult?.matchedVariantId) {
+            memory.selectedVariantId = templateResult.matchedVariantId;
+            memory.selectedVariantName = classification.entities.color ?? classification.entities.size ?? memory.selectedVariantName;
         }
-        else if (plan.next_action === 'confirm_selection') {
-            memory.lastAction = 'confirmed_product';
-            memory.awaitingField = 'order_confirmation';
-        }
-        else if (plan.next_action === 'ask_delivery_details') {
-            memory.lastAction = 'asked_delivery_details';
-            memory.awaitingField = 'delivery_info';
-        }
-        else if (plan.next_action === 'greet') {
-            memory.lastAction = 'greeted';
-            memory.awaitingField = 'product_inquiry';
+        if (productData && productData.length > 0) {
+            const first = productData[0];
+            stateUpdate.selectedProductId = first.product.id;
+            memory.selectedProductId = first.product.id;
+            memory.selectedProductTitle = memory.selectedProductTitle || first.product.title;
+            const inStockVariant = first.variants.find((v) => v.effectiveAvailable > 0);
+            stateUpdate.selectedVariantId =
+                inStockVariant?.id ?? first.variants[0]?.id;
         }
         stateUpdate.contextJson = memory;
+        const alreadyOrdered = memory.orderCreated === true;
+        if (actualAction === 'confirm_order' && !alreadyOrdered) {
+            memory.orderCreated = true;
+            const orderPayload = this.buildOrderPayload(input, memory, classification);
+            await this.auditService.log({
+                tenantId: input.tenantId,
+                conversationId: input.conversationId,
+                type: shared_1.AuditLogType.DraftOrderCreated,
+                details: {
+                    decision: shared_1.ReplyDecision.CreateDraftOrder,
+                    intent: classification.primaryIntent,
+                    action: actualAction,
+                    templateId: usedTemplateId ?? 'ai_fallback',
+                    hasOrderPayload: !!orderPayload,
+                },
+            });
+            this.logToFile({
+                event: 'create_draft_order',
+                conversationId: input.conversationId,
+                inbound: input.messageText,
+                outbound: finalReply,
+                templateId: usedTemplateId ?? 'ai_fallback',
+                templateScenario: templateResult?.scenario ?? 'ai_fallback',
+                orderPayload: orderPayload ? { items: orderPayload.items.length, customerInfo: orderPayload.customerInfo } : null,
+                memory,
+            });
+            return {
+                decision: shared_1.ReplyDecision.CreateDraftOrder,
+                reply: { text: finalReply, sendNow: true },
+                handoff: { required: false, reason: null },
+                stateUpdate,
+                orderPayload: orderPayload ?? undefined,
+            };
+        }
         await this.auditService.log({
             tenantId: input.tenantId,
             conversationId: input.conversationId,
             type: shared_1.AuditLogType.AiDecision,
             details: {
                 decision: shared_1.ReplyDecision.Reply,
-                intent: plan.intent,
-                dialogueAct: plan.dialogue_act,
-                nextAction: plan.next_action,
+                intent: classification.primaryIntent,
+                dialogueAct: classification.dialogueAct,
+                action: classification.recommendedAction,
+                templateId: usedTemplateId ?? 'ai_fallback',
             },
         });
         this.logToFile({
@@ -282,8 +507,10 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             conversationId: input.conversationId,
             inbound: input.messageText,
             outbound: finalReply,
-            dialogueState: plan.dialogue_state,
-            nextAction: plan.next_action,
+            templateId: usedTemplateId ?? 'ai_fallback',
+            templateScenario: templateResult?.scenario ?? 'ai_fallback',
+            stage: classification.conversationStage,
+            action: classification.recommendedAction,
             memory,
         });
         return {
@@ -293,49 +520,302 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             stateUpdate,
         };
     }
-    async planResponse(params) {
+    scenarioToAction(scenario) {
+        const map = {
+            greeting: 'greet',
+            show_products: 'show_products',
+            show_price: 'show_price',
+            recommend_product: 'recommend',
+            ask_recommendation_from_shown: 'recommend',
+            confirm_selection: 'confirm_selection',
+            collect_checkout_info: 'start_checkout',
+            order_confirmed_ask_delivery: 'ask_delivery',
+            confirm_order: 'confirm_order',
+            answer_delivery: 'answer_faq',
+            answer_payment: 'answer_faq',
+            out_of_stock: 'show_products',
+            ask_variant_choice: 'ask_variant_choice',
+            product_not_found: 'ai_fallback_clarification',
+        };
+        return map[scenario] ?? scenario;
+    }
+    resolveShortReply(classification, memory, messageText) {
+        const text = messageText.trim().toLowerCase();
+        if (text.length > 8 || classification.confidence >= 0.8)
+            return;
+        const isConfirmation = /^(так|да|ок|добре|беру|го|давайте|звісно)$/i.test(text);
+        const isRejection = /^(ні|нет|не)$/i.test(text);
+        if (isConfirmation) {
+            classification.slotAction = 'confirmation';
+            classification.confidence = 0.95;
+            this.logger.log(`Short reply safety net: "${text}" → confirmation`);
+        }
+        else if (isRejection) {
+            classification.slotAction = 'rejection';
+            classification.confidence = 0.95;
+            this.logger.log(`Short reply safety net: "${text}" → rejection`);
+        }
+    }
+    matchVariant(variants, userColor, userSize) {
+        const normalize = (s) => s.toLowerCase().replace(/[ʼ'ь]/g, '').trim();
+        for (const v of variants) {
+            if (userColor && v.color && normalize(v.color) === normalize(userColor))
+                return v;
+            if (userColor && v.size && normalize(v.size) === normalize(userColor))
+                return v;
+            if (userSize && v.size && normalize(v.size) === normalize(userSize))
+                return v;
+            if (userSize && v.color && normalize(v.color) === normalize(userSize))
+                return v;
+        }
+        for (const v of variants) {
+            const val = normalize(v.color || v.size || v.name);
+            if (userColor && val.includes(normalize(userColor)))
+                return v;
+            if (userColor && normalize(userColor).includes(val))
+                return v;
+            if (userSize && val.includes(normalize(userSize)))
+                return v;
+        }
+        for (const v of variants) {
+            const val = normalize(v.color || v.size || v.name);
+            const userWords = normalize(userColor || userSize || '').split(/\s+/);
+            for (const w of userWords) {
+                if (w.length > 2 && val.includes(w))
+                    return v;
+            }
+        }
+        return null;
+    }
+    shouldSearchProducts(classification, memory) {
+        const searchActions = [
+            'show_products',
+            'recommend',
+            'show_price',
+            'confirm_selection',
+            'start_checkout',
+        ];
+        const searchIntents = [
+            'product_inquiry',
+            'category_browse',
+            'ask_price',
+            'availability_check',
+            'ask_recommendation',
+            'ready_to_order',
+            'confirm_choice',
+        ];
+        const hasEntities = !!(classification.entities.category || classification.entities.productName || classification.entities.color);
+        const noProductsShownYet = !memory.lastPresentedProducts?.length;
+        return (searchActions.includes(classification.recommendedAction) ||
+            searchIntents.includes(classification.primaryIntent) ||
+            (hasEntities && noProductsShownYet));
+    }
+    extractSearchKeywords(classification) {
+        const keywords = [];
+        if (classification.entities.productName)
+            keywords.push(classification.entities.productName);
+        if (classification.entities.category)
+            keywords.push(classification.entities.category);
+        if (classification.entities.color)
+            keywords.push(classification.entities.color);
+        return keywords.length > 0 ? keywords : [''];
+    }
+    async searchProducts(tenantId, conversationId, keywords) {
+        for (const keyword of keywords) {
+            if (!keyword)
+                continue;
+            const results = await this.availabilityService.checkAll(tenantId, {
+                query: keyword,
+            });
+            await this.auditService.log({
+                tenantId,
+                conversationId,
+                type: shared_1.AuditLogType.AvailabilityCheck,
+                details: { keyword, productsFound: results.length },
+            });
+            if (results.length > 0) {
+                return results.map((r) => ({
+                    product: r.product,
+                    variants: r.variants,
+                }));
+            }
+        }
+        return undefined;
+    }
+    updateMemoryFromAction(actualAction, memory, templateResult, classification, productData) {
+        switch (actualAction) {
+            case 'recommend':
+                memory.lastAction = 'gave_recommendation';
+                memory.awaitingField = 'product_choice';
+                memory.selectionState = 'awaiting_confirmation';
+                if (productData && productData.length > 0) {
+                    const recommended = productData[0];
+                    memory.selectedProductId = recommended.product.id;
+                    memory.selectedProductTitle = recommended.product.title;
+                    memory.availableVariants = recommended.variants.map((v) => ({
+                        id: v.id,
+                        name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+                        color: v.color,
+                        size: v.size,
+                    }));
+                }
+                break;
+            case 'confirm_selection':
+                memory.lastAction = 'confirmed_product';
+                memory.awaitingField = 'order_confirmation';
+                memory.selectionState = 'awaiting_confirmation';
+                if (templateResult && classification) {
+                    memory.selectedProductTitle = classification.entities?.productName ?? memory.selectedProductTitle;
+                    memory.selectedVariantName = classification.entities?.color ?? classification.entities?.size ?? memory.selectedVariantName;
+                }
+                break;
+            case 'ask_delivery':
+            case 'start_checkout':
+                memory.lastAction = 'asked_delivery_details';
+                memory.awaitingField = 'delivery_info';
+                memory.selectionState = 'confirmed';
+                break;
+            case 'greet':
+                memory.lastAction = 'greeted';
+                memory.awaitingField = 'product_inquiry';
+                memory.selectionState = undefined;
+                break;
+            case 'show_products':
+                memory.lastAction = 'presented_product_options';
+                memory.awaitingField = 'product_choice_or_recommendation_request';
+                memory.selectionState = 'awaiting_product';
+                break;
+            case 'show_price':
+                memory.lastAction = 'showed_price';
+                memory.awaitingField = 'order_decision';
+                break;
+            case 'ai_fallback_clarification':
+                memory.lastAction = 'asked_clarification';
+                memory.awaitingField = 'clarification';
+                break;
+            case 'ask_variant_choice':
+                memory.lastAction = 'asked_variant';
+                memory.awaitingField = 'variant_selection';
+                memory.selectionState = 'awaiting_variant';
+                break;
+            case 'answer_faq':
+                memory.lastAction = 'answered_faq';
+                break;
+            case 'confirm_order':
+                memory.lastAction = 'confirmed_order';
+                memory.awaitingField = 'order_finalized';
+                break;
+        }
+    }
+    buildOrderPayload(input, memory, classification) {
+        const productId = memory.selectedProductId;
+        const variantId = memory.selectedVariantId;
+        if (!productId || !variantId) {
+            this.logger.warn(`Cannot build order payload: missing productId=${productId} variantId=${variantId}`);
+            return null;
+        }
+        const customerName = classification.entities.customerName ?? '';
+        const phone = classification.entities.phone ?? '';
+        const city = classification.entities.city ?? '';
+        const deliveryBranch = classification.entities.deliveryBranch ?? '';
+        let unitPrice = 0;
+        let externalProductId = null;
+        let externalVariantId = null;
+        const variants = memory.availableVariants;
+        if (Array.isArray(variants)) {
+            const matchedVariant = variants.find((v) => v.id === variantId);
+            if (matchedVariant) {
+                unitPrice = matchedVariant.price ?? 0;
+                externalProductId = matchedVariant.externalProductId ?? null;
+                externalVariantId = matchedVariant.externalVariantId ?? null;
+            }
+        }
+        if (unitPrice === 0 && memory.lastPresentedProducts?.length) {
+            const priceStr = memory.lastPresentedProducts[0].price;
+            const priceMatch = priceStr?.match(/[\d.]+/);
+            if (priceMatch) {
+                unitPrice = parseFloat(priceMatch[0]);
+            }
+        }
+        return {
+            tenantId: input.tenantId,
+            conversationId: input.conversationId,
+            customerId: input.state.conversationId,
+            items: [
+                {
+                    productId,
+                    variantId,
+                    externalProductId,
+                    externalVariantId,
+                    title: memory.selectedProductTitle ?? '',
+                    variantTitle: memory.selectedVariantName ?? '',
+                    quantity: 1,
+                    unitPrice,
+                    currency: 'UAH',
+                },
+            ],
+            customerInfo: {
+                fullName: customerName,
+                phone,
+                city,
+                deliveryBranch,
+            },
+            source: 'instagram_ai',
+        };
+    }
+    getCurrentStage(state) {
+        const statusStageMap = {
+            [shared_1.ConversationStateStatus.Browsing]: 'need_discovery',
+            [shared_1.ConversationStateStatus.StockConfirmed]: 'showing_options',
+            [shared_1.ConversationStateStatus.CollectingCustomerInfo]: 'collecting_customer_info',
+        };
+        return statusStageMap[state.stateStatus] ?? 'greeting';
+    }
+    buildOrderStateContext(memory) {
+        if (memory.selectedProductId && (memory.selectionState === 'confirmed' || memory.lastAction === 'asked_delivery_details')) {
+            return `\nORDER STATE: Active checkout — Product: ${memory.selectedProductTitle ?? 'unknown'} (${memory.selectedVariantName ?? ''}). Awaiting delivery details.`;
+        }
+        if (memory.selectedProductId) {
+            return `\nORDER STATE: Product browsing — ${memory.selectedProductTitle ?? 'product selected'}, not yet confirmed for order.`;
+        }
+        return `\nORDER STATE: No active order. No product selected. Do NOT confirm any order.`;
+    }
+    async aiFallbackReply(params) {
         const lang = params.language ?? 'uk';
         const langMap = { uk: 'Ukrainian', en: 'English' };
         const langName = langMap[lang] ?? lang;
+        const productContext = params.productData
+            ? this.buildProductContext(params.productData)
+            : '';
         const memoryContext = this.buildMemoryContext(params.memory);
         const systemPrompt = [
             `You are a sales manager for an online store. Reply ONLY in ${langName}.`,
             params.brandTone ? `\nTone:\n${params.brandTone}` : '',
-            params.productContext
-                ? `\nProduct data from database:\n${params.productContext}`
-                : '',
+            productContext ? `\nProduct data from database:\n${productContext}` : '',
             params.categories.length
                 ? `\nAvailable categories: ${params.categories.join(', ')}.`
                 : '',
             memoryContext ? `\n${memoryContext}` : '',
             `\nCONVERSATION RULES:`,
             `1. NEVER repeat what you already said. Don't re-list products, don't re-describe, don't re-greet.`,
-            `2. SHORT REPLIES ("підкажіть", "цей", "рожевий", "так", "добре", "давайте") = interpreted in context of your LAST action.`,
-            `3. If you showed options and user asks for recommendation → recommend with a reason. Don't re-ask.`,
+            `2. SHORT REPLIES = interpreted in context of your LAST action.`,
+            `3. If you showed options and user asks for recommendation -> recommend with a reason. Don't re-ask.`,
             `4. When presenting products: ALWAYS include the price. Be conversational, not tabular.`,
-            `5. NEVER say "contact manager", "зараз перевірю ціну" (you already HAVE the price data), or reveal you are AI.`,
-            `6. If product not found in database, say you'll check and follow up.`,
-            `7. Lead the conversation forward — always give the user a clear next step.`,
-            `8. NEVER greet mid-conversation. "Привіт/Вітаю" only at the very start.`,
-            ``,
-            `PRICING RULE:`,
-            `- Product prices are in the "Product data" section and in the ASSISTANT MEMORY "Products shown to customer" section.`,
-            `- When user asks about price, answer IMMEDIATELY from this data. NEVER say "зараз перевірю/уточню ціну".`,
-            `- Always mention price when presenting or recommending products.`,
-            ``,
-            `MULTI-PRODUCT ORDERS:`,
-            `- If customer is mid-order (collecting delivery info) and asks about ANOTHER product → do NOT reset the order.`,
-            `- Say "Звісно! Давайте додамо до замовлення." then recommend the new product.`,
-            `- Keep the existing order items in context.`,
-            ``,
-            `FLOW AFTER RECOMMENDATION:`,
-            `- User AGREES ("добре", "так", "давайте") → immediately ask "Оформлюємо замовлення? 💛" Do NOT repeat description.`,
-            `- User confirms order → immediately ask for delivery details. Do NOT re-describe.`,
-            `- NEVER ask the same question twice.`,
-            `\nExtract product_keywords for product-related intents. Include the customer's term AND the closest matching category name(s).`,
-            `\nSet next_action to "search_products" ONLY when you need NEW product data not already in memory. If product info is in "Products shown to customer" memory, use it directly.`,
-            `\nCall plan_and_reply with your analysis and response.`,
-        ].filter(Boolean).join('\n');
+            `5. NEVER say "contact manager", "зараз перевірю ціну", or reveal you are AI.`,
+            `6. If product not found, say you'll check and follow up.`,
+            `7. Lead the conversation forward.`,
+            `8. NEVER greet mid-conversation.`,
+            `9. Keep replies SHORT (1-3 sentences max).`,
+            `10. NEVER confirm an order, say "замовлення оформлено", "в обробці", "дані отримала", or imply an order exists unless ALL of these are true: selectedProductId exists, checkout is in progress, system is expecting delivery details.`,
+            this.buildOrderStateContext(params.memory),
+            `\nClassification context:`,
+            `Intent: ${params.classification.primaryIntent}`,
+            `Stage: ${params.classification.conversationStage}`,
+            `Action: ${params.classification.recommendedAction}`,
+            `\nGenerate a natural, helpful reply. Keep it concise.`,
+        ]
+            .filter(Boolean)
+            .join('\n');
         const messages = [
             { role: 'system', content: systemPrompt },
         ];
@@ -347,42 +827,47 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             const role = msg.role === shared_1.MessageRole.User ? 'user' : 'assistant';
             messages.push({ role, content: msg.text ?? '' });
         }
+        messages.push({ role: 'user', content: params.messageText });
         const completion = await this.openai.chat.completions.create({
-            model: params.modelOverride ?? this.model,
+            model: this.model,
             messages,
-            tools: [PLAN_AND_REPLY_TOOL],
-            tool_choice: { type: 'function', function: { name: 'plan_and_reply' } },
-            max_completion_tokens: 600,
+            max_completion_tokens: 300,
             temperature: 0.3,
         });
-        const toolCall = completion.choices[0]?.message?.tool_calls?.[0];
-        if (!toolCall) {
-            return {
-                intent: 'unknown', dialogue_act: 'general_chat', dialogue_state: 'idle',
-                product_keywords: [], next_action: 'clarify', needs_handoff: false,
-                handoff_reason: null,
-                reply: completion.choices[0]?.message?.content?.trim() ?? '',
-            };
+        const reply = completion.choices[0]?.message?.content?.trim();
+        if (!reply) {
+            throw new Error('Empty AI fallback response');
         }
-        return JSON.parse(toolCall.function.arguments);
+        return reply;
+    }
+    buildProductContext(productData) {
+        const parts = [];
+        for (const p of productData) {
+            const variantDescs = p.variants.map((v) => {
+                const details = [v.size, v.color].filter(Boolean).join(', ');
+                const stock = v.effectiveAvailable > 0 ? 'в наявності' : 'немає';
+                return `${details || 'standard'}: ${v.price} ${v.currency} (${stock})`;
+            });
+            parts.push(`- ${p.product.title}: ${variantDescs.join('; ')}`);
+        }
+        return `Products found:\n${parts.join('\n')}`;
     }
     buildMemoryContext(memory) {
         if (!memory.lastAction)
             return '';
-        const parts = [`\nASSISTANT MEMORY (what happened before in this conversation):`];
-        parts.push(`Last action: ${memory.lastAction}`);
+        const parts = [
+            `\nASSISTANT MEMORY (what happened before):`,
+            `Last action: ${memory.lastAction}`,
+        ];
         if (memory.lastPresentedProducts?.length) {
-            parts.push(`Products shown to customer (USE THIS DATA for prices and variants):`);
+            parts.push(`Products shown to customer:`);
             for (const p of memory.lastPresentedProducts) {
                 const variants = p.variants.join(', ');
-                parts.push(`  • ${p.title} — Price: ${p.price} — Variants: ${variants}`);
+                parts.push(`  - ${p.title} — Price: ${p.price} — Variants: ${variants}`);
             }
         }
         if (memory.orderItems?.length) {
-            parts.push(`Current order items:`);
-            for (const item of memory.orderItems) {
-                parts.push(`  • ${item}`);
-            }
+            parts.push(`Current order items: ${memory.orderItems.join(', ')}`);
         }
         if (memory.awaitingField) {
             parts.push(`Currently waiting for: ${memory.awaitingField}`);
@@ -392,48 +877,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         }
         return parts.join('\n');
     }
-    async searchProducts(tenantId, conversationId, keywords) {
-        for (const keyword of keywords) {
-            const results = await this.availabilityService.checkAll(tenantId, { query: keyword });
-            await this.auditService.log({
-                tenantId, conversationId,
-                type: shared_1.AuditLogType.AvailabilityCheck,
-                details: { keyword, productsFound: results.length },
-            });
-            if (results.length > 0) {
-                const contextParts = [];
-                const presentedProducts = [];
-                for (const r of results) {
-                    const variantDescs = [];
-                    const variantNames = [];
-                    for (const v of r.variants) {
-                        const details = [v.size, v.color].filter(Boolean).join(', ');
-                        const stock = v.effectiveAvailable > 0 ? 'в наявності' : 'немає';
-                        variantDescs.push(`${details || 'standard'}: ${v.price} ${v.currency} (${stock})`);
-                        variantNames.push(details || 'standard');
-                    }
-                    contextParts.push(`- ${r.product.title}: ${variantDescs.join('; ')}`);
-                    const prices = [...new Set(r.variants.map((v) => `${v.price} ${v.currency}`))];
-                    presentedProducts.push({
-                        title: r.product.title,
-                        variants: variantNames,
-                        price: prices.join(' / '),
-                    });
-                }
-                const firstResult = results[0];
-                const firstInStock = firstResult.variants.find((v) => v.effectiveAvailable > 0);
-                return {
-                    found: true,
-                    context: `Products found:\n${contextParts.join('\n')}`,
-                    variantId: firstInStock?.id ?? firstResult.variants[0]?.id,
-                    productId: firstResult.product.id,
-                    presentedProducts,
-                };
-            }
-        }
-        return { found: false };
-    }
-    async doHandoff(input, reason) {
+    async doHandoff(input, reason, softMessage) {
         await this.auditService.log({
             tenantId: input.tenantId,
             conversationId: input.conversationId,
@@ -445,10 +889,11 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             conversationId: input.conversationId,
             inbound: input.messageText,
             reason,
+            softMessage,
         });
         return {
             decision: shared_1.ReplyDecision.Handoff,
-            reply: null,
+            reply: softMessage ? { text: softMessage, sendNow: true } : null,
             handoff: { required: true, reason },
             stateUpdate: null,
         };
@@ -459,10 +904,15 @@ exports.ReplyEngineService = ReplyEngineService = ReplyEngineService_1 = __decor
     (0, common_1.Injectable)(),
     __param(0, (0, typeorm_1.InjectRepository)(tenant_settings_entity_1.TenantSettings)),
     __param(1, (0, typeorm_1.InjectRepository)(manager_example_entity_1.ManagerExample)),
+    __param(2, (0, typeorm_1.InjectRepository)(store_config_entity_1.StoreConfig)),
     __metadata("design:paramtypes", [typeorm_2.Repository,
+        typeorm_2.Repository,
         typeorm_2.Repository,
         availability_service_1.AvailabilityService,
         audit_service_1.AuditService,
+        classifier_service_1.ClassifierService,
+        template_engine_service_1.TemplateEngineService,
+        policy_engine_service_1.PolicyEngineService,
         config_1.ConfigService])
 ], ReplyEngineService);
 //# sourceMappingURL=reply-engine.service.js.map

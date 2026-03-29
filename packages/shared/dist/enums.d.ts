@@ -85,6 +85,8 @@ export declare enum OrderStatus {
     Draft = "draft",
     AwaitingManagerConfirmation = "awaiting_manager_confirmation",
     Confirmed = "confirmed",
+    Shipped = "shipped",
+    Delivered = "delivered",
     Cancelled = "cancelled"
 }
 export declare enum AuditLogType {

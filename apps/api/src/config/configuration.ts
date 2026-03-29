@@ -27,4 +27,9 @@ export default () => ({
   n8n: {
     orderSyncWebhookUrl: process.env.N8N_ORDER_SYNC_WEBHOOK_URL ?? '',
   },
+  telegram: {
+    botToken: process.env.TELEGRAM_BOT_TOKEN ?? '',
+    webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET ?? '',
+    botUsername: process.env.TELEGRAM_BOT_USERNAME ?? 'DirectMateBot',
+  },
 });

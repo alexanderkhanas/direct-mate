@@ -24,5 +24,13 @@ declare const _default: () => {
     internal: {
         apiKey: string;
     };
+    n8n: {
+        orderSyncWebhookUrl: string;
+    };
+    telegram: {
+        botToken: string;
+        webhookSecret: string;
+        botUsername: string;
+    };
 };
 export default _default;

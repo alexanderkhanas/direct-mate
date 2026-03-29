@@ -3,6 +3,8 @@ import { OrdersService } from './orders.service';
 import { CheckoutService } from './checkout.service';
 import { StartCheckoutDto } from './dto/start-checkout.dto';
 import { CustomerInfoDto } from './dto/customer-info.dto';
+import { SyncCallbackDto } from './dto/sync-callback.dto';
+import { OrderStatus } from '@direct-mate/shared';
 export declare class OrdersController {
     private readonly ordersService;
     private readonly checkoutService;
@@ -12,6 +14,10 @@ export declare class OrdersController {
     createDraft(body: {
         checkoutSessionId: string;
     }): Promise<import("./entities/order.entity").Order>;
-    listOrders(user: JwtPayload): Promise<import("./entities/order.entity").Order[]>;
-    getOrder(id: string): Promise<import("./entities/order.entity").Order>;
+    listOrders(user: JwtPayload): Promise<any[]>;
+    getOrder(id: string): Promise<any>;
+    updateStatus(user: JwtPayload, id: string, body: {
+        status: OrderStatus;
+    }): Promise<import("./entities/order.entity").Order>;
+    handleSyncCallback(orderId: string, callback: SyncCallbackDto): Promise<void>;
 }

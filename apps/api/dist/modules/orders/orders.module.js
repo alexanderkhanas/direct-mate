@@ -14,8 +14,10 @@ const checkout_item_entity_1 = require("./entities/checkout-item.entity");
 const checkout_customer_info_entity_1 = require("./entities/checkout-customer-info.entity");
 const order_entity_1 = require("./entities/order.entity");
 const order_item_entity_1 = require("./entities/order-item.entity");
+const product_entity_1 = require("../catalog/entities/product.entity");
 const product_variant_entity_1 = require("../catalog/entities/product-variant.entity");
 const tenant_settings_entity_1 = require("../tenants/entities/tenant-settings.entity");
+const connection_entity_1 = require("../integrations/entities/connection.entity");
 const orders_service_1 = require("./orders.service");
 const checkout_service_1 = require("./checkout.service");
 const orders_controller_1 = require("./orders.controller");
@@ -31,8 +33,10 @@ exports.OrdersModule = OrdersModule = __decorate([
                 checkout_customer_info_entity_1.CheckoutCustomerInfo,
                 order_entity_1.Order,
                 order_item_entity_1.OrderItem,
+                product_entity_1.Product,
                 product_variant_entity_1.ProductVariant,
                 tenant_settings_entity_1.TenantSettings,
+                connection_entity_1.Connection,
             ]),
         ],
         controllers: [orders_controller_1.OrdersController],

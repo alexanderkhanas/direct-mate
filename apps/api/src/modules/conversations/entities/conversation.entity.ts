@@ -3,6 +3,7 @@ import {
   CreateDateColumn,
   Entity,
   Index,
+  JoinColumn,
   ManyToOne,
   OneToMany,
   OneToOne,
@@ -54,6 +55,7 @@ export class Conversation {
   updatedAt!: Date;
 
   @ManyToOne(() => Customer, (c) => c.conversations)
+  @JoinColumn({ name: 'customer_id' })
   customer!: Customer;
 
   @OneToMany(() => Message, (m) => m.conversation)

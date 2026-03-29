@@ -12,11 +12,12 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
     return function (target, key) { decorator(target, key, paramIndex); }
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.IntegrationsController = void 0;
+exports.InternalConnectionsController = exports.IntegrationsController = void 0;
 const common_1 = require("@nestjs/common");
 const swagger_1 = require("@nestjs/swagger");
 const class_validator_1 = require("class-validator");
 const jwt_auth_guard_1 = require("../../common/guards/jwt-auth.guard");
+const internal_api_key_guard_1 = require("../../common/guards/internal-api-key.guard");
 const current_user_decorator_1 = require("../../common/decorators/current-user.decorator");
 const integrations_service_1 = require("./integrations.service");
 class ConnectInstagramDto {
@@ -75,6 +76,9 @@ let IntegrationsController = class IntegrationsController {
     disconnect(id) {
         return this.integrationsService.disconnect(id);
     }
+    remove(id) {
+        return this.integrationsService.remove(id);
+    }
 };
 exports.IntegrationsController = IntegrationsController;
 __decorate([
@@ -107,6 +111,13 @@ __decorate([
     __metadata("design:paramtypes", [String]),
     __metadata("design:returntype", void 0)
 ], IntegrationsController.prototype, "disconnect", null);
+__decorate([
+    (0, common_1.Delete)(':id'),
+    __param(0, (0, common_1.Param)('id')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String]),
+    __metadata("design:returntype", void 0)
+], IntegrationsController.prototype, "remove", null);
 exports.IntegrationsController = IntegrationsController = __decorate([
     (0, swagger_1.ApiTags)('connections'),
     (0, common_1.UseGuards)(jwt_auth_guard_1.JwtAuthGuard),
@@ -114,4 +125,48 @@ exports.IntegrationsController = IntegrationsController = __decorate([
     (0, common_1.Controller)('connections'),
     __metadata("design:paramtypes", [integrations_service_1.IntegrationsService])
 ], IntegrationsController);
+class ResolveCredentialsDto {
+}
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsNotEmpty)(),
+    __metadata("design:type", String)
+], ResolveCredentialsDto.prototype, "connectionId", void 0);
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsNotEmpty)(),
+    __metadata("design:type", String)
+], ResolveCredentialsDto.prototype, "tenantId", void 0);
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsNotEmpty)(),
+    __metadata("design:type", String)
+], ResolveCredentialsDto.prototype, "platform", void 0);
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsNotEmpty)(),
+    __metadata("design:type", String)
+], ResolveCredentialsDto.prototype, "purpose", void 0);
+let InternalConnectionsController = class InternalConnectionsController {
+    constructor(integrationsService) {
+        this.integrationsService = integrationsService;
+    }
+    async resolveCredentials(dto) {
+        return this.integrationsService.resolveCredentials(dto);
+    }
+};
+exports.InternalConnectionsController = InternalConnectionsController;
+__decorate([
+    (0, common_1.Post)('resolve-credentials'),
+    __param(0, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [ResolveCredentialsDto]),
+    __metadata("design:returntype", Promise)
+], InternalConnectionsController.prototype, "resolveCredentials", null);
+exports.InternalConnectionsController = InternalConnectionsController = __decorate([
+    (0, swagger_1.ApiTags)('internal/connections'),
+    (0, common_1.UseGuards)(internal_api_key_guard_1.InternalApiKeyGuard),
+    (0, common_1.Controller)('internal/connections'),
+    __metadata("design:paramtypes", [integrations_service_1.IntegrationsService])
+], InternalConnectionsController);
 //# sourceMappingURL=integrations.controller.js.map

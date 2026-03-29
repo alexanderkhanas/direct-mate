@@ -17,16 +17,20 @@ const crypto = require("crypto");
 const conversations_service_1 = require("../../conversations/conversations.service");
 const reply_engine_service_1 = require("../../conversations/reply-engine.service");
 const integrations_service_1 = require("../../integrations/integrations.service");
+const orders_service_1 = require("../../orders/orders.service");
 const crypto_service_1 = require("../../../common/crypto.service");
+const telegram_service_1 = require("../../notifications/telegram.service");
 const shared_1 = require("@direct-mate/shared");
 const DEBOUNCE_MS = 5_000;
 let InstagramService = InstagramService_1 = class InstagramService {
-    constructor(config, conversationsService, replyEngineService, integrationsService, cryptoService) {
+    constructor(config, conversationsService, replyEngineService, integrationsService, ordersService, cryptoService, telegramService) {
         this.config = config;
         this.conversationsService = conversationsService;
         this.replyEngineService = replyEngineService;
         this.integrationsService = integrationsService;
+        this.ordersService = ordersService;
         this.cryptoService = cryptoService;
+        this.telegramService = telegramService;
         this.logger = new common_1.Logger(InstagramService_1.name);
         this.pendingReplies = new Map();
     }
@@ -177,6 +181,25 @@ let InstagramService = InstagramService_1 = class InstagramService {
     }
     async processInbound(params) {
         const customer = await this.conversationsService.findOrCreateCustomer(params.tenantId, 'instagram', params.externalUserId);
+        if (!customer.username && params.connection.accessTokenEncrypted) {
+            try {
+                const token = this.cryptoService.decrypt(params.connection.accessTokenEncrypted);
+                const res = await fetch(`https://graph.instagram.com/v21.0/${params.externalUserId}?fields=username,name`, { headers: { Authorization: `Bearer ${token}` } });
+                if (res.ok) {
+                    const profile = await res.json();
+                    if (profile.username)
+                        customer.username = profile.username;
+                    if (profile.name)
+                        customer.fullName = profile.name;
+                    await this.conversationsService.updateCustomer(customer.id, {
+                        username: profile.username ?? null,
+                        fullName: profile.name ?? null,
+                    });
+                }
+            }
+            catch {
+            }
+        }
         const { conversation, state } = await this.conversationsService.findOrCreateConversation(params.tenantId, customer.id, 'instagram', params.channelAccountId);
         const recentMessages = (await this.conversationsService.findById(conversation.id)).messages
             .slice(-10)
@@ -202,6 +225,13 @@ let InstagramService = InstagramService_1 = class InstagramService {
                     this.logger.error('Failed to send handoff message', err);
                 });
             }
+            this.telegramService.notifyHandoff({
+                tenantId: params.tenantId,
+                customerName: customer.username ? `@${customer.username}` : customer.fullName || params.externalUserId,
+                reason: result.handoff.reason ?? 'unknown',
+                conversationId: conversation.id,
+                lastMessage: params.messageText,
+            }).catch(err => this.logger.error('Telegram notification failed', err));
             this.logger.log(`HANDOFF: conversation ${conversation.id}, reason: ${result.handoff.reason}`);
             return;
         }
@@ -223,6 +253,22 @@ let InstagramService = InstagramService_1 = class InstagramService {
                 this.logger.warn(`No access token for connection — cannot send message to Meta`);
             }
         }
+        if (result.decision === shared_1.ReplyDecision.CreateDraftOrder && result.orderPayload) {
+            try {
+                const orderPayload = {
+                    ...result.orderPayload,
+                    customerId: customer.id,
+                };
+                const order = await this.ordersService.createFromConversation(orderPayload);
+                this.logger.log(`Order created: ${order.id} for conversation ${conversation.id}`);
+                this.ordersService.triggerExternalSync(order).catch((err) => {
+                    this.logger.error(`External sync trigger failed for order ${order.id}`, err.message);
+                });
+            }
+            catch (err) {
+                this.logger.error(`Order creation failed for conversation ${conversation.id}`, err.message);
+            }
+        }
     }
 };
 exports.InstagramService = InstagramService;
@@ -232,6 +278,8 @@ exports.InstagramService = InstagramService = InstagramService_1 = __decorate([
         conversations_service_1.ConversationsService,
         reply_engine_service_1.ReplyEngineService,
         integrations_service_1.IntegrationsService,
-        crypto_service_1.CryptoService])
+        orders_service_1.OrdersService,
+        crypto_service_1.CryptoService,
+        telegram_service_1.TelegramService])
 ], InstagramService);
 //# sourceMappingURL=instagram.service.js.map

@@ -14,9 +14,31 @@ export declare class IntegrationsService {
     findAll(tenantId: string): Promise<Connection[]>;
     findByExternalAccountId(externalAccountId: string, type: ConnectionType): Promise<Connection | null>;
     disconnect(id: string): Promise<void>;
+    remove(id: string): Promise<void>;
     queueSyncJob(tenantId: string, connectionId: string, syncType: string, mode: string): Promise<SyncJob>;
     markJobRunning(jobId: string): Promise<void>;
     markJobDone(jobId: string, summary: Record<string, unknown>): Promise<void>;
     markJobFailed(jobId: string, error: string): Promise<void>;
     updateJobStatus(jobId: string, status: 'success' | 'failed', summary?: string, errorMessage?: string): Promise<void>;
+    private readonly ALLOWED_PURPOSES;
+    resolveCredentials(dto: {
+        connectionId: string;
+        tenantId: string;
+        platform: string;
+        purpose: string;
+    }): Promise<{
+        type: string;
+        shopDomain: any;
+        accessToken: string;
+        apiVersion: string;
+        externalAccountId?: undefined;
+        metadata?: undefined;
+    } | {
+        type: ConnectionType;
+        externalAccountId: string | null;
+        accessToken: string;
+        metadata: Record<string, any>;
+        shopDomain?: undefined;
+        apiVersion?: undefined;
+    }>;
 }

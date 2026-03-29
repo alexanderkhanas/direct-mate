@@ -53,6 +53,22 @@ __decorate([
     __metadata("design:type", String)
 ], Order.prototype, "source", void 0);
 __decorate([
+    (0, typeorm_1.Column)({ type: 'text', default: 'none' }),
+    __metadata("design:type", String)
+], Order.prototype, "externalSyncStatus", void 0);
+__decorate([
+    (0, typeorm_1.Column)({ type: 'jsonb', nullable: true }),
+    __metadata("design:type", Object)
+], Order.prototype, "externalOrderMetadata", void 0);
+__decorate([
+    (0, typeorm_1.Column)({ type: 'timestamptz', nullable: true }),
+    __metadata("design:type", Object)
+], Order.prototype, "externalSyncTriggeredAt", void 0);
+__decorate([
+    (0, typeorm_1.Column)({ type: 'timestamptz', nullable: true }),
+    __metadata("design:type", Object)
+], Order.prototype, "externalSyncCompletedAt", void 0);
+__decorate([
     (0, typeorm_1.CreateDateColumn)({ type: 'timestamptz' }),
     __metadata("design:type", Date)
 ], Order.prototype, "createdAt", void 0);

@@ -94,7 +94,7 @@ export default function ConversationsPage() {
                 </div>
                 <div>
                   <p className="text-sm font-medium text-gray-900">
-                    {conv.customerName ?? 'Unknown'}
+                    {conv.customer?.username ? `@${conv.customer.username}` : conv.customer?.fullName ?? 'Unknown'}
                   </p>
                   <p className="text-xs text-gray-400 mt-0.5 capitalize">{conv.channel}</p>
                 </div>
