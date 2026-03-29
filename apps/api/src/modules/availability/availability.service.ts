@@ -343,6 +343,81 @@ export class AvailabilityService {
       .getMany();
   }
 
+  /**
+   * Find all variants for a product by ID, returning the same ProductSearchResult[]
+   * format used by checkAll(). Used for media-linked product resolution.
+   */
+  async findAllByProductId(
+    productId: string,
+    variantId?: string,
+  ): Promise<
+    Array<{
+      product: { id: string; title: string };
+      variants: Array<{
+        id: string;
+        size: string | null;
+        color: string | null;
+        price: number;
+        currency: string;
+        effectiveAvailable: number;
+      }>;
+    }>
+  > {
+    const qb = this.variantRepo
+      .createQueryBuilder('v')
+      .innerJoinAndSelect('v.product', 'p')
+      .leftJoinAndSelect('v.stockBalance', 's')
+      .where('p.id = :productId', { productId })
+      .andWhere('p.status = :status', { status: 'active' })
+      .andWhere('v.active = true');
+
+    if (variantId) {
+      qb.andWhere('v.id = :variantId', { variantId });
+    }
+
+    const variants = await qb.take(20).getMany();
+    if (variants.length === 0) return [];
+
+    const productMap = new Map<
+      string,
+      {
+        product: { id: string; title: string };
+        variants: Array<{
+          id: string;
+          size: string | null;
+          color: string | null;
+          price: number;
+          currency: string;
+          effectiveAvailable: number;
+        }>;
+      }
+    >();
+
+    for (const v of variants) {
+      const pid = v.product.id;
+      if (!productMap.has(pid)) {
+        productMap.set(pid, {
+          product: { id: pid, title: v.product.title },
+          variants: [],
+        });
+      }
+      const stock = v.stockBalance;
+      const effectiveAvailable = stock
+        ? stock.availableQty - stock.reservedQty - stock.pendingCheckoutQty
+        : 0;
+      productMap.get(pid)!.variants.push({
+        id: v.id,
+        size: v.size,
+        color: v.color,
+        price: Number(v.price),
+        currency: v.currency,
+        effectiveAvailable,
+      });
+    }
+
+    return Array.from(productMap.values());
+  }
+
   async getByProductId(
     productId: string,
     variantId?: string,

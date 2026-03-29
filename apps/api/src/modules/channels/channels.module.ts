@@ -6,9 +6,10 @@ import { IntegrationsModule } from '../integrations/integrations.module';
 import { OrdersModule } from '../orders/orders.module';
 import { CryptoService } from '../../common/crypto.service';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { InstagramContentModule } from './instagram/instagram-content.module';
 
 @Module({
-  imports: [ConversationsModule, IntegrationsModule, OrdersModule, NotificationsModule],
+  imports: [ConversationsModule, IntegrationsModule, OrdersModule, NotificationsModule, InstagramContentModule],
   controllers: [InstagramController],
   providers: [InstagramService, CryptoService],
 })

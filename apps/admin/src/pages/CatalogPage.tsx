@@ -50,6 +50,8 @@ function ProductRow({ product }: { product: ProductRow }) {
           <div>
             <p className="text-sm font-medium text-gray-900">{product.title}</p>
             <p className="text-xs text-gray-400 mt-0.5">
+              {product.sku && <span className="font-mono text-gray-500">{product.sku}</span>}
+              {product.sku && ' · '}
               {product.category ?? 'Uncategorized'} · {product.variantCount} variant
               {product.variantCount !== 1 ? 's' : ''}
             </p>
@@ -66,6 +68,7 @@ function ProductRow({ product }: { product: ProductRow }) {
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+                  <th className="px-4 py-2.5 text-left font-medium">SKU</th>
                   <th className="px-4 py-2.5 text-left font-medium">Size</th>
                   <th className="px-4 py-2.5 text-left font-medium">Color</th>
                   <th className="px-4 py-2.5 text-left font-medium">Price</th>
@@ -78,6 +81,7 @@ function ProductRow({ product }: { product: ProductRow }) {
                   const variant = freshnessVariant(v.lastSyncedAt);
                   return (
                     <tr key={v.id} className="bg-white">
+                      <td className="px-4 py-2.5 text-gray-500 font-mono text-xs">{v.sku ?? '—'}</td>
                       <td className="px-4 py-2.5 text-gray-700">{v.size ?? '—'}</td>
                       <td className="px-4 py-2.5 text-gray-700 capitalize">{v.color ?? '—'}</td>
                       <td className="px-4 py-2.5 text-gray-700">

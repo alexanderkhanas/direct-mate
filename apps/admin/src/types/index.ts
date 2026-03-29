@@ -57,6 +57,7 @@ export interface ManagerExample {
 
 export interface ProductVariantRow {
   id: string;
+  sku: string | null;
   size: string | null;
   color: string | null;
   price: number;
@@ -67,6 +68,7 @@ export interface ProductVariantRow {
 
 export interface ProductRow {
   id: string;
+  sku: string | null;
   title: string;
   category: string | null;
   variantCount: number;

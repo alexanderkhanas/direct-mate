@@ -24,6 +24,9 @@ export class Product {
   @Column({ type: 'text', nullable: true })
   externalProductId!: string | null;
 
+  @Column({ type: 'text', nullable: true })
+  sku!: string | null;
+
   @Column({ type: 'text' })
   title!: string;
 

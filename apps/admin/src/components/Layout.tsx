@@ -13,6 +13,7 @@ import {
   FileText,
   FlaskConical,
   ShoppingCart,
+  ImagePlus,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { cn } from '../lib/cn';
@@ -26,6 +27,7 @@ const nav = [
   { to: '/training', label: 'Training', icon: GraduationCap },
   { to: '/templates', label: 'Templates', icon: FileText },
   { to: '/testing', label: 'Testing', icon: FlaskConical },
+  { to: '/content-linking', label: 'Content', icon: ImagePlus },
   { to: '/settings', label: 'Settings', icon: Settings },
   { to: '/logs', label: 'Logs', icon: ScrollText },
 ];

@@ -101,12 +101,14 @@ export class CatalogService {
 
     return products.map((p) => ({
       id: p.id,
+      sku: p.sku,
       title: p.title,
       category: p.category,
       variantCount: p.variants?.length ?? 0,
       updatedAt: p.updatedAt,
       variants: (p.variants ?? []).map((v) => ({
         id: v.id,
+        sku: v.sku,
         size: v.size,
         color: v.color,
         price: v.price,

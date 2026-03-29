@@ -11,6 +11,7 @@ import TrainingPage from './pages/TrainingPage';
 import TemplatesPage from './pages/TemplatesPage';
 import TestingPage from './pages/TestingPage';
 import OrdersPage from './pages/OrdersPage';
+import ContentLinkingPage from './pages/ContentLinkingPage';
 import Layout from './components/Layout';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -40,6 +41,7 @@ export default function App() {
           <Route path="training" element={<TrainingPage />} />
           <Route path="templates" element={<TemplatesPage />} />
           <Route path="testing" element={<TestingPage />} />
+          <Route path="content-linking" element={<ContentLinkingPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="logs" element={<LogsPage />} />
         </Route>

@@ -28,6 +28,7 @@ import {
   ReplyDecision,
 } from '@direct-mate/shared';
 import { OrderPayload } from '../orders/interfaces/order-payload.interface';
+import { InstagramContentService } from '../channels/instagram/instagram-content.service';
 
 // ─── Public interfaces ───────────────────────────────────────────
 
@@ -37,6 +38,7 @@ export interface ReplyEngineInput {
   messageText: string;
   state: ConversationState;
   recentMessages: Array<{ role: string; text: string | null }>;
+  mediaReference?: { mediaId: string; type: string };
 }
 
 export interface ReplyEngineOutput {
@@ -76,6 +78,7 @@ export class ReplyEngineService {
     private readonly templateEngine: TemplateEngineService,
     private readonly policyEngine: PolicyEngineService,
     private readonly config: ConfigService,
+    private readonly instagramContentService: InstagramContentService,
   ) {
     this.openai = new OpenAI({
       apiKey: this.config.get<string>('openai.apiKey'),
@@ -253,10 +256,60 @@ export class ReplyEngineService {
       }
     }
 
+    // 4.7 Media reference resolution
+    let mediaProductData: ProductSearchResult[] | undefined;
+
+    if (input.mediaReference) {
+      if (input.mediaReference.type === 'customer_photo') {
+        return this.doHandoff(input, 'customer_photo', 'Секунду, зараз перевірю 💛');
+      }
+
+      const mapping = await this.instagramContentService.findByMediaId(
+        input.tenantId,
+        input.mediaReference.mediaId,
+      );
+
+      if (mapping?.productId) {
+        // Known product — load full product data for use in product search step
+        mediaProductData = await this.availabilityService.findAllByProductId(
+          mapping.productId,
+          mapping.variantId ?? undefined,
+        );
+        this.logToFile({
+          event: 'media_product_resolved',
+          conversationId: input.conversationId,
+          mediaId: input.mediaReference.mediaId,
+          mediaType: input.mediaReference.type,
+          productId: mapping.productId,
+          variantId: mapping.variantId,
+          productsFound: mediaProductData.length,
+        });
+      } else {
+        this.instagramContentService
+          .saveUnlinkedMedia(
+            input.tenantId,
+            input.mediaReference.mediaId,
+            input.mediaReference.type,
+          )
+          .catch((err) => this.logger.error('Failed to save unlinked media', err));
+        return this.doHandoff(
+          input,
+          'unlinked_media_reference',
+          'Секунду, зараз перевірю 💛',
+        );
+      }
+    }
+
     // 5. Product search if needed (based on classification entities/keywords)
     let productData: ProductSearchResult[] | undefined;
     let isFirstProductPresentation = false;
-    const needsSearch = this.shouldSearchProducts(classification, memory);
+
+    if (mediaProductData && mediaProductData.length > 0) {
+      productData = mediaProductData;
+      isFirstProductPresentation = !memory.lastPresentedProducts?.length;
+    }
+
+    const needsSearch = !productData && this.shouldSearchProducts(classification, memory);
 
     if (needsSearch) {
       const searchKeywords = this.extractSearchKeywords(classification);
@@ -727,32 +780,62 @@ export class ReplyEngineService {
     userColor?: string,
     userSize?: string,
   ): { id: string; name: string } | null {
-    const normalize = (s: string) => s.toLowerCase().replace(/[ʼ'ь]/g, '').trim();
+    const input = (userColor || userSize || '').toLowerCase().trim();
+    if (!input) return null;
 
-    for (const v of variants) {
-      // Exact match on color or size
-      if (userColor && v.color && normalize(v.color) === normalize(userColor)) return v;
-      if (userColor && v.size && normalize(v.size) === normalize(userColor)) return v;
-      if (userSize && v.size && normalize(v.size) === normalize(userSize)) return v;
-      if (userSize && v.color && normalize(v.color) === normalize(userSize)) return v;
+    const normalize = (s: string) => s.toLowerCase().replace(/[ʼ'ьіїєґ]/g, '').replace(/\s+/g, ' ').trim();
+    const getLabel = (v: typeof variants[0]) => (v.color || v.size || v.name || '').toLowerCase();
+
+    // 1. Exact match
+    const exact = variants.find(v => getLabel(v) === input);
+    if (exact) return exact;
+
+    // 2. Partial/contains
+    const partial = variants.filter(v => getLabel(v).includes(input) || input.includes(getLabel(v)));
+    if (partial.length === 1) return partial[0];
+
+    // 3. Normalized match
+    const normalizedInput = normalize(input);
+    const normMatch = variants.find(v => normalize(getLabel(v)) === normalizedInput);
+    if (normMatch) return normMatch;
+
+    // 4. Word overlap — split on spaces AND hyphens
+    const inputWords = normalizedInput.split(/[\s-]+/);
+    const wordMatches = variants
+      .map(v => {
+        const labelWords = normalize(getLabel(v)).split(/[\s-]+/);
+        const overlap = inputWords.filter(w =>
+          labelWords.some(lw => lw.includes(w) || w.includes(lw)),
+        ).length;
+        return { variant: v, overlap };
+      })
+      .filter(x => x.overlap > 0)
+      .sort((a, b) => b.overlap - a.overlap);
+    if (wordMatches.length === 1) return wordMatches[0].variant;
+    if (wordMatches.length > 1 && wordMatches[0].overlap > wordMatches[1].overlap) {
+      return wordMatches[0].variant;
     }
 
-    // Partial/contains match
-    for (const v of variants) {
-      const val = normalize(v.color || v.size || v.name);
-      if (userColor && val.includes(normalize(userColor))) return v;
-      if (userColor && normalize(userColor).includes(val)) return v;
-      if (userSize && val.includes(normalize(userSize))) return v;
-    }
-
-    // Word overlap
-    for (const v of variants) {
-      const val = normalize(v.color || v.size || v.name);
-      const userWords = normalize(userColor || userSize || '').split(/\s+/);
-      for (const w of userWords) {
-        if (w.length > 2 && val.includes(w)) return v;
+    // 5. Fuzzy (Levenshtein ≤ 3)
+    const levenshtein = (a: string, b: string): number => {
+      const matrix: number[][] = [];
+      for (let i = 0; i <= a.length; i++) matrix[i] = [i];
+      for (let j = 0; j <= b.length; j++) matrix[0][j] = j;
+      for (let i = 1; i <= a.length; i++) {
+        for (let j = 1; j <= b.length; j++) {
+          const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+          matrix[i][j] = Math.min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j - 1] + cost);
+        }
       }
-    }
+      return matrix[a.length][b.length];
+    };
+
+    const fuzzy = variants
+      .map(v => ({ variant: v, dist: levenshtein(normalizedInput, normalize(getLabel(v))) }))
+      .filter(x => x.dist <= 3)
+      .sort((a, b) => a.dist - b.dist);
+    if (fuzzy.length === 1) return fuzzy[0].variant;
+    if (fuzzy.length > 1 && fuzzy[0].dist < fuzzy[1].dist) return fuzzy[0].variant;
 
     return null; // No confident match — ask user
   }

@@ -14,6 +14,7 @@ import { ConversationReplyController } from './conversation-reply.controller';
 import { AvailabilityModule } from '../availability/availability.module';
 import { AuditModule } from '../audit/audit.module';
 import { EngineModule } from '../engine/engine.module';
+import { InstagramContentModule } from '../channels/instagram/instagram-content.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { EngineModule } from '../engine/engine.module';
     AvailabilityModule,
     AuditModule,
     EngineModule,
+    InstagramContentModule,
   ],
   controllers: [ConversationsController, ConversationReplyController],
   providers: [ConversationsService, ReplyEngineService],

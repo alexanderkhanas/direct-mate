@@ -10,10 +10,20 @@ import { TelegramService } from '../../notifications/telegram.service';
 import { Connection } from '../../integrations/entities/connection.entity';
 import { ConnectionType, MessageDirection, MessageRole, ReplyDecision } from '@direct-mate/shared';
 
+interface MediaReference {
+  mediaId: string;
+  type: 'story_reply' | 'post_reply' | 'customer_photo';
+}
+
 interface MetaMessagingEvent {
   sender?: { id: string };
   recipient?: { id: string };
-  message?: { mid: string; text: string };
+  message?: {
+    mid: string;
+    text?: string;
+    reply_to?: { mid?: string; story?: { id: string } };
+    attachments?: Array<{ type: string; payload?: { url?: string } }>;
+  };
   message_edit?: { mid: string; num_edit: number };
   timestamp: number;
 }
@@ -34,6 +44,7 @@ const DEBOUNCE_MS = 5_000; // 5 seconds
 interface PendingMessage {
   messageId: string;
   text: string;
+  mediaReference?: MediaReference | null;
 }
 
 interface PendingReply {
@@ -120,6 +131,37 @@ export class InstagramService {
     }
   }
 
+  private extractMediaReference(
+    message: MetaMessagingEvent['message'],
+  ): MediaReference | null {
+    if (!message) return null;
+
+    // Story reply: reply_to.story.id
+    if (message.reply_to?.story?.id) {
+      return { mediaId: message.reply_to.story.id, type: 'story_reply' };
+    }
+
+    // Post reply: reply_to.mid (without story)
+    if (message.reply_to?.mid) {
+      return { mediaId: message.reply_to.mid, type: 'post_reply' };
+    }
+
+    // Customer photo: attachments with image/video type
+    if (message.attachments?.length) {
+      const mediaAttachment = message.attachments.find(
+        (a) => a.type === 'image' || a.type === 'video',
+      );
+      if (mediaAttachment) {
+        return {
+          mediaId: mediaAttachment.payload?.url ?? 'unknown',
+          type: 'customer_photo',
+        };
+      }
+    }
+
+    return null;
+  }
+
   async handleWebhook(payload: MetaWebhookPayload): Promise<void> {
     if (payload.object !== 'instagram') return;
 
@@ -128,12 +170,17 @@ export class InstagramService {
 
       for (const messaging of entry.messaging ?? []) {
         // Standard message event
-        if (messaging.message?.text && messaging.sender && messaging.recipient) {
+        if (messaging.message && messaging.sender && messaging.recipient) {
+          const mediaRef = this.extractMediaReference(messaging.message);
+          const text = messaging.message.text ?? '';
+          // Skip if no text AND no media reference
+          if (!text && !mediaRef) continue;
           await this.handleIncomingMessage(
             messaging.sender.id,
             messaging.recipient.id,
             messaging.message.mid,
-            messaging.message.text,
+            text,
+            mediaRef,
           );
           continue;
         }
@@ -191,6 +238,7 @@ export class InstagramService {
     channelAccountId: string,
     messageId: string,
     messageText: string,
+    mediaReference?: MediaReference | null,
   ): Promise<void> {
     // Try to find connection by channelAccountId first, then by any known ID
     let connection = await this.integrationsService.findByExternalAccountId(
@@ -242,7 +290,7 @@ export class InstagramService {
     if (existing) {
       // More messages coming — reset timer, accumulate
       clearTimeout(existing.timer);
-      existing.messages.push({ messageId, text: messageText });
+      existing.messages.push({ messageId, text: messageText, mediaReference });
       this.logger.log(
         `Debounce: added message #${existing.messages.length} for ${debounceKey}, resetting timer`,
       );
@@ -252,7 +300,7 @@ export class InstagramService {
       this.logger.log(`Debounce: first message for ${debounceKey}, waiting ${DEBOUNCE_MS / 1000}s`);
       const pending: PendingReply = {
         timer: setTimeout(() => this.flushPending(debounceKey), DEBOUNCE_MS),
-        messages: [{ messageId, text: messageText }],
+        messages: [{ messageId, text: messageText, mediaReference }],
         externalUserId,
         channelAccountId,
         connection,
@@ -268,6 +316,8 @@ export class InstagramService {
     this.pendingReplies.delete(debounceKey);
 
     const combinedText = pending.messages.map((m) => m.text).join('\n');
+    const mediaReference =
+      pending.messages.find((m) => m.mediaReference)?.mediaReference ?? null;
     this.logger.log(
       `Debounce: processing ${pending.messages.length} message(s) for ${debounceKey}: "${combinedText.substring(0, 100)}"`,
     );
@@ -279,6 +329,7 @@ export class InstagramService {
         channelAccountId: pending.channelAccountId,
         messageText: combinedText,
         connection: pending.connection,
+        mediaReference,
       });
     } catch (err) {
       this.logger.error(`Failed to process debounced messages for ${debounceKey}`, err);
@@ -291,6 +342,7 @@ export class InstagramService {
     channelAccountId: string;
     messageText: string;
     connection: Connection;
+    mediaReference?: MediaReference | null;
   }): Promise<void> {
     const customer = await this.conversationsService.findOrCreateCustomer(
       params.tenantId,
@@ -339,6 +391,10 @@ export class InstagramService {
       messageText: params.messageText,
       state,
       recentMessages,
+      mediaReference: params.mediaReference ? {
+        mediaId: params.mediaReference.mediaId,
+        type: params.mediaReference.type,
+      } : undefined,
     });
 
     if (result.stateUpdate) {

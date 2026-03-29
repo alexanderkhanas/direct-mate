@@ -93,6 +93,7 @@ export class ConversationsService {
     role: MessageRole,
     text: string,
     externalMessageId?: string,
+    rawPayload?: Record<string, unknown> | null,
   ): Promise<Message> {
     const msg = this.messageRepo.create({
       conversationId,
@@ -101,6 +102,7 @@ export class ConversationsService {
       role,
       text,
       externalMessageId,
+      rawPayload: rawPayload ?? null,
     });
     await this.conversationRepo.update(conversationId, { lastMessageAt: new Date() });
     return this.messageRepo.save(msg);
