@@ -170,4 +170,24 @@ export class ConversationsService {
       status: ConversationStatus.HumanInControl,
     });
   }
+
+  async findCustomer(tenantId: string, channel: string, externalUserId: string): Promise<Customer | null> {
+    return this.customerRepo.findOne({ where: { tenantId, channel, externalUserId } });
+  }
+
+  async findConversationByCustomer(
+    tenantId: string, customerId: string, channel: string, channelAccountId: string,
+  ): Promise<Conversation | null> {
+    return this.conversationRepo.findOne({
+      where: [
+        { tenantId, customerId, channel, channelAccountId, status: ConversationStatus.Active },
+        { tenantId, customerId, channel, channelAccountId, status: ConversationStatus.HumanInControl },
+      ],
+      order: { lastMessageAt: 'DESC' },
+    });
+  }
+
+  async findByStatus(status: ConversationStatus): Promise<Conversation[]> {
+    return this.conversationRepo.find({ where: { status } });
+  }
 }

@@ -1,4 +1,4 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
 import { ConversationsService } from '../../conversations/conversations.service';
@@ -8,7 +8,7 @@ import { OrdersService } from '../../orders/orders.service';
 import { CryptoService } from '../../../common/crypto.service';
 import { TelegramService } from '../../notifications/telegram.service';
 import { Connection } from '../../integrations/entities/connection.entity';
-import { ConnectionType, MessageDirection, MessageRole, ReplyDecision } from '@direct-mate/shared';
+import { ConnectionType, ConversationStatus, MessageDirection, MessageRole, ReplyDecision } from '@direct-mate/shared';
 
 interface MediaReference {
   mediaId: string;
@@ -21,6 +21,7 @@ interface MetaMessagingEvent {
   message?: {
     mid: string;
     text?: string;
+    is_echo?: boolean;
     reply_to?: { mid?: string; story?: { id: string } };
     attachments?: Array<{ type: string; payload?: { url?: string } }>;
   };
@@ -57,9 +58,11 @@ interface PendingReply {
 }
 
 @Injectable()
-export class InstagramService {
+export class InstagramService implements OnModuleInit {
   private readonly logger = new Logger(InstagramService.name);
   private readonly pendingReplies = new Map<string, PendingReply>();
+  private readonly recentSentMids = new Set<string>();
+  private readonly autoResumeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(
     private readonly config: ConfigService,
@@ -71,11 +74,26 @@ export class InstagramService {
     private readonly telegramService: TelegramService,
   ) {}
 
+  async onModuleInit(): Promise<void> {
+    const stuck = await this.conversationsService.findByStatus(ConversationStatus.HumanInControl);
+    for (const conv of stuck) {
+      const elapsed = Date.now() - new Date(conv.updatedAt).getTime();
+      const remaining = 30 * 60 * 1000 - elapsed;
+      if (remaining <= 0) {
+        await this.conversationsService.release(conv.id);
+        this.logger.log(`Startup recovery: auto-resumed conversation ${conv.id}`);
+      } else {
+        this.resetAutoResumeTimer(conv.id, remaining);
+        this.logger.log(`Startup recovery: resuming ${conv.id} in ${Math.round(remaining / 60000)}min`);
+      }
+    }
+  }
+
   private async sendMetaMessage(
     recipientId: string,
     text: string,
     pageAccessToken: string,
-  ): Promise<void> {
+  ): Promise<string | null> {
     const res = await fetch('https://graph.instagram.com/v21.0/me/messages', {
       method: 'POST',
       headers: {
@@ -91,6 +109,13 @@ export class InstagramService {
       const body = await res.text();
       throw new Error(`Meta API error ${res.status}: ${body}`);
     }
+    const body = await res.json() as { message_id?: string };
+    const mid = body.message_id ?? null;
+    if (mid) {
+      this.recentSentMids.add(mid);
+      setTimeout(() => this.recentSentMids.delete(mid), 5 * 60 * 1000);
+    }
+    return mid;
   }
 
   verifySignature(rawBody: Buffer, signature: string): boolean {
@@ -169,6 +194,20 @@ export class InstagramService {
       const entryId = entry.id;
 
       for (const messaging of entry.messaging ?? []) {
+        // Echo detection — before standard message handling
+        if (messaging.message?.is_echo) {
+          const mid = messaging.message.mid;
+          if (this.recentSentMids.has(mid)) {
+            this.recentSentMids.delete(mid);
+            continue; // Bot echo, skip
+          }
+          // Manager replied in Instagram DMs
+          await this.handleManagerReply(messaging, entryId ?? '').catch(err =>
+            this.logger.error('handleManagerReply failed', err),
+          );
+          continue;
+        }
+
         // Standard message event
         if (messaging.message && messaging.sender && messaging.recipient) {
           const mediaRef = this.extractMediaReference(messaging.message);
@@ -379,6 +418,12 @@ export class InstagramService {
       params.channelAccountId,
     );
 
+    // Skip bot processing when manager is in control
+    if (conversation.status === ConversationStatus.HumanInControl) {
+      this.logger.log(`Skipping bot reply — conversation ${conversation.id} is human_in_control`);
+      return;
+    }
+
     const recentMessages = (
       await this.conversationsService.findById(conversation.id)
     ).messages
@@ -489,5 +534,68 @@ export class InstagramService {
         // Don't block the conversation — order can be created manually
       }
     }
+  }
+
+  // ─── Manager reply detection ──────────────────────────────────
+
+  private async handleManagerReply(messaging: MetaMessagingEvent, channelAccountId: string): Promise<void> {
+    const customerId = messaging.recipient?.id;
+    if (!customerId) return;
+
+    const connection = await this.integrationsService.findByExternalAccountId(
+      channelAccountId, ConnectionType.Instagram,
+    );
+    if (!connection) return;
+
+    const customer = await this.conversationsService.findCustomer(
+      connection.tenantId, 'instagram', customerId,
+    );
+    if (!customer) return;
+
+    const conversation = await this.conversationsService.findConversationByCustomer(
+      connection.tenantId, customer.id, 'instagram', channelAccountId,
+    );
+    if (!conversation) return;
+
+    // Save manager's message
+    await this.conversationsService.saveMessage(
+      conversation.id, connection.tenantId,
+      MessageDirection.Outbound, MessageRole.Manager,
+      messaging.message?.text ?? '', messaging.message?.mid,
+    );
+
+    // Set conversation to human_in_control
+    if (conversation.status !== ConversationStatus.HumanInControl) {
+      await this.conversationsService.escalate(conversation.id, 'manager_reply_detected');
+      this.logger.log(`Manager reply detected → conversation ${conversation.id} set to human_in_control`);
+
+      // Notify via Telegram that manager took over
+      this.telegramService.notifyHandoff({
+        tenantId: connection.tenantId,
+        customerName: customer.username ? `@${customer.username}` : customer.fullName || customerId,
+        reason: 'manager_took_over',
+        conversationId: conversation.id,
+      }).catch(() => {});
+    }
+
+    // Reset auto-resume timer
+    this.resetAutoResumeTimer(conversation.id);
+  }
+
+  private resetAutoResumeTimer(conversationId: string, delayMs = 30 * 60 * 1000): void {
+    const existing = this.autoResumeTimers.get(conversationId);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(async () => {
+      this.autoResumeTimers.delete(conversationId);
+      try {
+        await this.conversationsService.release(conversationId);
+        this.logger.log(`Auto-resumed conversation ${conversationId} after timeout`);
+      } catch (err) {
+        this.logger.error(`Auto-resume failed for ${conversationId}`, err);
+      }
+    }, delayMs);
+
+    this.autoResumeTimers.set(conversationId, timer);
   }
 }
