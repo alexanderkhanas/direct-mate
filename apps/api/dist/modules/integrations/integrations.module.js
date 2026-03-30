@@ -11,6 +11,7 @@ const common_1 = require("@nestjs/common");
 const typeorm_1 = require("@nestjs/typeorm");
 const connection_entity_1 = require("./entities/connection.entity");
 const sync_job_entity_1 = require("./entities/sync-job.entity");
+const telegram_connect_token_entity_1 = require("../notifications/entities/telegram-connect-token.entity");
 const integrations_service_1 = require("./integrations.service");
 const integrations_controller_1 = require("./integrations.controller");
 const crypto_service_1 = require("../../common/crypto.service");
@@ -19,8 +20,8 @@ let IntegrationsModule = class IntegrationsModule {
 exports.IntegrationsModule = IntegrationsModule;
 exports.IntegrationsModule = IntegrationsModule = __decorate([
     (0, common_1.Module)({
-        imports: [typeorm_1.TypeOrmModule.forFeature([connection_entity_1.Connection, sync_job_entity_1.SyncJob])],
-        controllers: [integrations_controller_1.IntegrationsController, integrations_controller_1.InternalConnectionsController],
+        imports: [typeorm_1.TypeOrmModule.forFeature([connection_entity_1.Connection, sync_job_entity_1.SyncJob, telegram_connect_token_entity_1.TelegramConnectToken])],
+        controllers: [integrations_controller_1.IntegrationsController, integrations_controller_1.InternalConnectionsController, integrations_controller_1.InstagramOAuthController],
         providers: [integrations_service_1.IntegrationsService, crypto_service_1.CryptoService],
         exports: [integrations_service_1.IntegrationsService],
     })

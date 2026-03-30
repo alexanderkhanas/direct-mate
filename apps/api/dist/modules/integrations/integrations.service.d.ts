@@ -1,13 +1,18 @@
+import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { Connection } from './entities/connection.entity';
 import { SyncJob } from './entities/sync-job.entity';
+import { TelegramConnectToken } from '../notifications/entities/telegram-connect-token.entity';
 import { ConnectionType } from '@direct-mate/shared';
 import { CryptoService } from '../../common/crypto.service';
 export declare class IntegrationsService {
     private readonly connectionRepo;
     private readonly syncJobRepo;
+    private readonly connectTokenRepo;
     private readonly crypto;
-    constructor(connectionRepo: Repository<Connection>, syncJobRepo: Repository<SyncJob>, crypto: CryptoService);
+    private readonly config;
+    private readonly logger;
+    constructor(connectionRepo: Repository<Connection>, syncJobRepo: Repository<SyncJob>, connectTokenRepo: Repository<TelegramConnectToken>, crypto: CryptoService, config: ConfigService);
     connectInstagram(tenantId: string, pageId: string, accessToken: string, accountName?: string): Promise<Connection>;
     connectShopify(tenantId: string, shopDomain: string, accessToken: string, shopName?: string): Promise<Connection>;
     getDecryptedToken(connectionId: string): Promise<string>;
@@ -40,5 +45,17 @@ export declare class IntegrationsService {
         metadata: Record<string, any>;
         shopDomain?: undefined;
         apiVersion?: undefined;
+    }>;
+    createOAuthState(tenantId: string): Promise<string>;
+    validateOAuthState(state: string): Promise<string | null>;
+    exchangeCodeForToken(code: string): Promise<{
+        accessToken: string;
+        userId: string;
+    }>;
+    private exchangeForLongLivedToken;
+    refreshLongLivedToken(connectionId: string): Promise<void>;
+    refreshExpiringTokens(): Promise<{
+        refreshed: number;
+        failed: number;
     }>;
 }

@@ -20,6 +20,7 @@ import { ScreenshotTrainingModule } from './modules/screenshot-training/screensh
 import { EngineModule } from './modules/engine/engine.module';
 import { TestingModule } from './modules/testing/testing.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
+import { AdminModule } from './modules/admin/admin.module';
 
 @Module({
   imports: [
@@ -47,6 +48,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
     EngineModule,
     TestingModule,
     NotificationsModule,
+    AdminModule,
   ],
 })
 export class AppModule {}

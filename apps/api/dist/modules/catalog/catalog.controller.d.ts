@@ -6,12 +6,14 @@ export declare class CatalogController {
     constructor(catalogService: CatalogService);
     list(user: JwtPayload, q?: string): Promise<{
         id: string;
+        sku: string | null;
         title: string;
         category: string | null;
         variantCount: number;
         updatedAt: Date;
         variants: {
             id: string;
+            sku: string | null;
             size: string | null;
             color: string | null;
             price: number;

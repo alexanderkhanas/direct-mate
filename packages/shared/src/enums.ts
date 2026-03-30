@@ -8,6 +8,7 @@ export enum UserRole {
   Owner = 'owner',
   Manager = 'manager',
   Admin = 'admin',
+  Superadmin = 'superadmin',
 }
 
 export enum ConnectionType {

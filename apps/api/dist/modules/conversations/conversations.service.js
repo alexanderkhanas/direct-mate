@@ -44,13 +44,11 @@ let ConversationsService = class ConversationsService {
     }
     async findOrCreateConversation(tenantId, customerId, channel, channelAccountId) {
         let conversation = await this.conversationRepo.findOne({
-            where: {
-                tenantId,
-                customerId,
-                channel,
-                channelAccountId,
-                status: shared_1.ConversationStatus.Active,
-            },
+            where: [
+                { tenantId, customerId, channel, channelAccountId, status: shared_1.ConversationStatus.Active },
+                { tenantId, customerId, channel, channelAccountId, status: shared_1.ConversationStatus.HumanInControl },
+            ],
+            order: { lastMessageAt: 'DESC' },
         });
         if (!conversation) {
             conversation = this.conversationRepo.create({
@@ -74,7 +72,7 @@ let ConversationsService = class ConversationsService {
         }
         return { conversation, state };
     }
-    async saveMessage(conversationId, tenantId, direction, role, text, externalMessageId) {
+    async saveMessage(conversationId, tenantId, direction, role, text, externalMessageId, rawPayload) {
         const msg = this.messageRepo.create({
             conversationId,
             tenantId,
@@ -82,6 +80,7 @@ let ConversationsService = class ConversationsService {
             role,
             text,
             externalMessageId,
+            rawPayload: rawPayload ?? null,
         });
         await this.conversationRepo.update(conversationId, { lastMessageAt: new Date() });
         return this.messageRepo.save(msg);
@@ -126,7 +125,7 @@ let ConversationsService = class ConversationsService {
         const conv = await this.conversationRepo.findOne({ where: { id } });
         if (!conv)
             throw new common_1.NotFoundException(`Conversation ${id} not found`);
-        await this.conversationRepo.update(id, { status: shared_1.ConversationStatus.Active });
+        await this.conversationRepo.update(id, { status: shared_1.ConversationStatus.Active, needsHandoff: false });
         return this.conversationRepo.findOneOrFail({ where: { id } });
     }
     async updateState(conversationId, patch) {
@@ -138,6 +137,21 @@ let ConversationsService = class ConversationsService {
             handoffReason: reason,
             status: shared_1.ConversationStatus.HumanInControl,
         });
+    }
+    async findCustomer(tenantId, channel, externalUserId) {
+        return this.customerRepo.findOne({ where: { tenantId, channel, externalUserId } });
+    }
+    async findConversationByCustomer(tenantId, customerId, channel, channelAccountId) {
+        return this.conversationRepo.findOne({
+            where: [
+                { tenantId, customerId, channel, channelAccountId, status: shared_1.ConversationStatus.Active },
+                { tenantId, customerId, channel, channelAccountId, status: shared_1.ConversationStatus.HumanInControl },
+            ],
+            order: { lastMessageAt: 'DESC' },
+        });
+    }
+    async findByStatus(status) {
+        return this.conversationRepo.find({ where: { status } });
     }
 };
 exports.ConversationsService = ConversationsService;

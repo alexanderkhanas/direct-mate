@@ -5,6 +5,7 @@ export declare class Product {
     id: string;
     tenantId: string;
     externalProductId: string | null;
+    sku: string | null;
     title: string;
     description: string | null;
     category: string | null;

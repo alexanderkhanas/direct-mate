@@ -46,6 +46,9 @@ let OrdersController = class OrdersController {
     updateStatus(user, id, body) {
         return this.ordersService.updateStatus(id, user.tenantId, body.status);
     }
+    retrySync(user, id) {
+        return this.ordersService.retrySync(id, user.tenantId);
+    }
     handleSyncCallback(orderId, callback) {
         return this.ordersService.handleSyncCallback(orderId, callback);
     }
@@ -109,6 +112,16 @@ __decorate([
     __metadata("design:paramtypes", [Object, String, Object]),
     __metadata("design:returntype", void 0)
 ], OrdersController.prototype, "updateStatus", null);
+__decorate([
+    (0, common_1.Post)('orders/:id/retry-sync'),
+    (0, common_1.UseGuards)(jwt_auth_guard_1.JwtAuthGuard),
+    (0, swagger_1.ApiBearerAuth)(),
+    __param(0, (0, current_user_decorator_1.CurrentUser)()),
+    __param(1, (0, common_1.Param)('id')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String]),
+    __metadata("design:returntype", void 0)
+], OrdersController.prototype, "retrySync", null);
 __decorate([
     (0, common_1.Post)('internal/orders/:id/sync-callback'),
     (0, common_1.UseGuards)(internal_api_key_guard_1.InternalApiKeyGuard),

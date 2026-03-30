@@ -6,7 +6,8 @@ export declare enum BusinessType {
 export declare enum UserRole {
     Owner = "owner",
     Manager = "manager",
-    Admin = "admin"
+    Admin = "admin",
+    Superadmin = "superadmin"
 }
 export declare enum ConnectionType {
     Instagram = "instagram",

@@ -12,6 +12,9 @@ import TemplatesPage from './pages/TemplatesPage';
 import TestingPage from './pages/TestingPage';
 import OrdersPage from './pages/OrdersPage';
 import ContentLinkingPage from './pages/ContentLinkingPage';
+import TenantsPage from './pages/admin/TenantsPage';
+import TenantDetailPage from './pages/admin/TenantDetailPage';
+import StatsPage from './pages/admin/StatsPage';
 import Layout from './components/Layout';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -44,6 +47,9 @@ export default function App() {
           <Route path="content-linking" element={<ContentLinkingPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="logs" element={<LogsPage />} />
+          <Route path="admin/stores" element={<TenantsPage />} />
+          <Route path="admin/stores/:id" element={<TenantDetailPage />} />
+          <Route path="admin/analytics" element={<StatsPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

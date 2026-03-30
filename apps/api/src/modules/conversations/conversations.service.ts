@@ -150,7 +150,7 @@ export class ConversationsService {
   async release(id: string): Promise<Conversation> {
     const conv = await this.conversationRepo.findOne({ where: { id } });
     if (!conv) throw new NotFoundException(`Conversation ${id} not found`);
-    await this.conversationRepo.update(id, { status: ConversationStatus.Active });
+    await this.conversationRepo.update(id, { status: ConversationStatus.Active, needsHandoff: false });
     return this.conversationRepo.findOneOrFail({ where: { id } });
   }
 

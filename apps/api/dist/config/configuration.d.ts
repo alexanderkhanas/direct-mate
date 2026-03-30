@@ -12,6 +12,10 @@ declare const _default: () => {
         appSecret: string;
         webhookVerifyToken: string;
         appId: string;
+        oauthRedirectUri: string;
+    };
+    admin: {
+        baseUrl: string;
     };
     encryption: {
         key: string;

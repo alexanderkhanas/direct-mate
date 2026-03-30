@@ -3,7 +3,7 @@ import { Conversation } from './entities/conversation.entity';
 import { Customer } from './entities/customer.entity';
 import { Message } from './entities/message.entity';
 import { ConversationState } from './entities/conversation-state.entity';
-import { MessageDirection, MessageRole } from '@direct-mate/shared';
+import { ConversationStatus, MessageDirection, MessageRole } from '@direct-mate/shared';
 export declare class ConversationsService {
     private readonly conversationRepo;
     private readonly customerRepo;
@@ -19,7 +19,7 @@ export declare class ConversationsService {
         conversation: Conversation;
         state: ConversationState;
     }>;
-    saveMessage(conversationId: string, tenantId: string, direction: MessageDirection, role: MessageRole, text: string, externalMessageId?: string): Promise<Message>;
+    saveMessage(conversationId: string, tenantId: string, direction: MessageDirection, role: MessageRole, text: string, externalMessageId?: string, rawPayload?: Record<string, unknown> | null): Promise<Message>;
     findAll(tenantId: string, filters: {
         status?: string;
         needsHandoff?: boolean;
@@ -36,4 +36,7 @@ export declare class ConversationsService {
     release(id: string): Promise<Conversation>;
     updateState(conversationId: string, patch: Partial<ConversationState>): Promise<void>;
     escalate(conversationId: string, reason: string): Promise<void>;
+    findCustomer(tenantId: string, channel: string, externalUserId: string): Promise<Customer | null>;
+    findConversationByCustomer(tenantId: string, customerId: string, channel: string, channelAccountId: string): Promise<Conversation | null>;
+    findByStatus(status: ConversationStatus): Promise<Conversation[]>;
 }

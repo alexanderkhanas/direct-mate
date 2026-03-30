@@ -11,10 +11,12 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 var __param = (this && this.__param) || function (paramIndex, decorator) {
     return function (target, key) { decorator(target, key, paramIndex); }
 };
+var InstagramOAuthController_1;
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.InternalConnectionsController = exports.IntegrationsController = void 0;
+exports.InstagramOAuthController = exports.InternalConnectionsController = exports.IntegrationsController = void 0;
 const common_1 = require("@nestjs/common");
 const swagger_1 = require("@nestjs/swagger");
+const config_1 = require("@nestjs/config");
 const class_validator_1 = require("class-validator");
 const jwt_auth_guard_1 = require("../../common/guards/jwt-auth.guard");
 const internal_api_key_guard_1 = require("../../common/guards/internal-api-key.guard");
@@ -169,4 +171,81 @@ exports.InternalConnectionsController = InternalConnectionsController = __decora
     (0, common_1.Controller)('internal/connections'),
     __metadata("design:paramtypes", [integrations_service_1.IntegrationsService])
 ], InternalConnectionsController);
+let InstagramOAuthController = InstagramOAuthController_1 = class InstagramOAuthController {
+    constructor(integrationsService, config) {
+        this.integrationsService = integrationsService;
+        this.config = config;
+        this.logger = new common_1.Logger(InstagramOAuthController_1.name);
+    }
+    async start(user) {
+        const appId = this.config.get('meta.appId');
+        const redirectUri = this.config.get('meta.oauthRedirectUri');
+        if (!appId || !redirectUri) {
+            throw new common_1.BadRequestException('Instagram OAuth not configured');
+        }
+        const state = await this.integrationsService.createOAuthState(user.tenantId);
+        const scopes = [
+            'instagram_business_basic',
+            'instagram_business_manage_messages',
+            'instagram_business_content_publish',
+            'instagram_business_manage_comments',
+        ].join(',');
+        const redirectUrl = `https://www.instagram.com/oauth/authorize?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scopes}&response_type=code&state=${state}`;
+        return { redirectUrl };
+    }
+    async callback(code, state, res) {
+        const adminBaseUrl = this.config.get('admin.baseUrl') ?? 'http://localhost:5173';
+        if (!code || !state) {
+            return res.redirect(`${adminBaseUrl}/connections?instagram=error&reason=missing_params`);
+        }
+        try {
+            const tenantId = await this.integrationsService.validateOAuthState(state);
+            if (!tenantId) {
+                return res.redirect(`${adminBaseUrl}/connections?instagram=error&reason=invalid_state`);
+            }
+            const { accessToken, userId } = await this.integrationsService.exchangeCodeForToken(code);
+            let username;
+            try {
+                const profileRes = await fetch(`https://graph.instagram.com/me?fields=user_id,username&access_token=${accessToken}`);
+                if (profileRes.ok) {
+                    const profile = await profileRes.json();
+                    username = profile.username;
+                }
+            }
+            catch { }
+            await this.integrationsService.connectInstagram(tenantId, userId, accessToken, username);
+            this.logger.log(`Instagram OAuth connected for tenant ${tenantId}, user ${userId}`);
+            return res.redirect(`${adminBaseUrl}/connections?instagram=connected`);
+        }
+        catch (err) {
+            this.logger.error('Instagram OAuth callback failed', err.message);
+            return res.redirect(`${adminBaseUrl}/connections?instagram=error&reason=exchange_failed`);
+        }
+    }
+};
+exports.InstagramOAuthController = InstagramOAuthController;
+__decorate([
+    (0, common_1.UseGuards)(jwt_auth_guard_1.JwtAuthGuard),
+    (0, swagger_1.ApiBearerAuth)(),
+    (0, common_1.Post)('connections/instagram/oauth/start'),
+    __param(0, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], InstagramOAuthController.prototype, "start", null);
+__decorate([
+    (0, common_1.Get)('auth/instagram/callback'),
+    __param(0, (0, common_1.Query)('code')),
+    __param(1, (0, common_1.Query)('state')),
+    __param(2, (0, common_1.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String, Object]),
+    __metadata("design:returntype", Promise)
+], InstagramOAuthController.prototype, "callback", null);
+exports.InstagramOAuthController = InstagramOAuthController = InstagramOAuthController_1 = __decorate([
+    (0, swagger_1.ApiTags)('connections'),
+    (0, common_1.Controller)(),
+    __metadata("design:paramtypes", [integrations_service_1.IntegrationsService,
+        config_1.ConfigService])
+], InstagramOAuthController);
 //# sourceMappingURL=integrations.controller.js.map

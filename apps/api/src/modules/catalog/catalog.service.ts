@@ -213,6 +213,24 @@ export class CatalogService {
       }
     }
 
+    // Cleanup: mark products as inactive if not in this sync batch
+    const syncedExternalIds = products.map(p => p.externalProductId);
+    if (syncedExternalIds.length > 0) {
+      const deactivated = await this.productRepo
+        .createQueryBuilder()
+        .update()
+        .set({ status: ProductStatus.Archived })
+        .where('tenant_id = :tenantId', { tenantId })
+        .andWhere('status = :active', { active: ProductStatus.Active })
+        .andWhere('external_product_id IS NOT NULL')
+        .andWhere('external_product_id NOT IN (:...ids)', { ids: syncedExternalIds })
+        .execute();
+
+      if (deactivated.affected) {
+        this.logger.log(`Catalog cleanup: deactivated ${deactivated.affected} stale products`);
+      }
+    }
+
     this.logger.log(
       `Catalog import: created=${created} updated=${updated} skipped=${skipped} errors=${errors.length}`,
     );

@@ -72,6 +72,13 @@ export class OrdersController {
     return this.ordersService.updateStatus(id, user.tenantId, body.status);
   }
 
+  @Post('orders/:id/retry-sync')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  retrySync(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
+    return this.ordersService.retrySync(id, user.tenantId);
+  }
+
   @Post('internal/orders/:id/sync-callback')
   @UseGuards(InternalApiKeyGuard)
   handleSyncCallback(

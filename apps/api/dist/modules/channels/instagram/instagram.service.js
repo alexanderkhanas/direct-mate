@@ -33,6 +33,23 @@ let InstagramService = InstagramService_1 = class InstagramService {
         this.telegramService = telegramService;
         this.logger = new common_1.Logger(InstagramService_1.name);
         this.pendingReplies = new Map();
+        this.recentSentMids = new Set();
+        this.autoResumeTimers = new Map();
+    }
+    async onModuleInit() {
+        const stuck = await this.conversationsService.findByStatus(shared_1.ConversationStatus.HumanInControl);
+        for (const conv of stuck) {
+            const elapsed = Date.now() - new Date(conv.updatedAt).getTime();
+            const remaining = 30 * 60 * 1000 - elapsed;
+            if (remaining <= 0) {
+                await this.conversationsService.release(conv.id);
+                this.logger.log(`Startup recovery: auto-resumed conversation ${conv.id}`);
+            }
+            else {
+                this.resetAutoResumeTimer(conv.id, remaining);
+                this.logger.log(`Startup recovery: resuming ${conv.id} in ${Math.round(remaining / 60000)}min`);
+            }
+        }
     }
     async sendMetaMessage(recipientId, text, pageAccessToken) {
         const res = await fetch('https://graph.instagram.com/v21.0/me/messages', {
@@ -50,6 +67,13 @@ let InstagramService = InstagramService_1 = class InstagramService {
             const body = await res.text();
             throw new Error(`Meta API error ${res.status}: ${body}`);
         }
+        const body = await res.json();
+        const mid = body.message_id ?? null;
+        if (mid) {
+            this.recentSentMids.add(mid);
+            setTimeout(() => this.recentSentMids.delete(mid), 5 * 60 * 1000);
+        }
+        return mid;
     }
     verifySignature(rawBody, signature) {
         const appSecret = this.config.get('meta.appSecret') ?? '';
@@ -83,14 +107,48 @@ let InstagramService = InstagramService_1 = class InstagramService {
             return null;
         }
     }
+    extractMediaReference(message) {
+        if (!message)
+            return null;
+        if (message.reply_to?.story?.id) {
+            return { mediaId: message.reply_to.story.id, type: 'story_reply' };
+        }
+        if (message.reply_to?.mid) {
+            return { mediaId: message.reply_to.mid, type: 'post_reply' };
+        }
+        if (message.attachments?.length) {
+            const mediaAttachment = message.attachments.find((a) => a.type === 'image' || a.type === 'video');
+            if (mediaAttachment) {
+                return {
+                    mediaId: mediaAttachment.payload?.url ?? 'unknown',
+                    type: 'customer_photo',
+                };
+            }
+        }
+        return null;
+    }
     async handleWebhook(payload) {
         if (payload.object !== 'instagram')
             return;
         for (const entry of payload.entry) {
             const entryId = entry.id;
             for (const messaging of entry.messaging ?? []) {
-                if (messaging.message?.text && messaging.sender && messaging.recipient) {
-                    await this.handleIncomingMessage(messaging.sender.id, messaging.recipient.id, messaging.message.mid, messaging.message.text);
+                this.logger.debug(`Webhook messaging: is_echo=${messaging.message?.is_echo}, sender=${messaging.sender?.id}, text="${messaging.message?.text?.substring(0, 30)}"`);
+                if (messaging.message?.is_echo) {
+                    const mid = messaging.message.mid;
+                    if (this.recentSentMids.has(mid)) {
+                        this.recentSentMids.delete(mid);
+                        continue;
+                    }
+                    await this.handleManagerReply(messaging, entryId ?? '').catch(err => this.logger.error('handleManagerReply failed', err));
+                    continue;
+                }
+                if (messaging.message && messaging.sender && messaging.recipient) {
+                    const mediaRef = this.extractMediaReference(messaging.message);
+                    const text = messaging.message.text ?? '';
+                    if (!text && !mediaRef)
+                        continue;
+                    await this.handleIncomingMessage(messaging.sender.id, messaging.recipient.id, messaging.message.mid, text, mediaRef);
                     continue;
                 }
                 if (messaging.message_edit && messaging.message_edit.num_edit === 0) {
@@ -124,7 +182,7 @@ let InstagramService = InstagramService_1 = class InstagramService {
             }
         }
     }
-    async handleIncomingMessage(externalUserId, channelAccountId, messageId, messageText) {
+    async handleIncomingMessage(externalUserId, channelAccountId, messageId, messageText, mediaReference) {
         let connection = await this.integrationsService.findByExternalAccountId(channelAccountId, shared_1.ConnectionType.Instagram);
         if (!connection) {
             connection = await this.integrationsService.findByExternalAccountId(externalUserId, shared_1.ConnectionType.Instagram);
@@ -142,7 +200,7 @@ let InstagramService = InstagramService_1 = class InstagramService {
         const existing = this.pendingReplies.get(debounceKey);
         if (existing) {
             clearTimeout(existing.timer);
-            existing.messages.push({ messageId, text: messageText });
+            existing.messages.push({ messageId, text: messageText, mediaReference });
             this.logger.log(`Debounce: added message #${existing.messages.length} for ${debounceKey}, resetting timer`);
             existing.timer = setTimeout(() => this.flushPending(debounceKey), DEBOUNCE_MS);
         }
@@ -150,7 +208,7 @@ let InstagramService = InstagramService_1 = class InstagramService {
             this.logger.log(`Debounce: first message for ${debounceKey}, waiting ${DEBOUNCE_MS / 1000}s`);
             const pending = {
                 timer: setTimeout(() => this.flushPending(debounceKey), DEBOUNCE_MS),
-                messages: [{ messageId, text: messageText }],
+                messages: [{ messageId, text: messageText, mediaReference }],
                 externalUserId,
                 channelAccountId,
                 connection,
@@ -165,6 +223,7 @@ let InstagramService = InstagramService_1 = class InstagramService {
             return;
         this.pendingReplies.delete(debounceKey);
         const combinedText = pending.messages.map((m) => m.text).join('\n');
+        const mediaReference = pending.messages.find((m) => m.mediaReference)?.mediaReference ?? null;
         this.logger.log(`Debounce: processing ${pending.messages.length} message(s) for ${debounceKey}: "${combinedText.substring(0, 100)}"`);
         try {
             await this.processInbound({
@@ -173,6 +232,7 @@ let InstagramService = InstagramService_1 = class InstagramService {
                 channelAccountId: pending.channelAccountId,
                 messageText: combinedText,
                 connection: pending.connection,
+                mediaReference,
             });
         }
         catch (err) {
@@ -201,6 +261,10 @@ let InstagramService = InstagramService_1 = class InstagramService {
             }
         }
         const { conversation, state } = await this.conversationsService.findOrCreateConversation(params.tenantId, customer.id, 'instagram', params.channelAccountId);
+        if (conversation.status === shared_1.ConversationStatus.HumanInControl) {
+            this.logger.log(`Skipping bot reply — conversation ${conversation.id} is human_in_control`);
+            return;
+        }
         const recentMessages = (await this.conversationsService.findById(conversation.id)).messages
             .slice(-10)
             .map((m) => ({ role: m.role, text: m.text }));
@@ -210,6 +274,10 @@ let InstagramService = InstagramService_1 = class InstagramService {
             messageText: params.messageText,
             state,
             recentMessages,
+            mediaReference: params.mediaReference ? {
+                mediaId: params.mediaReference.mediaId,
+                type: params.mediaReference.type,
+            } : undefined,
         });
         if (result.stateUpdate) {
             await this.conversationsService.updateState(conversation.id, result.stateUpdate);
@@ -269,6 +337,42 @@ let InstagramService = InstagramService_1 = class InstagramService {
                 this.logger.error(`Order creation failed for conversation ${conversation.id}`, err.message);
             }
         }
+    }
+    async handleManagerReply(messaging, channelAccountId) {
+        const customerId = messaging.recipient?.id;
+        if (!customerId)
+            return;
+        const connection = await this.integrationsService.findByExternalAccountId(channelAccountId, shared_1.ConnectionType.Instagram);
+        if (!connection)
+            return;
+        const customer = await this.conversationsService.findCustomer(connection.tenantId, 'instagram', customerId);
+        if (!customer)
+            return;
+        const conversation = await this.conversationsService.findConversationByCustomer(connection.tenantId, customer.id, 'instagram', channelAccountId);
+        if (!conversation)
+            return;
+        await this.conversationsService.saveMessage(conversation.id, connection.tenantId, shared_1.MessageDirection.Outbound, shared_1.MessageRole.Manager, messaging.message?.text ?? '', messaging.message?.mid);
+        if (conversation.status !== shared_1.ConversationStatus.HumanInControl) {
+            await this.conversationsService.takeover(conversation.id, 'auto_detected');
+            this.logger.log(`Manager reply detected → conversation ${conversation.id} set to human_in_control`);
+        }
+        this.resetAutoResumeTimer(conversation.id);
+    }
+    resetAutoResumeTimer(conversationId, delayMs = 30 * 60 * 1000) {
+        const existing = this.autoResumeTimers.get(conversationId);
+        if (existing)
+            clearTimeout(existing);
+        const timer = setTimeout(async () => {
+            this.autoResumeTimers.delete(conversationId);
+            try {
+                await this.conversationsService.release(conversationId);
+                this.logger.log(`Auto-resumed conversation ${conversationId} after timeout`);
+            }
+            catch (err) {
+                this.logger.error(`Auto-resume failed for ${conversationId}`, err);
+            }
+        }, delayMs);
+        this.autoResumeTimers.set(conversationId, timer);
     }
 };
 exports.InstagramService = InstagramService;

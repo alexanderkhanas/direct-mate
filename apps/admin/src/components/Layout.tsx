@@ -14,6 +14,8 @@ import {
   FlaskConical,
   ShoppingCart,
   ImagePlus,
+  Store,
+  BarChart3,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { cn } from '../lib/cn';
@@ -36,11 +38,17 @@ export default function Layout() {
   const location = useLocation();
   const navigate = useNavigate();
 
-  const { data: user } = useQuery<{ email: string }>({
+  const { data: user } = useQuery<{ email: string; role: string }>({
     queryKey: ['me'],
     queryFn: () => api.get('/auth/me').then((r) => r.data),
     staleTime: Infinity,
   });
+
+  const isSuperadmin = user?.role === 'superadmin';
+  const adminNav = [
+    { to: '/admin/stores', label: 'Stores', icon: Store },
+    { to: '/admin/analytics', label: 'Analytics', icon: BarChart3 },
+  ];
 
   const handleLogout = () => {
     localStorage.removeItem('accessToken');
@@ -83,6 +91,34 @@ export default function Layout() {
               </Link>
             );
           })}
+
+          {isSuperadmin && (
+            <>
+              <div className="mx-3 my-2 border-t border-gray-200" />
+              <p className="px-3 text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Admin</p>
+              {adminNav.map((item) => {
+                const active = location.pathname.startsWith(item.to);
+                return (
+                  <Link
+                    key={item.to}
+                    to={item.to}
+                    className={cn(
+                      'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors',
+                      active
+                        ? 'bg-indigo-50 text-indigo-700'
+                        : 'text-gray-500 hover:text-indigo-700 hover:bg-indigo-50',
+                    )}
+                  >
+                    <item.icon
+                      className={cn('h-4 w-4', active ? 'text-indigo-600' : 'text-gray-400')}
+                      strokeWidth={active ? 2.5 : 2}
+                    />
+                    {item.label}
+                  </Link>
+                );
+              })}
+            </>
+          )}
         </nav>
 
         {/* User + sign out */}

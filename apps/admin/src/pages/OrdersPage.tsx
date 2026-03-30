@@ -74,6 +74,13 @@ function OrderRow({ order }: { order: Order }) {
     },
   });
 
+  const retrySyncMutation = useMutation({
+    mutationFn: () => api.post(`/orders/${order.id}/retry-sync`).then((r) => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
+    },
+  });
+
   const status = statusConfig[order.status] ?? { label: order.status, variant: 'default' as const };
   const syncStatus = syncStatusConfig[order.externalSyncStatus] ?? {
     label: order.externalSyncStatus,
@@ -123,8 +130,16 @@ function OrderRow({ order }: { order: Order }) {
           </div>
 
           {/* Sync */}
-          <div>
+          <div className="flex items-center gap-1.5">
             <Badge variant={syncStatus.variant}>{syncStatus.label}</Badge>
+            {order.externalSyncStatus === 'failed' && (
+              <button
+                onClick={(e) => { e.stopPropagation(); retrySyncMutation.mutate(); }}
+                className="text-[10px] text-blue-500 hover:text-blue-700"
+              >
+                {retrySyncMutation.isPending ? '...' : 'Retry'}
+              </button>
+            )}
           </div>
 
           {/* Date */}

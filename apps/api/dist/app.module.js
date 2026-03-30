@@ -29,6 +29,7 @@ const screenshot_training_module_1 = require("./modules/screenshot-training/scre
 const engine_module_1 = require("./modules/engine/engine.module");
 const testing_module_1 = require("./modules/testing/testing.module");
 const notifications_module_1 = require("./modules/notifications/notifications.module");
+const admin_module_1 = require("./modules/admin/admin.module");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
@@ -59,6 +60,7 @@ exports.AppModule = AppModule = __decorate([
             engine_module_1.EngineModule,
             testing_module_1.TestingModule,
             notifications_module_1.NotificationsModule,
+            admin_module_1.AdminModule,
         ],
     })
 ], AppModule);

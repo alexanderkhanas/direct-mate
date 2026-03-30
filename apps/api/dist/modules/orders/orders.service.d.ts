@@ -24,6 +24,9 @@ export declare class OrdersService {
     constructor(orderRepo: Repository<Order>, orderItemRepo: Repository<OrderItem>, sessionRepo: Repository<CheckoutSession>, checkoutItemRepo: Repository<CheckoutItem>, customerInfoRepo: Repository<CheckoutCustomerInfo>, settingsRepo: Repository<TenantSettings>, connectionRepo: Repository<Connection>, dataSource: DataSource, config: ConfigService);
     createFromConversation(payload: OrderPayload): Promise<Order>;
     triggerExternalSync(order: Order): Promise<void>;
+    retrySync(orderId: string, tenantId: string): Promise<{
+        ok: boolean;
+    }>;
     handleSyncCallback(orderId: string, callback: SyncCallbackDto): Promise<void>;
     createDraft(checkoutSessionId: string): Promise<Order>;
     private notifyManager;

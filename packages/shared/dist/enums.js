@@ -12,6 +12,7 @@ var UserRole;
     UserRole["Owner"] = "owner";
     UserRole["Manager"] = "manager";
     UserRole["Admin"] = "admin";
+    UserRole["Superadmin"] = "superadmin";
 })(UserRole || (exports.UserRole = UserRole = {}));
 var ConnectionType;
 (function (ConnectionType) {

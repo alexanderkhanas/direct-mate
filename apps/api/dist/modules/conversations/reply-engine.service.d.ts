@@ -11,6 +11,7 @@ import { TemplateEngineService } from '../engine/template-engine.service';
 import { PolicyEngineService } from '../engine/policy-engine.service';
 import { ReplyDecision } from '@direct-mate/shared';
 import { OrderPayload } from '../orders/interfaces/order-payload.interface';
+import { InstagramContentService } from '../channels/instagram/instagram-content.service';
 export interface ReplyEngineInput {
     tenantId: string;
     conversationId: string;
@@ -20,6 +21,10 @@ export interface ReplyEngineInput {
         role: string;
         text: string | null;
     }>;
+    mediaReference?: {
+        mediaId: string;
+        type: string;
+    };
 }
 export interface ReplyEngineOutput {
     decision: ReplyDecision;
@@ -44,11 +49,12 @@ export declare class ReplyEngineService {
     private readonly templateEngine;
     private readonly policyEngine;
     private readonly config;
+    private readonly instagramContentService;
     private readonly logger;
     private readonly openai;
     private readonly model;
     private logToFile;
-    constructor(settingsRepo: Repository<TenantSettings>, examplesRepo: Repository<ManagerExample>, storeConfigRepo: Repository<StoreConfig>, availabilityService: AvailabilityService, auditService: AuditService, classifierService: ClassifierService, templateEngine: TemplateEngineService, policyEngine: PolicyEngineService, config: ConfigService);
+    constructor(settingsRepo: Repository<TenantSettings>, examplesRepo: Repository<ManagerExample>, storeConfigRepo: Repository<StoreConfig>, availabilityService: AvailabilityService, auditService: AuditService, classifierService: ClassifierService, templateEngine: TemplateEngineService, policyEngine: PolicyEngineService, config: ConfigService, instagramContentService: InstagramContentService);
     process(input: ReplyEngineInput): Promise<ReplyEngineOutput>;
     private scenarioToAction;
     private resolveShortReply;

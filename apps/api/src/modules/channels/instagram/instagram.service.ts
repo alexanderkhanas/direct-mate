@@ -567,9 +567,9 @@ export class InstagramService implements OnModuleInit {
       messaging.message?.text ?? '', messaging.message?.mid,
     );
 
-    // Set conversation to human_in_control
+    // Set conversation to human_in_control (manager already took over, no handoff needed)
     if (conversation.status !== ConversationStatus.HumanInControl) {
-      await this.conversationsService.escalate(conversation.id, 'manager_reply_detected');
+      await this.conversationsService.takeover(conversation.id, 'auto_detected');
       this.logger.log(`Manager reply detected → conversation ${conversation.id} set to human_in_control`);
     }
 

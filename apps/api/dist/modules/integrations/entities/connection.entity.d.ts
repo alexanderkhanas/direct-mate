@@ -7,6 +7,7 @@ export declare class Connection {
     externalAccountId: string | null;
     accessTokenEncrypted: string | null;
     refreshTokenEncrypted: string | null;
+    tokenExpiresAt: Date | null;
     metadata: Record<string, unknown> | null;
     lastSyncAt: Date | null;
     createdAt: Date;

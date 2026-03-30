@@ -258,6 +258,44 @@ let AvailabilityService = class AvailabilityService {
             .take(20)
             .getMany();
     }
+    async findAllByProductId(productId, variantId) {
+        const qb = this.variantRepo
+            .createQueryBuilder('v')
+            .innerJoinAndSelect('v.product', 'p')
+            .leftJoinAndSelect('v.stockBalance', 's')
+            .where('p.id = :productId', { productId })
+            .andWhere('p.status = :status', { status: 'active' })
+            .andWhere('v.active = true');
+        if (variantId) {
+            qb.andWhere('v.id = :variantId', { variantId });
+        }
+        const variants = await qb.take(20).getMany();
+        if (variants.length === 0)
+            return [];
+        const productMap = new Map();
+        for (const v of variants) {
+            const pid = v.product.id;
+            if (!productMap.has(pid)) {
+                productMap.set(pid, {
+                    product: { id: pid, title: v.product.title },
+                    variants: [],
+                });
+            }
+            const stock = v.stockBalance;
+            const effectiveAvailable = stock
+                ? stock.availableQty - stock.reservedQty - stock.pendingCheckoutQty
+                : 0;
+            productMap.get(pid).variants.push({
+                id: v.id,
+                size: v.size,
+                color: v.color,
+                price: Number(v.price),
+                currency: v.currency,
+                effectiveAvailable,
+            });
+        }
+        return Array.from(productMap.values());
+    }
     async getByProductId(productId, variantId) {
         const qb = this.variantRepo
             .createQueryBuilder('v')

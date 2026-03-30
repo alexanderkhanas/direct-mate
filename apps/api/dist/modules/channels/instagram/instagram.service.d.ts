@@ -1,3 +1,4 @@
+import { OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ConversationsService } from '../../conversations/conversations.service';
 import { ReplyEngineService } from '../../conversations/reply-engine.service';
@@ -14,7 +15,20 @@ interface MetaMessagingEvent {
     };
     message?: {
         mid: string;
-        text: string;
+        text?: string;
+        is_echo?: boolean;
+        reply_to?: {
+            mid?: string;
+            story?: {
+                id: string;
+            };
+        };
+        attachments?: Array<{
+            type: string;
+            payload?: {
+                url?: string;
+            };
+        }>;
     };
     message_edit?: {
         mid: string;
@@ -31,7 +45,7 @@ interface MetaWebhookPayload {
     object: string;
     entry: MetaMessagingEntry[];
 }
-export declare class InstagramService {
+export declare class InstagramService implements OnModuleInit {
     private readonly config;
     private readonly conversationsService;
     private readonly replyEngineService;
@@ -41,14 +55,20 @@ export declare class InstagramService {
     private readonly telegramService;
     private readonly logger;
     private readonly pendingReplies;
+    private readonly recentSentMids;
+    private readonly autoResumeTimers;
     constructor(config: ConfigService, conversationsService: ConversationsService, replyEngineService: ReplyEngineService, integrationsService: IntegrationsService, ordersService: OrdersService, cryptoService: CryptoService, telegramService: TelegramService);
+    onModuleInit(): Promise<void>;
     private sendMetaMessage;
     verifySignature(rawBody: Buffer, signature: string): boolean;
     verifyWebhook(mode: string, token: string, challenge: string): string;
     private fetchMessageFromApi;
+    private extractMediaReference;
     handleWebhook(payload: MetaWebhookPayload): Promise<void>;
     private handleIncomingMessage;
     private flushPending;
     private processInbound;
+    private handleManagerReply;
+    private resetAutoResumeTimer;
 }
 export {};

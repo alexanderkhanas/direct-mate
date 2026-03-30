@@ -19,5 +19,8 @@ export declare class OrdersController {
     updateStatus(user: JwtPayload, id: string, body: {
         status: OrderStatus;
     }): Promise<import("./entities/order.entity").Order>;
+    retrySync(user: JwtPayload, id: string): Promise<{
+        ok: boolean;
+    }>;
     handleSyncCallback(orderId: string, callback: SyncCallbackDto): Promise<void>;
 }

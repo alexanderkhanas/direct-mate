@@ -30,6 +30,10 @@ __decorate([
     __metadata("design:type", Object)
 ], Product.prototype, "externalProductId", void 0);
 __decorate([
+    (0, typeorm_1.Column)({ type: 'text', nullable: true }),
+    __metadata("design:type", Object)
+], Product.prototype, "sku", void 0);
+__decorate([
     (0, typeorm_1.Column)({ type: 'text' }),
     __metadata("design:type", String)
 ], Product.prototype, "title", void 0);

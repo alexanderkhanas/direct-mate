@@ -11,31 +11,50 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 var __param = (this && this.__param) || function (paramIndex, decorator) {
     return function (target, key) { decorator(target, key, paramIndex); }
 };
+var IntegrationsService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.IntegrationsService = void 0;
 const common_1 = require("@nestjs/common");
 const typeorm_1 = require("@nestjs/typeorm");
+const config_1 = require("@nestjs/config");
 const typeorm_2 = require("typeorm");
+const crypto = require("crypto");
 const connection_entity_1 = require("./entities/connection.entity");
 const sync_job_entity_1 = require("./entities/sync-job.entity");
+const telegram_connect_token_entity_1 = require("../notifications/entities/telegram-connect-token.entity");
 const shared_1 = require("@direct-mate/shared");
 const crypto_service_1 = require("../../common/crypto.service");
-let IntegrationsService = class IntegrationsService {
-    constructor(connectionRepo, syncJobRepo, crypto) {
+let IntegrationsService = IntegrationsService_1 = class IntegrationsService {
+    constructor(connectionRepo, syncJobRepo, connectTokenRepo, crypto, config) {
         this.connectionRepo = connectionRepo;
         this.syncJobRepo = syncJobRepo;
+        this.connectTokenRepo = connectTokenRepo;
         this.crypto = crypto;
+        this.config = config;
+        this.logger = new common_1.Logger(IntegrationsService_1.name);
         this.ALLOWED_PURPOSES = ['create_order', 'sync_catalog', 'sync_stock', 'health_check'];
     }
     async connectInstagram(tenantId, pageId, accessToken, accountName) {
+        let finalToken = accessToken;
+        let tokenExpiresAt = null;
+        try {
+            const exchanged = await this.exchangeForLongLivedToken(accessToken);
+            finalToken = exchanged.token;
+            tokenExpiresAt = exchanged.expiresAt;
+            this.logger.log(`Instagram token exchanged: expires ${tokenExpiresAt.toISOString()}`);
+        }
+        catch (err) {
+            this.logger.warn(`Token exchange failed, using original token: ${err.message}`);
+        }
+        const encrypted = this.crypto.encrypt(finalToken);
         let conn = await this.connectionRepo.findOne({
             where: { tenantId, type: shared_1.ConnectionType.Instagram },
         });
-        const encrypted = this.crypto.encrypt(accessToken);
         if (conn) {
             await this.connectionRepo.update(conn.id, {
                 externalAccountId: pageId,
                 accessTokenEncrypted: encrypted,
+                tokenExpiresAt,
                 status: shared_1.ConnectionStatus.Connected,
                 metadata: accountName ? { accountName } : (conn.metadata ?? null),
             });
@@ -47,6 +66,7 @@ let IntegrationsService = class IntegrationsService {
             status: shared_1.ConnectionStatus.Connected,
             externalAccountId: pageId,
             accessTokenEncrypted: encrypted,
+            tokenExpiresAt,
             metadata: accountName ? { accountName } : null,
         });
         return this.connectionRepo.save(conn);
@@ -192,14 +212,121 @@ let IntegrationsService = class IntegrationsService {
             metadata,
         };
     }
+    async createOAuthState(tenantId) {
+        const token = crypto.randomBytes(16).toString('hex');
+        await this.connectTokenRepo.save(this.connectTokenRepo.create({
+            tenantId,
+            token,
+            expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+        }));
+        return token;
+    }
+    async validateOAuthState(state) {
+        const record = await this.connectTokenRepo.findOne({
+            where: { token: state, usedAt: (0, typeorm_2.IsNull)(), expiresAt: (0, typeorm_2.MoreThan)(new Date()) },
+        });
+        if (!record)
+            return null;
+        record.usedAt = new Date();
+        await this.connectTokenRepo.save(record);
+        return record.tenantId;
+    }
+    async exchangeCodeForToken(code) {
+        const appId = this.config.get('meta.appId');
+        const appSecret = this.config.get('meta.appSecret');
+        const redirectUri = this.config.get('meta.oauthRedirectUri');
+        const body = new URLSearchParams({
+            client_id: appId ?? '',
+            client_secret: appSecret ?? '',
+            grant_type: 'authorization_code',
+            redirect_uri: redirectUri ?? '',
+            code,
+        });
+        const res = await fetch('https://api.instagram.com/oauth/access_token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body.toString(),
+        });
+        if (!res.ok) {
+            const errBody = await res.text();
+            throw new Error(`Code exchange failed: ${res.status} — ${errBody}`);
+        }
+        const data = await res.json();
+        return { accessToken: data.access_token, userId: String(data.user_id) };
+    }
+    async exchangeForLongLivedToken(shortLivedToken) {
+        const appSecret = this.config.get('meta.appSecret');
+        if (!appSecret)
+            throw new Error('META_APP_SECRET not configured');
+        const url = `https://graph.instagram.com/access_token?grant_type=ig_exchange_token&client_secret=${appSecret}&access_token=${shortLivedToken}`;
+        const res = await fetch(url);
+        if (!res.ok) {
+            const body = await res.text();
+            throw new Error(`Token exchange failed: ${res.status} — ${body}`);
+        }
+        const data = await res.json();
+        return {
+            token: data.access_token,
+            expiresAt: new Date(Date.now() + data.expires_in * 1000),
+        };
+    }
+    async refreshLongLivedToken(connectionId) {
+        const conn = await this.connectionRepo.findOne({ where: { id: connectionId } });
+        if (!conn || !conn.accessTokenEncrypted) {
+            throw new common_1.NotFoundException('Connection not found or no token');
+        }
+        const currentToken = this.crypto.decrypt(conn.accessTokenEncrypted);
+        const url = `https://graph.instagram.com/refresh_access_token?grant_type=ig_refresh_token&access_token=${currentToken}`;
+        const res = await fetch(url);
+        if (!res.ok) {
+            const body = await res.text();
+            this.logger.error(`Token refresh failed for connection ${connectionId}: ${res.status} — ${body}`);
+            throw new Error(`Token refresh failed: ${res.status}`);
+        }
+        const data = await res.json();
+        const encrypted = this.crypto.encrypt(data.access_token);
+        const tokenExpiresAt = new Date(Date.now() + data.expires_in * 1000);
+        await this.connectionRepo.update(connectionId, {
+            accessTokenEncrypted: encrypted,
+            tokenExpiresAt,
+        });
+        this.logger.log(`Token refreshed for connection ${connectionId}, expires ${tokenExpiresAt.toISOString()}`);
+    }
+    async refreshExpiringTokens() {
+        const sevenDaysFromNow = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+        const expiring = await this.connectionRepo.find({
+            where: {
+                type: shared_1.ConnectionType.Instagram,
+                status: shared_1.ConnectionStatus.Connected,
+                tokenExpiresAt: (0, typeorm_2.LessThan)(sevenDaysFromNow),
+            },
+        });
+        let refreshed = 0;
+        let failed = 0;
+        for (const conn of expiring) {
+            try {
+                await this.refreshLongLivedToken(conn.id);
+                refreshed++;
+            }
+            catch (err) {
+                this.logger.error(`Failed to refresh token for connection ${conn.id}`, err.message);
+                failed++;
+            }
+        }
+        this.logger.log(`Token refresh: ${refreshed} refreshed, ${failed} failed out of ${expiring.length} expiring`);
+        return { refreshed, failed };
+    }
 };
 exports.IntegrationsService = IntegrationsService;
-exports.IntegrationsService = IntegrationsService = __decorate([
+exports.IntegrationsService = IntegrationsService = IntegrationsService_1 = __decorate([
     (0, common_1.Injectable)(),
     __param(0, (0, typeorm_1.InjectRepository)(connection_entity_1.Connection)),
     __param(1, (0, typeorm_1.InjectRepository)(sync_job_entity_1.SyncJob)),
+    __param(2, (0, typeorm_1.InjectRepository)(telegram_connect_token_entity_1.TelegramConnectToken)),
     __metadata("design:paramtypes", [typeorm_2.Repository,
         typeorm_2.Repository,
-        crypto_service_1.CryptoService])
+        typeorm_2.Repository,
+        crypto_service_1.CryptoService,
+        config_1.ConfigService])
 ], IntegrationsService);
 //# sourceMappingURL=integrations.service.js.map

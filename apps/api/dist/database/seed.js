@@ -43,6 +43,27 @@ async function seed() {
     else {
         console.log(`- Settings already exist`);
     }
+    const systemTenantId = '00000000-0000-0000-0000-000000000000';
+    const systemTenantResult = await data_source_1.AppDataSource.query(`SELECT id FROM tenants WHERE id = $1 LIMIT 1`, [systemTenantId]);
+    if (systemTenantResult.length === 0) {
+        await data_source_1.AppDataSource.query(`INSERT INTO tenants (id, name, slug, business_type, timezone, is_active)
+       VALUES ($1, $2, $3, $4, $5, $6)`, [systemTenantId, 'System', 'system', 'fashion', 'Europe/Kyiv', true]);
+        console.log(`✓ System tenant created: ${systemTenantId}`);
+    }
+    else {
+        console.log(`- System tenant already exists: ${systemTenantId}`);
+    }
+    const superadminEmail = 'superadmin@directmate.app';
+    const superadminResult = await data_source_1.AppDataSource.query(`SELECT id FROM users WHERE email = $1 LIMIT 1`, [superadminEmail]);
+    if (superadminResult.length === 0) {
+        const superadminHash = await bcrypt.hash('admin123', 10);
+        await data_source_1.AppDataSource.query(`INSERT INTO users (tenant_id, email, password_hash, role, is_active)
+       VALUES ($1, $2, $3, $4, $5)`, [systemTenantId, superadminEmail, superadminHash, 'superadmin', true]);
+        console.log(`✓ Superadmin user created: ${superadminEmail} / admin123`);
+    }
+    else {
+        console.log(`- Superadmin user already exists: ${superadminEmail}`);
+    }
     await data_source_1.AppDataSource.destroy();
     console.log('\nDone.');
 }

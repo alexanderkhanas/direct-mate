@@ -1,3 +1,5 @@
+import { ConfigService } from '@nestjs/config';
+import { Response } from 'express';
 import { JwtPayload } from '../../common/decorators/current-user.decorator';
 import { IntegrationsService } from './integrations.service';
 declare class ConnectInstagramDto {
@@ -43,5 +45,15 @@ export declare class InternalConnectionsController {
         shopDomain?: undefined;
         apiVersion?: undefined;
     }>;
+}
+export declare class InstagramOAuthController {
+    private readonly integrationsService;
+    private readonly config;
+    private readonly logger;
+    constructor(integrationsService: IntegrationsService, config: ConfigService);
+    start(user: JwtPayload): Promise<{
+        redirectUrl: string;
+    }>;
+    callback(code: string, state: string, res: Response): Promise<void>;
 }
 export {};

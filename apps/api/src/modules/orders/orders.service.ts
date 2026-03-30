@@ -254,6 +254,19 @@ export class OrdersService {
     }
   }
 
+  // ─── Retry sync ────────────────────────────────────────────────
+
+  async retrySync(orderId: string, tenantId: string): Promise<{ ok: boolean }> {
+    const order = await this.orderRepo.findOne({ where: { id: orderId, tenantId } });
+    if (!order) throw new NotFoundException(`Order ${orderId} not found`);
+
+    await this.orderRepo.update(orderId, { externalSyncStatus: 'none' } as any);
+    this.triggerExternalSync(order).catch(err =>
+      this.logger.error(`Retry sync failed for order ${orderId}`, (err as Error).message),
+    );
+    return { ok: true };
+  }
+
   // ─── Sync callback from n8n ────────────────────────────────────
 
   async handleSyncCallback(

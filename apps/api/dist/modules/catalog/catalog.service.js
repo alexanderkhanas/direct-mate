@@ -94,12 +94,14 @@ let CatalogService = CatalogService_1 = class CatalogService {
         const products = await qb.getMany();
         return products.map((p) => ({
             id: p.id,
+            sku: p.sku,
             title: p.title,
             category: p.category,
             variantCount: p.variants?.length ?? 0,
             updatedAt: p.updatedAt,
             variants: (p.variants ?? []).map((v) => ({
                 id: v.id,
+                sku: v.sku,
                 size: v.size,
                 color: v.color,
                 price: v.price,
@@ -170,6 +172,21 @@ let CatalogService = CatalogService_1 = class CatalogService {
             catch (err) {
                 errors.push(`product ${p.externalProductId}: ${err.message}`);
                 skipped++;
+            }
+        }
+        const syncedExternalIds = products.map(p => p.externalProductId);
+        if (syncedExternalIds.length > 0) {
+            const deactivated = await this.productRepo
+                .createQueryBuilder()
+                .update()
+                .set({ status: shared_1.ProductStatus.Archived })
+                .where('tenant_id = :tenantId', { tenantId })
+                .andWhere('status = :active', { active: shared_1.ProductStatus.Active })
+                .andWhere('external_product_id IS NOT NULL')
+                .andWhere('external_product_id NOT IN (:...ids)', { ids: syncedExternalIds })
+                .execute();
+            if (deactivated.affected) {
+                this.logger.log(`Catalog cleanup: deactivated ${deactivated.affected} stale products`);
             }
         }
         this.logger.log(`Catalog import: created=${created} updated=${updated} skipped=${skipped} errors=${errors.length}`);

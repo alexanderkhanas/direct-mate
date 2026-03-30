@@ -189,6 +189,14 @@ let OrdersService = OrdersService_1 = class OrdersService {
             this.logger.error(`External sync trigger failed for order ${order.id}`, err.message);
         }
     }
+    async retrySync(orderId, tenantId) {
+        const order = await this.orderRepo.findOne({ where: { id: orderId, tenantId } });
+        if (!order)
+            throw new common_1.NotFoundException(`Order ${orderId} not found`);
+        await this.orderRepo.update(orderId, { externalSyncStatus: 'none' });
+        this.triggerExternalSync(order).catch(err => this.logger.error(`Retry sync failed for order ${orderId}`, err.message));
+        return { ok: true };
+    }
     async handleSyncCallback(orderId, callback) {
         const order = await this.orderRepo.findOne({ where: { id: orderId } });
         if (!order) {
