@@ -177,6 +177,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 };
             }
             if (classification.slotAction === 'new_inquiry' ||
+                classification.slotAction === 'adds_to_cart' ||
                 ['product_inquiry', 'ready_to_order', 'category_browse', 'greeting'].includes(classification.primaryIntent)) {
                 memory.selectedProductId = undefined;
                 memory.selectedProductTitle = undefined;
@@ -188,8 +189,18 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 memory.lastAction = undefined;
                 memory.awaitingField = undefined;
                 memory.orderCreated = undefined;
+                memory.cartItems = undefined;
                 this.logger.log('State reset: new inquiry after completed order');
             }
+        }
+        if (classification.slotAction === 'adds_to_cart' && !memory.orderCreated) {
+            memory.selectedProductId = undefined;
+            memory.selectedProductTitle = undefined;
+            memory.selectedVariantId = undefined;
+            memory.selectedVariantName = undefined;
+            memory.selectionState = undefined;
+            memory.availableVariants = undefined;
+            this.logger.log('adds_to_cart: clearing selection for new product, keeping cart');
         }
         let mediaProductData;
         if (input.mediaReference) {
@@ -276,19 +287,62 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             memory.selectionState === 'awaiting_confirmation' &&
             memory.selectedProductId &&
             memory.selectedVariantId) {
-            memory.selectionState = 'confirmed';
-            classification.primaryIntent = 'ready_to_order';
-            classification.recommendedAction = 'start_checkout';
-            classification.conversationStage = 'checkout_started';
-            this.logger.log('5.5a FIRED: Selection fully confirmed, proceeding to checkout');
+            if (!memory.cartItems)
+                memory.cartItems = [];
+            let itemPrice = 0;
+            let itemCurrency = 'UAH';
+            const currentProduct = productData?.find(p => p.product.id === memory.selectedProductId);
+            const currentVariant = currentProduct?.variants.find(v => v.id === memory.selectedVariantId);
+            if (currentVariant) {
+                itemPrice = currentVariant.price;
+                itemCurrency = currentVariant.currency;
+            }
+            else if (Array.isArray(memory.availableVariants)) {
+                const memVariant = memory.availableVariants.find(v => v.id === memory.selectedVariantId);
+                if (memVariant?.price) {
+                    itemPrice = memVariant.price;
+                    itemCurrency = memVariant.currency ?? 'UAH';
+                }
+            }
+            if (itemPrice === 0 && memory.lastPresentedProducts?.length) {
+                const priceStr = memory.lastPresentedProducts[0].price;
+                const priceMatch = priceStr?.match(/[\d.]+/);
+                if (priceMatch)
+                    itemPrice = parseFloat(priceMatch[0]);
+            }
+            memory.cartItems.push({
+                productId: memory.selectedProductId,
+                variantId: memory.selectedVariantId,
+                externalProductId: null,
+                externalVariantId: null,
+                title: memory.selectedProductTitle,
+                variantName: memory.selectedVariantName,
+                price: itemPrice,
+                currency: itemCurrency,
+            });
+            memory.selectionState = 'cart_item_added';
+            classification.primaryIntent = 'confirm_choice';
+            classification.recommendedAction = 'ask_continue_or_checkout';
+            this.logger.log(`5.5a FIRED: Item added to cart: ${memory.selectedProductTitle} (${memory.selectedVariantName}). Cart has ${memory.cartItems.length} items.`);
             this.logToFile({
-                event: 'selection_confirmed',
+                event: 'cart_item_added',
                 conversationId: input.conversationId,
                 selectionState: memory.selectionState,
                 selectedProductId: memory.selectedProductId,
                 selectedVariantId: memory.selectedVariantId,
-                action: 'start_checkout',
+                cartSize: memory.cartItems.length,
+                action: 'ask_continue_or_checkout',
             });
+        }
+        if ((classification.slotAction === 'confirmation' || classification.primaryIntent === 'ready_to_order') &&
+            memory.selectionState === 'cart_item_added' &&
+            memory.cartItems?.length &&
+            memory.lastAction === 'asked_continue_or_checkout') {
+            memory.selectionState = 'confirmed';
+            classification.primaryIntent = 'ready_to_order';
+            classification.recommendedAction = 'start_checkout';
+            classification.conversationStage = 'checkout_started';
+            this.logger.log('Cart checkout: proceeding with ' + memory.cartItems.length + ' items');
         }
         if (classification.slotAction === 'confirmation' &&
             memory.selectionState === 'awaiting_confirmation' &&
@@ -567,6 +621,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             out_of_stock: 'show_products',
             ask_variant_choice: 'ask_variant_choice',
             product_not_found: 'ai_fallback_clarification',
+            ask_continue_or_checkout: 'ask_continue_or_checkout',
         };
         return map[scenario] ?? scenario;
     }
@@ -759,55 +814,73 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 memory.lastAction = 'confirmed_order';
                 memory.awaitingField = 'order_finalized';
                 break;
+            case 'ask_continue_or_checkout':
+                memory.lastAction = 'asked_continue_or_checkout';
+                memory.awaitingField = 'add_more_or_checkout';
+                break;
         }
     }
     buildOrderPayload(input, memory, classification) {
-        const productId = memory.selectedProductId;
-        const variantId = memory.selectedVariantId;
-        if (!productId || !variantId) {
-            this.logger.warn(`Cannot build order payload: missing productId=${productId} variantId=${variantId}`);
-            return null;
+        const cartItems = memory.cartItems ?? [];
+        if (cartItems.length === 0) {
+            const productId = memory.selectedProductId;
+            const variantId = memory.selectedVariantId;
+            if (!productId || !variantId) {
+                this.logger.warn(`Cannot build order payload: no cart items and missing productId=${productId} variantId=${variantId}`);
+                return null;
+            }
+            let unitPrice = 0;
+            let externalProductId = null;
+            let externalVariantId = null;
+            const variants = memory.availableVariants;
+            if (Array.isArray(variants)) {
+                const matchedVariant = variants.find((v) => v.id === variantId);
+                if (matchedVariant) {
+                    unitPrice = matchedVariant.price ?? 0;
+                    externalProductId = matchedVariant.externalProductId ?? null;
+                    externalVariantId = matchedVariant.externalVariantId ?? null;
+                }
+            }
+            if (unitPrice === 0 && memory.lastPresentedProducts?.length) {
+                const priceStr = memory.lastPresentedProducts[0].price;
+                const priceMatch = priceStr?.match(/[\d.]+/);
+                if (priceMatch) {
+                    unitPrice = parseFloat(priceMatch[0]);
+                }
+            }
+            cartItems.push({
+                productId,
+                variantId,
+                externalProductId,
+                externalVariantId,
+                title: memory.selectedProductTitle ?? '',
+                variantName: memory.selectedVariantName ?? '',
+                price: unitPrice,
+                currency: 'UAH',
+            });
         }
+        if (cartItems.length === 0)
+            return null;
         const customerName = classification.entities.customerName ?? '';
         const phone = classification.entities.phone ?? '';
         const city = classification.entities.city ?? '';
         const deliveryBranch = classification.entities.deliveryBranch ?? '';
-        let unitPrice = 0;
-        let externalProductId = null;
-        let externalVariantId = null;
-        const variants = memory.availableVariants;
-        if (Array.isArray(variants)) {
-            const matchedVariant = variants.find((v) => v.id === variantId);
-            if (matchedVariant) {
-                unitPrice = matchedVariant.price ?? 0;
-                externalProductId = matchedVariant.externalProductId ?? null;
-                externalVariantId = matchedVariant.externalVariantId ?? null;
-            }
-        }
-        if (unitPrice === 0 && memory.lastPresentedProducts?.length) {
-            const priceStr = memory.lastPresentedProducts[0].price;
-            const priceMatch = priceStr?.match(/[\d.]+/);
-            if (priceMatch) {
-                unitPrice = parseFloat(priceMatch[0]);
-            }
-        }
+        const items = cartItems.map(item => ({
+            productId: item.productId,
+            variantId: item.variantId,
+            externalProductId: item.externalProductId,
+            externalVariantId: item.externalVariantId,
+            title: item.title,
+            variantTitle: item.variantName,
+            quantity: 1,
+            unitPrice: item.price,
+            currency: item.currency,
+        }));
         return {
             tenantId: input.tenantId,
             conversationId: input.conversationId,
             customerId: input.state.conversationId,
-            items: [
-                {
-                    productId,
-                    variantId,
-                    externalProductId,
-                    externalVariantId,
-                    title: memory.selectedProductTitle ?? '',
-                    variantTitle: memory.selectedVariantName ?? '',
-                    quantity: 1,
-                    unitPrice,
-                    currency: 'UAH',
-                },
-            ],
+            items,
             customerInfo: {
                 fullName: customerName,
                 phone,

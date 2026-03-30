@@ -239,9 +239,10 @@ export class ReplyEngineService {
 
       if (
         classification.slotAction === 'new_inquiry' ||
+        classification.slotAction === 'adds_to_cart' ||
         ['product_inquiry', 'ready_to_order', 'category_browse', 'greeting'].includes(classification.primaryIntent)
       ) {
-        // New inquiry after completed order → reset state
+        // New inquiry after completed order → reset ALL state including cart
         memory.selectedProductId = undefined;
         memory.selectedProductTitle = undefined;
         memory.selectedVariantId = undefined;
@@ -252,8 +253,21 @@ export class ReplyEngineService {
         memory.lastAction = undefined;
         memory.awaitingField = undefined;
         memory.orderCreated = undefined;
+        memory.cartItems = undefined;
         this.logger.log('State reset: new inquiry after completed order');
       }
+    }
+
+    // 4.6 Handle adds_to_cart: customer wants to add another product to cart
+    if (classification.slotAction === 'adds_to_cart' && !memory.orderCreated) {
+      // Keep cartItems, reset current selection for new product
+      memory.selectedProductId = undefined;
+      memory.selectedProductTitle = undefined;
+      memory.selectedVariantId = undefined;
+      memory.selectedVariantName = undefined;
+      memory.selectionState = undefined;
+      memory.availableVariants = undefined;
+      this.logger.log('adds_to_cart: clearing selection for new product, keeping cart');
     }
 
     // 4.7 Media reference resolution
@@ -390,19 +404,70 @@ export class ReplyEngineService {
       memory.selectedProductId &&
       memory.selectedVariantId
     ) {
-      memory.selectionState = 'confirmed';
-      classification.primaryIntent = 'ready_to_order';
-      classification.recommendedAction = 'start_checkout';
-      classification.conversationStage = 'checkout_started';
-      this.logger.log('5.5a FIRED: Selection fully confirmed, proceeding to checkout');
+      // Add confirmed item to cart
+      if (!memory.cartItems) memory.cartItems = [];
+
+      // Try to find price: first from productData (current turn), then from memory variants, then from lastPresentedProducts
+      let itemPrice = 0;
+      let itemCurrency = 'UAH';
+      const currentProduct = productData?.find(p => p.product.id === memory.selectedProductId);
+      const currentVariant = currentProduct?.variants.find(v => v.id === memory.selectedVariantId);
+      if (currentVariant) {
+        itemPrice = currentVariant.price;
+        itemCurrency = currentVariant.currency;
+      } else if (Array.isArray(memory.availableVariants)) {
+        const memVariant = (memory.availableVariants as any[]).find(v => v.id === memory.selectedVariantId);
+        if (memVariant?.price) {
+          itemPrice = memVariant.price;
+          itemCurrency = memVariant.currency ?? 'UAH';
+        }
+      }
+      if (itemPrice === 0 && memory.lastPresentedProducts?.length) {
+        const priceStr = memory.lastPresentedProducts[0].price;
+        const priceMatch = priceStr?.match(/[\d.]+/);
+        if (priceMatch) itemPrice = parseFloat(priceMatch[0]);
+      }
+
+      memory.cartItems.push({
+        productId: memory.selectedProductId!,
+        variantId: memory.selectedVariantId!,
+        externalProductId: null, // resolved at order creation from DB
+        externalVariantId: null,
+        title: memory.selectedProductTitle!,
+        variantName: memory.selectedVariantName!,
+        price: itemPrice,
+        currency: itemCurrency,
+      });
+
+      // Ask if customer wants to add more items or proceed to checkout
+      memory.selectionState = 'cart_item_added';
+      classification.primaryIntent = 'confirm_choice';
+      classification.recommendedAction = 'ask_continue_or_checkout';
+      this.logger.log(`5.5a FIRED: Item added to cart: ${memory.selectedProductTitle} (${memory.selectedVariantName}). Cart has ${memory.cartItems.length} items.`);
       this.logToFile({
-        event: 'selection_confirmed',
+        event: 'cart_item_added',
         conversationId: input.conversationId,
         selectionState: memory.selectionState,
         selectedProductId: memory.selectedProductId,
         selectedVariantId: memory.selectedVariantId,
-        action: 'start_checkout',
+        cartSize: memory.cartItems.length,
+        action: 'ask_continue_or_checkout',
       });
+    }
+
+    // 5.5a-2: Cart checkout — user confirms "оформлюємо" when cart has items
+    // Only fires when cart_item_added was set on a PREVIOUS turn (not the current one from 5.5a)
+    if (
+      (classification.slotAction === 'confirmation' || classification.primaryIntent === 'ready_to_order') &&
+      memory.selectionState === 'cart_item_added' &&
+      memory.cartItems?.length &&
+      memory.lastAction === 'asked_continue_or_checkout' // Ensure this is a NEW confirmation, not the same turn as 5.5a
+    ) {
+      memory.selectionState = 'confirmed';
+      classification.primaryIntent = 'ready_to_order';
+      classification.recommendedAction = 'start_checkout';
+      classification.conversationStage = 'checkout_started';
+      this.logger.log('Cart checkout: proceeding with ' + memory.cartItems.length + ' items');
     }
 
     // 5.5b Variant check: after recommendation + confirmation, check if variant selection needed
@@ -738,6 +803,7 @@ export class ReplyEngineService {
       out_of_stock: 'show_products',
       ask_variant_choice: 'ask_variant_choice',
       product_not_found: 'ai_fallback_clarification',
+      ask_continue_or_checkout: 'ask_continue_or_checkout',
     };
     return map[scenario] ?? scenario;
   }
@@ -983,6 +1049,10 @@ export class ReplyEngineService {
         memory.lastAction = 'confirmed_order';
         memory.awaitingField = 'order_finalized';
         break;
+      case 'ask_continue_or_checkout':
+        memory.lastAction = 'asked_continue_or_checkout';
+        memory.awaitingField = 'add_more_or_checkout';
+        break;
     }
   }
 
@@ -993,62 +1063,80 @@ export class ReplyEngineService {
     memory: AssistantMemory,
     classification: ClassificationResult,
   ): OrderPayload | null {
-    const productId = memory.selectedProductId;
-    const variantId = memory.selectedVariantId;
+    const cartItems = memory.cartItems ?? [];
 
-    if (!productId || !variantId) {
-      this.logger.warn(
-        `Cannot build order payload: missing productId=${productId} variantId=${variantId}`,
-      );
-      return null;
+    // Fallback to single product if no cart items (backward compatibility)
+    if (cartItems.length === 0) {
+      const productId = memory.selectedProductId;
+      const variantId = memory.selectedVariantId;
+
+      if (!productId || !variantId) {
+        this.logger.warn(
+          `Cannot build order payload: no cart items and missing productId=${productId} variantId=${variantId}`,
+        );
+        return null;
+      }
+
+      // Find variant price from available variants in memory
+      let unitPrice = 0;
+      let externalProductId: string | null = null;
+      let externalVariantId: string | null = null;
+      const variants = memory.availableVariants;
+      if (Array.isArray(variants)) {
+        const matchedVariant = variants.find((v) => v.id === variantId) as any;
+        if (matchedVariant) {
+          unitPrice = matchedVariant.price ?? 0;
+          externalProductId = matchedVariant.externalProductId ?? null;
+          externalVariantId = matchedVariant.externalVariantId ?? null;
+        }
+      }
+
+      // Try to parse price from lastPresentedProducts if not found in variants
+      if (unitPrice === 0 && memory.lastPresentedProducts?.length) {
+        const priceStr = memory.lastPresentedProducts[0].price;
+        const priceMatch = priceStr?.match(/[\d.]+/);
+        if (priceMatch) {
+          unitPrice = parseFloat(priceMatch[0]);
+        }
+      }
+
+      cartItems.push({
+        productId,
+        variantId,
+        externalProductId,
+        externalVariantId,
+        title: memory.selectedProductTitle ?? '',
+        variantName: memory.selectedVariantName ?? '',
+        price: unitPrice,
+        currency: 'UAH',
+      });
     }
 
-    const customerName =
-      classification.entities.customerName ?? '';
+    if (cartItems.length === 0) return null;
+
+    const customerName = classification.entities.customerName ?? '';
     const phone = classification.entities.phone ?? '';
     const city = classification.entities.city ?? '';
     const deliveryBranch = classification.entities.deliveryBranch ?? '';
 
-    // Find variant price from available variants in memory
-    let unitPrice = 0;
-    let externalProductId: string | null = null;
-    let externalVariantId: string | null = null;
-    const variants = memory.availableVariants;
-    if (Array.isArray(variants)) {
-      const matchedVariant = variants.find((v) => v.id === variantId) as any;
-      if (matchedVariant) {
-        unitPrice = matchedVariant.price ?? 0;
-        externalProductId = matchedVariant.externalProductId ?? null;
-        externalVariantId = matchedVariant.externalVariantId ?? null;
-      }
-    }
-
-    // Try to parse price from lastPresentedProducts if not found in variants
-    if (unitPrice === 0 && memory.lastPresentedProducts?.length) {
-      const priceStr = memory.lastPresentedProducts[0].price;
-      const priceMatch = priceStr?.match(/[\d.]+/);
-      if (priceMatch) {
-        unitPrice = parseFloat(priceMatch[0]);
-      }
-    }
+    // Build items from cart
+    const items = cartItems.map(item => ({
+      productId: item.productId,
+      variantId: item.variantId,
+      externalProductId: item.externalProductId,
+      externalVariantId: item.externalVariantId,
+      title: item.title,
+      variantTitle: item.variantName,
+      quantity: 1,
+      unitPrice: item.price,
+      currency: item.currency,
+    }));
 
     return {
       tenantId: input.tenantId,
       conversationId: input.conversationId,
-      customerId: input.state.conversationId, // Will be resolved by InstagramService from customer lookup
-      items: [
-        {
-          productId,
-          variantId,
-          externalProductId,
-          externalVariantId,
-          title: memory.selectedProductTitle ?? '',
-          variantTitle: memory.selectedVariantName ?? '',
-          quantity: 1,
-          unitPrice,
-          currency: 'UAH',
-        },
-      ],
+      customerId: input.state.conversationId,
+      items,
       customerInfo: {
         fullName: customerName,
         phone,

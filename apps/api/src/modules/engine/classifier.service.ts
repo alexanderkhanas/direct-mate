@@ -47,6 +47,16 @@ export interface AssistantMemory {
   selectedVariantName?: string;
   availableVariants?: Array<{ id: string; name: string; color?: string | null; size?: string | null }> | string;
   orderCreated?: boolean;
+  cartItems?: Array<{
+    productId: string;
+    variantId: string;
+    externalProductId: string | null;
+    externalVariantId: string | null;
+    title: string;
+    variantName: string;
+    price: number;
+    currency: string;
+  }>;
 }
 
 // ─── OpenAI tool definition ──────────────────────────────────────
@@ -366,6 +376,9 @@ export class ClassifierService {
     parts.push(`- Available variants: ${variantStr}`);
     parts.push(`- Last bot action: ${memory.lastAction || 'none'}`);
     parts.push(`- Waiting for: ${memory.awaitingField || 'nothing specific'}`);
+    if (memory.cartItems?.length) {
+      parts.push(`- Cart items (${memory.cartItems.length}): ${memory.cartItems.map(i => i.title).join(', ')}`);
+    }
 
     return parts.join('\n');
   }

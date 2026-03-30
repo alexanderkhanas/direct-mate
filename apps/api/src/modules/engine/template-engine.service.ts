@@ -58,6 +58,7 @@ const ACTION_TO_SCENARIO: Record<string, string> = {
   greet: 'greeting',
   ask_variant_choice: 'ask_variant_choice',
   product_not_found: 'product_not_found',
+  ask_continue_or_checkout: 'ask_continue_or_checkout',
 };
 
 // ─── Service ─────────────────────────────────────────────────────
@@ -247,6 +248,11 @@ export class TemplateEngineService {
     const act = classification.dialogueAct;
     const entities = classification.entities;
 
+    // Special case: cart item just added → ask continue or checkout
+    if (memory?.selectionState === 'cart_item_added' && action === 'ask_continue_or_checkout') {
+      return 'ask_continue_or_checkout';
+    }
+
     // Special case: provide_details with actual delivery info → confirm order
     // BUT only if a product is already selected and checkout is in progress
     if (
@@ -308,6 +314,14 @@ export class TemplateEngineService {
     if (selectionState === 'confirmed') {
       this.logger.debug(`Selection confirmed — allowing scenario: ${scenario}`);
       return scenario;
+    }
+
+    // ── FAST PATH: cart_item_added → allow ask_continue_or_checkout and checkout through
+    if (selectionState === 'cart_item_added') {
+      if (scenario === 'ask_continue_or_checkout' || scenario === 'collect_checkout_info' || scenario === 'order_confirmed_ask_delivery') {
+        this.logger.debug(`Cart item added — allowing scenario: ${scenario}`);
+        return scenario;
+      }
     }
 
     // ── HARD CHECKOUT GATE ──────────────────────────────────────
@@ -498,22 +512,48 @@ export class TemplateEngineService {
       vars['reason'] = 'чудова якість та гарні відгуки';
     }
 
-    // Build order summary from entities + memory
-    const summaryParts: string[] = [];
-    if (vars['product_name']) summaryParts.push(vars['product_name']);
-    if (vars['price']) summaryParts.push(`Ціна: ${vars['price']}`);
-    if (classification.entities.customerName)
-      summaryParts.push(`ПІБ: ${classification.entities.customerName}`);
-    if (classification.entities.phone)
-      summaryParts.push(`Телефон: ${classification.entities.phone}`);
-    if (classification.entities.city) {
-      let delivery = classification.entities.city;
-      if (classification.entities.deliveryBranch)
-        delivery += `, відділення ${classification.entities.deliveryBranch}`;
-      summaryParts.push(`Доставка: ${delivery}`);
-    }
-    if (summaryParts.length > 0) {
-      vars['order_summary'] = summaryParts.join('\n');
+    // Build order summary from cart items (multi-product) or single product
+    if (memory?.cartItems?.length) {
+      const lines = memory.cartItems.map((item, i) =>
+        `${memory!.cartItems!.length > 1 ? `${i + 1}. ` : ''}${item.title} (${item.variantName})\nЦіна: ${item.price} ${item.currency}`
+      );
+      const total = memory.cartItems.reduce((sum, item) => sum + item.price, 0);
+
+      const summaryParts = [...lines];
+      if (total > 0 && memory.cartItems.length > 1) {
+        summaryParts.push(`Всього: ${total} ${memory.cartItems[0].currency}`);
+      }
+      if (classification.entities.customerName)
+        summaryParts.push(`ПІБ: ${classification.entities.customerName}`);
+      if (classification.entities.phone)
+        summaryParts.push(`Телефон: ${classification.entities.phone}`);
+      if (classification.entities.city) {
+        let delivery = classification.entities.city;
+        if (classification.entities.deliveryBranch)
+          delivery += `, відділення ${classification.entities.deliveryBranch}`;
+        summaryParts.push(`Доставка: ${delivery}`);
+      }
+      if (summaryParts.length > 0) {
+        vars['order_summary'] = summaryParts.join('\n');
+      }
+    } else {
+      // Fallback: single product summary from entities + memory
+      const summaryParts: string[] = [];
+      if (vars['product_name']) summaryParts.push(vars['product_name']);
+      if (vars['price']) summaryParts.push(`Ціна: ${vars['price']}`);
+      if (classification.entities.customerName)
+        summaryParts.push(`ПІБ: ${classification.entities.customerName}`);
+      if (classification.entities.phone)
+        summaryParts.push(`Телефон: ${classification.entities.phone}`);
+      if (classification.entities.city) {
+        let delivery = classification.entities.city;
+        if (classification.entities.deliveryBranch)
+          delivery += `, відділення ${classification.entities.deliveryBranch}`;
+        summaryParts.push(`Доставка: ${delivery}`);
+      }
+      if (summaryParts.length > 0) {
+        vars['order_summary'] = summaryParts.join('\n');
+      }
     }
 
     return vars;
