@@ -1,0 +1,42 @@
+name: "Multi-product cart: add two items then checkout"
+messages:
+  - customer: "хочу помаду"
+    expect:
+      scenario: show_products
+      contains: "наявності"
+
+  - customer: "Silk Color Помада Rosewood"
+    expect:
+      scenario_in: [confirm_selection, ask_variant_choice]
+      contains_any: ["Rosewood", "варіант"]
+
+  - customer: "так"
+    expect:
+      scenario: ask_continue_or_checkout
+      contains_any: ["Хочете ще", "оформлюємо"]
+      memory:
+        selectionState: cart_item_added
+
+  - customer: "і ще крем"
+    expect:
+      scenario: show_products
+      not_scenario: confirm_order
+
+  - customer: "Hydra Veil Collection Тонер"
+    expect:
+      scenario_in: [confirm_selection, ask_variant_choice, show_products]
+
+  - customer: "так"
+    expect:
+      scenario: ask_continue_or_checkout
+      contains_any: ["Хочете ще", "оформлюємо"]
+
+  - customer: "оформлюємо"
+    expect:
+      scenario_in: [order_confirmed_ask_delivery, collect_checkout_info]
+      contains_any: ["ПІБ", "Телефон"]
+
+  - customer: "Іван Петренко 0991234567 Київ НП 5"
+    expect:
+      scenario: confirm_order
+      contains: "замовлення"

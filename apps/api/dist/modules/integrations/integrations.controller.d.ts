@@ -18,8 +18,8 @@ export declare class IntegrationsController {
     findAll(user: JwtPayload): Promise<import("./entities/connection.entity").Connection[]>;
     connectInstagram(user: JwtPayload, dto: ConnectInstagramDto): Promise<import("./entities/connection.entity").Connection>;
     connectShopify(user: JwtPayload, dto: ConnectShopifyDto): Promise<import("./entities/connection.entity").Connection>;
-    disconnect(id: string): Promise<void>;
-    remove(id: string): Promise<void>;
+    disconnect(user: JwtPayload, id: string): Promise<void>;
+    remove(user: JwtPayload, id: string): Promise<void>;
 }
 declare class ResolveCredentialsDto {
     connectionId: string;

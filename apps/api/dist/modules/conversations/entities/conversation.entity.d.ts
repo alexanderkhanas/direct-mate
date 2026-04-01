@@ -12,6 +12,7 @@ export declare class Conversation {
     needsHandoff: boolean;
     handoffReason: string | null;
     lastMessageAt: Date | null;
+    autoResumeAt: Date | null;
     createdAt: Date;
     updatedAt: Date;
     customer: Customer;

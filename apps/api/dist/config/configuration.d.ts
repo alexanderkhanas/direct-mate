@@ -1,6 +1,9 @@
 declare const _default: () => {
     nodeEnv: string;
     port: number;
+    app: {
+        backendBaseUrl: string;
+    };
     database: {
         url: string | undefined;
     };

@@ -49,6 +49,24 @@ export class ImportVariantDto {
   inventoryQty?: number;
 }
 
+export class ImportImageDto {
+  @ApiProperty({ example: 'https://cdn.shopify.com/s/files/product.jpg' })
+  @IsString()
+  @IsNotEmpty()
+  url!: string;
+
+  @ApiPropertyOptional({ example: 'Red' })
+  @IsString()
+  @IsOptional()
+  color?: string;
+
+  @ApiPropertyOptional({ example: 0 })
+  @IsNumber()
+  @IsOptional()
+  @Min(0)
+  sortOrder?: number;
+}
+
 export class ImportProductDto {
   @ApiProperty({ example: 'gid://shopify/Product/123' })
   @IsString()
@@ -85,6 +103,13 @@ export class ImportProductDto {
   @ValidateNested({ each: true })
   @Type(() => ImportVariantDto)
   variants!: ImportVariantDto[];
+
+  @ApiPropertyOptional({ type: [ImportImageDto] })
+  @IsArray()
+  @IsOptional()
+  @ValidateNested({ each: true })
+  @Type(() => ImportImageDto)
+  images?: ImportImageDto[];
 }
 
 export class CatalogImportDto {

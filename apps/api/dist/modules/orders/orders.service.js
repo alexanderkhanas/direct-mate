@@ -18,6 +18,7 @@ const common_1 = require("@nestjs/common");
 const typeorm_1 = require("@nestjs/typeorm");
 const config_1 = require("@nestjs/config");
 const typeorm_2 = require("typeorm");
+const retry_1 = require("../../common/retry");
 const order_entity_1 = require("./entities/order.entity");
 const order_item_entity_1 = require("./entities/order-item.entity");
 const checkout_session_entity_1 = require("./entities/checkout-session.entity");
@@ -97,7 +98,7 @@ let OrdersService = OrdersService_1 = class OrdersService {
             await manager.update(checkout_session_entity_1.CheckoutSession, savedSession.id, {
                 status: shared_1.CheckoutSessionStatus.DraftCreated,
             });
-            this.notifyManager(savedOrder).catch((err) => this.logger.error(`Manager notification failed for order ${savedOrder.id}`, err));
+            (0, retry_1.withRetry)(() => this.notifyManager(savedOrder), { label: `notify-manager-${savedOrder.id}` }).catch((err) => this.logger.error(`Manager notification failed for order ${savedOrder.id} after retries`, err));
             return savedOrder;
         });
     }
@@ -145,7 +146,7 @@ let OrdersService = OrdersService_1 = class OrdersService {
                 where: { checkoutSessionId: order.checkoutSessionId },
             })
             : null;
-        const backendBaseUrl = 'http://host.docker.internal:3000';
+        const backendBaseUrl = this.config.get('app.backendBaseUrl') ?? 'http://host.docker.internal:3000';
         const callbackUrl = `${backendBaseUrl}/internal/orders/${order.id}/sync-callback`;
         const resolveCredentialsUrl = `${backendBaseUrl}/internal/connections/resolve-credentials`;
         await this.orderRepo.update(order.id, {
@@ -198,21 +199,16 @@ let OrdersService = OrdersService_1 = class OrdersService {
         return { ok: true };
     }
     async handleSyncCallback(orderId, callback) {
-        const order = await this.orderRepo.findOne({ where: { id: orderId } });
-        if (!order) {
-            throw new common_1.NotFoundException(`Order ${orderId} not found`);
-        }
-        if (order.externalSyncStatus === 'synced') {
-            this.logger.log(`Order ${orderId} already synced, skipping callback`);
-            return;
-        }
-        const expectedKey = `order-${order.id}-sync-1`;
+        const expectedKey = `order-${orderId}-sync-1`;
         if (callback.idempotencyKey !== expectedKey) {
             this.logger.warn(`Idempotency key mismatch for order ${orderId}: expected ${expectedKey}, got ${callback.idempotencyKey}`);
             return;
         }
         if (callback.status === 'success') {
-            await this.orderRepo.update(order.id, {
+            const result = await this.orderRepo
+                .createQueryBuilder()
+                .update(order_entity_1.Order)
+                .set({
                 externalSyncStatus: 'synced',
                 externalOrderId: callback.externalOrderId ?? null,
                 externalOrderMetadata: {
@@ -220,18 +216,33 @@ let OrdersService = OrdersService_1 = class OrdersService {
                     ...callback.metadata,
                 },
                 externalSyncCompletedAt: new Date(),
-            });
+            })
+                .where('id = :id AND external_sync_status != :synced', { id: orderId, synced: 'synced' })
+                .execute();
+            if (result.affected === 0) {
+                this.logger.log(`Order ${orderId} already synced or not found, skipping callback`);
+                return;
+            }
             this.logger.log(`Order ${orderId} synced to ${callback.platform}, external ID: ${callback.externalOrderId}`);
         }
         else {
-            await this.orderRepo.update(order.id, {
+            const result = await this.orderRepo
+                .createQueryBuilder()
+                .update(order_entity_1.Order)
+                .set({
                 externalSyncStatus: 'failed',
                 externalOrderMetadata: {
                     error: callback.error,
                     ...callback.metadata,
                 },
                 externalSyncCompletedAt: new Date(),
-            });
+            })
+                .where('id = :id AND external_sync_status != :synced', { id: orderId, synced: 'synced' })
+                .execute();
+            if (result.affected === 0) {
+                this.logger.log(`Order ${orderId} already synced, ignoring failure callback`);
+                return;
+            }
             this.logger.error(`Order ${orderId} sync failed on ${callback.platform}: ${callback.error?.message ?? 'unknown error'}`);
         }
     }
@@ -305,9 +316,12 @@ let OrdersService = OrdersService_1 = class OrdersService {
         });
         return Promise.all(orders.map((order) => this.enrichOrder(order)));
     }
-    async findById(id) {
+    async findById(id, tenantId) {
+        const where = { id };
+        if (tenantId)
+            where.tenantId = tenantId;
         const order = await this.orderRepo.findOne({
-            where: { id },
+            where,
             relations: ['items'],
         });
         if (!order)

@@ -11,6 +11,7 @@ const common_1 = require("@nestjs/common");
 const typeorm_1 = require("@nestjs/typeorm");
 const product_variant_entity_1 = require("../catalog/entities/product-variant.entity");
 const stock_balance_entity_1 = require("../catalog/entities/stock-balance.entity");
+const product_media_entity_1 = require("../catalog/entities/product-media.entity");
 const availability_service_1 = require("./availability.service");
 const availability_controller_1 = require("./availability.controller");
 let AvailabilityModule = class AvailabilityModule {
@@ -18,7 +19,7 @@ let AvailabilityModule = class AvailabilityModule {
 exports.AvailabilityModule = AvailabilityModule;
 exports.AvailabilityModule = AvailabilityModule = __decorate([
     (0, common_1.Module)({
-        imports: [typeorm_1.TypeOrmModule.forFeature([product_variant_entity_1.ProductVariant, stock_balance_entity_1.StockBalance])],
+        imports: [typeorm_1.TypeOrmModule.forFeature([product_variant_entity_1.ProductVariant, stock_balance_entity_1.StockBalance, product_media_entity_1.ProductMedia])],
         controllers: [availability_controller_1.AvailabilityController],
         providers: [availability_service_1.AvailabilityService],
         exports: [availability_service_1.AvailabilityService],

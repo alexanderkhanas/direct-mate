@@ -57,6 +57,11 @@ export interface AssistantMemory {
     price: number;
     currency: string;
   }>;
+  preQualifyData?: Record<string, string>;
+  preQualifyCollected?: boolean;
+  recommendedSize?: string;
+  variantStep?: 'color' | 'size' | null;
+  selectedColor?: string;
 }
 
 // ─── OpenAI tool definition ──────────────────────────────────────
@@ -286,7 +291,13 @@ export class ClassifierService {
       return this.defaultClassification();
     }
 
-    const raw = JSON.parse((toolCall as any).function.arguments);
+    let raw: any;
+    try {
+      raw = JSON.parse((toolCall as any).function.arguments);
+    } catch (err) {
+      this.logger.error('Failed to parse classification JSON', (err as Error).message);
+      return this.defaultClassification();
+    }
 
     return {
       primaryIntent: raw.primary_intent ?? 'unknown',
@@ -378,6 +389,15 @@ export class ClassifierService {
     parts.push(`- Waiting for: ${memory.awaitingField || 'nothing specific'}`);
     if (memory.cartItems?.length) {
       parts.push(`- Cart items (${memory.cartItems.length}): ${memory.cartItems.map(i => i.title).join(', ')}`);
+    }
+    if (memory.variantStep) {
+      parts.push(`- Variant selection step: ${memory.variantStep}`);
+      if (memory.selectedColor) {
+        parts.push(`- Selected color: ${memory.selectedColor}`);
+      }
+    }
+    if (memory.preQualifyCollected && memory.preQualifyData) {
+      parts.push(`- Pre-qualify data: ${JSON.stringify(memory.preQualifyData)}`);
     }
 
     return parts.join('\n');

@@ -9,7 +9,7 @@ import { ClassificationResult, AssistantMemory } from './classifier.service';
 // ─── Interfaces ──────────────────────────────────────────────────
 
 export interface ProductSearchResult {
-  product: { id: string; title: string };
+  product: { id: string; title: string; imageUrl?: string | null };
   variants: Array<{
     id: string;
     size: string | null;
@@ -25,6 +25,7 @@ export interface TemplateRenderResult {
   templateId: string;
   scenario: string; // The actual scenario that was rendered
   matchedVariantId?: string; // If variant was matched during variable building
+  imageUrls?: string[]; // Product images to send alongside the text
 }
 
 // ─── Intent-to-scenario mapping ──────────────────────────────────
@@ -88,14 +89,15 @@ export class TemplateEngineService {
     recentTemplateIds: string[];
     isFirstProductPresentation?: boolean;
     messageText?: string;
+    flowConfig?: Record<string, unknown>;
   }): Promise<TemplateRenderResult | null> {
-    const { tenantId, classification, productData, memory, recentTemplateIds, isFirstProductPresentation, messageText } =
+    const { tenantId, classification, productData, memory, recentTemplateIds, isFirstProductPresentation, messageText, flowConfig } =
       params;
 
     // 0. If products were just found for the first time, force show_products
     if (isFirstProductPresentation && productData && productData.length > 0) {
       this.logger.log('First product presentation — forcing show_products scenario');
-      return this.renderScenario(tenantId, 'show_products', classification, productData, memory, recentTemplateIds);
+      return this.renderScenario(tenantId, 'show_products', classification, productData, memory, recentTemplateIds, flowConfig);
     }
 
     // 1. Check if this is an FAQ question first
@@ -115,7 +117,7 @@ export class TemplateEngineService {
     scenario = this.enforceStageGates(scenario, memory, classification, productData);
 
     // 3. Render the resolved scenario
-    return this.renderScenario(tenantId, scenario, classification, productData, memory, recentTemplateIds);
+    return this.renderScenario(tenantId, scenario, classification, productData, memory, recentTemplateIds, flowConfig);
   }
 
   private async renderScenario(
@@ -125,6 +127,7 @@ export class TemplateEngineService {
     productData?: ProductSearchResult[],
     memory?: AssistantMemory,
     recentTemplateIds: string[] = [],
+    flowConfig?: Record<string, unknown>,
   ): Promise<TemplateRenderResult | null> {
     this.logger.debug(`renderScenario: scenario=${scenario} tenantId=${tenantId?.slice(0, 8)}`);
 
@@ -138,7 +141,7 @@ export class TemplateEngineService {
       return null;
     }
 
-    const variables = this.buildVariableMap(classification, productData, memory);
+    const variables = this.buildVariableMap(classification, productData, memory, flowConfig);
     this.logger.debug(`renderScenario: ${templates.length} templates found, variables: ${Object.keys(variables).join(', ')}`);
 
     const viable = templates.filter((t) => this.hasRequiredVariables(t, variables));
@@ -153,7 +156,7 @@ export class TemplateEngineService {
       // Fallback: if confirm_selection fails due to missing variant_name, try ask_variant_choice
       if (scenario === 'confirm_selection' && !variables['variant_name']) {
         this.logger.log('confirm_selection missing variant_name — falling back to ask_variant_choice');
-        return this.renderScenario(tenantId, 'ask_variant_choice', classification, productData, memory, recentTemplateIds);
+        return this.renderScenario(tenantId, 'ask_variant_choice', classification, productData, memory, recentTemplateIds, flowConfig);
       }
 
       return null;
@@ -169,7 +172,28 @@ export class TemplateEngineService {
     const selected = topCandidates[Math.floor(Math.random() * topCandidates.length)];
 
     const text = this.interpolateTemplate(selected, variables);
-    return { text, templateId: selected.id, scenario, matchedVariantId: variables['matched_variant_id'] };
+
+    // Collect product image URLs for scenarios that show products
+    const allProductScenarios = ['show_products'];
+    const singleProductScenarios = ['confirm_selection', 'recommend_product', 'ask_recommendation_from_shown'];
+    const imageUrls: string[] = [];
+    if (productData) {
+      if (allProductScenarios.includes(scenario)) {
+        for (const p of productData) {
+          if (p.product.imageUrl) imageUrls.push(p.product.imageUrl);
+        }
+      } else if (singleProductScenarios.includes(scenario) && productData[0]?.product.imageUrl) {
+        imageUrls.push(productData[0].product.imageUrl);
+      }
+    }
+
+    return {
+      text,
+      templateId: selected.id,
+      scenario,
+      matchedVariantId: variables['matched_variant_id'],
+      imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
+    };
   }
 
   // ─── FAQ matching ──────────────────────────────────────────────
@@ -384,6 +408,7 @@ export class TemplateEngineService {
     classification: ClassificationResult,
     productData?: ProductSearchResult[],
     memory?: AssistantMemory,
+    flowConfig?: Record<string, unknown>,
   ): Record<string, string> {
     const vars: Record<string, string> = {};
 
@@ -433,12 +458,16 @@ export class TemplateEngineService {
       vars['price'] = prices.join(' / ');
 
       // Build smart product list for show_products scenario
-      vars['product_list'] = this.formatProductList(productData);
+      vars['product_list'] = this.formatProductList(productData, memory?.recommendedSize);
 
       // Build variants string for single product (deduplicated)
+      // When recommendedSize is set, only show colors (sizes already determined)
+      const suppressSizes = !!memory?.recommendedSize;
       const allVariants = first.variants
         .filter((v) => v.effectiveAvailable > 0)
-        .map((v) => [...new Set([v.color, v.size].filter(Boolean))].join(', '))
+        .map((v) => suppressSizes
+          ? (v.color || '')
+          : [...new Set([v.color, v.size].filter(Boolean))].join(', '))
         .filter(Boolean);
       const uniqueVariants = [...new Set(allVariants)];
       if (uniqueVariants.length > 0) {
@@ -473,24 +502,58 @@ export class TemplateEngineService {
       // If multiple variants and no user input → variant_name stays unset → ask_variant_choice
 
       // Build variant_list for ask_variant_choice scenario (deduplicated)
+      // Two-step variant selection: show only colors or only sizes based on variantStep
       if (first.variants.length > 1) {
-        const variantType = this.detectVariantType(first.variants);
-        vars['variant_type'] = variantType;
-        const variantNames = first.variants
-          .filter((v) => v.effectiveAvailable > 0)
-          .map((v) => [...new Set([v.color, v.size].filter(Boolean))].join(', '))
-          .filter(Boolean);
-        vars['variant_list'] = [...new Set(variantNames)].join(', ');
+        const inStockVars = first.variants.filter((v) => v.effectiveAvailable > 0);
+
+        if (suppressSizes || memory?.variantStep === 'color') {
+          // Show only unique colors (sizes suppressed by pre-qualify or two-step flow)
+          const colors = [...new Set(inStockVars.map((v) => v.color).filter(Boolean))] as string[];
+          vars['variant_type'] = 'Відтінки';
+          vars['variant_list'] = colors.join(', ');
+        } else if (memory?.variantStep === 'size') {
+          // Show only sizes filtered by selected color
+          const selectedColor = memory?.selectedColor;
+          const filteredVars = selectedColor
+            ? inStockVars.filter((v) => v.color && v.color.toLowerCase() === selectedColor.toLowerCase())
+            : inStockVars;
+          const sizes = [...new Set(filteredVars.map((v) => v.size).filter(Boolean))] as string[];
+          vars['variant_type'] = 'Розміри';
+          vars['variant_list'] = sizes.join(', ');
+        } else {
+          // Default behavior — detect and show all variants
+          const variantType = this.detectVariantType(first.variants);
+          vars['variant_type'] = variantType;
+          const variantNames = inStockVars
+            .map((v) => [...new Set([v.color, v.size].filter(Boolean))].join(', '))
+            .filter(Boolean);
+          vars['variant_list'] = [...new Set(variantNames)].join(', ');
+        }
       }
     }
 
     // From memory: variant_list fallback (if not built from productData)
+    const suppressSizesFromMemory = !!memory?.recommendedSize;
     if (!vars['variant_list'] && Array.isArray(memory?.availableVariants) && memory.availableVariants.length > 0) {
-      vars['variant_list'] = [...new Set(memory.availableVariants.map((v: any) => v.name))].join(', ');
-      if (!vars['variant_type']) {
-        vars['variant_type'] = this.detectVariantType(
-          memory.availableVariants.map((v: any) => ({ color: v.color, size: v.size })) as any,
-        );
+      if (suppressSizesFromMemory || memory?.variantStep === 'color') {
+        const colors = [...new Set(memory.availableVariants.map((v: any) => v.color).filter(Boolean))];
+        vars['variant_list'] = colors.join(', ');
+        vars['variant_type'] = 'Відтінки';
+      } else if (memory?.variantStep === 'size') {
+        const selectedColor = memory?.selectedColor;
+        const filteredVars = selectedColor
+          ? memory.availableVariants.filter((v: any) => v.color && v.color.toLowerCase() === selectedColor.toLowerCase())
+          : memory.availableVariants;
+        const sizes = [...new Set(filteredVars.map((v: any) => v.size).filter(Boolean))];
+        vars['variant_list'] = sizes.join(', ');
+        vars['variant_type'] = 'Розміри';
+      } else {
+        vars['variant_list'] = [...new Set(memory.availableVariants.map((v: any) => v.name))].join(', ');
+        if (!vars['variant_type']) {
+          vars['variant_type'] = this.detectVariantType(
+            memory.availableVariants.map((v: any) => ({ color: v.color, size: v.size })) as any,
+          );
+        }
       }
     }
 
@@ -561,8 +624,11 @@ export class TemplateEngineService {
 
   // ─── Product list formatter ────────────────────────────────────
 
-  private formatProductList(productData: ProductSearchResult[]): string {
+  private formatProductList(productData: ProductSearchResult[], recommendedSize?: string): string {
     if (!productData || productData.length === 0) return '';
+
+    // When recommendedSize is set, sizes are already determined by pre-qualify — hide them from display
+    const suppressSizes = !!recommendedSize;
 
     // Collect all prices to check if they're the same
     const allPrices: number[] = [];
@@ -592,10 +658,17 @@ export class TemplateEngineService {
       // Product name line
       let productLine = `${idx}. ${p.product.title}`;
 
-      // If only 1 variant and no distinguishing attributes, just show price
-      if (inStock.length === 1) {
-        const v = inStock[0];
-        const detail = [...new Set([v.color, v.size].filter(Boolean))].join(', ');
+      // Deduplicate variants when suppressing sizes (multiple size variants with same color collapse)
+      const displayVariants = suppressSizes
+        ? this.deduplicateByColor(inStock)
+        : inStock;
+
+      // If only 1 display variant and no distinguishing attributes, just show price
+      if (displayVariants.length === 1) {
+        const v = displayVariants[0];
+        const detail = suppressSizes
+          ? (v.color || '')
+          : [...new Set([v.color, v.size].filter(Boolean))].join(', ');
         if (!samePriceForAll) {
           productLine += detail ? ` (${detail}) — ${v.price} ${v.currency}` : ` — ${v.price} ${v.currency}`;
         } else if (detail) {
@@ -605,20 +678,42 @@ export class TemplateEngineService {
       } else {
         lines.push(productLine);
 
-        // Variant names list (deduplicated: color===size shows once)
-        const variantNames = inStock
-          .map((v) => [...new Set([v.color, v.size].filter(Boolean))].join(', '))
-          .filter(Boolean);
-        const uniqueVariantNames = [...new Set(variantNames)];
+        if (suppressSizes) {
+          // Only show colors when sizes are pre-determined
+          const uniqueColors = [...new Set(displayVariants.map((v) => v.color).filter(Boolean))];
+          if (uniqueColors.length > 0) {
+            lines.push(`Відтінки: ${uniqueColors.join(', ')}`);
+          }
+        } else {
+          // Check if variants have BOTH color and size populated
+          const hasColors = displayVariants.some((v) => v.color);
+          const hasSizes = displayVariants.some((v) => v.size);
 
-        if (uniqueVariantNames.length > 0) {
-          const label = variantType;
-          lines.push(`${label}: ${uniqueVariantNames.join(', ')}`);
+          if (hasColors && hasSizes) {
+            // Display color and size separately
+            const uniqueColors = [...new Set(displayVariants.map((v) => v.color).filter(Boolean))];
+            const uniqueSizes = [...new Set(displayVariants.map((v) => v.size).filter(Boolean))];
+            const parts: string[] = [];
+            if (uniqueColors.length > 0) parts.push(`Кольори: ${uniqueColors.join(', ')}`);
+            if (uniqueSizes.length > 0) parts.push(`Розміри: ${uniqueSizes.join(', ')}`);
+            lines.push(parts.join(' · '));
+          } else {
+            // Single dimension — use detected type label
+            const variantNames = displayVariants
+              .map((v) => [...new Set([v.color, v.size].filter(Boolean))].join(', '))
+              .filter(Boolean);
+            const uniqueVariantNames = [...new Set(variantNames)];
+
+            if (uniqueVariantNames.length > 0) {
+              const label = variantType;
+              lines.push(`${label}: ${uniqueVariantNames.join(', ')}`);
+            }
+          }
         }
 
         // Show per-product price only if different from others
         if (!samePriceForAll) {
-          const productPrices = [...new Set(inStock.map((v) => v.price))];
+          const productPrices = [...new Set(displayVariants.map((v) => v.price))];
           if (productPrices.length === 1) {
             lines.push(`Ціна: ${productPrices[0]} ${currency}`);
           } else {
@@ -644,6 +739,19 @@ export class TemplateEngineService {
     }
 
     return lines.join('\n');
+  }
+
+  /** Collapse variants with the same color into one (pick first of each color) */
+  private deduplicateByColor(
+    variants: ProductSearchResult['variants'],
+  ): ProductSearchResult['variants'] {
+    const seen = new Set<string>();
+    return variants.filter((v) => {
+      const key = (v.color || '').toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 
   private detectVariantType(
@@ -790,7 +898,12 @@ export class TemplateEngineService {
     variables: Record<string, string>,
   ): string {
     return text.replace(/\{(\w+)\}/g, (match, key) => {
-      return variables[key] ?? match;
+      if (variables[key] !== undefined && variables[key] !== '') {
+        return variables[key];
+      }
+      // Safety net: strip unresolved variables instead of leaving literals
+      this.logger.warn(`Unresolved template variable: ${match}`);
+      return '';
     });
   }
 }

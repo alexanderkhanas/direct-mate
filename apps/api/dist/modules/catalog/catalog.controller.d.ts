@@ -9,6 +9,7 @@ export declare class CatalogController {
         sku: string | null;
         title: string;
         category: string | null;
+        imageUrl: string;
         variantCount: number;
         updatedAt: Date;
         variants: {
@@ -18,6 +19,7 @@ export declare class CatalogController {
             color: string | null;
             price: number;
             currency: string;
+            imageUrl: string;
             effectiveAvailable: number;
             lastSyncedAt: Date | null;
         }[];

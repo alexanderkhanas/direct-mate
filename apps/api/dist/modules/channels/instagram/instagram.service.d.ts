@@ -1,11 +1,14 @@
-import { OnModuleInit } from '@nestjs/common';
+import { OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { DataSource, Repository } from 'typeorm';
 import { ConversationsService } from '../../conversations/conversations.service';
 import { ReplyEngineService } from '../../conversations/reply-engine.service';
 import { IntegrationsService } from '../../integrations/integrations.service';
 import { OrdersService } from '../../orders/orders.service';
 import { CryptoService } from '../../../common/crypto.service';
 import { TelegramService } from '../../notifications/telegram.service';
+import { PendingMessage } from './entities/pending-message.entity';
+import { Conversation } from '../../conversations/entities/conversation.entity';
 interface MetaMessagingEvent {
     sender?: {
         id: string;
@@ -45,7 +48,7 @@ interface MetaWebhookPayload {
     object: string;
     entry: MetaMessagingEntry[];
 }
-export declare class InstagramService implements OnModuleInit {
+export declare class InstagramService implements OnModuleInit, OnModuleDestroy {
     private readonly config;
     private readonly conversationsService;
     private readonly replyEngineService;
@@ -53,13 +56,20 @@ export declare class InstagramService implements OnModuleInit {
     private readonly ordersService;
     private readonly cryptoService;
     private readonly telegramService;
+    private readonly pendingMessageRepo;
+    private readonly conversationRepo;
+    private readonly dataSource;
     private readonly logger;
-    private readonly pendingReplies;
     private readonly recentSentMids;
-    private readonly autoResumeTimers;
-    constructor(config: ConfigService, conversationsService: ConversationsService, replyEngineService: ReplyEngineService, integrationsService: IntegrationsService, ordersService: OrdersService, cryptoService: CryptoService, telegramService: TelegramService);
+    private pollInterval;
+    constructor(config: ConfigService, conversationsService: ConversationsService, replyEngineService: ReplyEngineService, integrationsService: IntegrationsService, ordersService: OrdersService, cryptoService: CryptoService, telegramService: TelegramService, pendingMessageRepo: Repository<PendingMessage>, conversationRepo: Repository<Conversation>, dataSource: DataSource);
     onModuleInit(): Promise<void>;
+    onModuleDestroy(): void;
+    private pollTasks;
+    private flushReadyMessages;
+    private autoResumeExpired;
     private sendMetaMessage;
+    private sendMetaImages;
     verifySignature(rawBody: Buffer, signature: string): boolean;
     verifyWebhook(mode: string, token: string, challenge: string): string;
     private fetchMessageFromApi;
@@ -68,7 +78,8 @@ export declare class InstagramService implements OnModuleInit {
     private handleIncomingMessage;
     private flushPending;
     private processInbound;
+    private conversationLockKey;
     private handleManagerReply;
-    private resetAutoResumeTimer;
+    private setAutoResumeDeadline;
 }
 export {};

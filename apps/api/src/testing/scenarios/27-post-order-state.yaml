@@ -1,0 +1,30 @@
+name: "Post-order: thanks acknowledged, new inquiry resets state"
+messages:
+  - customer: "хочу помаду Silk Color Rosewood"
+    expect:
+      scenario_in: [confirm_selection, show_products]
+
+  - customer: "так"
+    expect:
+      scenario: ask_continue_or_checkout
+      memory:
+        selectionState: cart_item_added
+
+  - customer: "оформлюємо"
+    expect:
+      scenario_in: [order_confirmed_ask_delivery, collect_checkout_info]
+
+  - customer: "Олена Коваль 0997654321 Львів НП 3"
+    expect:
+      scenario: confirm_order
+      contains: "замовлення"
+
+  - customer: "дякую"
+    expect:
+      not_scenario: confirm_order
+      not_contains: "замовлення оформлено"
+
+  - customer: "хочу ще крем"
+    expect:
+      scenario: show_products
+      not_scenario: confirm_order

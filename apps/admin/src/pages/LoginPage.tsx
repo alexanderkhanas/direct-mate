@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Zap } from 'lucide-react';
 import { api } from '../lib/api';
 import { Button } from '../components/ui/Button';
@@ -72,6 +72,13 @@ export default function LoginPage() {
             </Button>
           </form>
         </div>
+
+        <p className="text-center text-sm text-gray-500 mt-4">
+          Don't have an account?{' '}
+          <Link to="/register" className="text-gray-900 font-medium hover:underline">
+            Create store
+          </Link>
+        </p>
       </div>
     </div>
   );

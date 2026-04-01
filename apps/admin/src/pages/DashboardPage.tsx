@@ -1,132 +1,292 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { MessageSquare, AlertTriangle, Bot, ShoppingBag } from 'lucide-react';
+import {
+  MessageSquare,
+  AlertTriangle,
+  Bot,
+  ShoppingBag,
+  TrendingUp,
+  Clock,
+} from 'lucide-react';
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  BarChart, Bar, Cell,
+  PieChart, Pie,
+} from 'recharts';
 import { api } from '../lib/api';
 import { Card } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { LoadingState } from '../components/ui/Spinner';
-import { Conversation } from '../types';
 
-interface StatsData {
-  total: number;
-  items: Conversation[];
+interface DashboardData {
+  period: { from: string; to: string };
+  summary: {
+    totalConversations: number;
+    automationRate: number;
+    totalOrders: number;
+    totalRevenue: number;
+    currency: string;
+  };
+  conversationsPerDay: Array<{ date: string; total: number; autoHandled: number }>;
+  funnel: {
+    started: number;
+    productShown: number;
+    variantSelected: number;
+    orderCreated: number;
+  };
+  handoffReasons: Array<{ reason: string; count: number }>;
+  avgResponseTimeMs: number;
+  recentOrders: Array<{
+    id: string;
+    status: string;
+    totalAmount: number;
+    currency: string;
+    customerName: string;
+    createdAt: string;
+  }>;
+}
+
+const FUNNEL_COLORS = ['#3b82f6', '#8b5cf6', '#f59e0b', '#10b981'];
+const PIE_COLORS = ['#f59e0b', '#ef4444', '#8b5cf6', '#3b82f6', '#6b7280'];
+
+const REASON_LABELS: Record<string, string> = {
+  product_not_found: 'Product not found',
+  low_confidence: 'Low confidence',
+  send_failed: 'Send failed',
+  ai_fallback_failure: 'AI fallback failed',
+  unknown: 'Unknown',
+};
+
+function formatMs(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function formatCurrency(amount: number, currency: string): string {
+  return `${amount.toLocaleString('uk-UA')} ${currency}`;
+}
+
+function StatCard({ label, value, icon: Icon, color, bg }: {
+  label: string; value: string | number; icon: typeof MessageSquare; color: string; bg: string;
+}) {
+  return (
+    <Card>
+      <div className="flex items-start justify-between">
+        <div>
+          <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</p>
+          <p className="text-3xl font-semibold text-gray-900 mt-1">{value}</p>
+        </div>
+        <div className={`${bg} rounded-lg p-2`}>
+          <Icon className={`h-5 w-5 ${color}`} />
+        </div>
+      </div>
+    </Card>
+  );
 }
 
 export default function DashboardPage() {
-  const { data: all } = useQuery<StatsData>({
-    queryKey: ['conversations', 'all'],
-    queryFn: () => api.get('/conversations').then((r) => r.data),
+  const { data, isLoading } = useQuery<DashboardData>({
+    queryKey: ['analytics', 'dashboard'],
+    queryFn: () => api.get('/analytics/dashboard').then((r) => r.data),
+    refetchInterval: 60_000,
   });
 
-  const { data: handoffs } = useQuery<StatsData>({
-    queryKey: ['conversations', 'handoffs'],
-    queryFn: () => api.get('/conversations?needsHandoff=true').then((r) => r.data),
-  });
+  if (isLoading || !data) return <LoadingState />;
 
-  const { data: closed } = useQuery<StatsData>({
-    queryKey: ['conversations', 'closed'],
-    queryFn: () => api.get('/conversations?status=closed').then((r) => r.data),
-  });
+  const { summary, conversationsPerDay, funnel, handoffReasons, avgResponseTimeMs, recentOrders } = data;
 
-  const stats = [
-    {
-      label: 'Total conversations',
-      value: all?.total ?? '—',
-      icon: MessageSquare,
-      color: 'text-blue-500',
-      bg: 'bg-blue-50',
-    },
-    {
-      label: 'Need handoff',
-      value: handoffs?.total ?? '—',
-      icon: AlertTriangle,
-      color: 'text-amber-500',
-      bg: 'bg-amber-50',
-    },
-    {
-      label: 'Auto-handled',
-      value:
-        all?.total != null && handoffs?.total != null ? all.total - handoffs.total : '—',
-      icon: Bot,
-      color: 'text-emerald-500',
-      bg: 'bg-emerald-50',
-    },
-    {
-      label: 'Closed',
-      value: closed?.total ?? '—',
-      icon: ShoppingBag,
-      color: 'text-gray-400',
-      bg: 'bg-gray-50',
-    },
+  const funnelData = [
+    { name: 'Conversations', value: funnel.started },
+    { name: 'Products shown', value: funnel.productShown },
+    { name: 'Variant selected', value: funnel.variantSelected },
+    { name: 'Order created', value: funnel.orderCreated },
   ];
 
-  const needsAttention = handoffs?.items ?? [];
-
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold text-gray-900">Dashboard</h1>
-        <p className="text-sm text-gray-500 mt-1">Overview of your store's conversations</p>
+        <p className="text-sm text-gray-500 mt-1">Last 30 days analytics</p>
       </div>
 
-      {/* Stats */}
+      {/* Summary cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {stats.map((s) => (
-          <Card key={s.label}>
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{s.label}</p>
-                <p className="text-3xl font-semibold text-gray-900 mt-1">{s.value}</p>
-              </div>
-              <div className={`${s.bg} rounded-lg p-2`}>
-                <s.icon className={`h-5 w-5 ${s.color}`} />
-              </div>
-            </div>
-          </Card>
-        ))}
+        <StatCard
+          label="Conversations"
+          value={summary.totalConversations}
+          icon={MessageSquare}
+          color="text-blue-500"
+          bg="bg-blue-50"
+        />
+        <StatCard
+          label="Automation rate"
+          value={`${Math.round(summary.automationRate * 100)}%`}
+          icon={Bot}
+          color="text-emerald-500"
+          bg="bg-emerald-50"
+        />
+        <StatCard
+          label="Orders"
+          value={summary.totalOrders}
+          icon={ShoppingBag}
+          color="text-violet-500"
+          bg="bg-violet-50"
+        />
+        <StatCard
+          label="Revenue"
+          value={formatCurrency(summary.totalRevenue, summary.currency)}
+          icon={TrendingUp}
+          color="text-amber-500"
+          bg="bg-amber-50"
+        />
       </div>
 
-      {/* Needs attention */}
-      <div>
-        <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
-          Needs attention
-        </h2>
-        <Card padding={false}>
-          {needsAttention.length === 0 ? (
-            <div className="py-10 text-center">
-              <p className="text-sm text-gray-400">All conversations are handled</p>
+      {/* Charts row */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Conversations per day */}
+        <Card className="lg:col-span-2">
+          <p className="text-sm font-semibold text-gray-700 mb-4">Conversations per day</p>
+          <ResponsiveContainer width="100%" height={240}>
+            <LineChart data={conversationsPerDay}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+              <XAxis
+                dataKey="date"
+                tick={{ fontSize: 11, fill: '#9ca3af' }}
+                tickFormatter={(d: string) => d.slice(5)}
+              />
+              <YAxis tick={{ fontSize: 11, fill: '#9ca3af' }} allowDecimals={false} />
+              <Tooltip
+                contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e5e7eb' }}
+                labelFormatter={(d: string) => new Date(d).toLocaleDateString('uk-UA')}
+              />
+              <Line type="monotone" dataKey="total" stroke="#3b82f6" strokeWidth={2} dot={false} name="Total" />
+              <Line type="monotone" dataKey="autoHandled" stroke="#10b981" strokeWidth={2} dot={false} name="Auto-handled" />
+            </LineChart>
+          </ResponsiveContainer>
+        </Card>
+
+        {/* Handoff reasons */}
+        <Card>
+          <p className="text-sm font-semibold text-gray-700 mb-4">Handoff reasons</p>
+          {handoffReasons.length === 0 ? (
+            <div className="flex items-center justify-center h-48 text-sm text-gray-400">
+              No handoffs yet
             </div>
           ) : (
-            <div className="divide-y divide-gray-100">
-              {needsAttention.map((conv) => (
-                <Link
-                  key={conv.id}
-                  to={`/conversations/${conv.id}`}
-                  className="flex items-center justify-between px-5 py-3.5 hover:bg-gray-50 transition-colors"
+            <ResponsiveContainer width="100%" height={240}>
+              <PieChart>
+                <Pie
+                  data={handoffReasons}
+                  dataKey="count"
+                  nameKey="reason"
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={50}
+                  outerRadius={80}
+                  paddingAngle={3}
+                  label={({ reason, count }: { reason: string; count: number }) =>
+                    `${REASON_LABELS[reason] ?? reason} (${count})`
+                  }
                 >
-                  <div className="flex items-center gap-3">
-                    <div className="w-1 h-8 rounded-full bg-amber-400" />
-                    <div>
-                      <p className="text-sm font-medium text-gray-900">
-                        {conv.customer?.username ? `@${conv.customer.username}` : conv.customer?.fullName ?? 'Unknown'}
-                      </p>
-                      <p className="text-xs text-gray-500">{conv.channel}</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <Badge variant="handoff">Needs handoff</Badge>
-                    <span className="text-xs text-gray-400">
-                      {conv.lastMessageAt
-                        ? new Date(conv.lastMessageAt).toLocaleTimeString([], {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })
-                        : '—'}
-                    </span>
-                  </div>
-                </Link>
-              ))}
+                  {handoffReasons.map((_, i) => (
+                    <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip
+                  formatter={(value: number, name: string) => [value, REASON_LABELS[name] ?? name]}
+                  contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e5e7eb' }}
+                />
+              </PieChart>
+            </ResponsiveContainer>
+          )}
+        </Card>
+      </div>
+
+      {/* Funnel + response time row */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Conversion funnel */}
+        <Card className="lg:col-span-2">
+          <p className="text-sm font-semibold text-gray-700 mb-4">Conversion funnel</p>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={funnelData} layout="vertical" barSize={28}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
+              <XAxis type="number" tick={{ fontSize: 11, fill: '#9ca3af' }} allowDecimals={false} />
+              <YAxis
+                type="category"
+                dataKey="name"
+                tick={{ fontSize: 12, fill: '#374151' }}
+                width={120}
+              />
+              <Tooltip
+                contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e5e7eb' }}
+              />
+              <Bar dataKey="value" radius={[0, 6, 6, 0]}>
+                {funnelData.map((_, i) => (
+                  <Cell key={i} fill={FUNNEL_COLORS[i]} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </Card>
+
+        {/* Avg response time */}
+        <Card>
+          <p className="text-sm font-semibold text-gray-700 mb-2">Avg response time</p>
+          <div className="flex items-center gap-3 mt-6">
+            <div className="bg-blue-50 rounded-lg p-3">
+              <Clock className="h-6 w-6 text-blue-500" />
             </div>
+            <div>
+              <p className="text-3xl font-semibold text-gray-900">{formatMs(avgResponseTimeMs)}</p>
+              <p className="text-xs text-gray-500 mt-1">from customer message to bot reply</p>
+            </div>
+          </div>
+        </Card>
+      </div>
+
+      {/* Recent orders */}
+      <div>
+        <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
+          Recent orders
+        </h2>
+        <Card padding={false}>
+          {recentOrders.length === 0 ? (
+            <div className="py-10 text-center">
+              <p className="text-sm text-gray-400">No orders yet</p>
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+                  <th className="px-5 py-3 text-left font-medium">Customer</th>
+                  <th className="px-5 py-3 text-left font-medium">Status</th>
+                  <th className="px-5 py-3 text-left font-medium">Amount</th>
+                  <th className="px-5 py-3 text-left font-medium">Date</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {recentOrders.map((order) => (
+                  <tr key={order.id} className="hover:bg-gray-50 transition-colors">
+                    <td className="px-5 py-3 text-gray-900 font-medium">
+                      <Link to={`/orders`} className="hover:underline">
+                        {order.customerName ?? 'Unknown'}
+                      </Link>
+                    </td>
+                    <td className="px-5 py-3">
+                      <Badge variant={order.status === 'confirmed' ? 'success' : order.status === 'cancelled' ? 'error' : 'pending'}>
+                        {order.status}
+                      </Badge>
+                    </td>
+                    <td className="px-5 py-3 text-gray-700">
+                      {order.totalAmount ? formatCurrency(order.totalAmount, order.currency) : '—'}
+                    </td>
+                    <td className="px-5 py-3 text-gray-500">
+                      {new Date(order.createdAt).toLocaleDateString('uk-UA')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </Card>
       </div>

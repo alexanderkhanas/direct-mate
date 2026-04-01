@@ -43,7 +43,7 @@ export interface ReplyEngineInput {
 
 export interface ReplyEngineOutput {
   decision: ReplyDecision;
-  reply: { text: string; sendNow: boolean } | null;
+  reply: { text: string; sendNow: boolean; imageUrls?: string[] } | null;
   handoff: { required: boolean; reason: string | null };
   stateUpdate: Partial<ConversationState> | null;
   orderPayload?: OrderPayload;
@@ -254,6 +254,10 @@ export class ReplyEngineService {
         memory.awaitingField = undefined;
         memory.orderCreated = undefined;
         memory.cartItems = undefined;
+        memory.variantStep = null;
+        memory.selectedColor = undefined;
+        memory.preQualifyCollected = undefined;
+        memory.preQualifyData = undefined;
         this.logger.log('State reset: new inquiry after completed order');
       }
     }
@@ -267,6 +271,8 @@ export class ReplyEngineService {
       memory.selectedVariantName = undefined;
       memory.selectionState = undefined;
       memory.availableVariants = undefined;
+      memory.variantStep = null;
+      memory.selectedColor = undefined;
       this.logger.log('adds_to_cart: clearing selection for new product, keeping cart');
     }
 
@@ -314,6 +320,61 @@ export class ReplyEngineService {
       }
     }
 
+    // 4.8 Pre-qualification step (e.g., ask height/weight for clothing stores)
+    const preQualifyFlowConfig = (effectiveConfig?.flowConfig as any);
+    const awaitingPreQualify = memory.lastAction === 'asked_pre_qualify' && memory.awaitingField === 'pre_qualify_data';
+    if (
+      preQualifyFlowConfig?.preQualify?.enabled &&
+      !memory.preQualifyCollected &&
+      !memory.orderCreated &&
+      (awaitingPreQualify || this.shouldSearchProducts(classification, memory))
+    ) {
+      // Check if this message contains pre-qualify data
+      if (
+        awaitingPreQualify ||
+        classification.primaryIntent === 'provide_details' ||
+        this.looksLikePreQualifyData(input.messageText, preQualifyFlowConfig.preQualify.fields)
+      ) {
+        memory.preQualifyData = this.extractPreQualifyData(input.messageText, preQualifyFlowConfig.preQualify.fields);
+        memory.preQualifyCollected = true;
+        this.logger.log(`Pre-qualify data collected: ${JSON.stringify(memory.preQualifyData)}`);
+
+        // Size recommendation from size chart
+        const sizeChart = preQualifyFlowConfig.sizeChart as Record<string, { heightMin: number; heightMax: number; weightMin: number; weightMax: number }> | undefined;
+        if (sizeChart && memory.preQualifyData) {
+          const recommended = this.recommendSize(memory.preQualifyData, sizeChart);
+          if (recommended) {
+            memory.recommendedSize = recommended;
+            this.logger.log(`Recommended size: ${recommended}`);
+            // Prepend size recommendation to the response
+            memory.lastAction = 'recommended_size';
+          }
+        }
+        // Restore category from memory so product search can proceed
+        if (!classification.entities.category && memory.selectedCategory) {
+          classification.entities.category = memory.selectedCategory;
+        }
+        // Override intent to ensure shouldSearchProducts returns true
+        classification.primaryIntent = 'category_browse';
+        classification.recommendedAction = 'show_products';
+        // Continue to product search below
+      } else {
+        // Ask for pre-qualify data — save category for use after pre-qualify response
+        if (classification.entities.category) {
+          memory.selectedCategory = classification.entities.category;
+        }
+        const prompt = preQualifyFlowConfig.preQualify.prompt || 'Підкажіть ваш зріст та вагу, щоб підібрати розмір 💛';
+        memory.lastAction = 'asked_pre_qualify';
+        memory.awaitingField = 'pre_qualify_data';
+        return {
+          decision: ReplyDecision.Reply,
+          reply: { text: prompt, sendNow: true },
+          handoff: { required: false, reason: null },
+          stateUpdate: { contextJson: memory as any },
+        };
+      }
+    }
+
     // 5. Product search if needed (based on classification entities/keywords)
     let productData: ProductSearchResult[] | undefined;
     let isFirstProductPresentation = false;
@@ -340,6 +401,22 @@ export class ReplyEngineService {
         found: productData ? productData.length : 0,
       });
 
+      // Filter by recommended size if available
+      if (productData && productData.length > 0 && memory.recommendedSize) {
+        const recSize = memory.recommendedSize;
+        const filtered = productData
+          .map(p => ({
+            ...p,
+            variants: p.variants.filter(v => !v.size || v.size.toLowerCase() === recSize.toLowerCase()),
+          }))
+          .filter(p => p.variants.length > 0);
+
+        if (filtered.length > 0) {
+          productData = filtered;
+          this.logger.log(`Filtered products by recommended size ${recSize}: ${filtered.length} products`);
+        }
+      }
+
       // Product not found → try product_not_found template, then handoff
       if ((!productData || productData.length === 0) &&
           ['product_inquiry', 'ready_to_order', 'availability_check', 'category_browse'].includes(classification.primaryIntent)) {
@@ -360,6 +437,15 @@ export class ReplyEngineService {
       }
 
       if (productData && productData.length > 0) {
+        // Prioritize the already-selected product in search results
+        if (productData.length > 1 && memory.selectedProductId) {
+          const selectedIdx = productData.findIndex(p => p.product.id === memory.selectedProductId);
+          if (selectedIdx > 0) {
+            const [selected] = productData.splice(selectedIdx, 1);
+            productData.unshift(selected);
+          }
+        }
+
         // Check if this is the first time showing products in this conversation
         isFirstProductPresentation = !memory.lastPresentedProducts?.length;
 
@@ -376,17 +462,23 @@ export class ReplyEngineService {
         memory.selectedCategory =
           classification.entities.category ?? searchKeywords[0];
 
-        // Store available variant names for classifier context
-        if (productData.length === 1) {
-          memory.availableVariants = productData[0].variants
-            .filter((v) => v.effectiveAvailable > 0)
-            .map((v) => [v.color, v.size].filter(Boolean).join(', '))
-            .filter(Boolean)
-            .join(', ');
+        // Store available variant names for the selected/target product
+        const targetProduct = memory.selectedProductId
+          ? productData.find(p => p.product.id === memory.selectedProductId) ?? (productData.length === 1 ? productData[0] : null)
+          : productData.length === 1 ? productData[0] : null;
 
-          // Single product match — set product ID in memory
-          memory.selectedProductId = productData[0].product.id;
-          memory.selectedProductTitle = productData[0].product.title;
+        if (targetProduct) {
+          memory.availableVariants = targetProduct.variants
+            .filter((v) => v.effectiveAvailable > 0)
+            .map((v) => ({
+              id: v.id,
+              name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+              color: v.color ?? null,
+              size: v.size ?? null,
+            }));
+
+          memory.selectedProductId = targetProduct.product.id;
+          memory.selectedProductTitle = targetProduct.product.title;
         }
 
         // Selection state management
@@ -471,6 +563,12 @@ export class ReplyEngineService {
     }
 
     // 5.5b Variant check: after recommendation + confirmation, check if variant selection needed
+    // Detect if two-step variant selection is needed (flowConfig.variants.askSequence has both color and size)
+    const variantsFlowConfig = (effectiveConfig?.flowConfig as any)?.variants;
+    const needsTwoStepVariants = variantsFlowConfig?.askSequence?.length === 2 &&
+      variantsFlowConfig.askSequence.includes('color') &&
+      variantsFlowConfig.askSequence.includes('size');
+
     if (
       classification.slotAction === 'confirmation' &&
       memory.selectionState === 'awaiting_confirmation' &&
@@ -482,6 +580,10 @@ export class ReplyEngineService {
       const userColor = classification.entities.color;
       const userSize = classification.entities.size;
 
+      // Check if variants have both color AND size for two-step
+      const hasBothDimensions = needsTwoStepVariants &&
+        variants.some((v: any) => v.color) && variants.some((v: any) => v.size);
+
       if (variants.length === 1) {
         // Single variant → auto-select, proceed to confirm
         memory.selectedVariantId = variants[0].id;
@@ -489,6 +591,13 @@ export class ReplyEngineService {
         memory.selectionState = 'awaiting_confirmation';
         classification.recommendedAction = 'confirm_selection';
         this.logger.log('Single variant → auto-selected, proceeding to confirm_selection');
+      } else if (hasBothDimensions && !memory.variantStep) {
+        // Two-step: start with color
+        memory.selectionState = 'awaiting_variant';
+        memory.variantStep = 'color';
+        classification.primaryIntent = 'ask_variant_choice';
+        classification.recommendedAction = 'ask_variant_choice';
+        this.logger.log(`Two-step variant: starting with color (${variants.length} variants)`);
       } else if (variants.length > 1 && (userColor || userSize)) {
         // User specified a variant — try to match
         const matched = this.matchVariant(variants, userColor, userSize);
@@ -514,18 +623,130 @@ export class ReplyEngineService {
       }
     }
 
+    // 5.5b-2: Two-step variant selection — handle color/size steps
+    if (
+      memory.selectionState === 'awaiting_variant' &&
+      memory.variantStep &&
+      memory.selectedProductId &&
+      !memory.selectedVariantId &&
+      (classification.slotAction === 'fills_missing_slot' || classification.slotAction === 'confirmation')
+    ) {
+      const rawVariants = memory.availableVariants;
+      const variants = Array.isArray(rawVariants) ? rawVariants : [];
+      const userColor = classification.entities.color;
+      const userSize = classification.entities.size;
+
+      if (memory.variantStep === 'color' && (userColor || (!userSize && input.messageText.trim()))) {
+        // User picked a color — match it
+        const colorInput = userColor || input.messageText.trim();
+        const colorVariants = variants.filter((v: any) => v.color);
+        const uniqueColors = [...new Set(colorVariants.map((v: any) => v.color))] as string[];
+        const matchedColor = this.matchColorOrSize(colorInput, uniqueColors);
+
+        if (matchedColor) {
+          memory.selectedColor = matchedColor;
+          // Check if sizes exist for this color
+          const sizesForColor = variants.filter(
+            (v: any) => v.color && v.color.toLowerCase() === matchedColor.toLowerCase() && v.size,
+          );
+          if (sizesForColor.length > 1) {
+            // Multiple sizes — ask for size
+            memory.variantStep = 'size';
+            classification.primaryIntent = 'ask_variant_choice';
+            classification.recommendedAction = 'ask_variant_choice';
+            this.logger.log(`Two-step variant: color=${matchedColor}, asking for size (${sizesForColor.length} options)`);
+          } else if (sizesForColor.length === 1) {
+            // Only one size for this color — auto-select
+            memory.selectedVariantId = sizesForColor[0].id;
+            memory.selectedVariantName = sizesForColor[0].name;
+            memory.variantStep = null;
+            memory.selectionState = 'awaiting_confirmation';
+            classification.recommendedAction = 'confirm_selection';
+            this.logger.log(`Two-step variant: color=${matchedColor}, single size → auto-selected`);
+          } else {
+            // No sizes, find variant by color only
+            const colorOnlyVariant = variants.find(
+              (v: any) => v.color && v.color.toLowerCase() === matchedColor.toLowerCase(),
+            );
+            if (colorOnlyVariant) {
+              memory.selectedVariantId = colorOnlyVariant.id;
+              memory.selectedVariantName = colorOnlyVariant.name;
+              memory.variantStep = null;
+              memory.selectionState = 'awaiting_confirmation';
+              classification.recommendedAction = 'confirm_selection';
+            }
+          }
+        } else {
+          // Color not matched — re-ask
+          classification.primaryIntent = 'ask_variant_choice';
+          classification.recommendedAction = 'ask_variant_choice';
+          this.logger.log(`Two-step variant: color not matched for "${colorInput}", re-asking`);
+        }
+      } else if (memory.variantStep === 'size' && memory.selectedColor && (userSize || (!userColor && input.messageText.trim()))) {
+        // User picked a size — match it
+        const sizeInput = userSize || input.messageText.trim();
+        const sizesForColor = variants.filter(
+          (v: any) => v.color && v.color.toLowerCase() === memory.selectedColor!.toLowerCase() && v.size,
+        );
+        const uniqueSizes = [...new Set(sizesForColor.map((v: any) => v.size))] as string[];
+        const matchedSize = this.matchColorOrSize(sizeInput, uniqueSizes);
+
+        if (matchedSize) {
+          // Find the exact variant by color + size
+          const exactVariant = variants.find(
+            (v: any) =>
+              v.color && v.color.toLowerCase() === memory.selectedColor!.toLowerCase() &&
+              v.size && v.size.toLowerCase() === matchedSize.toLowerCase(),
+          );
+          if (exactVariant) {
+            memory.selectedVariantId = exactVariant.id;
+            memory.selectedVariantName = exactVariant.name;
+            memory.variantStep = null;
+            memory.selectionState = 'awaiting_confirmation';
+            classification.recommendedAction = 'confirm_selection';
+            this.logger.log(`Two-step variant: color=${memory.selectedColor}, size=${matchedSize} → resolved`);
+          }
+        } else {
+          // Size not matched — re-ask
+          classification.primaryIntent = 'ask_variant_choice';
+          classification.recommendedAction = 'ask_variant_choice';
+          this.logger.log(`Two-step variant: size not matched for "${sizeInput}", re-asking`);
+        }
+      }
+    }
+
     // 5.5c Variant check for fills_missing_slot: user picked a product, check if variant needed
     if (
       classification.slotAction === 'fills_missing_slot' &&
       memory.selectedProductId &&
       !memory.selectedVariantId &&
+      !memory.variantStep && // Don't interfere with two-step variant selection
       productData && productData.length === 1
     ) {
       const variants = productData[0].variants.filter(v => v.effectiveAvailable > 0);
+
+      // Check if two-step is needed for this product
+      const hasBothDimensions = needsTwoStepVariants &&
+        variants.some(v => v.color) && variants.some(v => v.size);
+
       if (variants.length > 1) {
         const userColor = classification.entities.color;
         const userSize = classification.entities.size;
-        if (userColor || userSize) {
+
+        if (hasBothDimensions && !userColor && !userSize) {
+          // Two-step: start with color
+          memory.selectionState = 'awaiting_variant';
+          memory.variantStep = 'color';
+          memory.availableVariants = variants.map(v => ({
+            id: v.id,
+            name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+            color: v.color,
+            size: v.size,
+          }));
+          classification.primaryIntent = 'ask_variant_choice';
+          classification.recommendedAction = 'ask_variant_choice';
+          this.logger.log(`5.5c two-step: Product selected, starting with color (${variants.length} variants)`);
+        } else if (userColor || userSize) {
           const matched = this.matchVariant(
             variants.map(v => ({ id: v.id, name: [...new Set([v.color, v.size].filter(Boolean))].join(', '), color: v.color, size: v.size })),
             userColor, userSize,
@@ -560,8 +781,73 @@ export class ReplyEngineService {
       }
     }
 
+    // 5.5d: Product picked from list — check if variant selection is needed
+    // Handles the gap where user picks a product while in awaiting_product state
+    if (
+      memory.selectionState === 'awaiting_product' &&
+      memory.selectedProductId &&
+      !memory.selectedVariantId &&
+      Array.isArray(memory.availableVariants) &&
+      memory.availableVariants.length > 0
+    ) {
+      const variants = memory.availableVariants as Array<{ id: string; name: string; color?: string | null; size?: string | null }>;
+
+      // If recommendedSize is set, filter variants to that size first
+      let effectiveVariants = variants;
+      if (memory.recommendedSize) {
+        const sizeFiltered = variants.filter(
+          (v: any) => !v.size || v.size.toLowerCase() === memory.recommendedSize!.toLowerCase(),
+        );
+        if (sizeFiltered.length > 0) effectiveVariants = sizeFiltered;
+      }
+
+      const userColor = classification.entities.color;
+      const userSize = classification.entities.size;
+
+      if (effectiveVariants.length === 1) {
+        // Single variant (or single after size filter) → auto-select
+        memory.selectedVariantId = effectiveVariants[0].id;
+        memory.selectedVariantName = effectiveVariants[0].name;
+        memory.selectionState = 'awaiting_confirmation';
+        classification.recommendedAction = 'confirm_selection';
+        this.logger.log(`5.5d: Single variant after filter → auto-selected: ${effectiveVariants[0].name}`);
+      } else if (userColor || userSize) {
+        // User specified color/size in the same message — try to match
+        const matched = this.matchVariant(
+          effectiveVariants.map(v => ({ id: v.id, name: v.name, color: v.color ?? null, size: v.size ?? null })),
+          userColor, userSize,
+        );
+        if (matched) {
+          memory.selectedVariantId = matched.id;
+          memory.selectedVariantName = matched.name;
+          memory.selectionState = 'awaiting_confirmation';
+          classification.recommendedAction = 'confirm_selection';
+          this.logger.log(`5.5d: Variant matched from user input: ${matched.name}`);
+        } else {
+          memory.selectionState = 'awaiting_variant';
+          if (memory.recommendedSize) memory.variantStep = 'color';
+          classification.primaryIntent = 'ask_variant_choice';
+          classification.recommendedAction = 'ask_variant_choice';
+          this.logger.log(`5.5d: Variant not matched, asking user`);
+        }
+      } else if (effectiveVariants.length > 1) {
+        // Multiple variants, no user input — ask for choice
+        memory.selectionState = 'awaiting_variant';
+        // If sizes are already determined (recommendedSize), only ask for color
+        if (memory.recommendedSize) {
+          memory.variantStep = 'color';
+        } else if (needsTwoStepVariants) {
+          memory.variantStep = 'color';
+        }
+        classification.primaryIntent = 'ask_variant_choice';
+        classification.recommendedAction = 'ask_variant_choice';
+        this.logger.log(`5.5d: Product picked, ${effectiveVariants.length} variants — asking user (variantStep=${memory.variantStep ?? 'all'})`);
+      }
+    }
+
     // 6. Template Engine: select + render template
     const recentTemplateIds = memory.recentTemplateIds ?? [];
+    const flowConfig = effectiveConfig?.flowConfig as Record<string, unknown> | undefined;
     const templateResult = await this.templateEngine.render({
       tenantId: input.tenantId,
       classification,
@@ -570,6 +856,7 @@ export class ReplyEngineService {
       recentTemplateIds,
       isFirstProductPresentation,
       messageText: input.messageText,
+      flowConfig,
     });
 
     let finalReply: string;
@@ -582,6 +869,11 @@ export class ReplyEngineService {
       usedTemplateId = templateResult.templateId;
       // Use the template's actual scenario for memory tracking (may differ from classifier due to stage gates)
       actualAction = this.scenarioToAction(templateResult.scenario);
+
+      // Prepend size recommendation if just collected
+      if (memory.recommendedSize && memory.lastAction === 'recommended_size') {
+        finalReply = `За вашими параметрами рекомендую розмір ${memory.recommendedSize} 💛\n\n${finalReply}`;
+      }
 
       // Log if stage gate overrode the classifier's recommendation
       const classifierAction = classification.recommendedAction;
@@ -743,7 +1035,7 @@ export class ReplyEngineService {
 
       return {
         decision: ReplyDecision.CreateDraftOrder,
-        reply: { text: finalReply, sendNow: true },
+        reply: { text: finalReply, sendNow: true, imageUrls: templateResult?.imageUrls },
         handoff: { required: false, reason: null },
         stateUpdate,
         orderPayload: orderPayload ?? undefined,
@@ -777,7 +1069,7 @@ export class ReplyEngineService {
 
     return {
       decision: ReplyDecision.Reply,
-      reply: { text: finalReply, sendNow: true },
+      reply: { text: finalReply, sendNow: true, imageUrls: templateResult?.imageUrls },
       handoff: { required: false, reason: null },
       stateUpdate,
     };
@@ -905,6 +1197,142 @@ export class ReplyEngineService {
 
     return null; // No confident match — ask user
   }
+
+  // ─── Two-step variant helpers ──────────────────────────────────
+
+  /**
+   * Match user input against a list of option values (colors or sizes).
+   * Returns the original option string if matched, null otherwise.
+   */
+  private matchColorOrSize(userInput: string, options: string[]): string | null {
+    const input = userInput.toLowerCase().trim();
+    if (!input || options.length === 0) return null;
+
+    // 1. Exact match
+    const exact = options.find(o => o.toLowerCase() === input);
+    if (exact) return exact;
+
+    // 2. Partial/contains
+    const partial = options.filter(o => o.toLowerCase().includes(input) || input.includes(o.toLowerCase()));
+    if (partial.length === 1) return partial[0];
+
+    // 3. Normalized match
+    const normalize = (s: string) => s.toLowerCase().replace(/[ʼ'ьіїєґ]/g, '').replace(/\s+/g, ' ').trim();
+    const normalizedInput = normalize(input);
+    const normMatch = options.find(o => normalize(o) === normalizedInput);
+    if (normMatch) return normMatch;
+
+    // 4. Word overlap
+    const inputWords = normalizedInput.split(/[\s-]+/);
+    const wordMatches = options
+      .map(o => {
+        const labelWords = normalize(o).split(/[\s-]+/);
+        const overlap = inputWords.filter(w =>
+          labelWords.some(lw => lw.includes(w) || w.includes(lw)),
+        ).length;
+        return { option: o, overlap };
+      })
+      .filter(x => x.overlap > 0)
+      .sort((a, b) => b.overlap - a.overlap);
+    if (wordMatches.length === 1) return wordMatches[0].option;
+    if (wordMatches.length > 1 && wordMatches[0].overlap > wordMatches[1].overlap) {
+      return wordMatches[0].option;
+    }
+
+    return null;
+  }
+
+  // ─── Pre-qualification helpers ────────────────────────────────
+
+  /**
+   * Check if text contains data that looks like pre-qualify info (numbers for height/weight).
+   */
+  private looksLikePreQualifyData(text: string, fields: string[]): boolean {
+    if (!fields || fields.length === 0) return false;
+    // Look for at least one number in the text (height/weight are numeric)
+    const numbers = text.match(/\d+/g);
+    if (!numbers || numbers.length === 0) return false;
+    // Check if numbers are in a plausible range for height/weight
+    const plausible = numbers.some(n => {
+      const num = parseInt(n, 10);
+      return (num >= 30 && num <= 250); // covers weight 30-150, height 100-250
+    });
+    return plausible;
+  }
+
+  /**
+   * Extract pre-qualify data (height/weight) from user message.
+   */
+  private extractPreQualifyData(text: string, fields: string[]): Record<string, string> {
+    const result: Record<string, string> = {};
+    const numbers = text.match(/\d+/g) || [];
+
+    if (fields.includes('height') && fields.includes('weight')) {
+      // Try to parse "180/75", "зріст 180, вага 75", "180 75", etc.
+      const nums = numbers.map(n => parseInt(n, 10)).filter(n => n > 0);
+      if (nums.length >= 2) {
+        // Assume larger number is height, smaller is weight
+        const sorted = [...nums].sort((a, b) => b - a);
+        result['height'] = String(sorted[0]);
+        result['weight'] = String(sorted[1]);
+      } else if (nums.length === 1) {
+        // Single number — guess based on value
+        const n = nums[0];
+        if (n >= 100) {
+          result['height'] = String(n);
+        } else {
+          result['weight'] = String(n);
+        }
+      }
+    } else {
+      // Generic: assign numbers to fields in order
+      for (let i = 0; i < fields.length && i < numbers.length; i++) {
+        result[fields[i]] = numbers[i];
+      }
+    }
+
+    return result;
+  }
+
+  private recommendSize(
+    params: Record<string, string>,
+    sizeChart: Record<string, { heightMin: number; heightMax: number; weightMin: number; weightMax: number }>,
+  ): string | null {
+    const height = parseInt(params.height, 10);
+    const weight = parseInt(params.weight, 10);
+    if (!height && !weight) return null;
+
+    let bestSize: string | null = null;
+    let bestScore = -1;
+
+    for (const [size, range] of Object.entries(sizeChart)) {
+      let score = 0;
+      if (height && height >= range.heightMin && height <= range.heightMax) score++;
+      if (weight && weight >= range.weightMin && weight <= range.weightMax) score++;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestSize = size;
+      }
+    }
+
+    // Score 0 for all → fallback: find closest by height
+    if (bestScore === 0 && height) {
+      let closestDist = Infinity;
+      for (const [size, range] of Object.entries(sizeChart)) {
+        const mid = (range.heightMin + range.heightMax) / 2;
+        const dist = Math.abs(height - mid);
+        if (dist < closestDist) {
+          closestDist = dist;
+          bestSize = size;
+        }
+      }
+    }
+
+    return bestSize;
+  }
+
+  // ─── Product search helpers ────────────────────────────────────
 
   private shouldSearchProducts(classification: ClassificationResult, memory: AssistantMemory): boolean {
     const searchActions = [
@@ -1039,7 +1467,7 @@ export class ReplyEngineService {
         break;
       case 'ask_variant_choice':
         memory.lastAction = 'asked_variant';
-        memory.awaitingField = 'variant_selection';
+        memory.awaitingField = memory.variantStep === 'size' ? 'size_selection' : 'variant_selection';
         memory.selectionState = 'awaiting_variant';
         break;
       case 'answer_faq':

@@ -62,6 +62,7 @@ export interface ProductVariantRow {
   color: string | null;
   price: number;
   currency: string;
+  imageUrl: string | null;
   effectiveAvailable: number;
   lastSyncedAt: string | null;
 }
@@ -71,6 +72,7 @@ export interface ProductRow {
   sku: string | null;
   title: string;
   category: string | null;
+  imageUrl: string | null;
   variantCount: number;
   updatedAt: string;
   variants: ProductVariantRow[];

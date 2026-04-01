@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { ProductVariant } from '../catalog/entities/product-variant.entity';
 import { StockBalance } from '../catalog/entities/stock-balance.entity';
+import { ProductMedia } from '../catalog/entities/product-media.entity';
 import { CheckAvailabilityDto } from './dto/check-availability.dto';
 
 const FRESHNESS_MINUTES = 10;
@@ -35,6 +36,9 @@ export class AvailabilityService {
     private readonly variantRepo: Repository<ProductVariant>,
     @InjectRepository(StockBalance)
     private readonly stockRepo: Repository<StockBalance>,
+    @InjectRepository(ProductMedia)
+    private readonly mediaRepo: Repository<ProductMedia>,
+    private readonly dataSource: DataSource,
   ) {}
 
   private extractSearchTerms(text: string): string[] {
@@ -209,7 +213,7 @@ export class AvailabilityService {
     dto: CheckAvailabilityDto,
   ): Promise<
     Array<{
-      product: { id: string; title: string };
+      product: { id: string; title: string; imageUrl?: string | null };
       variants: Array<{
         id: string;
         size: string | null;
@@ -237,7 +241,18 @@ export class AvailabilityService {
       }
     }
 
-    // Priority 2: ILIKE on category
+    // Priority 2: ILIKE on description
+    if (!variants.length) {
+      variants = await this.searchAllByDescription(tenantId, fullPhrase);
+      if (!variants.length) {
+        for (const t of searchTerms) {
+          variants = await this.searchAllByDescription(tenantId, t);
+          if (variants.length) break;
+        }
+      }
+    }
+
+    // Priority 3: ILIKE on category
     if (!variants.length) {
       variants = await this.searchAllByCategory(tenantId, fullPhrase);
       if (!variants.length) {
@@ -248,7 +263,7 @@ export class AvailabilityService {
       }
     }
 
-    // Priority 3: Trigram on category only (NOT title — title trigram is too noisy)
+    // Priority 4: Trigram on category only (NOT title — title trigram is too noisy)
     // with a higher threshold (0.3)
     if (!variants.length) {
       for (const t of searchTerms) {
@@ -261,44 +276,12 @@ export class AvailabilityService {
     if (variants.length === 0) return [];
 
     // Group by product
-    const productMap = new Map<
-      string,
-      {
-        product: { id: string; title: string };
-        variants: Array<{
-          id: string;
-          size: string | null;
-          color: string | null;
-          price: number;
-          currency: string;
-          effectiveAvailable: number;
-        }>;
-      }
-    >();
+    const results = this.groupVariantsByProduct(variants);
 
-    for (const v of variants) {
-      const pid = v.product.id;
-      if (!productMap.has(pid)) {
-        productMap.set(pid, {
-          product: { id: pid, title: v.product.title },
-          variants: [],
-        });
-      }
-      const stock = v.stockBalance;
-      const effectiveAvailable = stock
-        ? stock.availableQty - stock.reservedQty - stock.pendingCheckoutQty
-        : 0;
-      productMap.get(pid)!.variants.push({
-        id: v.id,
-        size: v.size,
-        color: v.color,
-        price: Number(v.price),
-        currency: v.currency,
-        effectiveAvailable,
-      });
-    }
+    // Load first image for each product
+    await this.loadProductImages(results);
 
-    return Array.from(productMap.values()).slice(0, 5);
+    return results.slice(0, 5);
   }
 
   private async searchAllByTitle(tenantId: string, term: string): Promise<ProductVariant[]> {
@@ -343,6 +326,19 @@ export class AvailabilityService {
       .getMany();
   }
 
+  private async searchAllByDescription(tenantId: string, term: string): Promise<ProductVariant[]> {
+    return this.variantRepo
+      .createQueryBuilder('v')
+      .innerJoinAndSelect('v.product', 'p')
+      .leftJoinAndSelect('v.stockBalance', 's')
+      .where('p.tenant_id = :tenantId', { tenantId })
+      .andWhere('p.status = :status', { status: 'active' })
+      .andWhere('v.active = true')
+      .andWhere('p.description ILIKE :q', { q: `%${term}%` })
+      .take(20)
+      .getMany();
+  }
+
   /**
    * Find all variants for a product by ID, returning the same ProductSearchResult[]
    * format used by checkAll(). Used for media-linked product resolution.
@@ -352,7 +348,7 @@ export class AvailabilityService {
     variantId?: string,
   ): Promise<
     Array<{
-      product: { id: string; title: string };
+      product: { id: string; title: string; imageUrl?: string | null };
       variants: Array<{
         id: string;
         size: string | null;
@@ -378,44 +374,9 @@ export class AvailabilityService {
     const variants = await qb.take(20).getMany();
     if (variants.length === 0) return [];
 
-    const productMap = new Map<
-      string,
-      {
-        product: { id: string; title: string };
-        variants: Array<{
-          id: string;
-          size: string | null;
-          color: string | null;
-          price: number;
-          currency: string;
-          effectiveAvailable: number;
-        }>;
-      }
-    >();
-
-    for (const v of variants) {
-      const pid = v.product.id;
-      if (!productMap.has(pid)) {
-        productMap.set(pid, {
-          product: { id: pid, title: v.product.title },
-          variants: [],
-        });
-      }
-      const stock = v.stockBalance;
-      const effectiveAvailable = stock
-        ? stock.availableQty - stock.reservedQty - stock.pendingCheckoutQty
-        : 0;
-      productMap.get(pid)!.variants.push({
-        id: v.id,
-        size: v.size,
-        color: v.color,
-        price: Number(v.price),
-        currency: v.currency,
-        effectiveAvailable,
-      });
-    }
-
-    return Array.from(productMap.values());
+    const results = this.groupVariantsByProduct(variants);
+    await this.loadProductImages(results);
+    return results;
   }
 
   async getByProductId(
@@ -454,5 +415,77 @@ export class AvailabilityService {
       },
       stock: effectiveAvailable,
     };
+  }
+
+  // ─── Shared helpers ────────────────────────────────────────────
+
+  private groupVariantsByProduct(variants: ProductVariant[]): Array<{
+    product: { id: string; title: string; imageUrl?: string | null };
+    variants: Array<{
+      id: string;
+      size: string | null;
+      color: string | null;
+      price: number;
+      currency: string;
+      effectiveAvailable: number;
+    }>;
+  }> {
+    const productMap = new Map<string, {
+      product: { id: string; title: string; imageUrl?: string | null };
+      variants: Array<{
+        id: string;
+        size: string | null;
+        color: string | null;
+        price: number;
+        currency: string;
+        effectiveAvailable: number;
+      }>;
+    }>();
+
+    for (const v of variants) {
+      const pid = v.product.id;
+      if (!productMap.has(pid)) {
+        productMap.set(pid, {
+          product: { id: pid, title: v.product.title, imageUrl: null },
+          variants: [],
+        });
+      }
+      const stock = v.stockBalance;
+      const effectiveAvailable = stock
+        ? stock.availableQty - stock.reservedQty - stock.pendingCheckoutQty
+        : 0;
+      productMap.get(pid)!.variants.push({
+        id: v.id,
+        size: v.size,
+        color: v.color,
+        price: Number(v.price),
+        currency: v.currency,
+        effectiveAvailable,
+      });
+    }
+
+    return Array.from(productMap.values());
+  }
+
+  /** Load the first image (by sort_order) for each product in the results */
+  private async loadProductImages(
+    results: Array<{ product: { id: string; imageUrl?: string | null } }>,
+  ): Promise<void> {
+    const productIds = results.map((r) => r.product.id);
+    if (productIds.length === 0) return;
+
+    // Single query: get the first image per product, ordered by sort_order
+    const images = await this.dataSource.query(
+      `SELECT DISTINCT ON (product_id) product_id, url
+       FROM product_media
+       WHERE product_id = ANY($1)
+       ORDER BY product_id, sort_order ASC`,
+      [productIds],
+    ) as Array<{ product_id: string; url: string }>;
+
+    const imageMap = new Map(images.map((i) => [i.product_id, i.url]));
+    for (const r of results) {
+      r.product.imageUrl = imageMap.get(r.product.id) ?? null;
+    }
   }
 }

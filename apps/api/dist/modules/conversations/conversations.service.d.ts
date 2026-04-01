@@ -31,9 +31,10 @@ export declare class ConversationsService {
         limit: number;
         total: number;
     }>;
-    findById(id: string): Promise<Conversation>;
-    takeover(id: string, managerUserId: string): Promise<Conversation>;
-    release(id: string): Promise<Conversation>;
+    findById(id: string, tenantId?: string): Promise<Conversation>;
+    takeover(id: string, tenantId: string | null, managerUserId: string): Promise<Conversation>;
+    release(id: string, tenantId?: string | null): Promise<Conversation>;
+    getState(conversationId: string): Promise<ConversationState | null>;
     updateState(conversationId: string, patch: Partial<ConversationState>): Promise<void>;
     escalate(conversationId: string, reason: string): Promise<void>;
     findCustomer(tenantId: string, channel: string, externalUserId: string): Promise<Customer | null>;

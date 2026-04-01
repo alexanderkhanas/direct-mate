@@ -117,6 +117,10 @@ export class IntegrationsService {
     return this.connectionRepo.find({ where: { tenantId } });
   }
 
+  async findById(id: string): Promise<Connection | null> {
+    return this.connectionRepo.findOne({ where: { id } });
+  }
+
   async findByExternalAccountId(
     externalAccountId: string,
     type: ConnectionType,
@@ -126,8 +130,8 @@ export class IntegrationsService {
     });
   }
 
-  async disconnect(id: string): Promise<void> {
-    const conn = await this.connectionRepo.findOne({ where: { id } });
+  async disconnect(id: string, tenantId: string): Promise<void> {
+    const conn = await this.connectionRepo.findOne({ where: { id, tenantId } });
     if (!conn) throw new NotFoundException('Connection not found');
     await this.connectionRepo.update(id, {
       status: ConnectionStatus.Disconnected,
@@ -136,8 +140,8 @@ export class IntegrationsService {
     });
   }
 
-  async remove(id: string): Promise<void> {
-    const conn = await this.connectionRepo.findOne({ where: { id } });
+  async remove(id: string, tenantId: string): Promise<void> {
+    const conn = await this.connectionRepo.findOne({ where: { id, tenantId } });
     if (!conn) throw new NotFoundException('Connection not found');
     await this.connectionRepo.delete(id);
   }

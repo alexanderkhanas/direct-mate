@@ -1,0 +1,21 @@
+name: "Cart compatibility: single product order still works through cart flow"
+messages:
+  - customer: "хочу Soft Satin Lab Помада Terracotta"
+    expect:
+      scenario_in: [confirm_selection, show_products, ask_variant_choice]
+
+  - customer: "так"
+    expect:
+      scenario: ask_continue_or_checkout
+      memory:
+        selectionState: cart_item_added
+
+  - customer: "ні, оформлюємо"
+    expect:
+      scenario_in: [order_confirmed_ask_delivery, collect_checkout_info]
+      contains_any: ["ПІБ", "Телефон"]
+
+  - customer: "Марія Шевченко 0501234567 Одеса НП 1"
+    expect:
+      scenario: confirm_order
+      contains_any: ["замовлення", "Soft Satin"]

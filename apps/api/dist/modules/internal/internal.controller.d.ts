@@ -8,6 +8,7 @@ export declare class InternalController {
     private readonly integrationsService;
     private readonly catalogService;
     constructor(integrationsService: IntegrationsService, catalogService: CatalogService);
+    private verifyConnectionOwnership;
     syncCatalog(dto: SyncTriggerDto): Promise<{
         jobId: string;
         accepted: boolean;

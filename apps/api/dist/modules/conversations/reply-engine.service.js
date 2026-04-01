@@ -190,6 +190,10 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 memory.awaitingField = undefined;
                 memory.orderCreated = undefined;
                 memory.cartItems = undefined;
+                memory.variantStep = null;
+                memory.selectedColor = undefined;
+                memory.preQualifyCollected = undefined;
+                memory.preQualifyData = undefined;
                 this.logger.log('State reset: new inquiry after completed order');
             }
         }
@@ -200,6 +204,8 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             memory.selectedVariantName = undefined;
             memory.selectionState = undefined;
             memory.availableVariants = undefined;
+            memory.variantStep = null;
+            memory.selectedColor = undefined;
             this.logger.log('adds_to_cart: clearing selection for new product, keeping cart');
         }
         let mediaProductData;
@@ -227,6 +233,48 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 return this.doHandoff(input, 'unlinked_media_reference', 'Секунду, зараз перевірю 💛');
             }
         }
+        const preQualifyFlowConfig = effectiveConfig?.flowConfig;
+        const awaitingPreQualify = memory.lastAction === 'asked_pre_qualify' && memory.awaitingField === 'pre_qualify_data';
+        if (preQualifyFlowConfig?.preQualify?.enabled &&
+            !memory.preQualifyCollected &&
+            !memory.orderCreated &&
+            (awaitingPreQualify || this.shouldSearchProducts(classification, memory))) {
+            if (awaitingPreQualify ||
+                classification.primaryIntent === 'provide_details' ||
+                this.looksLikePreQualifyData(input.messageText, preQualifyFlowConfig.preQualify.fields)) {
+                memory.preQualifyData = this.extractPreQualifyData(input.messageText, preQualifyFlowConfig.preQualify.fields);
+                memory.preQualifyCollected = true;
+                this.logger.log(`Pre-qualify data collected: ${JSON.stringify(memory.preQualifyData)}`);
+                const sizeChart = preQualifyFlowConfig.sizeChart;
+                if (sizeChart && memory.preQualifyData) {
+                    const recommended = this.recommendSize(memory.preQualifyData, sizeChart);
+                    if (recommended) {
+                        memory.recommendedSize = recommended;
+                        this.logger.log(`Recommended size: ${recommended}`);
+                        memory.lastAction = 'recommended_size';
+                    }
+                }
+                if (!classification.entities.category && memory.selectedCategory) {
+                    classification.entities.category = memory.selectedCategory;
+                }
+                classification.primaryIntent = 'category_browse';
+                classification.recommendedAction = 'show_products';
+            }
+            else {
+                if (classification.entities.category) {
+                    memory.selectedCategory = classification.entities.category;
+                }
+                const prompt = preQualifyFlowConfig.preQualify.prompt || 'Підкажіть ваш зріст та вагу, щоб підібрати розмір 💛';
+                memory.lastAction = 'asked_pre_qualify';
+                memory.awaitingField = 'pre_qualify_data';
+                return {
+                    decision: shared_1.ReplyDecision.Reply,
+                    reply: { text: prompt, sendNow: true },
+                    handoff: { required: false, reason: null },
+                    stateUpdate: { contextJson: memory },
+                };
+            }
+        }
         let productData;
         let isFirstProductPresentation = false;
         if (mediaProductData && mediaProductData.length > 0) {
@@ -243,6 +291,19 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 keywords: searchKeywords,
                 found: productData ? productData.length : 0,
             });
+            if (productData && productData.length > 0 && memory.recommendedSize) {
+                const recSize = memory.recommendedSize;
+                const filtered = productData
+                    .map(p => ({
+                    ...p,
+                    variants: p.variants.filter(v => !v.size || v.size.toLowerCase() === recSize.toLowerCase()),
+                }))
+                    .filter(p => p.variants.length > 0);
+                if (filtered.length > 0) {
+                    productData = filtered;
+                    this.logger.log(`Filtered products by recommended size ${recSize}: ${filtered.length} products`);
+                }
+            }
             if ((!productData || productData.length === 0) &&
                 ['product_inquiry', 'ready_to_order', 'availability_check', 'category_browse'].includes(classification.primaryIntent)) {
                 this.logger.log('Product not found — using product_not_found template + handoff');
@@ -258,6 +319,13 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 return this.doHandoff(input, 'product_not_found', softMessage);
             }
             if (productData && productData.length > 0) {
+                if (productData.length > 1 && memory.selectedProductId) {
+                    const selectedIdx = productData.findIndex(p => p.product.id === memory.selectedProductId);
+                    if (selectedIdx > 0) {
+                        const [selected] = productData.splice(selectedIdx, 1);
+                        productData.unshift(selected);
+                    }
+                }
                 isFirstProductPresentation = !memory.lastPresentedProducts?.length;
                 memory.lastPresentedProducts = productData.map((p) => ({
                     title: p.product.title,
@@ -268,14 +336,20 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 }));
                 memory.selectedCategory =
                     classification.entities.category ?? searchKeywords[0];
-                if (productData.length === 1) {
-                    memory.availableVariants = productData[0].variants
+                const targetProduct = memory.selectedProductId
+                    ? productData.find(p => p.product.id === memory.selectedProductId) ?? (productData.length === 1 ? productData[0] : null)
+                    : productData.length === 1 ? productData[0] : null;
+                if (targetProduct) {
+                    memory.availableVariants = targetProduct.variants
                         .filter((v) => v.effectiveAvailable > 0)
-                        .map((v) => [v.color, v.size].filter(Boolean).join(', '))
-                        .filter(Boolean)
-                        .join(', ');
-                    memory.selectedProductId = productData[0].product.id;
-                    memory.selectedProductTitle = productData[0].product.title;
+                        .map((v) => ({
+                        id: v.id,
+                        name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+                        color: v.color ?? null,
+                        size: v.size ?? null,
+                    }));
+                    memory.selectedProductId = targetProduct.product.id;
+                    memory.selectedProductTitle = targetProduct.product.title;
                 }
                 if (isFirstProductPresentation) {
                     memory.selectionState = 'awaiting_product';
@@ -344,6 +418,10 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             classification.conversationStage = 'checkout_started';
             this.logger.log('Cart checkout: proceeding with ' + memory.cartItems.length + ' items');
         }
+        const variantsFlowConfig = effectiveConfig?.flowConfig?.variants;
+        const needsTwoStepVariants = variantsFlowConfig?.askSequence?.length === 2 &&
+            variantsFlowConfig.askSequence.includes('color') &&
+            variantsFlowConfig.askSequence.includes('size');
         if (classification.slotAction === 'confirmation' &&
             memory.selectionState === 'awaiting_confirmation' &&
             memory.selectedProductId &&
@@ -352,12 +430,21 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             const variants = Array.isArray(rawVariants) ? rawVariants : [];
             const userColor = classification.entities.color;
             const userSize = classification.entities.size;
+            const hasBothDimensions = needsTwoStepVariants &&
+                variants.some((v) => v.color) && variants.some((v) => v.size);
             if (variants.length === 1) {
                 memory.selectedVariantId = variants[0].id;
                 memory.selectedVariantName = variants[0].name;
                 memory.selectionState = 'awaiting_confirmation';
                 classification.recommendedAction = 'confirm_selection';
                 this.logger.log('Single variant → auto-selected, proceeding to confirm_selection');
+            }
+            else if (hasBothDimensions && !memory.variantStep) {
+                memory.selectionState = 'awaiting_variant';
+                memory.variantStep = 'color';
+                classification.primaryIntent = 'ask_variant_choice';
+                classification.recommendedAction = 'ask_variant_choice';
+                this.logger.log(`Two-step variant: starting with color (${variants.length} variants)`);
             }
             else if (variants.length > 1 && (userColor || userSize)) {
                 const matched = this.matchVariant(variants, userColor, userSize);
@@ -382,15 +469,103 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 this.logger.log(`Multiple variants (${variants.length}), asking user to choose`);
             }
         }
+        if (memory.selectionState === 'awaiting_variant' &&
+            memory.variantStep &&
+            memory.selectedProductId &&
+            !memory.selectedVariantId &&
+            (classification.slotAction === 'fills_missing_slot' || classification.slotAction === 'confirmation')) {
+            const rawVariants = memory.availableVariants;
+            const variants = Array.isArray(rawVariants) ? rawVariants : [];
+            const userColor = classification.entities.color;
+            const userSize = classification.entities.size;
+            if (memory.variantStep === 'color' && (userColor || (!userSize && input.messageText.trim()))) {
+                const colorInput = userColor || input.messageText.trim();
+                const colorVariants = variants.filter((v) => v.color);
+                const uniqueColors = [...new Set(colorVariants.map((v) => v.color))];
+                const matchedColor = this.matchColorOrSize(colorInput, uniqueColors);
+                if (matchedColor) {
+                    memory.selectedColor = matchedColor;
+                    const sizesForColor = variants.filter((v) => v.color && v.color.toLowerCase() === matchedColor.toLowerCase() && v.size);
+                    if (sizesForColor.length > 1) {
+                        memory.variantStep = 'size';
+                        classification.primaryIntent = 'ask_variant_choice';
+                        classification.recommendedAction = 'ask_variant_choice';
+                        this.logger.log(`Two-step variant: color=${matchedColor}, asking for size (${sizesForColor.length} options)`);
+                    }
+                    else if (sizesForColor.length === 1) {
+                        memory.selectedVariantId = sizesForColor[0].id;
+                        memory.selectedVariantName = sizesForColor[0].name;
+                        memory.variantStep = null;
+                        memory.selectionState = 'awaiting_confirmation';
+                        classification.recommendedAction = 'confirm_selection';
+                        this.logger.log(`Two-step variant: color=${matchedColor}, single size → auto-selected`);
+                    }
+                    else {
+                        const colorOnlyVariant = variants.find((v) => v.color && v.color.toLowerCase() === matchedColor.toLowerCase());
+                        if (colorOnlyVariant) {
+                            memory.selectedVariantId = colorOnlyVariant.id;
+                            memory.selectedVariantName = colorOnlyVariant.name;
+                            memory.variantStep = null;
+                            memory.selectionState = 'awaiting_confirmation';
+                            classification.recommendedAction = 'confirm_selection';
+                        }
+                    }
+                }
+                else {
+                    classification.primaryIntent = 'ask_variant_choice';
+                    classification.recommendedAction = 'ask_variant_choice';
+                    this.logger.log(`Two-step variant: color not matched for "${colorInput}", re-asking`);
+                }
+            }
+            else if (memory.variantStep === 'size' && memory.selectedColor && (userSize || (!userColor && input.messageText.trim()))) {
+                const sizeInput = userSize || input.messageText.trim();
+                const sizesForColor = variants.filter((v) => v.color && v.color.toLowerCase() === memory.selectedColor.toLowerCase() && v.size);
+                const uniqueSizes = [...new Set(sizesForColor.map((v) => v.size))];
+                const matchedSize = this.matchColorOrSize(sizeInput, uniqueSizes);
+                if (matchedSize) {
+                    const exactVariant = variants.find((v) => v.color && v.color.toLowerCase() === memory.selectedColor.toLowerCase() &&
+                        v.size && v.size.toLowerCase() === matchedSize.toLowerCase());
+                    if (exactVariant) {
+                        memory.selectedVariantId = exactVariant.id;
+                        memory.selectedVariantName = exactVariant.name;
+                        memory.variantStep = null;
+                        memory.selectionState = 'awaiting_confirmation';
+                        classification.recommendedAction = 'confirm_selection';
+                        this.logger.log(`Two-step variant: color=${memory.selectedColor}, size=${matchedSize} → resolved`);
+                    }
+                }
+                else {
+                    classification.primaryIntent = 'ask_variant_choice';
+                    classification.recommendedAction = 'ask_variant_choice';
+                    this.logger.log(`Two-step variant: size not matched for "${sizeInput}", re-asking`);
+                }
+            }
+        }
         if (classification.slotAction === 'fills_missing_slot' &&
             memory.selectedProductId &&
             !memory.selectedVariantId &&
+            !memory.variantStep &&
             productData && productData.length === 1) {
             const variants = productData[0].variants.filter(v => v.effectiveAvailable > 0);
+            const hasBothDimensions = needsTwoStepVariants &&
+                variants.some(v => v.color) && variants.some(v => v.size);
             if (variants.length > 1) {
                 const userColor = classification.entities.color;
                 const userSize = classification.entities.size;
-                if (userColor || userSize) {
+                if (hasBothDimensions && !userColor && !userSize) {
+                    memory.selectionState = 'awaiting_variant';
+                    memory.variantStep = 'color';
+                    memory.availableVariants = variants.map(v => ({
+                        id: v.id,
+                        name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+                        color: v.color,
+                        size: v.size,
+                    }));
+                    classification.primaryIntent = 'ask_variant_choice';
+                    classification.recommendedAction = 'ask_variant_choice';
+                    this.logger.log(`5.5c two-step: Product selected, starting with color (${variants.length} variants)`);
+                }
+                else if (userColor || userSize) {
                     const matched = this.matchVariant(variants.map(v => ({ id: v.id, name: [...new Set([v.color, v.size].filter(Boolean))].join(', '), color: v.color, size: v.size })), userColor, userSize);
                     if (matched) {
                         memory.selectedVariantId = matched.id;
@@ -424,7 +599,60 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 classification.recommendedAction = 'confirm_selection';
             }
         }
+        if (memory.selectionState === 'awaiting_product' &&
+            memory.selectedProductId &&
+            !memory.selectedVariantId &&
+            Array.isArray(memory.availableVariants) &&
+            memory.availableVariants.length > 0) {
+            const variants = memory.availableVariants;
+            let effectiveVariants = variants;
+            if (memory.recommendedSize) {
+                const sizeFiltered = variants.filter((v) => !v.size || v.size.toLowerCase() === memory.recommendedSize.toLowerCase());
+                if (sizeFiltered.length > 0)
+                    effectiveVariants = sizeFiltered;
+            }
+            const userColor = classification.entities.color;
+            const userSize = classification.entities.size;
+            if (effectiveVariants.length === 1) {
+                memory.selectedVariantId = effectiveVariants[0].id;
+                memory.selectedVariantName = effectiveVariants[0].name;
+                memory.selectionState = 'awaiting_confirmation';
+                classification.recommendedAction = 'confirm_selection';
+                this.logger.log(`5.5d: Single variant after filter → auto-selected: ${effectiveVariants[0].name}`);
+            }
+            else if (userColor || userSize) {
+                const matched = this.matchVariant(effectiveVariants.map(v => ({ id: v.id, name: v.name, color: v.color ?? null, size: v.size ?? null })), userColor, userSize);
+                if (matched) {
+                    memory.selectedVariantId = matched.id;
+                    memory.selectedVariantName = matched.name;
+                    memory.selectionState = 'awaiting_confirmation';
+                    classification.recommendedAction = 'confirm_selection';
+                    this.logger.log(`5.5d: Variant matched from user input: ${matched.name}`);
+                }
+                else {
+                    memory.selectionState = 'awaiting_variant';
+                    if (memory.recommendedSize)
+                        memory.variantStep = 'color';
+                    classification.primaryIntent = 'ask_variant_choice';
+                    classification.recommendedAction = 'ask_variant_choice';
+                    this.logger.log(`5.5d: Variant not matched, asking user`);
+                }
+            }
+            else if (effectiveVariants.length > 1) {
+                memory.selectionState = 'awaiting_variant';
+                if (memory.recommendedSize) {
+                    memory.variantStep = 'color';
+                }
+                else if (needsTwoStepVariants) {
+                    memory.variantStep = 'color';
+                }
+                classification.primaryIntent = 'ask_variant_choice';
+                classification.recommendedAction = 'ask_variant_choice';
+                this.logger.log(`5.5d: Product picked, ${effectiveVariants.length} variants — asking user (variantStep=${memory.variantStep ?? 'all'})`);
+            }
+        }
         const recentTemplateIds = memory.recentTemplateIds ?? [];
+        const flowConfig = effectiveConfig?.flowConfig;
         const templateResult = await this.templateEngine.render({
             tenantId: input.tenantId,
             classification,
@@ -433,6 +661,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             recentTemplateIds,
             isFirstProductPresentation,
             messageText: input.messageText,
+            flowConfig,
         });
         let finalReply;
         let usedTemplateId;
@@ -441,6 +670,9 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             finalReply = templateResult.text;
             usedTemplateId = templateResult.templateId;
             actualAction = this.scenarioToAction(templateResult.scenario);
+            if (memory.recommendedSize && memory.lastAction === 'recommended_size') {
+                finalReply = `За вашими параметрами рекомендую розмір ${memory.recommendedSize} 💛\n\n${finalReply}`;
+            }
             const classifierAction = classification.recommendedAction;
             if (actualAction !== classifierAction) {
                 const reason = !memory.selectedProductId ? 'checkout_blocked_no_product'
@@ -569,7 +801,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             });
             return {
                 decision: shared_1.ReplyDecision.CreateDraftOrder,
-                reply: { text: finalReply, sendNow: true },
+                reply: { text: finalReply, sendNow: true, imageUrls: templateResult?.imageUrls },
                 handoff: { required: false, reason: null },
                 stateUpdate,
                 orderPayload: orderPayload ?? undefined,
@@ -600,7 +832,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         });
         return {
             decision: shared_1.ReplyDecision.Reply,
-            reply: { text: finalReply, sendNow: true },
+            reply: { text: finalReply, sendNow: true, imageUrls: templateResult?.imageUrls },
             handoff: { required: false, reason: null },
             stateUpdate,
         };
@@ -695,6 +927,107 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         if (fuzzy.length > 1 && fuzzy[0].dist < fuzzy[1].dist)
             return fuzzy[0].variant;
         return null;
+    }
+    matchColorOrSize(userInput, options) {
+        const input = userInput.toLowerCase().trim();
+        if (!input || options.length === 0)
+            return null;
+        const exact = options.find(o => o.toLowerCase() === input);
+        if (exact)
+            return exact;
+        const partial = options.filter(o => o.toLowerCase().includes(input) || input.includes(o.toLowerCase()));
+        if (partial.length === 1)
+            return partial[0];
+        const normalize = (s) => s.toLowerCase().replace(/[ʼ'ьіїєґ]/g, '').replace(/\s+/g, ' ').trim();
+        const normalizedInput = normalize(input);
+        const normMatch = options.find(o => normalize(o) === normalizedInput);
+        if (normMatch)
+            return normMatch;
+        const inputWords = normalizedInput.split(/[\s-]+/);
+        const wordMatches = options
+            .map(o => {
+            const labelWords = normalize(o).split(/[\s-]+/);
+            const overlap = inputWords.filter(w => labelWords.some(lw => lw.includes(w) || w.includes(lw))).length;
+            return { option: o, overlap };
+        })
+            .filter(x => x.overlap > 0)
+            .sort((a, b) => b.overlap - a.overlap);
+        if (wordMatches.length === 1)
+            return wordMatches[0].option;
+        if (wordMatches.length > 1 && wordMatches[0].overlap > wordMatches[1].overlap) {
+            return wordMatches[0].option;
+        }
+        return null;
+    }
+    looksLikePreQualifyData(text, fields) {
+        if (!fields || fields.length === 0)
+            return false;
+        const numbers = text.match(/\d+/g);
+        if (!numbers || numbers.length === 0)
+            return false;
+        const plausible = numbers.some(n => {
+            const num = parseInt(n, 10);
+            return (num >= 30 && num <= 250);
+        });
+        return plausible;
+    }
+    extractPreQualifyData(text, fields) {
+        const result = {};
+        const numbers = text.match(/\d+/g) || [];
+        if (fields.includes('height') && fields.includes('weight')) {
+            const nums = numbers.map(n => parseInt(n, 10)).filter(n => n > 0);
+            if (nums.length >= 2) {
+                const sorted = [...nums].sort((a, b) => b - a);
+                result['height'] = String(sorted[0]);
+                result['weight'] = String(sorted[1]);
+            }
+            else if (nums.length === 1) {
+                const n = nums[0];
+                if (n >= 100) {
+                    result['height'] = String(n);
+                }
+                else {
+                    result['weight'] = String(n);
+                }
+            }
+        }
+        else {
+            for (let i = 0; i < fields.length && i < numbers.length; i++) {
+                result[fields[i]] = numbers[i];
+            }
+        }
+        return result;
+    }
+    recommendSize(params, sizeChart) {
+        const height = parseInt(params.height, 10);
+        const weight = parseInt(params.weight, 10);
+        if (!height && !weight)
+            return null;
+        let bestSize = null;
+        let bestScore = -1;
+        for (const [size, range] of Object.entries(sizeChart)) {
+            let score = 0;
+            if (height && height >= range.heightMin && height <= range.heightMax)
+                score++;
+            if (weight && weight >= range.weightMin && weight <= range.weightMax)
+                score++;
+            if (score > bestScore) {
+                bestScore = score;
+                bestSize = size;
+            }
+        }
+        if (bestScore === 0 && height) {
+            let closestDist = Infinity;
+            for (const [size, range] of Object.entries(sizeChart)) {
+                const mid = (range.heightMin + range.heightMax) / 2;
+                const dist = Math.abs(height - mid);
+                if (dist < closestDist) {
+                    closestDist = dist;
+                    bestSize = size;
+                }
+            }
+        }
+        return bestSize;
     }
     shouldSearchProducts(classification, memory) {
         const searchActions = [
@@ -804,7 +1137,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 break;
             case 'ask_variant_choice':
                 memory.lastAction = 'asked_variant';
-                memory.awaitingField = 'variant_selection';
+                memory.awaitingField = memory.variantStep === 'size' ? 'size_selection' : 'variant_selection';
                 memory.selectionState = 'awaiting_variant';
                 break;
             case 'answer_faq':

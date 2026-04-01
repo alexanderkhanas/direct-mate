@@ -1,0 +1,7 @@
+name: "Safety: delivery details without product should not create order"
+messages:
+  - customer: "Ханас Олександр 0991345713 Тернопіль 2 відділення"
+    expect:
+      not_scenario: confirm_order
+      not_contains: "замовлення"
+      contains_any: ["товар", "допомогти", "цікавить"]

@@ -31,7 +31,7 @@ export declare class OrdersService {
     createDraft(checkoutSessionId: string): Promise<Order>;
     private notifyManager;
     findAll(tenantId: string): Promise<any[]>;
-    findById(id: string): Promise<any>;
+    findById(id: string, tenantId?: string): Promise<any>;
     updateStatus(id: string, tenantId: string, status: OrderStatus): Promise<Order>;
     private enrichOrder;
 }

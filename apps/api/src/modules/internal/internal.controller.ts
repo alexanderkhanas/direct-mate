@@ -1,4 +1,4 @@
-import { Body, Controller, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { InternalApiKeyGuard } from '../../common/guards/internal-api-key.guard';
 import { IntegrationsService } from '../integrations/integrations.service';
@@ -18,8 +18,20 @@ export class InternalController {
     private readonly catalogService: CatalogService,
   ) {}
 
+  /** Verify that connectionId belongs to tenantId. Throws if mismatch. */
+  private async verifyConnectionOwnership(connectionId: string, tenantId: string): Promise<void> {
+    if (!connectionId) return; // Some endpoints have optional connectionId
+    const conn = await this.integrationsService.findById(connectionId);
+    if (!conn || conn.tenantId !== tenantId) {
+      throw new ForbiddenException('Connection does not belong to the specified tenant');
+    }
+  }
+
   @Post('sync/catalog')
   async syncCatalog(@Body() dto: SyncTriggerDto) {
+    if (dto.connectionId) {
+      await this.verifyConnectionOwnership(dto.connectionId, dto.tenantId);
+    }
     const job = await this.integrationsService.queueSyncJob(
       dto.tenantId,
       dto.connectionId ?? '',
@@ -31,6 +43,9 @@ export class InternalController {
 
   @Post('sync/stock')
   async syncStock(@Body() dto: SyncTriggerDto) {
+    if (dto.connectionId) {
+      await this.verifyConnectionOwnership(dto.connectionId, dto.tenantId);
+    }
     const job = await this.integrationsService.queueSyncJob(
       dto.tenantId,
       dto.connectionId ?? '',
@@ -46,6 +61,7 @@ export class InternalController {
    */
   @Post('sync/catalog-import')
   async catalogImport(@Body() dto: CatalogImportDto) {
+    await this.verifyConnectionOwnership(dto.connectionId, dto.tenantId);
     const job = await this.integrationsService.queueSyncJob(
       dto.tenantId,
       dto.connectionId,
@@ -70,6 +86,7 @@ export class InternalController {
    */
   @Post('sync/stock-import')
   async stockImport(@Body() dto: StockImportDto) {
+    await this.verifyConnectionOwnership(dto.connectionId, dto.tenantId);
     const job = await this.integrationsService.queueSyncJob(
       dto.tenantId,
       dto.connectionId,

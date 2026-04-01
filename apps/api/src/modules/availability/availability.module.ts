@@ -2,11 +2,12 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ProductVariant } from '../catalog/entities/product-variant.entity';
 import { StockBalance } from '../catalog/entities/stock-balance.entity';
+import { ProductMedia } from '../catalog/entities/product-media.entity';
 import { AvailabilityService } from './availability.service';
 import { AvailabilityController } from './availability.controller';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([ProductVariant, StockBalance])],
+  imports: [TypeOrmModule.forFeature([ProductVariant, StockBalance, ProductMedia])],
   controllers: [AvailabilityController],
   providers: [AvailabilityService],
   exports: [AvailabilityService],

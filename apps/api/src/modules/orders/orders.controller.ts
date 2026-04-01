@@ -57,8 +57,8 @@ export class OrdersController {
   @Get('orders/:id')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  getOrder(@Param('id') id: string) {
-    return this.ordersService.findById(id);
+  getOrder(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
+    return this.ordersService.findById(id, user.tenantId);
   }
 
   @Patch('orders/:id/status')

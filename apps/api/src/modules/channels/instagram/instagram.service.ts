@@ -1,5 +1,7 @@
-import { Injectable, Logger, OnModuleInit, UnauthorizedException } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InjectRepository } from '@nestjs/typeorm';
+import { DataSource, Repository, LessThanOrEqual } from 'typeorm';
 import * as crypto from 'crypto';
 import { ConversationsService } from '../../conversations/conversations.service';
 import { ReplyEngineService } from '../../conversations/reply-engine.service';
@@ -8,7 +10,10 @@ import { OrdersService } from '../../orders/orders.service';
 import { CryptoService } from '../../../common/crypto.service';
 import { TelegramService } from '../../notifications/telegram.service';
 import { Connection } from '../../integrations/entities/connection.entity';
+import { PendingMessage } from './entities/pending-message.entity';
+import { Conversation } from '../../conversations/entities/conversation.entity';
 import { ConnectionType, ConversationStatus, MessageDirection, MessageRole, ReplyDecision } from '@direct-mate/shared';
+import { withRetry } from '../../../common/retry';
 
 interface MediaReference {
   mediaId: string;
@@ -40,29 +45,14 @@ interface MetaWebhookPayload {
   entry: MetaMessagingEntry[];
 }
 
-const DEBOUNCE_MS = 5_000; // 5 seconds
+const DEBOUNCE_MS = 500; // 0.5 seconds
 
-interface PendingMessage {
-  messageId: string;
-  text: string;
-  mediaReference?: MediaReference | null;
-}
-
-interface PendingReply {
-  timer: ReturnType<typeof setTimeout>;
-  messages: PendingMessage[];
-  externalUserId: string;
-  channelAccountId: string;
-  connection: Connection;
-  tenantId: string;
-}
 
 @Injectable()
-export class InstagramService implements OnModuleInit {
+export class InstagramService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(InstagramService.name);
-  private readonly pendingReplies = new Map<string, PendingReply>();
   private readonly recentSentMids = new Set<string>();
-  private readonly autoResumeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private pollInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly config: ConfigService,
@@ -72,19 +62,72 @@ export class InstagramService implements OnModuleInit {
     private readonly ordersService: OrdersService,
     private readonly cryptoService: CryptoService,
     private readonly telegramService: TelegramService,
+    @InjectRepository(PendingMessage)
+    private readonly pendingMessageRepo: Repository<PendingMessage>,
+    @InjectRepository(Conversation)
+    private readonly conversationRepo: Repository<Conversation>,
+    private readonly dataSource: DataSource,
   ) {}
 
   async onModuleInit(): Promise<void> {
-    const stuck = await this.conversationsService.findByStatus(ConversationStatus.HumanInControl);
-    for (const conv of stuck) {
-      const elapsed = Date.now() - new Date(conv.updatedAt).getTime();
-      const remaining = 30 * 60 * 1000 - elapsed;
-      if (remaining <= 0) {
+    // Recover auto-resume: release overdue conversations, keep future ones
+    const overdue = await this.conversationRepo.find({
+      where: {
+        status: ConversationStatus.HumanInControl,
+        autoResumeAt: LessThanOrEqual(new Date()),
+      },
+    });
+    for (const conv of overdue) {
+      await this.conversationsService.release(conv.id);
+      await this.conversationRepo.update(conv.id, { autoResumeAt: null });
+      this.logger.log(`Startup recovery: auto-resumed conversation ${conv.id}`);
+    }
+
+    // Start polling for pending messages (debounce flush) and auto-resume
+    this.pollInterval = setInterval(() => this.pollTasks(), 2_000);
+  }
+
+  onModuleDestroy(): void {
+    if (this.pollInterval) clearInterval(this.pollInterval);
+  }
+
+  /** Polls DB for debounce flushes and auto-resume deadlines */
+  private async pollTasks(): Promise<void> {
+    try {
+      await this.flushReadyMessages();
+      await this.autoResumeExpired();
+    } catch (err) {
+      this.logger.error('Poll tasks error', (err as Error).message);
+    }
+  }
+
+  private async flushReadyMessages(): Promise<void> {
+    // Find distinct debounce keys that are ready to flush
+    const ready = await this.pendingMessageRepo
+      .createQueryBuilder('pm')
+      .select('DISTINCT pm.debounce_key', 'debounceKey')
+      .where('pm.flush_at <= :now', { now: new Date() })
+      .getRawMany<{ debounceKey: string }>();
+
+    for (const { debounceKey } of ready) {
+      await this.flushPending(debounceKey);
+    }
+  }
+
+  private async autoResumeExpired(): Promise<void> {
+    const expired = await this.conversationRepo.find({
+      where: {
+        status: ConversationStatus.HumanInControl,
+        autoResumeAt: LessThanOrEqual(new Date()),
+      },
+    });
+    for (const conv of expired) {
+      try {
         await this.conversationsService.release(conv.id);
-        this.logger.log(`Startup recovery: auto-resumed conversation ${conv.id}`);
-      } else {
-        this.resetAutoResumeTimer(conv.id, remaining);
-        this.logger.log(`Startup recovery: resuming ${conv.id} in ${Math.round(remaining / 60000)}min`);
+        await this.conversationRepo.update(conv.id, { autoResumeAt: null });
+        this.logger.log(`Auto-resumed conversation ${conv.id} after timeout`);
+      } catch (err) {
+        this.logger.error(`Auto-resume failed for ${conv.id}`, err);
       }
     }
   }
@@ -118,9 +161,45 @@ export class InstagramService implements OnModuleInit {
     return mid;
   }
 
+  private async sendMetaImages(
+    recipientId: string,
+    imageUrls: string[],
+    pageAccessToken: string,
+  ): Promise<void> {
+    const res = await fetch('https://graph.instagram.com/v21.0/me/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${pageAccessToken}`,
+      },
+      body: JSON.stringify({
+        recipient: { id: recipientId },
+        message: {
+          attachments: imageUrls.map((url) => ({
+            type: 'image',
+            payload: { url },
+          })),
+        },
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      this.logger.error(`Meta API images send error ${res.status}: ${body}`);
+      return;
+    }
+    const body = await res.json() as { message_id?: string };
+    if (body.message_id) {
+      this.recentSentMids.add(body.message_id);
+      setTimeout(() => this.recentSentMids.delete(body.message_id!), 5 * 60 * 1000);
+    }
+  }
+
   verifySignature(rawBody: Buffer, signature: string): boolean {
     const appSecret = this.config.get<string>('meta.appSecret') ?? '';
-    if (!appSecret) return true;
+    if (!appSecret) {
+      this.logger.error('META_APP_SECRET is not configured — rejecting webhook');
+      return false;
+    }
     const expected = `sha256=${crypto
       .createHmac('sha256', appSecret)
       .update(rawBody)
@@ -325,53 +404,68 @@ export class InstagramService implements OnModuleInit {
       messageId,
     );
 
-    // Debounce: wait for more messages before processing
+    // Debounce: save to DB, flush when timer expires (polled every 2s)
     const debounceKey = `${externalUserId}:${channelAccountId}`;
-    const existing = this.pendingReplies.get(debounceKey);
+    const flushAt = new Date(Date.now() + DEBOUNCE_MS);
 
-    if (existing) {
-      // More messages coming — reset timer, accumulate
-      clearTimeout(existing.timer);
-      existing.messages.push({ messageId, text: messageText, mediaReference });
-      this.logger.log(
-        `Debounce: added message #${existing.messages.length} for ${debounceKey}, resetting timer`,
-      );
-      existing.timer = setTimeout(() => this.flushPending(debounceKey), DEBOUNCE_MS);
-    } else {
-      // First message — start debounce timer
-      this.logger.log(`Debounce: first message for ${debounceKey}, waiting ${DEBOUNCE_MS / 1000}s`);
-      const pending: PendingReply = {
-        timer: setTimeout(() => this.flushPending(debounceKey), DEBOUNCE_MS),
-        messages: [{ messageId, text: messageText, mediaReference }],
-        externalUserId,
-        channelAccountId,
-        connection,
-        tenantId: connection.tenantId,
-      };
-      this.pendingReplies.set(debounceKey, pending);
-    }
+    // Update flush_at for all pending messages with this key (extend debounce window)
+    await this.pendingMessageRepo
+      .createQueryBuilder()
+      .update(PendingMessage)
+      .set({ flushAt })
+      .where('debounce_key = :debounceKey', { debounceKey })
+      .execute();
+
+    // Save the new message
+    await this.pendingMessageRepo.save({
+      debounceKey,
+      tenantId: connection.tenantId,
+      externalUserId,
+      channelAccountId,
+      connectionId: connection.id,
+      messageId,
+      messageText,
+      mediaReference: mediaReference as any,
+      flushAt,
+    });
+
+    this.logger.log(`Debounce: saved message for ${debounceKey}, flush at ${flushAt.toISOString()}`);
   }
 
   private async flushPending(debounceKey: string): Promise<void> {
-    const pending = this.pendingReplies.get(debounceKey);
-    if (!pending) return;
-    this.pendingReplies.delete(debounceKey);
+    // Atomically grab pending messages for this key
+    const messages = await this.pendingMessageRepo.find({
+      where: { debounceKey },
+      order: { createdAt: 'ASC' },
+    });
+    if (messages.length === 0) return;
 
-    const combinedText = pending.messages.map((m) => m.text).join('\n');
-    const mediaReference =
-      pending.messages.find((m) => m.mediaReference)?.mediaReference ?? null;
+    // Delete immediately to prevent double-processing
+    await this.pendingMessageRepo.delete({ debounceKey });
+
+    const combinedText = messages.map((m) => m.messageText).join('\n');
+    const mediaRef = messages.find((m) => m.mediaReference)?.mediaReference ?? null;
+    const first = messages[0];
+
     this.logger.log(
-      `Debounce: processing ${pending.messages.length} message(s) for ${debounceKey}: "${combinedText.substring(0, 100)}"`,
+      `Debounce: processing ${messages.length} message(s) for ${debounceKey}: "${combinedText.substring(0, 100)}"`,
     );
+
+    // Load connection from DB (not cached in memory)
+    const connection = await this.integrationsService.findById(first.connectionId);
+    if (!connection) {
+      this.logger.warn(`Connection ${first.connectionId} not found during flush — skipping`);
+      return;
+    }
 
     try {
       await this.processInbound({
-        tenantId: pending.tenantId,
-        externalUserId: pending.externalUserId,
-        channelAccountId: pending.channelAccountId,
+        tenantId: first.tenantId,
+        externalUserId: first.externalUserId,
+        channelAccountId: first.channelAccountId,
         messageText: combinedText,
-        connection: pending.connection,
-        mediaReference,
+        connection,
+        mediaReference: mediaRef as MediaReference | null,
       });
     } catch (err) {
       this.logger.error(`Failed to process debounced messages for ${debounceKey}`, err);
@@ -421,33 +515,43 @@ export class InstagramService implements OnModuleInit {
       params.channelAccountId,
     );
 
-    // Skip bot processing when manager is in control
-    if (conversation.status === ConversationStatus.HumanInControl) {
-      this.logger.log(`Skipping bot reply — conversation ${conversation.id} is human_in_control`);
-      return;
-    }
+    // Acquire advisory lock on conversation to prevent concurrent processing
+    // Uses a hash of the UUID as the lock key (pg_advisory_xact_lock needs bigint)
+    const lockKey = this.conversationLockKey(conversation.id);
+    await this.dataSource.query(`SELECT pg_advisory_lock($1)`, [lockKey]);
 
-    const recentMessages = (
-      await this.conversationsService.findById(conversation.id)
-    ).messages
-      .slice(-10)
-      .map((m) => ({ role: m.role, text: m.text }));
+    try {
+      // Re-fetch state inside the lock to get latest version
+      const freshState = await this.conversationsService.getState(conversation.id);
+      const currentConv = await this.conversationRepo.findOne({ where: { id: conversation.id } });
 
-    const result = await this.replyEngineService.process({
-      tenantId: params.tenantId,
-      conversationId: conversation.id,
-      messageText: params.messageText,
-      state,
-      recentMessages,
-      mediaReference: params.mediaReference ? {
-        mediaId: params.mediaReference.mediaId,
-        type: params.mediaReference.type,
-      } : undefined,
-    });
+      // Skip bot processing when manager is in control
+      if (currentConv?.status === ConversationStatus.HumanInControl) {
+        this.logger.log(`Skipping bot reply — conversation ${conversation.id} is human_in_control`);
+        return;
+      }
 
-    if (result.stateUpdate) {
-      await this.conversationsService.updateState(conversation.id, result.stateUpdate);
-    }
+      const recentMessages = (
+        await this.conversationsService.findById(conversation.id)
+      ).messages
+        .slice(-10)
+        .map((m) => ({ role: m.role, text: m.text }));
+
+      const result = await this.replyEngineService.process({
+        tenantId: params.tenantId,
+        conversationId: conversation.id,
+        messageText: params.messageText,
+        state: freshState ?? state,
+        recentMessages,
+        mediaReference: params.mediaReference ? {
+          mediaId: params.mediaReference.mediaId,
+          type: params.mediaReference.type,
+        } : undefined,
+      });
+
+      if (result.stateUpdate) {
+        await this.conversationsService.updateState(conversation.id, result.stateUpdate);
+      }
 
     if (result.handoff.required) {
       await this.conversationsService.escalate(
@@ -472,14 +576,17 @@ export class InstagramService implements OnModuleInit {
         });
       }
 
-      // Notify manager via Telegram
-      this.telegramService.notifyHandoff({
-        tenantId: params.tenantId,
-        customerName: customer.username ? `@${customer.username}` : customer.fullName || params.externalUserId,
-        reason: result.handoff.reason ?? 'unknown',
-        conversationId: conversation.id,
-        lastMessage: params.messageText,
-      }).catch(err => this.logger.error('Telegram notification failed', err));
+      // Notify manager via Telegram (with retry — critical for handoff awareness)
+      withRetry(
+        () => this.telegramService.notifyHandoff({
+          tenantId: params.tenantId,
+          customerName: customer.username ? `@${customer.username}` : customer.fullName || params.externalUserId,
+          reason: result.handoff.reason ?? 'unknown',
+          conversationId: conversation.id,
+          lastMessage: params.messageText,
+        }),
+        { label: `telegram-handoff-${conversation.id}` },
+      ).catch(err => this.logger.error('Telegram notification failed after retries', err));
 
       this.logger.log(`HANDOFF: conversation ${conversation.id}, reason: ${result.handoff.reason}`);
       return;
@@ -499,6 +606,12 @@ export class InstagramService implements OnModuleInit {
       if (encryptedToken) {
         const pageAccessToken = this.cryptoService.decrypt(encryptedToken);
         try {
+          // Send product images as a single batch message before the text
+          if (result.reply.imageUrls?.length) {
+            await this.sendMetaImages(params.externalUserId, result.reply.imageUrls, pageAccessToken);
+            this.logger.log(`Sent ${result.reply.imageUrls.length} product image(s) in one message to ${params.externalUserId}`);
+          }
+
           await this.sendMetaMessage(params.externalUserId, result.reply.text, pageAccessToken);
           this.logger.log(`Message sent to ${params.externalUserId} via Meta Graph API`);
         } catch (err) {
@@ -522,10 +635,13 @@ export class InstagramService implements OnModuleInit {
         const order = await this.ordersService.createFromConversation(orderPayload);
         this.logger.log(`Order created: ${order.id} for conversation ${conversation.id}`);
 
-        // Trigger external sync (async, fire-and-forget)
-        this.ordersService.triggerExternalSync(order).catch((err) => {
+        // Trigger external sync (with retry)
+        withRetry(
+          () => this.ordersService.triggerExternalSync(order),
+          { label: `order-sync-${order.id}` },
+        ).catch((err) => {
           this.logger.error(
-            `External sync trigger failed for order ${order.id}`,
+            `External sync trigger failed for order ${order.id} after retries`,
             (err as Error).message,
           );
         });
@@ -537,6 +653,18 @@ export class InstagramService implements OnModuleInit {
         // Don't block the conversation — order can be created manually
       }
     }
+    } finally {
+      await this.dataSource.query(`SELECT pg_advisory_unlock($1)`, [lockKey]);
+    }
+  }
+
+  private conversationLockKey(conversationId: string): number {
+    // Hash UUID to a 32-bit integer for pg_advisory_lock
+    let hash = 0;
+    for (let i = 0; i < conversationId.length; i++) {
+      hash = ((hash << 5) - hash + conversationId.charCodeAt(i)) | 0;
+    }
+    return hash;
   }
 
   // ─── Manager reply detection ──────────────────────────────────
@@ -569,28 +697,17 @@ export class InstagramService implements OnModuleInit {
 
     // Set conversation to human_in_control (manager already took over, no handoff needed)
     if (conversation.status !== ConversationStatus.HumanInControl) {
-      await this.conversationsService.takeover(conversation.id, 'auto_detected');
+      await this.conversationsService.takeover(conversation.id, null, 'auto_detected');
       this.logger.log(`Manager reply detected → conversation ${conversation.id} set to human_in_control`);
     }
 
     // Reset auto-resume timer
-    this.resetAutoResumeTimer(conversation.id);
+    await this.setAutoResumeDeadline(conversation.id);
   }
 
-  private resetAutoResumeTimer(conversationId: string, delayMs = 30 * 60 * 1000): void {
-    const existing = this.autoResumeTimers.get(conversationId);
-    if (existing) clearTimeout(existing);
-
-    const timer = setTimeout(async () => {
-      this.autoResumeTimers.delete(conversationId);
-      try {
-        await this.conversationsService.release(conversationId);
-        this.logger.log(`Auto-resumed conversation ${conversationId} after timeout`);
-      } catch (err) {
-        this.logger.error(`Auto-resume failed for ${conversationId}`, err);
-      }
-    }, delayMs);
-
-    this.autoResumeTimers.set(conversationId, timer);
+  private async setAutoResumeDeadline(conversationId: string, delayMs = 30 * 60 * 1000): Promise<void> {
+    const autoResumeAt = new Date(Date.now() + delayMs);
+    await this.conversationRepo.update(conversationId, { autoResumeAt });
+    this.logger.log(`Auto-resume set for ${conversationId} at ${autoResumeAt.toISOString()}`);
   }
 }

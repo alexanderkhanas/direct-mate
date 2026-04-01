@@ -102,17 +102,23 @@ let ConversationsService = class ConversationsService {
         const [items, total] = await qb.getManyAndCount();
         return { items, page, limit, total };
     }
-    async findById(id) {
+    async findById(id, tenantId) {
+        const where = { id };
+        if (tenantId)
+            where.tenantId = tenantId;
         const conv = await this.conversationRepo.findOne({
-            where: { id },
+            where,
             relations: ['customer', 'messages', 'state'],
         });
         if (!conv)
             throw new common_1.NotFoundException(`Conversation ${id} not found`);
         return conv;
     }
-    async takeover(id, managerUserId) {
-        const conv = await this.conversationRepo.findOne({ where: { id } });
+    async takeover(id, tenantId, managerUserId) {
+        const where = { id };
+        if (tenantId)
+            where.tenantId = tenantId;
+        const conv = await this.conversationRepo.findOne({ where });
         if (!conv)
             throw new common_1.NotFoundException(`Conversation ${id} not found`);
         await this.conversationRepo.update(id, {
@@ -121,12 +127,18 @@ let ConversationsService = class ConversationsService {
         });
         return this.conversationRepo.findOneOrFail({ where: { id } });
     }
-    async release(id) {
-        const conv = await this.conversationRepo.findOne({ where: { id } });
+    async release(id, tenantId) {
+        const where = { id };
+        if (tenantId)
+            where.tenantId = tenantId;
+        const conv = await this.conversationRepo.findOne({ where });
         if (!conv)
             throw new common_1.NotFoundException(`Conversation ${id} not found`);
         await this.conversationRepo.update(id, { status: shared_1.ConversationStatus.Active, needsHandoff: false });
         return this.conversationRepo.findOneOrFail({ where: { id } });
+    }
+    async getState(conversationId) {
+        return this.stateRepo.findOne({ where: { conversationId } });
     }
     async updateState(conversationId, patch) {
         await this.stateRepo.update({ conversationId }, patch);

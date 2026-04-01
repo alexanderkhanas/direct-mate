@@ -7,6 +7,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { DataSource, Repository } from 'typeorm';
+import { withRetry } from '../../common/retry';
 import { Order } from './entities/order.entity';
 import { OrderItem } from './entities/order-item.entity';
 import { CheckoutSession } from './entities/checkout-session.entity';
@@ -123,10 +124,13 @@ export class OrdersService {
         status: CheckoutSessionStatus.DraftCreated,
       });
 
-      // 8. Notify manager (fire-and-forget)
-      this.notifyManager(savedOrder).catch((err) =>
+      // 8. Notify manager (with retry)
+      withRetry(
+        () => this.notifyManager(savedOrder),
+        { label: `notify-manager-${savedOrder.id}` },
+      ).catch((err: Error) =>
         this.logger.error(
-          `Manager notification failed for order ${savedOrder.id}`,
+          `Manager notification failed for order ${savedOrder.id} after retries`,
           err,
         ),
       );
@@ -199,7 +203,7 @@ export class OrdersService {
         })
       : null;
 
-    const backendBaseUrl = 'http://host.docker.internal:3000';
+    const backendBaseUrl = this.config.get<string>('app.backendBaseUrl') ?? 'http://host.docker.internal:3000';
     const callbackUrl = `${backendBaseUrl}/internal/orders/${order.id}/sync-callback`;
     const resolveCredentialsUrl = `${backendBaseUrl}/internal/connections/resolve-credentials`;
 
@@ -273,19 +277,8 @@ export class OrdersService {
     orderId: string,
     callback: SyncCallbackDto,
   ): Promise<void> {
-    const order = await this.orderRepo.findOne({ where: { id: orderId } });
-    if (!order) {
-      throw new NotFoundException(`Order ${orderId} not found`);
-    }
-
-    // Idempotency check: already synced → skip
-    if (order.externalSyncStatus === 'synced') {
-      this.logger.log(`Order ${orderId} already synced, skipping callback`);
-      return;
-    }
-
-    // Verify idempotency key matches
-    const expectedKey = `order-${order.id}-sync-1`;
+    // Verify idempotency key
+    const expectedKey = `order-${orderId}-sync-1`;
     if (callback.idempotencyKey !== expectedKey) {
       this.logger.warn(
         `Idempotency key mismatch for order ${orderId}: expected ${expectedKey}, got ${callback.idempotencyKey}`,
@@ -293,29 +286,51 @@ export class OrdersService {
       return;
     }
 
+    // Atomic check-and-update: only update if not already synced
+    // Prevents race condition where two concurrent callbacks both pass the check
     if (callback.status === 'success') {
-      await this.orderRepo.update(order.id, {
-        externalSyncStatus: 'synced',
-        externalOrderId: callback.externalOrderId ?? null,
-        externalOrderMetadata: {
-          externalOrderUrl: callback.externalOrderUrl,
-          ...callback.metadata,
-        } as any,
-        externalSyncCompletedAt: new Date(),
-      } as any);
+      const result = await this.orderRepo
+        .createQueryBuilder()
+        .update(Order)
+        .set({
+          externalSyncStatus: 'synced' as any,
+          externalOrderId: callback.externalOrderId ?? null,
+          externalOrderMetadata: {
+            externalOrderUrl: callback.externalOrderUrl,
+            ...callback.metadata,
+          } as any,
+          externalSyncCompletedAt: new Date(),
+        })
+        .where('id = :id AND external_sync_status != :synced', { id: orderId, synced: 'synced' })
+        .execute();
+
+      if (result.affected === 0) {
+        this.logger.log(`Order ${orderId} already synced or not found, skipping callback`);
+        return;
+      }
 
       this.logger.log(
         `Order ${orderId} synced to ${callback.platform}, external ID: ${callback.externalOrderId}`,
       );
     } else {
-      await this.orderRepo.update(order.id, {
-        externalSyncStatus: 'failed',
-        externalOrderMetadata: {
-          error: callback.error,
-          ...callback.metadata,
-        } as any,
-        externalSyncCompletedAt: new Date(),
-      } as any);
+      const result = await this.orderRepo
+        .createQueryBuilder()
+        .update(Order)
+        .set({
+          externalSyncStatus: 'failed' as any,
+          externalOrderMetadata: {
+            error: callback.error,
+            ...callback.metadata,
+          } as any,
+          externalSyncCompletedAt: new Date(),
+        })
+        .where('id = :id AND external_sync_status != :synced', { id: orderId, synced: 'synced' })
+        .execute();
+
+      if (result.affected === 0) {
+        this.logger.log(`Order ${orderId} already synced, ignoring failure callback`);
+        return;
+      }
 
       this.logger.error(
         `Order ${orderId} sync failed on ${callback.platform}: ${callback.error?.message ?? 'unknown error'}`,
@@ -417,9 +432,11 @@ export class OrdersService {
     return Promise.all(orders.map((order) => this.enrichOrder(order)));
   }
 
-  async findById(id: string): Promise<any> {
+  async findById(id: string, tenantId?: string): Promise<any> {
+    const where: any = { id };
+    if (tenantId) where.tenantId = tenantId;
     const order = await this.orderRepo.findOne({
-      where: { id },
+      where,
       relations: ['items'],
     });
     if (!order) throw new NotFoundException(`Order ${id} not found`);

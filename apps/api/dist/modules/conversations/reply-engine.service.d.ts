@@ -31,6 +31,7 @@ export interface ReplyEngineOutput {
     reply: {
         text: string;
         sendNow: boolean;
+        imageUrls?: string[];
     } | null;
     handoff: {
         required: boolean;
@@ -59,6 +60,10 @@ export declare class ReplyEngineService {
     private scenarioToAction;
     private resolveShortReply;
     private matchVariant;
+    private matchColorOrSize;
+    private looksLikePreQualifyData;
+    private extractPreQualifyData;
+    private recommendSize;
     private shouldSearchProducts;
     private extractSearchKeywords;
     private searchProducts;

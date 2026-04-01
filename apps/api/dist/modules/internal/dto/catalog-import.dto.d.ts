@@ -7,6 +7,11 @@ export declare class ImportVariantDto {
     currency?: string;
     inventoryQty?: number;
 }
+export declare class ImportImageDto {
+    url: string;
+    color?: string;
+    sortOrder?: number;
+}
 export declare class ImportProductDto {
     externalProductId: string;
     title: string;
@@ -15,6 +20,7 @@ export declare class ImportProductDto {
     brand?: string;
     status?: string;
     variants: ImportVariantDto[];
+    images?: ImportImageDto[];
 }
 export declare class CatalogImportDto {
     tenantId: string;

@@ -15,7 +15,7 @@ export declare class OrdersController {
         checkoutSessionId: string;
     }): Promise<import("./entities/order.entity").Order>;
     listOrders(user: JwtPayload): Promise<any[]>;
-    getOrder(id: string): Promise<any>;
+    getOrder(user: JwtPayload, id: string): Promise<any>;
     updateStatus(user: JwtPayload, id: string, body: {
         status: OrderStatus;
     }): Promise<import("./entities/order.entity").Order>;

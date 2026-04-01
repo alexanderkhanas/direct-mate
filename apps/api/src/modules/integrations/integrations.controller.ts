@@ -81,13 +81,13 @@ export class IntegrationsController {
   }
 
   @Post(':id/disconnect')
-  disconnect(@Param('id') id: string) {
-    return this.integrationsService.disconnect(id);
+  disconnect(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
+    return this.integrationsService.disconnect(id, user.tenantId);
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.integrationsService.remove(id);
+  remove(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
+    return this.integrationsService.remove(id, user.tenantId);
   }
 }
 

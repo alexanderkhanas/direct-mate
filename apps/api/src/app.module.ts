@@ -21,6 +21,7 @@ import { EngineModule } from './modules/engine/engine.module';
 import { TestingModule } from './modules/testing/testing.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { AnalyticsModule } from './modules/analytics/analytics.module';
 
 @Module({
   imports: [
@@ -49,6 +50,7 @@ import { AdminModule } from './modules/admin/admin.module';
     TestingModule,
     NotificationsModule,
     AdminModule,
+    AnalyticsModule,
   ],
 })
 export class AppModule {}

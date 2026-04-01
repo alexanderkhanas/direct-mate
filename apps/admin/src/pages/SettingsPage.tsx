@@ -106,6 +106,127 @@ function HandoffRulesSection({ settings }: { settings: TenantSettings }) {
   );
 }
 
+function FlowConfigSection() {
+  const qc = useQueryClient();
+
+  const { data: config } = useQuery<any>({
+    queryKey: ['store-config'],
+    queryFn: () => api.get('/engine/config').then(r => r.data),
+  });
+
+  const flowConfig = (config?.flowConfig ?? {}) as any;
+  const [preQualifyEnabled, setPreQualifyEnabled] = useState(false);
+  const [preQualifyPrompt, setPreQualifyPrompt] = useState('');
+  const [preQualifyFields, setPreQualifyFields] = useState<string[]>([]);
+  const [variantMode, setVariantMode] = useState('single');
+
+  useEffect(() => {
+    if (config) {
+      const fc = (config.flowConfig ?? {}) as any;
+      setPreQualifyEnabled(fc.preQualify?.enabled ?? false);
+      setPreQualifyPrompt(fc.preQualify?.prompt ?? '');
+      setPreQualifyFields(fc.preQualify?.fields ?? []);
+      setVariantMode(fc.variants?.askSequence?.length > 1 ? 'two_step' : 'single');
+    }
+  }, [config]);
+
+  const save = useMutation({
+    mutationFn: () => api.patch('/engine/config', {
+      flowConfig: {
+        preQualify: {
+          enabled: preQualifyEnabled,
+          prompt: preQualifyPrompt || undefined,
+          fields: preQualifyFields.length > 0 ? preQualifyFields : undefined,
+        },
+        variants: variantMode === 'two_step' ? {
+          primaryOption: 'color',
+          secondaryOption: 'size',
+          askSequence: ['color', 'size'],
+        } : undefined,
+      },
+    }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['store-config'] }),
+  });
+
+  const FIELD_OPTIONS = [
+    { value: 'height', label: 'Height' },
+    { value: 'weight', label: 'Weight' },
+    { value: 'skin_type', label: 'Skin type' },
+    { value: 'age', label: 'Age' },
+  ];
+
+  return (
+    <Card>
+      <h2 className="text-sm font-semibold text-gray-900 mb-4">Conversation flow</h2>
+      <div className="space-y-5">
+        {/* Pre-qualification */}
+        <div>
+          <label className="flex items-center gap-2.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={preQualifyEnabled}
+              onChange={e => setPreQualifyEnabled(e.target.checked)}
+              className="h-4 w-4 rounded border-gray-300 text-gray-900 focus:ring-gray-900"
+            />
+            <span className="text-sm text-gray-700">Ask customer info before showing products</span>
+          </label>
+
+          {preQualifyEnabled && (
+            <div className="mt-3 ml-6 space-y-3">
+              <Input
+                label="Pre-qualify prompt"
+                value={preQualifyPrompt}
+                onChange={e => setPreQualifyPrompt(e.target.value)}
+                placeholder="Підкажіть ваш зріст та вагу, щоб підібрати розмір 💛"
+              />
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1.5">Fields to collect</label>
+                <div className="flex flex-wrap gap-2">
+                  {FIELD_OPTIONS.map(f => (
+                    <label key={f.value} className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={preQualifyFields.includes(f.value)}
+                        onChange={e => {
+                          if (e.target.checked) setPreQualifyFields([...preQualifyFields, f.value]);
+                          else setPreQualifyFields(preQualifyFields.filter(x => x !== f.value));
+                        }}
+                        className="h-3.5 w-3.5 rounded border-gray-300 text-gray-900 focus:ring-gray-900"
+                      />
+                      <span className="text-sm text-gray-600">{f.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Variant selection mode */}
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1.5">Variant selection mode</label>
+          <select
+            value={variantMode}
+            onChange={e => setVariantMode(e.target.value)}
+            className="px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 max-w-xs"
+          >
+            <option value="single">Single step (ask all at once)</option>
+            <option value="two_step">Color then size (two steps)</option>
+          </select>
+          <p className="text-xs text-gray-400 mt-1">For products with both color and size options</p>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3 mt-4">
+        <Button onClick={() => save.mutate()} loading={save.isPending} size="sm">
+          Save
+        </Button>
+        {save.isSuccess && <span className="text-xs text-emerald-600">Saved</span>}
+      </div>
+    </Card>
+  );
+}
+
 function ExamplesSection() {
   const qc = useQueryClient();
   const [showForm, setShowForm] = useState(false);
@@ -233,6 +354,7 @@ export default function SettingsPage() {
         <p className="text-sm text-gray-500 mt-1">Configure AI behavior and handoff rules</p>
       </div>
       <BrandToneSection settings={data} />
+      <FlowConfigSection />
       <HandoffRulesSection settings={data} />
       <ExamplesSection />
     </div>

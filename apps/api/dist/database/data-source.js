@@ -12,7 +12,7 @@ exports.AppDataSource = new typeorm_1.DataSource({
     entities: [__dirname + '/../**/*.entity.{ts,js}'],
     migrations: [__dirname + '/migrations/*.{ts,js}'],
     synchronize: false,
-    logging: true,
+    logging: process.env.NODE_ENV !== 'production',
     namingStrategy: new typeorm_naming_strategies_1.SnakeNamingStrategy(),
 });
 //# sourceMappingURL=data-source.js.map

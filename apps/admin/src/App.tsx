@@ -15,6 +15,7 @@ import ContentLinkingPage from './pages/ContentLinkingPage';
 import TenantsPage from './pages/admin/TenantsPage';
 import TenantDetailPage from './pages/admin/TenantDetailPage';
 import StatsPage from './pages/admin/StatsPage';
+import RegisterPage from './pages/RegisterPage';
 import Layout from './components/Layout';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -27,6 +28,7 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
         <Route
           path="/"
           element={

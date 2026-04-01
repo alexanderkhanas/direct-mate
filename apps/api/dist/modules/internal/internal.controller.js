@@ -28,15 +28,30 @@ let InternalController = class InternalController {
         this.integrationsService = integrationsService;
         this.catalogService = catalogService;
     }
+    async verifyConnectionOwnership(connectionId, tenantId) {
+        if (!connectionId)
+            return;
+        const conn = await this.integrationsService.findById(connectionId);
+        if (!conn || conn.tenantId !== tenantId) {
+            throw new common_1.ForbiddenException('Connection does not belong to the specified tenant');
+        }
+    }
     async syncCatalog(dto) {
+        if (dto.connectionId) {
+            await this.verifyConnectionOwnership(dto.connectionId, dto.tenantId);
+        }
         const job = await this.integrationsService.queueSyncJob(dto.tenantId, dto.connectionId ?? '', shared_1.SyncType.Catalog, dto.mode);
         return { jobId: job.id, accepted: true };
     }
     async syncStock(dto) {
+        if (dto.connectionId) {
+            await this.verifyConnectionOwnership(dto.connectionId, dto.tenantId);
+        }
         const job = await this.integrationsService.queueSyncJob(dto.tenantId, dto.connectionId ?? '', shared_1.SyncType.Stock, dto.mode);
         return { jobId: job.id, accepted: true };
     }
     async catalogImport(dto) {
+        await this.verifyConnectionOwnership(dto.connectionId, dto.tenantId);
         const job = await this.integrationsService.queueSyncJob(dto.tenantId, dto.connectionId, shared_1.SyncType.Catalog, 'full');
         await this.integrationsService.markJobRunning(job.id);
         try {
@@ -50,6 +65,7 @@ let InternalController = class InternalController {
         }
     }
     async stockImport(dto) {
+        await this.verifyConnectionOwnership(dto.connectionId, dto.tenantId);
         const job = await this.integrationsService.queueSyncJob(dto.tenantId, dto.connectionId, shared_1.SyncType.Stock, 'full');
         await this.integrationsService.markJobRunning(job.id);
         try {

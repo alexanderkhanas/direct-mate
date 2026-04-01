@@ -17,9 +17,10 @@ export declare class IntegrationsService {
     connectShopify(tenantId: string, shopDomain: string, accessToken: string, shopName?: string): Promise<Connection>;
     getDecryptedToken(connectionId: string): Promise<string>;
     findAll(tenantId: string): Promise<Connection[]>;
+    findById(id: string): Promise<Connection | null>;
     findByExternalAccountId(externalAccountId: string, type: ConnectionType): Promise<Connection | null>;
-    disconnect(id: string): Promise<void>;
-    remove(id: string): Promise<void>;
+    disconnect(id: string, tenantId: string): Promise<void>;
+    remove(id: string, tenantId: string): Promise<void>;
     queueSyncJob(tenantId: string, connectionId: string, syncType: string, mode: string): Promise<SyncJob>;
     markJobRunning(jobId: string): Promise<void>;
     markJobDone(jobId: string, summary: Record<string, unknown>): Promise<void>;

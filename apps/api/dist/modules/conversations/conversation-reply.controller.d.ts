@@ -11,6 +11,7 @@ export declare class ConversationReplyController {
         reply: {
             text: string;
             sendNow: boolean;
+            imageUrls?: string[];
         } | null;
         handoff: {
             required: boolean;

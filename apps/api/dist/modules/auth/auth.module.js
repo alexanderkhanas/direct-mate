@@ -11,8 +11,13 @@ const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const jwt_1 = require("@nestjs/jwt");
 const passport_1 = require("@nestjs/passport");
+const throttler_1 = require("@nestjs/throttler");
 const typeorm_1 = require("@nestjs/typeorm");
+const tenant_entity_1 = require("../tenants/entities/tenant.entity");
+const tenant_settings_entity_1 = require("../tenants/entities/tenant-settings.entity");
 const user_entity_1 = require("../tenants/entities/user.entity");
+const store_config_entity_1 = require("../engine/entities/store-config.entity");
+const response_template_entity_1 = require("../engine/entities/response-template.entity");
 const auth_controller_1 = require("./auth.controller");
 const auth_service_1 = require("./auth.service");
 const jwt_strategy_1 = require("./strategies/jwt.strategy");
@@ -22,8 +27,9 @@ exports.AuthModule = AuthModule;
 exports.AuthModule = AuthModule = __decorate([
     (0, common_1.Module)({
         imports: [
-            typeorm_1.TypeOrmModule.forFeature([user_entity_1.User]),
+            typeorm_1.TypeOrmModule.forFeature([user_entity_1.User, tenant_entity_1.Tenant, tenant_settings_entity_1.TenantSettings, store_config_entity_1.StoreConfig, response_template_entity_1.ResponseTemplate]),
             passport_1.PassportModule,
+            throttler_1.ThrottlerModule.forRoot([{ ttl: 60000, limit: 5 }]),
             jwt_1.JwtModule.registerAsync({
                 imports: [config_1.ConfigModule],
                 inject: [config_1.ConfigService],

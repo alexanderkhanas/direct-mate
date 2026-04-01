@@ -9,7 +9,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CatalogImportDto = exports.ImportProductDto = exports.ImportVariantDto = void 0;
+exports.CatalogImportDto = exports.ImportProductDto = exports.ImportImageDto = exports.ImportVariantDto = void 0;
 const swagger_1 = require("@nestjs/swagger");
 const class_validator_1 = require("class-validator");
 const class_transformer_1 = require("class-transformer");
@@ -59,6 +59,28 @@ __decorate([
     (0, class_validator_1.Min)(0),
     __metadata("design:type", Number)
 ], ImportVariantDto.prototype, "inventoryQty", void 0);
+class ImportImageDto {
+}
+exports.ImportImageDto = ImportImageDto;
+__decorate([
+    (0, swagger_1.ApiProperty)({ example: 'https://cdn.shopify.com/s/files/product.jpg' }),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsNotEmpty)(),
+    __metadata("design:type", String)
+], ImportImageDto.prototype, "url", void 0);
+__decorate([
+    (0, swagger_1.ApiPropertyOptional)({ example: 'Red' }),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsOptional)(),
+    __metadata("design:type", String)
+], ImportImageDto.prototype, "color", void 0);
+__decorate([
+    (0, swagger_1.ApiPropertyOptional)({ example: 0 }),
+    (0, class_validator_1.IsNumber)(),
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.Min)(0),
+    __metadata("design:type", Number)
+], ImportImageDto.prototype, "sortOrder", void 0);
 class ImportProductDto {
 }
 exports.ImportProductDto = ImportProductDto;
@@ -105,6 +127,14 @@ __decorate([
     (0, class_transformer_1.Type)(() => ImportVariantDto),
     __metadata("design:type", Array)
 ], ImportProductDto.prototype, "variants", void 0);
+__decorate([
+    (0, swagger_1.ApiPropertyOptional)({ type: [ImportImageDto] }),
+    (0, class_validator_1.IsArray)(),
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.ValidateNested)({ each: true }),
+    (0, class_transformer_1.Type)(() => ImportImageDto),
+    __metadata("design:type", Array)
+], ImportProductDto.prototype, "images", void 0);
 class CatalogImportDto {
 }
 exports.CatalogImportDto = CatalogImportDto;

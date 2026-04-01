@@ -48,6 +48,9 @@ export class Conversation {
   @Column({ type: 'timestamptz', nullable: true })
   lastMessageAt!: Date | null;
 
+  @Column({ type: 'timestamptz', nullable: true })
+  autoResumeAt!: Date | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt!: Date;
 

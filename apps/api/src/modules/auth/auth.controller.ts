@@ -1,7 +1,9 @@
 import { Body, Controller, Get, HttpCode, Post, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
+import { RegisterDto } from './dto/register.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser, JwtPayload } from '../../common/decorators/current-user.decorator';
 
@@ -9,6 +11,12 @@ import { CurrentUser, JwtPayload } from '../../common/decorators/current-user.de
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
+
+  @Post('register')
+  @Throttle({ default: { ttl: 60000, limit: 5 } })
+  register(@Body() dto: RegisterDto) {
+    return this.authService.register(dto);
+  }
 
   @Post('login')
   @HttpCode(200)

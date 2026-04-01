@@ -18,11 +18,14 @@ const typeorm_1 = require("@nestjs/typeorm");
 const typeorm_2 = require("typeorm");
 const product_variant_entity_1 = require("../catalog/entities/product-variant.entity");
 const stock_balance_entity_1 = require("../catalog/entities/stock-balance.entity");
+const product_media_entity_1 = require("../catalog/entities/product-media.entity");
 const FRESHNESS_MINUTES = 10;
 let AvailabilityService = class AvailabilityService {
-    constructor(variantRepo, stockRepo) {
+    constructor(variantRepo, stockRepo, mediaRepo, dataSource) {
         this.variantRepo = variantRepo;
         this.stockRepo = stockRepo;
+        this.mediaRepo = mediaRepo;
+        this.dataSource = dataSource;
     }
     extractSearchTerms(text) {
         const stopWords = new Set([
@@ -175,6 +178,16 @@ let AvailabilityService = class AvailabilityService {
             }
         }
         if (!variants.length) {
+            variants = await this.searchAllByDescription(tenantId, fullPhrase);
+            if (!variants.length) {
+                for (const t of searchTerms) {
+                    variants = await this.searchAllByDescription(tenantId, t);
+                    if (variants.length)
+                        break;
+                }
+            }
+        }
+        if (!variants.length) {
             variants = await this.searchAllByCategory(tenantId, fullPhrase);
             if (!variants.length) {
                 for (const t of searchTerms) {
@@ -195,29 +208,9 @@ let AvailabilityService = class AvailabilityService {
         }
         if (variants.length === 0)
             return [];
-        const productMap = new Map();
-        for (const v of variants) {
-            const pid = v.product.id;
-            if (!productMap.has(pid)) {
-                productMap.set(pid, {
-                    product: { id: pid, title: v.product.title },
-                    variants: [],
-                });
-            }
-            const stock = v.stockBalance;
-            const effectiveAvailable = stock
-                ? stock.availableQty - stock.reservedQty - stock.pendingCheckoutQty
-                : 0;
-            productMap.get(pid).variants.push({
-                id: v.id,
-                size: v.size,
-                color: v.color,
-                price: Number(v.price),
-                currency: v.currency,
-                effectiveAvailable,
-            });
-        }
-        return Array.from(productMap.values()).slice(0, 5);
+        const results = this.groupVariantsByProduct(variants);
+        await this.loadProductImages(results);
+        return results.slice(0, 5);
     }
     async searchAllByTitle(tenantId, term) {
         return this.variantRepo
@@ -258,6 +251,18 @@ let AvailabilityService = class AvailabilityService {
             .take(20)
             .getMany();
     }
+    async searchAllByDescription(tenantId, term) {
+        return this.variantRepo
+            .createQueryBuilder('v')
+            .innerJoinAndSelect('v.product', 'p')
+            .leftJoinAndSelect('v.stockBalance', 's')
+            .where('p.tenant_id = :tenantId', { tenantId })
+            .andWhere('p.status = :status', { status: 'active' })
+            .andWhere('v.active = true')
+            .andWhere('p.description ILIKE :q', { q: `%${term}%` })
+            .take(20)
+            .getMany();
+    }
     async findAllByProductId(productId, variantId) {
         const qb = this.variantRepo
             .createQueryBuilder('v')
@@ -272,29 +277,9 @@ let AvailabilityService = class AvailabilityService {
         const variants = await qb.take(20).getMany();
         if (variants.length === 0)
             return [];
-        const productMap = new Map();
-        for (const v of variants) {
-            const pid = v.product.id;
-            if (!productMap.has(pid)) {
-                productMap.set(pid, {
-                    product: { id: pid, title: v.product.title },
-                    variants: [],
-                });
-            }
-            const stock = v.stockBalance;
-            const effectiveAvailable = stock
-                ? stock.availableQty - stock.reservedQty - stock.pendingCheckoutQty
-                : 0;
-            productMap.get(pid).variants.push({
-                id: v.id,
-                size: v.size,
-                color: v.color,
-                price: Number(v.price),
-                currency: v.currency,
-                effectiveAvailable,
-            });
-        }
-        return Array.from(productMap.values());
+        const results = this.groupVariantsByProduct(variants);
+        await this.loadProductImages(results);
+        return results;
     }
     async getByProductId(productId, variantId) {
         const qb = this.variantRepo
@@ -323,13 +308,54 @@ let AvailabilityService = class AvailabilityService {
             stock: effectiveAvailable,
         };
     }
+    groupVariantsByProduct(variants) {
+        const productMap = new Map();
+        for (const v of variants) {
+            const pid = v.product.id;
+            if (!productMap.has(pid)) {
+                productMap.set(pid, {
+                    product: { id: pid, title: v.product.title, imageUrl: null },
+                    variants: [],
+                });
+            }
+            const stock = v.stockBalance;
+            const effectiveAvailable = stock
+                ? stock.availableQty - stock.reservedQty - stock.pendingCheckoutQty
+                : 0;
+            productMap.get(pid).variants.push({
+                id: v.id,
+                size: v.size,
+                color: v.color,
+                price: Number(v.price),
+                currency: v.currency,
+                effectiveAvailable,
+            });
+        }
+        return Array.from(productMap.values());
+    }
+    async loadProductImages(results) {
+        const productIds = results.map((r) => r.product.id);
+        if (productIds.length === 0)
+            return;
+        const images = await this.dataSource.query(`SELECT DISTINCT ON (product_id) product_id, url
+       FROM product_media
+       WHERE product_id = ANY($1)
+       ORDER BY product_id, sort_order ASC`, [productIds]);
+        const imageMap = new Map(images.map((i) => [i.product_id, i.url]));
+        for (const r of results) {
+            r.product.imageUrl = imageMap.get(r.product.id) ?? null;
+        }
+    }
 };
 exports.AvailabilityService = AvailabilityService;
 exports.AvailabilityService = AvailabilityService = __decorate([
     (0, common_1.Injectable)(),
     __param(0, (0, typeorm_1.InjectRepository)(product_variant_entity_1.ProductVariant)),
     __param(1, (0, typeorm_1.InjectRepository)(stock_balance_entity_1.StockBalance)),
+    __param(2, (0, typeorm_1.InjectRepository)(product_media_entity_1.ProductMedia)),
     __metadata("design:paramtypes", [typeorm_2.Repository,
-        typeorm_2.Repository])
+        typeorm_2.Repository,
+        typeorm_2.Repository,
+        typeorm_2.DataSource])
 ], AvailabilityService);
 //# sourceMappingURL=availability.service.js.map

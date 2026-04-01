@@ -1,6 +1,9 @@
 export default () => ({
   nodeEnv: process.env.NODE_ENV ?? 'development',
   port: parseInt(process.env.PORT ?? '3000', 10),
+  app: {
+    backendBaseUrl: process.env.BACKEND_BASE_URL ?? 'http://host.docker.internal:3000',
+  },
   database: {
     url: process.env.DATABASE_URL,
   },

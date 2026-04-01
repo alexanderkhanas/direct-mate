@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Product } from './entities/product.entity';
 import { ProductVariant } from './entities/product-variant.entity';
+import { ProductMedia } from './entities/product-media.entity';
 import { StockBalance } from './entities/stock-balance.entity';
 import { SearchProductsDto } from './dto/search-products.dto';
 import { ProductStatus } from '@direct-mate/shared';
@@ -18,6 +19,8 @@ export class CatalogService {
     private readonly variantRepo: Repository<ProductVariant>,
     @InjectRepository(StockBalance)
     private readonly stockRepo: Repository<StockBalance>,
+    @InjectRepository(ProductMedia)
+    private readonly mediaRepo: Repository<ProductMedia>,
   ) {}
 
   async searchProducts(tenantId: string, dto: SearchProductsDto) {
@@ -89,9 +92,11 @@ export class CatalogService {
       .createQueryBuilder('p')
       .leftJoinAndSelect('p.variants', 'v', 'v.active = true')
       .leftJoinAndSelect('v.stockBalance', 's')
+      .leftJoinAndSelect('p.media', 'm')
       .where('p.tenantId = :tenantId', { tenantId })
       .andWhere('p.status = :status', { status: 'active' })
-      .orderBy('p.title', 'ASC');
+      .orderBy('p.title', 'ASC')
+      .addOrderBy('m.sortOrder', 'ASC');
 
     if (q) {
       qb.andWhere('p.title ILIKE :q', { q: `%${q}%` });
@@ -99,27 +104,42 @@ export class CatalogService {
 
     const products = await qb.getMany();
 
-    return products.map((p) => ({
-      id: p.id,
-      sku: p.sku,
-      title: p.title,
-      category: p.category,
-      variantCount: p.variants?.length ?? 0,
-      updatedAt: p.updatedAt,
-      variants: (p.variants ?? []).map((v) => ({
-        id: v.id,
-        sku: v.sku,
-        size: v.size,
-        color: v.color,
-        price: v.price,
-        currency: v.currency,
-        effectiveAvailable:
-          (v.stockBalance?.availableQty ?? 0) -
-          (v.stockBalance?.reservedQty ?? 0) -
-          (v.stockBalance?.pendingCheckoutQty ?? 0),
-        lastSyncedAt: v.stockBalance?.lastSyncedAt ?? null,
-      })),
-    }));
+    return products.map((p) => {
+      // Build a map of color → image URL from product media
+      const colorImageMap = new Map<string, string>();
+      const sortedMedia = (p.media ?? []).sort((a, b) => a.sortOrder - b.sortOrder);
+      const productImageUrl = sortedMedia[0]?.url ?? null;
+      for (const m of sortedMedia) {
+        if (m.color && !colorImageMap.has(m.color.toLowerCase())) {
+          colorImageMap.set(m.color.toLowerCase(), m.url);
+        }
+      }
+
+      return {
+        id: p.id,
+        sku: p.sku,
+        title: p.title,
+        category: p.category,
+        imageUrl: productImageUrl,
+        variantCount: p.variants?.length ?? 0,
+        updatedAt: p.updatedAt,
+        variants: (p.variants ?? []).map((v) => ({
+          id: v.id,
+          sku: v.sku,
+          size: v.size,
+          color: v.color,
+          price: v.price,
+          currency: v.currency,
+          // Variant image: match by color, fallback to product image
+          imageUrl: (v.color ? colorImageMap.get(v.color.toLowerCase()) : null) ?? productImageUrl,
+          effectiveAvailable:
+            (v.stockBalance?.availableQty ?? 0) -
+            (v.stockBalance?.reservedQty ?? 0) -
+            (v.stockBalance?.pendingCheckoutQty ?? 0),
+          lastSyncedAt: v.stockBalance?.lastSyncedAt ?? null,
+        })),
+      };
+    });
   }
 
   async upsertStockBalance(
@@ -164,6 +184,11 @@ export class CatalogService {
         currency?: string;
         inventoryQty?: number;
       }>;
+      images?: Array<{
+        url: string;
+        color?: string;
+        sortOrder?: number;
+      }>;
     }>,
   ): Promise<{ created: number; updated: number; skipped: number; errors: string[] }> {
     let created = 0;
@@ -205,6 +230,19 @@ export class CatalogService {
             }
           } catch (err: any) {
             errors.push(`variant ${v.externalVariantId}: ${err.message}`);
+          }
+        }
+
+        // Upsert product images (replace all for this product)
+        if (p.images && p.images.length > 0) {
+          await this.mediaRepo.delete({ productId: product.id });
+          for (const img of p.images) {
+            await this.mediaRepo.save({
+              productId: product.id,
+              url: img.url,
+              color: img.color ?? null,
+              sortOrder: img.sortOrder ?? 0,
+            });
           }
         }
       } catch (err: any) {

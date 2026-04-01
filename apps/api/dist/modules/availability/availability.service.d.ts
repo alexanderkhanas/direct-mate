@@ -1,6 +1,7 @@
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { ProductVariant } from '../catalog/entities/product-variant.entity';
 import { StockBalance } from '../catalog/entities/stock-balance.entity';
+import { ProductMedia } from '../catalog/entities/product-media.entity';
 import { CheckAvailabilityDto } from './dto/check-availability.dto';
 export interface AvailabilityResult {
     matchType: 'exact' | 'partial' | 'none';
@@ -28,7 +29,9 @@ export interface AvailabilityResult {
 export declare class AvailabilityService {
     private readonly variantRepo;
     private readonly stockRepo;
-    constructor(variantRepo: Repository<ProductVariant>, stockRepo: Repository<StockBalance>);
+    private readonly mediaRepo;
+    private readonly dataSource;
+    constructor(variantRepo: Repository<ProductVariant>, stockRepo: Repository<StockBalance>, mediaRepo: Repository<ProductMedia>, dataSource: DataSource);
     private extractSearchTerms;
     getCategories(tenantId: string): Promise<string[]>;
     check(tenantId: string, dto: CheckAvailabilityDto): Promise<AvailabilityResult>;
@@ -39,6 +42,7 @@ export declare class AvailabilityService {
         product: {
             id: string;
             title: string;
+            imageUrl?: string | null;
         };
         variants: Array<{
             id: string;
@@ -52,10 +56,12 @@ export declare class AvailabilityService {
     private searchAllByTitle;
     private searchAllByCategory;
     private searchAllByCategoryTrigram;
+    private searchAllByDescription;
     findAllByProductId(productId: string, variantId?: string): Promise<Array<{
         product: {
             id: string;
             title: string;
+            imageUrl?: string | null;
         };
         variants: Array<{
             id: string;
@@ -76,4 +82,6 @@ export declare class AvailabilityService {
         } | null;
         stock: number;
     } | null>;
+    private groupVariantsByProduct;
+    private loadProductImages;
 }

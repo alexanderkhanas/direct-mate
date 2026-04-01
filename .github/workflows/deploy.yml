@@ -1,0 +1,65 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+
+env:
+  SERVER_HOST: ${{ secrets.SERVER_HOST }}
+  SERVER_USER: root
+  DEPLOY_PATH: /opt/directmate
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H $SERVER_HOST >> ~/.ssh/known_hosts
+
+      - name: Sync code to server
+        run: |
+          rsync -avz --delete \
+            --exclude='.git' \
+            --exclude='node_modules' \
+            --exclude='apps/api/dist' \
+            --exclude='apps/admin/dist' \
+            --exclude='apps/api/.env' \
+            --exclude='infra/production/.env' \
+            --exclude='apps/api/conversations.log' \
+            --exclude='apps/api/uploads' \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            ./ $SERVER_USER@$SERVER_HOST:$DEPLOY_PATH/
+
+      - name: Build and deploy
+        run: |
+          ssh -i ~/.ssh/deploy_key $SERVER_USER@$SERVER_HOST << 'EOF'
+            cd /opt/directmate/infra/production
+
+            echo "==> Building images..."
+            docker compose -f docker-compose.prod.yml build --no-cache
+
+            echo "==> Running migrations..."
+            docker compose -f docker-compose.prod.yml run --rm api sh -c "
+              cd /app/apps/api && node -e \"
+                const { AppDataSource } = require('./dist/database/data-source');
+                AppDataSource.initialize()
+                  .then(ds => ds.runMigrations())
+                  .then(() => { console.log('Migrations OK'); process.exit(0); })
+                  .catch(err => { console.error(err); process.exit(1); });
+              \"
+            "
+
+            echo "==> Restarting services..."
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+
+            echo "==> Cleaning old images..."
+            docker image prune -f
+
+            echo "==> Deploy complete!"
+          EOF

@@ -47,6 +47,17 @@ function ProductRow({ product }: { product: ProductRow }) {
           ) : (
             <ChevronRight className="h-4 w-4 text-gray-400 shrink-0" />
           )}
+          {product.imageUrl ? (
+            <img
+              src={product.imageUrl}
+              alt={product.title}
+              className="h-10 w-10 rounded-lg object-cover shrink-0 bg-gray-100"
+            />
+          ) : (
+            <div className="h-10 w-10 rounded-lg bg-gray-100 flex items-center justify-center shrink-0">
+              <Package className="h-4 w-4 text-gray-300" />
+            </div>
+          )}
           <div>
             <p className="text-sm font-medium text-gray-900">{product.title}</p>
             <p className="text-xs text-gray-400 mt-0.5">
@@ -68,6 +79,7 @@ function ProductRow({ product }: { product: ProductRow }) {
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+                  <th className="px-4 py-2.5 text-left font-medium w-12"></th>
                   <th className="px-4 py-2.5 text-left font-medium">SKU</th>
                   <th className="px-4 py-2.5 text-left font-medium">Size</th>
                   <th className="px-4 py-2.5 text-left font-medium">Color</th>
@@ -81,6 +93,13 @@ function ProductRow({ product }: { product: ProductRow }) {
                   const variant = freshnessVariant(v.lastSyncedAt);
                   return (
                     <tr key={v.id} className="bg-white">
+                      <td className="px-4 py-2.5">
+                        {v.imageUrl ? (
+                          <img src={v.imageUrl} alt="" className="h-8 w-8 rounded object-cover bg-gray-100" />
+                        ) : (
+                          <div className="h-8 w-8 rounded bg-gray-50" />
+                        )}
+                      </td>
                       <td className="px-4 py-2.5 text-gray-500 font-mono text-xs">{v.sku ?? '—'}</td>
                       <td className="px-4 py-2.5 text-gray-700">{v.size ?? '—'}</td>
                       <td className="px-4 py-2.5 text-gray-700 capitalize">{v.color ?? '—'}</td>

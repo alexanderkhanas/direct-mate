@@ -128,17 +128,21 @@ export class ConversationsService {
     return { items, page, limit, total };
   }
 
-  async findById(id: string): Promise<Conversation> {
+  async findById(id: string, tenantId?: string): Promise<Conversation> {
+    const where: any = { id };
+    if (tenantId) where.tenantId = tenantId;
     const conv = await this.conversationRepo.findOne({
-      where: { id },
+      where,
       relations: ['customer', 'messages', 'state'],
     });
     if (!conv) throw new NotFoundException(`Conversation ${id} not found`);
     return conv;
   }
 
-  async takeover(id: string, managerUserId: string): Promise<Conversation> {
-    const conv = await this.conversationRepo.findOne({ where: { id } });
+  async takeover(id: string, tenantId: string | null, managerUserId: string): Promise<Conversation> {
+    const where: any = { id };
+    if (tenantId) where.tenantId = tenantId;
+    const conv = await this.conversationRepo.findOne({ where });
     if (!conv) throw new NotFoundException(`Conversation ${id} not found`);
     await this.conversationRepo.update(id, {
       status: ConversationStatus.HumanInControl,
@@ -147,11 +151,17 @@ export class ConversationsService {
     return this.conversationRepo.findOneOrFail({ where: { id } });
   }
 
-  async release(id: string): Promise<Conversation> {
-    const conv = await this.conversationRepo.findOne({ where: { id } });
+  async release(id: string, tenantId?: string | null): Promise<Conversation> {
+    const where: any = { id };
+    if (tenantId) where.tenantId = tenantId;
+    const conv = await this.conversationRepo.findOne({ where });
     if (!conv) throw new NotFoundException(`Conversation ${id} not found`);
     await this.conversationRepo.update(id, { status: ConversationStatus.Active, needsHandoff: false });
     return this.conversationRepo.findOneOrFail({ where: { id } });
+  }
+
+  async getState(conversationId: string): Promise<ConversationState | null> {
+    return this.stateRepo.findOne({ where: { conversationId } });
   }
 
   async updateState(

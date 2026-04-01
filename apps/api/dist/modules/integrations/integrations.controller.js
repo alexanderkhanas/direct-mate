@@ -75,11 +75,11 @@ let IntegrationsController = class IntegrationsController {
     connectShopify(user, dto) {
         return this.integrationsService.connectShopify(user.tenantId, dto.shopDomain, dto.accessToken, dto.shopName);
     }
-    disconnect(id) {
-        return this.integrationsService.disconnect(id);
+    disconnect(user, id) {
+        return this.integrationsService.disconnect(id, user.tenantId);
     }
-    remove(id) {
-        return this.integrationsService.remove(id);
+    remove(user, id) {
+        return this.integrationsService.remove(id, user.tenantId);
     }
 };
 exports.IntegrationsController = IntegrationsController;
@@ -108,16 +108,18 @@ __decorate([
 ], IntegrationsController.prototype, "connectShopify", null);
 __decorate([
     (0, common_1.Post)(':id/disconnect'),
-    __param(0, (0, common_1.Param)('id')),
+    __param(0, (0, current_user_decorator_1.CurrentUser)()),
+    __param(1, (0, common_1.Param)('id')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [Object, String]),
     __metadata("design:returntype", void 0)
 ], IntegrationsController.prototype, "disconnect", null);
 __decorate([
     (0, common_1.Delete)(':id'),
-    __param(0, (0, common_1.Param)('id')),
+    __param(0, (0, current_user_decorator_1.CurrentUser)()),
+    __param(1, (0, common_1.Param)('id')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [Object, String]),
     __metadata("design:returntype", void 0)
 ], IntegrationsController.prototype, "remove", null);
 exports.IntegrationsController = IntegrationsController = __decorate([

@@ -31,14 +31,14 @@ let ConversationsController = class ConversationsController {
             limit: limit ? parseInt(limit, 10) : 20,
         });
     }
-    findOne(id) {
-        return this.conversationsService.findById(id);
+    findOne(user, id) {
+        return this.conversationsService.findById(id, user.tenantId);
     }
-    takeover(id, dto) {
-        return this.conversationsService.takeover(id, dto.managerUserId);
+    takeover(user, id, dto) {
+        return this.conversationsService.takeover(id, user.tenantId, dto.managerUserId);
     }
-    release(id) {
-        return this.conversationsService.release(id);
+    release(user, id) {
+        return this.conversationsService.release(id, user.tenantId);
     }
 };
 exports.ConversationsController = ConversationsController;
@@ -59,24 +59,27 @@ __decorate([
 ], ConversationsController.prototype, "findAll", null);
 __decorate([
     (0, common_1.Get)(':id'),
-    __param(0, (0, common_1.Param)('id')),
+    __param(0, (0, current_user_decorator_1.CurrentUser)()),
+    __param(1, (0, common_1.Param)('id')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [Object, String]),
     __metadata("design:returntype", void 0)
 ], ConversationsController.prototype, "findOne", null);
 __decorate([
     (0, common_1.Post)(':id/takeover'),
-    __param(0, (0, common_1.Param)('id')),
-    __param(1, (0, common_1.Body)()),
+    __param(0, (0, current_user_decorator_1.CurrentUser)()),
+    __param(1, (0, common_1.Param)('id')),
+    __param(2, (0, common_1.Body)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, takeover_dto_1.TakeoverDto]),
+    __metadata("design:paramtypes", [Object, String, takeover_dto_1.TakeoverDto]),
     __metadata("design:returntype", void 0)
 ], ConversationsController.prototype, "takeover", null);
 __decorate([
     (0, common_1.Post)(':id/release'),
-    __param(0, (0, common_1.Param)('id')),
+    __param(0, (0, current_user_decorator_1.CurrentUser)()),
+    __param(1, (0, common_1.Param)('id')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [Object, String]),
     __metadata("design:returntype", void 0)
 ], ConversationsController.prototype, "release", null);
 exports.ConversationsController = ConversationsController = __decorate([

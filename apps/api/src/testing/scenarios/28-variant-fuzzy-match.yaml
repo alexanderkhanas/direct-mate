@@ -1,0 +1,11 @@
+name: "Variant matching: hyphenated Ukrainian color names"
+messages:
+  - customer: "хочу помаду Color Veil Ritual"
+    expect:
+      scenario_in: [show_products, ask_variant_choice, confirm_selection]
+
+  - customer: "червоний"
+    expect:
+      scenario_in: [confirm_selection, ask_variant_choice]
+      not_scenario: show_products
+      contains_any: ["Berry Red", "червоний", "Ягідно", "варіант"]

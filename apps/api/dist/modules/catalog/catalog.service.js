@@ -19,13 +19,15 @@ const typeorm_1 = require("@nestjs/typeorm");
 const typeorm_2 = require("typeorm");
 const product_entity_1 = require("./entities/product.entity");
 const product_variant_entity_1 = require("./entities/product-variant.entity");
+const product_media_entity_1 = require("./entities/product-media.entity");
 const stock_balance_entity_1 = require("./entities/stock-balance.entity");
 const shared_1 = require("@direct-mate/shared");
 let CatalogService = CatalogService_1 = class CatalogService {
-    constructor(productRepo, variantRepo, stockRepo) {
+    constructor(productRepo, variantRepo, stockRepo, mediaRepo) {
         this.productRepo = productRepo;
         this.variantRepo = variantRepo;
         this.stockRepo = stockRepo;
+        this.mediaRepo = mediaRepo;
         this.logger = new common_1.Logger(CatalogService_1.name);
     }
     async searchProducts(tenantId, dto) {
@@ -85,33 +87,47 @@ let CatalogService = CatalogService_1 = class CatalogService {
             .createQueryBuilder('p')
             .leftJoinAndSelect('p.variants', 'v', 'v.active = true')
             .leftJoinAndSelect('v.stockBalance', 's')
+            .leftJoinAndSelect('p.media', 'm')
             .where('p.tenantId = :tenantId', { tenantId })
             .andWhere('p.status = :status', { status: 'active' })
-            .orderBy('p.title', 'ASC');
+            .orderBy('p.title', 'ASC')
+            .addOrderBy('m.sortOrder', 'ASC');
         if (q) {
             qb.andWhere('p.title ILIKE :q', { q: `%${q}%` });
         }
         const products = await qb.getMany();
-        return products.map((p) => ({
-            id: p.id,
-            sku: p.sku,
-            title: p.title,
-            category: p.category,
-            variantCount: p.variants?.length ?? 0,
-            updatedAt: p.updatedAt,
-            variants: (p.variants ?? []).map((v) => ({
-                id: v.id,
-                sku: v.sku,
-                size: v.size,
-                color: v.color,
-                price: v.price,
-                currency: v.currency,
-                effectiveAvailable: (v.stockBalance?.availableQty ?? 0) -
-                    (v.stockBalance?.reservedQty ?? 0) -
-                    (v.stockBalance?.pendingCheckoutQty ?? 0),
-                lastSyncedAt: v.stockBalance?.lastSyncedAt ?? null,
-            })),
-        }));
+        return products.map((p) => {
+            const colorImageMap = new Map();
+            const sortedMedia = (p.media ?? []).sort((a, b) => a.sortOrder - b.sortOrder);
+            const productImageUrl = sortedMedia[0]?.url ?? null;
+            for (const m of sortedMedia) {
+                if (m.color && !colorImageMap.has(m.color.toLowerCase())) {
+                    colorImageMap.set(m.color.toLowerCase(), m.url);
+                }
+            }
+            return {
+                id: p.id,
+                sku: p.sku,
+                title: p.title,
+                category: p.category,
+                imageUrl: productImageUrl,
+                variantCount: p.variants?.length ?? 0,
+                updatedAt: p.updatedAt,
+                variants: (p.variants ?? []).map((v) => ({
+                    id: v.id,
+                    sku: v.sku,
+                    size: v.size,
+                    color: v.color,
+                    price: v.price,
+                    currency: v.currency,
+                    imageUrl: (v.color ? colorImageMap.get(v.color.toLowerCase()) : null) ?? productImageUrl,
+                    effectiveAvailable: (v.stockBalance?.availableQty ?? 0) -
+                        (v.stockBalance?.reservedQty ?? 0) -
+                        (v.stockBalance?.pendingCheckoutQty ?? 0),
+                    lastSyncedAt: v.stockBalance?.lastSyncedAt ?? null,
+                })),
+            };
+        });
     }
     async upsertStockBalance(variantId, availableQty) {
         const existing = await this.stockRepo.findOne({ where: { variantId } });
@@ -166,6 +182,17 @@ let CatalogService = CatalogService_1 = class CatalogService {
                     }
                     catch (err) {
                         errors.push(`variant ${v.externalVariantId}: ${err.message}`);
+                    }
+                }
+                if (p.images && p.images.length > 0) {
+                    await this.mediaRepo.delete({ productId: product.id });
+                    for (const img of p.images) {
+                        await this.mediaRepo.save({
+                            productId: product.id,
+                            url: img.url,
+                            color: img.color ?? null,
+                            sortOrder: img.sortOrder ?? 0,
+                        });
                     }
                 }
             }
@@ -225,7 +252,9 @@ exports.CatalogService = CatalogService = CatalogService_1 = __decorate([
     __param(0, (0, typeorm_1.InjectRepository)(product_entity_1.Product)),
     __param(1, (0, typeorm_1.InjectRepository)(product_variant_entity_1.ProductVariant)),
     __param(2, (0, typeorm_1.InjectRepository)(stock_balance_entity_1.StockBalance)),
+    __param(3, (0, typeorm_1.InjectRepository)(product_media_entity_1.ProductMedia)),
     __metadata("design:paramtypes", [typeorm_2.Repository,
+        typeorm_2.Repository,
         typeorm_2.Repository,
         typeorm_2.Repository])
 ], CatalogService);

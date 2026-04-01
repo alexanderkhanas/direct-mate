@@ -1,14 +1,16 @@
 import { Repository } from 'typeorm';
 import { Product } from './entities/product.entity';
 import { ProductVariant } from './entities/product-variant.entity';
+import { ProductMedia } from './entities/product-media.entity';
 import { StockBalance } from './entities/stock-balance.entity';
 import { SearchProductsDto } from './dto/search-products.dto';
 export declare class CatalogService {
     private readonly productRepo;
     private readonly variantRepo;
     private readonly stockRepo;
+    private readonly mediaRepo;
     private readonly logger;
-    constructor(productRepo: Repository<Product>, variantRepo: Repository<ProductVariant>, stockRepo: Repository<StockBalance>);
+    constructor(productRepo: Repository<Product>, variantRepo: Repository<ProductVariant>, stockRepo: Repository<StockBalance>, mediaRepo: Repository<ProductMedia>);
     searchProducts(tenantId: string, dto: SearchProductsDto): Promise<any[]>;
     upsertProduct(tenantId: string, data: Partial<Product> & {
         externalProductId: string;
@@ -21,6 +23,7 @@ export declare class CatalogService {
         sku: string | null;
         title: string;
         category: string | null;
+        imageUrl: string;
         variantCount: number;
         updatedAt: Date;
         variants: {
@@ -30,6 +33,7 @@ export declare class CatalogService {
             color: string | null;
             price: number;
             currency: string;
+            imageUrl: string;
             effectiveAvailable: number;
             lastSyncedAt: Date | null;
         }[];
@@ -50,6 +54,11 @@ export declare class CatalogService {
             price: number;
             currency?: string;
             inventoryQty?: number;
+        }>;
+        images?: Array<{
+            url: string;
+            color?: string;
+            sortOrder?: number;
         }>;
     }>): Promise<{
         created: number;

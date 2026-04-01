@@ -41,17 +41,17 @@ export class ConversationsController {
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.conversationsService.findById(id);
+  findOne(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
+    return this.conversationsService.findById(id, user.tenantId);
   }
 
   @Post(':id/takeover')
-  takeover(@Param('id') id: string, @Body() dto: TakeoverDto) {
-    return this.conversationsService.takeover(id, dto.managerUserId);
+  takeover(@CurrentUser() user: JwtPayload, @Param('id') id: string, @Body() dto: TakeoverDto) {
+    return this.conversationsService.takeover(id, user.tenantId, dto.managerUserId);
   }
 
   @Post(':id/release')
-  release(@Param('id') id: string) {
-    return this.conversationsService.release(id);
+  release(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
+    return this.conversationsService.release(id, user.tenantId);
   }
 }

@@ -10,7 +10,7 @@ export declare class ConversationsController {
         limit: number;
         total: number;
     }>;
-    findOne(id: string): Promise<import("./entities/conversation.entity").Conversation>;
-    takeover(id: string, dto: TakeoverDto): Promise<import("./entities/conversation.entity").Conversation>;
-    release(id: string): Promise<import("./entities/conversation.entity").Conversation>;
+    findOne(user: JwtPayload, id: string): Promise<import("./entities/conversation.entity").Conversation>;
+    takeover(user: JwtPayload, id: string, dto: TakeoverDto): Promise<import("./entities/conversation.entity").Conversation>;
+    release(user: JwtPayload, id: string): Promise<import("./entities/conversation.entity").Conversation>;
 }

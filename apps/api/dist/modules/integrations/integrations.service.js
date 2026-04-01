@@ -105,13 +105,16 @@ let IntegrationsService = IntegrationsService_1 = class IntegrationsService {
     async findAll(tenantId) {
         return this.connectionRepo.find({ where: { tenantId } });
     }
+    async findById(id) {
+        return this.connectionRepo.findOne({ where: { id } });
+    }
     async findByExternalAccountId(externalAccountId, type) {
         return this.connectionRepo.findOne({
             where: { externalAccountId, type, status: shared_1.ConnectionStatus.Connected },
         });
     }
-    async disconnect(id) {
-        const conn = await this.connectionRepo.findOne({ where: { id } });
+    async disconnect(id, tenantId) {
+        const conn = await this.connectionRepo.findOne({ where: { id, tenantId } });
         if (!conn)
             throw new common_1.NotFoundException('Connection not found');
         await this.connectionRepo.update(id, {
@@ -120,8 +123,8 @@ let IntegrationsService = IntegrationsService_1 = class IntegrationsService {
             refreshTokenEncrypted: null,
         });
     }
-    async remove(id) {
-        const conn = await this.connectionRepo.findOne({ where: { id } });
+    async remove(id, tenantId) {
+        const conn = await this.connectionRepo.findOne({ where: { id, tenantId } });
         if (!conn)
             throw new common_1.NotFoundException('Connection not found');
         await this.connectionRepo.delete(id);

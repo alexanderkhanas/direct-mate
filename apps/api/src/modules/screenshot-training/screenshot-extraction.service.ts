@@ -311,7 +311,13 @@ export class ScreenshotExtractionService {
         return;
       }
 
-      const grouping: GroupingResult = JSON.parse((toolCall as any).function.arguments);
+      let grouping: GroupingResult;
+      try {
+        grouping = JSON.parse((toolCall as any).function.arguments);
+      } catch (err) {
+        this.logger.error('Failed to parse grouping JSON', (err as Error).message);
+        return;
+      }
 
       this.logger.log(
         `Grouped ${fragments.length} fragments into ${grouping.conversations.length} conversation(s)`,
@@ -421,7 +427,14 @@ export class ScreenshotExtractionService {
         throw new Error(`Unexpected tool call: ${toolCall.function.name}`);
       }
 
-      const extraction: ExtractionResult = JSON.parse(toolCall.function.arguments);
+      let extraction: ExtractionResult;
+      try {
+        extraction = JSON.parse(toolCall.function.arguments);
+      } catch (err) {
+        this.logger.error(`Failed to parse extraction JSON for file ${file.id}`, (err as Error).message);
+        await this.fileRepo.update(file.id, { extractionStatus: 'failed' });
+        return;
+      }
 
       await this.fileRepo.update(file.id, {
         ocrStatus: 'completed',
