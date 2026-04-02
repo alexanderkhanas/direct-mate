@@ -1,4 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Post, Query, Res, UseGuards, BadRequestException, ForbiddenException, NotFoundException, Logger } from '@nestjs/common';
+import { ConnectionType } from '@direct-mate/shared';
 import { ApiBearerAuth, ApiProperty, ApiTags } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { IsNotEmpty, IsOptional, IsString, IsIn } from 'class-validator';
@@ -122,6 +123,11 @@ export class InternalConnectionsController {
   @Post('resolve-credentials')
   async resolveCredentials(@Body() dto: ResolveCredentialsDto) {
     return this.integrationsService.resolveCredentials(dto);
+  }
+
+  @Get('shopify')
+  async listShopifyConnections() {
+    return this.integrationsService.findAllByType(ConnectionType.Shopify);
   }
 }
 

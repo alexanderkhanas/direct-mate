@@ -108,6 +108,18 @@ let IntegrationsService = IntegrationsService_1 = class IntegrationsService {
     async findById(id) {
         return this.connectionRepo.findOne({ where: { id } });
     }
+    async findAllByType(type) {
+        const connections = await this.connectionRepo.find({
+            where: { type, status: shared_1.ConnectionStatus.Connected },
+        });
+        return connections.map(c => ({
+            id: c.id,
+            tenantId: c.tenantId,
+            externalAccountId: c.externalAccountId,
+            metadata: c.metadata,
+            lastSyncAt: c.lastSyncAt,
+        }));
+    }
     async findByExternalAccountId(externalAccountId, type) {
         return this.connectionRepo.findOne({
             where: { externalAccountId, type, status: shared_1.ConnectionStatus.Connected },

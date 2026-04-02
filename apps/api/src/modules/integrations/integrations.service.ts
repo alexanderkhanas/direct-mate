@@ -121,6 +121,25 @@ export class IntegrationsService {
     return this.connectionRepo.findOne({ where: { id } });
   }
 
+  async findAllByType(type: ConnectionType): Promise<Array<{
+    id: string;
+    tenantId: string;
+    externalAccountId: string | null;
+    metadata: Record<string, unknown> | null;
+    lastSyncAt: Date | null;
+  }>> {
+    const connections = await this.connectionRepo.find({
+      where: { type, status: ConnectionStatus.Connected },
+    });
+    return connections.map(c => ({
+      id: c.id,
+      tenantId: c.tenantId,
+      externalAccountId: c.externalAccountId,
+      metadata: c.metadata,
+      lastSyncAt: c.lastSyncAt,
+    }));
+  }
+
   async findByExternalAccountId(
     externalAccountId: string,
     type: ConnectionType,

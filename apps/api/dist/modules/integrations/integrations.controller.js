@@ -15,6 +15,7 @@ var InstagramOAuthController_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.InstagramOAuthController = exports.InternalConnectionsController = exports.IntegrationsController = void 0;
 const common_1 = require("@nestjs/common");
+const shared_1 = require("@direct-mate/shared");
 const swagger_1 = require("@nestjs/swagger");
 const config_1 = require("@nestjs/config");
 const class_validator_1 = require("class-validator");
@@ -158,6 +159,9 @@ let InternalConnectionsController = class InternalConnectionsController {
     async resolveCredentials(dto) {
         return this.integrationsService.resolveCredentials(dto);
     }
+    async listShopifyConnections() {
+        return this.integrationsService.findAllByType(shared_1.ConnectionType.Shopify);
+    }
 };
 exports.InternalConnectionsController = InternalConnectionsController;
 __decorate([
@@ -167,6 +171,12 @@ __decorate([
     __metadata("design:paramtypes", [ResolveCredentialsDto]),
     __metadata("design:returntype", Promise)
 ], InternalConnectionsController.prototype, "resolveCredentials", null);
+__decorate([
+    (0, common_1.Get)('shopify'),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", []),
+    __metadata("design:returntype", Promise)
+], InternalConnectionsController.prototype, "listShopifyConnections", null);
 exports.InternalConnectionsController = InternalConnectionsController = __decorate([
     (0, swagger_1.ApiTags)('internal/connections'),
     (0, common_1.UseGuards)(internal_api_key_guard_1.InternalApiKeyGuard),

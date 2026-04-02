@@ -1,3 +1,4 @@
+import { ConnectionType } from '@direct-mate/shared';
 import { ConfigService } from '@nestjs/config';
 import { Response } from 'express';
 import { JwtPayload } from '../../common/decorators/current-user.decorator';
@@ -38,13 +39,20 @@ export declare class InternalConnectionsController {
         externalAccountId?: undefined;
         metadata?: undefined;
     } | {
-        type: import("@direct-mate/shared").ConnectionType;
+        type: ConnectionType;
         externalAccountId: string | null;
         accessToken: string;
         metadata: Record<string, any>;
         shopDomain?: undefined;
         apiVersion?: undefined;
     }>;
+    listShopifyConnections(): Promise<{
+        id: string;
+        tenantId: string;
+        externalAccountId: string | null;
+        metadata: Record<string, unknown> | null;
+        lastSyncAt: Date | null;
+    }[]>;
 }
 export declare class InstagramOAuthController {
     private readonly integrationsService;

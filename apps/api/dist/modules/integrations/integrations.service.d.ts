@@ -18,6 +18,13 @@ export declare class IntegrationsService {
     getDecryptedToken(connectionId: string): Promise<string>;
     findAll(tenantId: string): Promise<Connection[]>;
     findById(id: string): Promise<Connection | null>;
+    findAllByType(type: ConnectionType): Promise<Array<{
+        id: string;
+        tenantId: string;
+        externalAccountId: string | null;
+        metadata: Record<string, unknown> | null;
+        lastSyncAt: Date | null;
+    }>>;
     findByExternalAccountId(externalAccountId: string, type: ConnectionType): Promise<Connection | null>;
     disconnect(id: string, tenantId: string): Promise<void>;
     remove(id: string, tenantId: string): Promise<void>;
