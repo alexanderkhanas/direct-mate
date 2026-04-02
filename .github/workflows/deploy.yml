@@ -36,30 +36,17 @@ jobs:
             -e "ssh -i ~/.ssh/deploy_key" \
             ./ $SERVER_USER@$SERVER_HOST:$DEPLOY_PATH/
 
-      - name: Build and deploy
+      - name: Build images
         run: |
-          ssh -i ~/.ssh/deploy_key $SERVER_USER@$SERVER_HOST << 'EOF'
-            cd /opt/directmate/infra/production
+          ssh -i ~/.ssh/deploy_key $SERVER_USER@$SERVER_HOST \
+            "cd /opt/directmate/infra/production && docker compose -f docker-compose.prod.yml build"
 
-            echo "==> Building images..."
-            docker compose -f docker-compose.prod.yml build --no-cache
+      - name: Run migrations
+        run: |
+          ssh -i ~/.ssh/deploy_key $SERVER_USER@$SERVER_HOST \
+            'cd /opt/directmate/infra/production && docker compose -f docker-compose.prod.yml run --rm api node -e "const d=require(\"./dist/database/data-source\");d.AppDataSource.initialize().then(s=>s.runMigrations()).then(()=>{console.log(\"OK\");process.exit(0)}).catch(e=>{console.error(e.message);process.exit(1)})"'
 
-            echo "==> Running migrations..."
-            docker compose -f docker-compose.prod.yml run --rm api sh -c "
-              cd /app/apps/api && node -e \"
-                const { AppDataSource } = require('./dist/database/data-source');
-                AppDataSource.initialize()
-                  .then(ds => ds.runMigrations())
-                  .then(() => { console.log('Migrations OK'); process.exit(0); })
-                  .catch(err => { console.error(err); process.exit(1); });
-              \"
-            "
-
-            echo "==> Restarting services..."
-            docker compose -f docker-compose.prod.yml up -d --remove-orphans
-
-            echo "==> Cleaning old images..."
-            docker image prune -f
-
-            echo "==> Deploy complete!"
-          EOF
+      - name: Restart services
+        run: |
+          ssh -i ~/.ssh/deploy_key $SERVER_USER@$SERVER_HOST \
+            "cd /opt/directmate/infra/production && docker compose -f docker-compose.prod.yml up -d --remove-orphans && docker image prune -f"

@@ -360,6 +360,7 @@ function ContentDetailModal({ mapping, products, onLink, onUnlink, onDelete, onC
   onDelete: () => void;
   onClose: () => void;
 }) {
+  const { t } = useT();
   const [showProductSearch, setShowProductSearch] = useState(false);
 
   const linkedProduct = products.find(p => p.id === mapping.productId);
