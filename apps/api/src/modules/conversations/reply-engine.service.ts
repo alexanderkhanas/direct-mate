@@ -912,6 +912,15 @@ export class ReplyEngineService {
       this.logger.log(`Template selected: ${templateResult.templateId}`);
     } else {
       // 8. No template -> check if AI fallback is allowed
+      // general_question with no FAQ match → bot doesn't know the answer → handoff
+      if (
+        classification.primaryIntent === 'general_question' ||
+        classification.recommendedAction === 'answer_faq'
+      ) {
+        this.logger.log('general_question with no template → handoff');
+        return this.doHandoff(input, 'Клієнт поставив питання, на яке бот не знає відповіді');
+      }
+
       // Check if product-related intent but no products found → handoff
       const productIntents = ['product_inquiry', 'ready_to_order', 'availability_check', 'category_browse', 'ask_price'];
       if (productIntents.includes(classification.primaryIntent) && (!productData || productData.length === 0)) {

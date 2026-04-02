@@ -55,7 +55,6 @@ const ACTION_TO_SCENARIO: Record<string, string> = {
   ask_delivery: 'order_confirmed_ask_delivery',
   confirm_selection: 'confirm_selection',
   show_price: 'show_price',
-  answer_faq: 'answer_delivery',
   greet: 'greeting',
   ask_variant_choice: 'ask_variant_choice',
   product_not_found: 'product_not_found',

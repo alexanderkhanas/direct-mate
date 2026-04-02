@@ -45,7 +45,7 @@ interface MetaWebhookPayload {
   entry: MetaMessagingEntry[];
 }
 
-const DEBOUNCE_MS = 500; // 0.5 seconds
+const DEBOUNCE_MS = 10_000; // 10 seconds
 
 
 @Injectable()
