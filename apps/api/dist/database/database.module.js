@@ -27,7 +27,7 @@ exports.DatabaseModule = DatabaseModule = __decorate([
                     synchronize: false,
                     migrations: [__dirname + '/migrations/*.{ts,js}'],
                     migrationsRun: false,
-                    logging: config.get('nodeEnv') === 'development',
+                    logging: false,
                     namingStrategy: new typeorm_naming_strategies_1.SnakeNamingStrategy(),
                 }),
             }),

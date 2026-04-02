@@ -40,6 +40,9 @@ export class InstagramMediaMapping {
   permalink!: string | null;
 
   @Column({ type: 'text', nullable: true })
+  sourcePostUrl!: string | null;
+
+  @Column({ type: 'text', nullable: true })
   matchMethod!: string | null;
 
   @Column({ type: 'real', nullable: true })

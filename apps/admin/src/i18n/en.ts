@@ -307,6 +307,10 @@ export const en = {
     linked: 'Linked',
     unlinked: 'Not linked',
     search_product: 'Search product...',
+    ai_matched: 'AI matched',
+    sku_match: 'SKU match',
+    confirmed: 'Manual',
+    suggested: 'Suggested',
   },
 
   // Logs

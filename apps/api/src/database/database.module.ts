@@ -15,7 +15,7 @@ import { SnakeNamingStrategy } from 'typeorm-naming-strategies';
         synchronize: false,
         migrations: [__dirname + '/migrations/*.{ts,js}'],
         migrationsRun: false,
-        logging: config.get<string>('nodeEnv') === 'development',
+        logging: false,
         namingStrategy: new SnakeNamingStrategy(),
       }),
     }),

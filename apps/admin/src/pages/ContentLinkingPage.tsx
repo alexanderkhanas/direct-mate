@@ -28,6 +28,8 @@ interface Product {
   id: string;
   title: string;
   category: string | null;
+  sku: string | null;
+  imageUrl: string | null;
 }
 
 function MediaTypeIcon({ type }: { type: string }) {
@@ -36,11 +38,12 @@ function MediaTypeIcon({ type }: { type: string }) {
   return <Image className="h-4 w-4 text-pink-500" />;
 }
 
-function statusBadge(mapping: MediaMapping, unlinkedLabel: string) {
-  if (mapping.confirmed && mapping.matchMethod === 'sku_from_caption') return <Badge variant="connected">SKU Match</Badge>;
-  if (mapping.confirmed) return <Badge variant="connected">Confirmed</Badge>;
-  if (mapping.productId) return <Badge variant="pending">Suggested</Badge>;
-  return <Badge variant="disconnected">{unlinkedLabel}</Badge>;
+function statusBadge(mapping: MediaMapping, t: (key: string) => string) {
+  if (mapping.matchMethod === 'ai_vision_match') return <Badge variant="pending">{t('content.ai_matched')}</Badge>;
+  if (mapping.matchMethod === 'sku_from_caption') return <Badge variant="connected">{t('content.sku_match')}</Badge>;
+  if (mapping.confirmed) return <Badge variant="connected">{t('content.confirmed')}</Badge>;
+  if (mapping.productId) return <Badge variant="pending">{t('content.suggested')}</Badge>;
+  return <Badge variant="disconnected">{t('content.unlinked')}</Badge>;
 }
 
 function ProductLinkModal({ products, caption, onSelect, onClose }: {
@@ -49,6 +52,7 @@ function ProductLinkModal({ products, caption, onSelect, onClose }: {
   onSelect: (product: Product) => void;
   onClose: () => void;
 }) {
+  const { t } = useT();
   const [search, setSearch] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -59,28 +63,23 @@ function ProductLinkModal({ products, caption, onSelect, onClose }: {
     return () => document.removeEventListener('keydown', handleEsc);
   }, [onClose]);
 
+  const q = search.toLowerCase();
   const filtered = products.filter(p =>
-    p.title.toLowerCase().includes(search.toLowerCase()) ||
-    (p.category ?? '').toLowerCase().includes(search.toLowerCase())
+    p.title.toLowerCase().includes(q) ||
+    (p.sku ?? '').toLowerCase().includes(q) ||
+    (p.category ?? '').toLowerCase().includes(q)
   );
-
-  const grouped = new Map<string, Product[]>();
-  for (const p of filtered) {
-    const cat = p.category ?? 'Other';
-    if (!grouped.has(cat)) grouped.set(cat, []);
-    grouped.get(cat)!.push(p);
-  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={onClose}>
       <div className="absolute inset-0 bg-black/30" />
       <div
-        className="relative bg-white rounded-xl shadow-xl w-full max-w-md mx-4 overflow-hidden"
+        className="relative bg-white rounded-xl shadow-xl w-full max-w-xl mx-4 overflow-hidden flex flex-col max-h-[80vh]"
         onClick={e => e.stopPropagation()}
       >
-        <div className="px-5 py-4 border-b border-gray-100">
+        <div className="px-5 py-4 border-b border-gray-100 flex-shrink-0">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-semibold text-gray-900">Link to product</h3>
+            <h3 className="text-sm font-semibold text-gray-900">{t('content.link_product')}</h3>
             <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
               <X className="h-4 w-4" />
             </button>
@@ -97,7 +96,7 @@ function ProductLinkModal({ products, caption, onSelect, onClose }: {
               type="text"
               value={search}
               onChange={e => setSearch(e.target.value)}
-              placeholder="Search products..."
+              placeholder={t('content.search_product')}
               className="w-full pl-9 pr-9 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent"
             />
             {search && (
@@ -107,27 +106,46 @@ function ProductLinkModal({ products, caption, onSelect, onClose }: {
             )}
           </div>
         </div>
-        <div className="max-h-72 overflow-y-auto">
+
+        <div className="overflow-y-auto p-4">
           {filtered.length === 0 ? (
-            <div className="px-5 py-8 text-center text-sm text-gray-400">No products found</div>
+            <div className="py-10 text-center text-sm text-gray-400">No products found</div>
           ) : (
-            [...grouped.entries()].map(([category, prods]) => (
-              <div key={category}>
-                <div className="px-5 py-2 text-[10px] font-semibold text-gray-400 uppercase tracking-wider bg-gray-50 sticky top-0">
-                  {category}
-                </div>
-                {prods.map(p => (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              {filtered.map(p => {
+                const imgUrl = p.imageUrl;
+                return (
                   <button
                     key={p.id}
                     onClick={() => onSelect(p)}
-                    className="w-full text-left px-5 py-3 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700 flex items-center gap-3 transition-colors border-b border-gray-50 last:border-0"
+                    className="group text-left rounded-xl border border-gray-200 hover:border-blue-400 hover:shadow-md transition-all overflow-hidden bg-white"
                   >
-                    <Package className="h-4 w-4 text-gray-400 flex-shrink-0" />
-                    <span className="truncate">{p.title}</span>
+                    <div className="aspect-square bg-gray-100 overflow-hidden">
+                      {imgUrl ? (
+                        <img
+                          src={imgUrl}
+                          alt={p.title}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <Package className="h-8 w-8 text-gray-300" />
+                        </div>
+                      )}
+                    </div>
+                    <div className="p-2.5">
+                      <p className="text-xs font-medium text-gray-900 line-clamp-2 leading-snug">{p.title}</p>
+                      {p.category && (
+                        <p className="text-[10px] text-gray-400 mt-0.5 truncate">{p.category}</p>
+                      )}
+                      {p.sku && (
+                        <p className="text-[10px] text-gray-400 font-mono mt-0.5 truncate">SKU: {p.sku}</p>
+                      )}
+                    </div>
                   </button>
-                ))}
-              </div>
-            ))
+                );
+              })}
+            </div>
           )}
         </div>
       </div>
@@ -289,15 +307,25 @@ export default function ContentLinkingPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  {mapping.productId && (
-                    <div className="flex items-center gap-1.5 bg-green-50 text-green-700 px-2 py-1 rounded-md">
-                      <Package className="h-3 w-3" />
-                      <span className="text-xs font-medium max-w-[120px] truncate">
-                        {productList.find(p => p.id === mapping.productId)?.title ?? 'Linked'}
-                      </span>
-                    </div>
+                  {mapping.productId ? (
+                    <>
+                      <div className="flex items-center gap-1.5 bg-green-50 text-green-700 px-2 py-1 rounded-md">
+                        <Package className="h-3 w-3" />
+                        <span className="text-xs font-medium max-w-[120px] truncate">
+                          {productList.find(p => p.id === mapping.productId)?.title ?? 'Linked'}
+                        </span>
+                      </div>
+                      {statusBadge(mapping, t)}
+                    </>
+                  ) : (
+                    <button
+                      onClick={e => { e.stopPropagation(); setLinkingMapping(mapping); }}
+                      className="flex items-center gap-1 text-xs text-blue-500 hover:text-blue-700 border border-blue-200 hover:border-blue-400 hover:bg-blue-50 px-2.5 py-1 rounded-md transition-colors"
+                    >
+                      <Link2 className="h-3 w-3" />
+                      {t('content.link_product')}
+                    </button>
                   )}
-                  {statusBadge(mapping, t('content.unlinked'))}
                 </div>
               </div>
             </button>
@@ -401,7 +429,7 @@ function ContentDetailModal({ mapping, products, onLink, onUnlink, onDelete, onC
             <div>
               <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Status</label>
               <div className="flex items-center gap-2">
-                {statusBadge(mapping, t('content.unlinked'))}
+                {statusBadge(mapping, t)}
                 {mapping.matchMethod && (
                   <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">{mapping.matchMethod}</span>
                 )}

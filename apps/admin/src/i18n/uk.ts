@@ -307,6 +307,10 @@ export const uk = {
     linked: 'Прив\'язано',
     unlinked: 'Не прив\'язано',
     search_product: 'Пошук товару...',
+    ai_matched: 'AI-збіг',
+    sku_match: 'SKU збіг',
+    confirmed: 'Вручну',
+    suggested: 'Запропоновано',
   },
 
   // Logs

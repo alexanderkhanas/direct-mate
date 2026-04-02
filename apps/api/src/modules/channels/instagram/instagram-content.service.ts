@@ -1,6 +1,8 @@
 import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
+import OpenAI from 'openai';
 import { InstagramMediaMapping } from './entities/instagram-media-mapping.entity';
 import { Connection } from '../../integrations/entities/connection.entity';
 import { Product } from '../../catalog/entities/product.entity';
@@ -20,6 +22,7 @@ const DEFAULT_SKU_PATTERNS = [
 @Injectable()
 export class InstagramContentService {
   private readonly logger = new Logger(InstagramContentService.name);
+  private readonly openai: OpenAI;
 
   constructor(
     @InjectRepository(InstagramMediaMapping)
@@ -33,7 +36,10 @@ export class InstagramContentService {
     @InjectRepository(StoreConfig)
     private readonly storeConfigRepo: Repository<StoreConfig>,
     private readonly crypto: CryptoService,
-  ) {}
+    private readonly config: ConfigService,
+  ) {
+    this.openai = new OpenAI({ apiKey: this.config.get<string>('openai.apiKey') });
+  }
 
   async findByMediaId(
     tenantId: string,
@@ -254,15 +260,35 @@ export class InstagramContentService {
     fetched += await this.fetchPosts(tenantId, token, fullSync);
 
     // 2. Fetch active stories (24h window)
-    fetched += await this.fetchStories(tenantId, token);
+    const storiesResult = await this.fetchStories(tenantId, token);
+    fetched += storiesResult.count;
 
     // 3. SKU matching pass
     const matched = await this.matchSkusInCaptions(tenantId);
 
+    // 4. Inherit product links for stories reshared from mapped posts
+    await this.inheritProductsFromSourcePosts(tenantId);
+
+    // 5. AI vision matching for new unlinked stories only
+    if (storiesResult.newIds.length > 0) {
+      await this.matchStoriesByVision(tenantId, storiesResult.newIds);
+    }
+
     return { fetched, matched };
   }
 
-  private async upsertMedia(tenantId: string, item: any, mediaType: string): Promise<void> {
+  // Returns true if this was a new insert (not an update of existing)
+  private async upsertMedia(
+    tenantId: string,
+    item: any,
+    mediaType: string,
+    sourcePostUrl?: string | null,
+  ): Promise<boolean> {
+    const existing = await this.mappingRepo.findOne({
+      where: { tenantId, instagramMediaId: item.id },
+      select: ['id'],
+    });
+
     await this.mappingRepo
       .createQueryBuilder()
       .insert()
@@ -273,10 +299,16 @@ export class InstagramContentService {
         caption: item.caption ?? null,
         mediaUrl: item.media_url ?? null,
         permalink: item.permalink ?? null,
+        sourcePostUrl: sourcePostUrl ?? null,
         matchMethod: 'bulk_import',
       })
-      .orIgnore()
+      .orUpdate(
+        ['caption', 'media_url', 'permalink', 'source_post_url'],
+        ['tenant_id', 'instagram_media_id'],
+      )
       .execute();
+
+    return !existing;
   }
 
   private async fetchPosts(tenantId: string, token: string, fullSync = false): Promise<number> {
@@ -310,22 +342,24 @@ export class InstagramContentService {
     return fetched;
   }
 
-  private async fetchStories(tenantId: string, token: string): Promise<number> {
+  private async fetchStories(tenantId: string, token: string): Promise<{ count: number; newIds: string[] }> {
     let fetched = 0;
+    const newIds: string[] = [];
 
     try {
-      const url = `https://graph.instagram.com/v21.0/me/stories?fields=id,caption,media_type,media_url,timestamp`;
+      const url = `https://graph.instagram.com/v21.0/me/stories?fields=id,caption,media_type,media_url,permalink,timestamp`;
       const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
 
       if (!res.ok) {
         this.logger.warn(`Instagram stories API error: ${res.status} — stories may not be available`);
-        return 0;
+        return { count: 0, newIds: [] };
       }
 
       const body = (await res.json()) as { data: any[] };
 
       for (const item of body.data ?? []) {
-        await this.upsertMedia(tenantId, item, 'story');
+        const isNew = await this.upsertMedia(tenantId, item, 'story', null);
+        if (isNew) newIds.push(item.id);
 
         // Set expiry for stories (24h from fetch)
         await this.mappingRepo
@@ -340,12 +374,160 @@ export class InstagramContentService {
         fetched++;
       }
 
-      this.logger.log(`Fetched ${fetched} stories for tenant ${tenantId}`);
+      this.logger.log(`Fetched ${fetched} stories for tenant ${tenantId} (${newIds.length} new)`);
     } catch (err) {
       this.logger.warn('Failed to fetch stories', (err as Error).message);
     }
 
-    return fetched;
+    return { count: fetched, newIds };
+  }
+
+  // ─── Story → post product inheritance ─────────────────────────
+
+  private async inheritProductsFromSourcePosts(tenantId: string): Promise<number> {
+    // Find unlinked stories that have a source_post_url (reshared from a post)
+    const stories = await this.mappingRepo.find({
+      where: { tenantId, mediaType: 'story', productId: undefined as any },
+    });
+
+    this.logger.log(`inheritProductsFromSourcePosts: ${stories.length} unlinked stories total, ${stories.filter(s => s.sourcePostUrl).length} have sourcePostUrl`);
+    stories.forEach(s => this.logger.log(`  story ${s.instagramMediaId}: sourcePostUrl=${s.sourcePostUrl ?? 'null'}`));
+
+    const candidates = stories.filter((s) => s.sourcePostUrl);
+    if (candidates.length === 0) return 0;
+
+    let inherited = 0;
+
+    for (const story of candidates) {
+      // Extract shortcode from URL: https://www.instagram.com/p/{shortcode}/
+      const match = story.sourcePostUrl!.match(/\/p\/([A-Za-z0-9_-]+)/);
+      if (!match) continue;
+
+      const shortcode = match[1];
+
+      const sourcePost = await this.mappingRepo
+        .createQueryBuilder('m')
+        .where('m.tenant_id = :tenantId', { tenantId })
+        .andWhere('m.permalink LIKE :pattern', { pattern: `%/p/${shortcode}/%` })
+        .andWhere('m.product_id IS NOT NULL')
+        .getOne();
+
+      if (!sourcePost) continue;
+
+      await this.mappingRepo.update(story.id, {
+        productId: sourcePost.productId,
+        variantId: sourcePost.variantId,
+        matchMethod: 'story_from_post',
+        matchConfidence: 1.0,
+      });
+
+      this.logger.log(
+        `Story ${story.instagramMediaId} inherited product ${sourcePost.productId} from post ${shortcode}`,
+      );
+      inherited++;
+    }
+
+    return inherited;
+  }
+
+  // ─── AI vision matching ────────────────────────────────────────
+
+  private async toBase64DataUrl(url: string): Promise<string | null> {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      const buffer = await res.arrayBuffer();
+      const mime = res.headers.get('content-type') ?? 'image/jpeg';
+      return `data:${mime};base64,${Buffer.from(buffer).toString('base64')}`;
+    } catch {
+      return null;
+    }
+  }
+
+  private async matchStoriesByVision(tenantId: string, newIds: string[]): Promise<void> {
+    const unlinkedStories = await this.mappingRepo
+      .createQueryBuilder('m')
+      .where('m.tenant_id = :tenantId', { tenantId })
+      .andWhere('m.media_type = :type', { type: 'story' })
+      .andWhere('m.product_id IS NULL')
+      .andWhere('m.instagram_media_id IN (:...newIds)', { newIds })
+      .getMany();
+
+    const candidates = unlinkedStories.filter((s) => s.mediaUrl).slice(0, 5);
+    if (candidates.length === 0) return;
+
+    const linkedPosts = await this.mappingRepo
+      .createQueryBuilder('m')
+      .where('m.tenant_id = :tenantId', { tenantId })
+      .andWhere('m.product_id IS NOT NULL')
+      .andWhere('m.media_url IS NOT NULL')
+      .limit(10)
+      .getMany();
+
+    if (linkedPosts.length === 0) return;
+
+    for (const story of candidates) {
+      try {
+        const storyDataUrl = await this.toBase64DataUrl(story.mediaUrl!);
+        if (!storyDataUrl) {
+          this.logger.warn(`Vision match: could not download story image ${story.instagramMediaId}`);
+          continue;
+        }
+
+        const postDataUrls = await Promise.all(linkedPosts.map((p) => this.toBase64DataUrl(p.mediaUrl!)));
+        const validPosts = linkedPosts.filter((_, i) => postDataUrls[i] !== null);
+        const validDataUrls = postDataUrls.filter((u): u is string => u !== null);
+
+        if (validPosts.length === 0) continue;
+
+        const imageContent: OpenAI.Chat.ChatCompletionContentPart[] = [
+          {
+            type: 'image_url',
+            image_url: { url: storyDataUrl, detail: 'low' },
+          },
+          ...validDataUrls.map((url): OpenAI.Chat.ChatCompletionContentPart => ({
+            type: 'image_url',
+            image_url: { url, detail: 'low' },
+          })),
+          {
+            type: 'text',
+            text: `The first image is a story. The next ${validPosts.length} images are product posts (index 0 to ${validPosts.length - 1}). Does the story show the same product as any of the posts? Reply with JSON only: {"match": <index or -1 if no match>, "confidence": <0.0 to 1.0>}`,
+          },
+        ];
+
+        const response = await this.openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [{ role: 'user', content: imageContent }],
+          max_tokens: 50,
+          temperature: 0,
+        });
+
+        const text = response.choices[0]?.message?.content?.trim() ?? '';
+        const jsonMatch = text.match(/\{.*\}/s);
+        if (!jsonMatch) continue;
+
+        const result = JSON.parse(jsonMatch[0]) as { match: number; confidence: number };
+
+        if (result.match >= 0 && result.match < validPosts.length && result.confidence >= 0.8) {
+          const sourcePost = validPosts[result.match];
+          await this.mappingRepo.update(story.id, {
+            productId: sourcePost.productId,
+            variantId: sourcePost.variantId,
+            matchMethod: 'ai_vision_match',
+            matchConfidence: result.confidence,
+          });
+          this.logger.log(
+            `Story ${story.instagramMediaId} matched to post ${sourcePost.instagramMediaId} via vision (confidence: ${result.confidence})`,
+          );
+        } else {
+          this.logger.log(
+            `Story ${story.instagramMediaId}: no vision match (match=${result.match}, confidence=${result.confidence})`,
+          );
+        }
+      } catch (err) {
+        this.logger.error(`Vision match failed for story ${story.instagramMediaId}: ${err}`);
+      }
+    }
   }
 
   // ─── SKU matching ──────────────────────────────────────────────
