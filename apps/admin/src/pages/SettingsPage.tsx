@@ -343,6 +343,130 @@ function ExamplesSection() {
   );
 }
 
+function AiFallbackSection() {
+  const { t } = useT();
+  const qc = useQueryClient();
+
+  const { data: config } = useQuery<any>({
+    queryKey: ['store-config'],
+    queryFn: () => api.get('/engine/config').then((r) => r.data),
+  });
+
+  const fallbackMode = (config?.fallbackConfig as any)?.mode ?? 'template_first_with_safe_fallback';
+  const allowed = fallbackMode !== 'strict_templates_only';
+
+  const toggle = useMutation({
+    mutationFn: (enable: boolean) =>
+      api.patch('/engine/config', {
+        fallbackConfig: {
+          mode: enable ? 'template_first_with_safe_fallback' : 'strict_templates_only',
+        },
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['store-config'] }),
+  });
+
+  return (
+    <Card>
+      <h2 className="text-sm font-semibold text-gray-900 mb-1">{t('settings_ext.ai_fallback_title')}</h2>
+      <p className="text-xs text-gray-500 mb-4">{t('settings_ext.ai_fallback_desc')}</p>
+      <label className="flex items-center gap-3 cursor-pointer">
+        <button
+          role="switch"
+          aria-checked={allowed}
+          onClick={() => toggle.mutate(!allowed)}
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${
+            allowed ? 'bg-gray-900' : 'bg-gray-200'
+          }`}
+        >
+          <span
+            className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+              allowed ? 'translate-x-4' : 'translate-x-1'
+            }`}
+          />
+        </button>
+        <span className="text-sm text-gray-700">
+          {allowed ? t('settings_ext.ai_fallback_on') : t('settings_ext.ai_fallback_off')}
+        </span>
+      </label>
+      {toggle.isSuccess && (
+        <p className="text-xs text-emerald-600 mt-2">{t('settings.saved')}</p>
+      )}
+    </Card>
+  );
+}
+
+type OperatingMode = 'learning' | 'active' | 'paused';
+
+interface StoreConfigData {
+  operatingMode: OperatingMode;
+  learningStartedAt: string | null;
+}
+
+function OperatingModeSection() {
+  const { t } = useT();
+  const qc = useQueryClient();
+  const { data: config } = useQuery<StoreConfigData>({
+    queryKey: ['engine-config'],
+    queryFn: () => api.get('/engine/config').then((r) => r.data),
+  });
+
+  const save = useMutation({
+    mutationFn: (mode: OperatingMode) => api.patch('/engine/config', { operatingMode: mode }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['engine-config'] }),
+  });
+
+  const currentMode: OperatingMode = config?.operatingMode ?? 'active';
+
+  const modes: { value: OperatingMode; label: string; desc: string }[] = [
+    { value: 'learning', label: t('operating_mode.learning'), desc: t('operating_mode.learning_desc') },
+    { value: 'active', label: t('operating_mode.active'), desc: t('operating_mode.active_desc') },
+    { value: 'paused', label: t('operating_mode.paused'), desc: t('operating_mode.paused_desc') },
+  ];
+
+  return (
+    <Card>
+      <h2 className="text-sm font-semibold text-gray-900 mb-1">{t('operating_mode.title')}</h2>
+      <p className="text-xs text-gray-500 mb-4">{t('operating_mode.subtitle')}</p>
+      <div className="space-y-2">
+        {modes.map((m) => (
+          <button
+            key={m.value}
+            onClick={() => {
+              if (m.value === 'active' && currentMode === 'learning') {
+                if (!window.confirm(t('operating_mode.go_live_confirm'))) return;
+              }
+              save.mutate(m.value);
+            }}
+            className={`w-full text-left p-3 rounded-lg border transition-colors ${
+              currentMode === m.value
+                ? 'border-amber-400 bg-amber-50'
+                : 'border-gray-200 hover:border-gray-300'
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-gray-900">{m.label}</span>
+              {currentMode === m.value && (
+                <span className="w-2 h-2 rounded-full bg-amber-400" />
+              )}
+            </div>
+            <p className="text-xs text-gray-500 mt-0.5">{m.desc}</p>
+          </button>
+        ))}
+      </div>
+      {currentMode === 'learning' && config?.learningStartedAt && (
+        <p className="text-xs text-gray-400 mt-3">
+          {t('operating_mode.learning_since', {
+            date: new Date(config.learningStartedAt).toLocaleDateString(),
+          })}
+        </p>
+      )}
+      {save.isSuccess && (
+        <p className="text-xs text-emerald-600 mt-2">{t('operating_mode.saved')}</p>
+      )}
+    </Card>
+  );
+}
+
 export default function SettingsPage() {
   const { t } = useT();
   const { data, isLoading } = useQuery<TenantSettings>({
@@ -359,8 +483,10 @@ export default function SettingsPage() {
         <h1 className="text-2xl font-semibold text-gray-900">{t('settings.title')}</h1>
         <p className="text-sm text-gray-500 mt-1">{t('settings_ext.configure_subtitle')}</p>
       </div>
+      <OperatingModeSection />
       <BrandToneSection settings={data} />
       <FlowConfigSection />
+      <AiFallbackSection />
       <HandoffRulesSection settings={data} />
       <ExamplesSection />
     </div>

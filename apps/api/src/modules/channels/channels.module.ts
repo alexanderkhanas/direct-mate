@@ -10,11 +10,14 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { InstagramContentModule } from './instagram/instagram-content.module';
 import { PendingMessage } from './instagram/entities/pending-message.entity';
 import { Conversation } from '../conversations/entities/conversation.entity';
+import { StoreConfig } from '../engine/entities/store-config.entity';
+import { ScreenshotTrainingModule } from '../screenshot-training/screenshot-training.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([PendingMessage, Conversation]),
-    ConversationsModule, IntegrationsModule, OrdersModule, NotificationsModule, InstagramContentModule,
+    TypeOrmModule.forFeature([PendingMessage, Conversation, StoreConfig]),
+    ConversationsModule, IntegrationsModule, OrdersModule, NotificationsModule,
+    InstagramContentModule, ScreenshotTrainingModule,
   ],
   controllers: [InstagramController],
   providers: [InstagramService, CryptoService],

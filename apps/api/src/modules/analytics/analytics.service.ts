@@ -170,10 +170,11 @@ export class AnalyticsService {
         o.status,
         o.total_amount AS "totalAmount",
         o.currency,
-        COALESCE(cu.full_name, cu.username, cu.external_user_id) AS "customerName",
+        COALESCE(cci.full_name, cu.full_name, cu.username, cu.external_user_id) AS "customerName",
         o.created_at AS "createdAt"
       FROM orders o
       LEFT JOIN customers cu ON cu.id = o.customer_id
+      LEFT JOIN checkout_customer_info cci ON cci.checkout_session_id = o.checkout_session_id
       WHERE o.tenant_id = $1
       ORDER BY o.created_at DESC
       LIMIT 10`,

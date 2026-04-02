@@ -37,6 +37,15 @@ export class StoreConfig {
   @Column({ type: 'jsonb', default: '{}' })
   fallbackConfig!: Record<string, unknown>;
 
+  @Column({ name: 'operating_mode', default: 'active' })
+  operatingMode!: 'learning' | 'active' | 'paused';
+
+  @Column({ name: 'learning_started_at', type: 'timestamptz', nullable: true })
+  learningStartedAt!: Date | null;
+
+  @Column({ name: 'learning_notified_at', type: 'timestamptz', nullable: true })
+  learningNotifiedAt!: Date | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt!: Date;
 

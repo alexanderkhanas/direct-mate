@@ -163,6 +163,10 @@ export class TelegramService {
     return config?.telegramChatIds ?? (config?.telegramChatId ? [config.telegramChatId] : []);
   }
 
+  async sendToTenant(tenantId: string, message: string): Promise<void> {
+    return this.sendToAll(tenantId, message);
+  }
+
   private async sendToAll(tenantId: string, message: string): Promise<void> {
     const chatIds = await this.getChatIds(tenantId);
     await Promise.all(chatIds.map(id => this.sendMessage(id, message)));

@@ -6,10 +6,14 @@ import { ExtractedConversationFragment } from './entities/extracted-conversation
 import { ExtractedPhrase } from './entities/extracted-phrase.entity';
 import { ExtractedVoiceSignal } from './entities/extracted-voice-signal.entity';
 import { ManagerExample } from '../settings/entities/manager-example.entity';
+import { StoreConfig } from '../engine/entities/store-config.entity';
 import { ScreenshotUploadController } from './screenshot-upload.controller';
 import { ScreenshotReviewController } from './screenshot-review.controller';
 import { ScreenshotExtractionService } from './screenshot-extraction.service';
 import { ScreenshotApprovalService } from './screenshot-approval.service';
+import { LearningObserverService } from './learning-observer.service';
+import { LearningSchedulerService } from './learning-scheduler.service';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
@@ -20,10 +24,17 @@ import { ScreenshotApprovalService } from './screenshot-approval.service';
       ExtractedPhrase,
       ExtractedVoiceSignal,
       ManagerExample,
+      StoreConfig,
     ]),
+    NotificationsModule,
   ],
   controllers: [ScreenshotUploadController, ScreenshotReviewController],
-  providers: [ScreenshotExtractionService, ScreenshotApprovalService],
-  exports: [ScreenshotExtractionService, ScreenshotApprovalService],
+  providers: [
+    ScreenshotExtractionService,
+    ScreenshotApprovalService,
+    LearningObserverService,
+    LearningSchedulerService,
+  ],
+  exports: [ScreenshotExtractionService, ScreenshotApprovalService, LearningObserverService],
 })
 export class ScreenshotTrainingModule {}

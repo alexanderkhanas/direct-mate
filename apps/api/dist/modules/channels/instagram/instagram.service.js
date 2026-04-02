@@ -27,11 +27,13 @@ const crypto_service_1 = require("../../../common/crypto.service");
 const telegram_service_1 = require("../../notifications/telegram.service");
 const pending_message_entity_1 = require("./entities/pending-message.entity");
 const conversation_entity_1 = require("../../conversations/entities/conversation.entity");
+const store_config_entity_1 = require("../../engine/entities/store-config.entity");
+const learning_observer_service_1 = require("../../screenshot-training/learning-observer.service");
 const shared_1 = require("@direct-mate/shared");
 const retry_1 = require("../../../common/retry");
-const DEBOUNCE_MS = 500;
+const DEBOUNCE_MS = 10_000;
 let InstagramService = InstagramService_1 = class InstagramService {
-    constructor(config, conversationsService, replyEngineService, integrationsService, ordersService, cryptoService, telegramService, pendingMessageRepo, conversationRepo, dataSource) {
+    constructor(config, conversationsService, replyEngineService, integrationsService, ordersService, cryptoService, telegramService, pendingMessageRepo, conversationRepo, storeConfigRepo, learningObserver, dataSource) {
         this.config = config;
         this.conversationsService = conversationsService;
         this.replyEngineService = replyEngineService;
@@ -41,6 +43,8 @@ let InstagramService = InstagramService_1 = class InstagramService {
         this.telegramService = telegramService;
         this.pendingMessageRepo = pendingMessageRepo;
         this.conversationRepo = conversationRepo;
+        this.storeConfigRepo = storeConfigRepo;
+        this.learningObserver = learningObserver;
         this.dataSource = dataSource;
         this.logger = new common_1.Logger(InstagramService_1.name);
         this.recentSentMids = new Set();
@@ -274,8 +278,15 @@ let InstagramService = InstagramService_1 = class InstagramService {
             return;
         }
         const customer = await this.conversationsService.findOrCreateCustomer(connection.tenantId, 'instagram', externalUserId);
-        const { conversation } = await this.conversationsService.findOrCreateConversation(connection.tenantId, customer.id, 'instagram', channelAccountId);
+        const { conversation, state } = await this.conversationsService.findOrCreateConversation(connection.tenantId, customer.id, 'instagram', channelAccountId);
         await this.conversationsService.saveMessage(conversation.id, connection.tenantId, shared_1.MessageDirection.Inbound, shared_1.MessageRole.User, messageText, messageId);
+        if (messageText) {
+            const storeConfig = await this.storeConfigRepo.findOne({ where: { tenantId: connection.tenantId } });
+            if (storeConfig?.operatingMode === 'learning') {
+                this.learningObserver.recordCustomerMessage(conversation.id, messageText);
+                this.runLearningDryRun(connection.tenantId, conversation.id, messageText, state).catch((err) => this.logger.error(`Learning dry-run failed: ${err}`));
+            }
+        }
         const debounceKey = `${externalUserId}:${channelAccountId}`;
         const flushAt = new Date(Date.now() + DEBOUNCE_MS);
         await this.pendingMessageRepo
@@ -359,6 +370,10 @@ let InstagramService = InstagramService_1 = class InstagramService {
                 this.logger.log(`Skipping bot reply — conversation ${conversation.id} is human_in_control`);
                 return;
             }
+            const storeConfig = await this.storeConfigRepo.findOne({ where: { tenantId: params.tenantId } });
+            if (storeConfig?.operatingMode === 'learning') {
+                return;
+            }
             const recentMessages = (await this.conversationsService.findById(conversation.id)).messages
                 .slice(-10)
                 .map((m) => ({ role: m.role, text: m.text }));
@@ -440,6 +455,26 @@ let InstagramService = InstagramService_1 = class InstagramService {
             await this.dataSource.query(`SELECT pg_advisory_unlock($1)`, [lockKey]);
         }
     }
+    async runLearningDryRun(tenantId, conversationId, messageText, state) {
+        const recentMessages = (await this.conversationsService.findById(conversationId)).messages
+            .slice(-10)
+            .map((m) => ({ role: m.role, text: m.text }));
+        const dryRun = await this.replyEngineService.process({
+            tenantId,
+            conversationId,
+            messageText,
+            state,
+            recentMessages,
+        });
+        this.learningObserver.recordBotAnalysis(conversationId, {
+            classification: dryRun.classification
+                ? dryRun.classification
+                : null,
+            botReply: dryRun.reply?.text ?? (dryRun.handoff.required ? `[handoff: ${dryRun.handoff.reason}]` : null),
+            templateScenario: dryRun.templateScenario ?? (dryRun.handoff.required ? 'handoff' : null),
+        });
+        this.logger.log(`Learning dry-run complete for conversation ${conversationId}: template=${dryRun.templateScenario ?? 'none'}`);
+    }
     conversationLockKey(conversationId) {
         let hash = 0;
         for (let i = 0; i < conversationId.length; i++) {
@@ -460,7 +495,12 @@ let InstagramService = InstagramService_1 = class InstagramService {
         const conversation = await this.conversationsService.findConversationByCustomer(connection.tenantId, customer.id, 'instagram', channelAccountId);
         if (!conversation)
             return;
-        await this.conversationsService.saveMessage(conversation.id, connection.tenantId, shared_1.MessageDirection.Outbound, shared_1.MessageRole.Manager, messaging.message?.text ?? '', messaging.message?.mid);
+        const managerText = messaging.message?.text ?? '';
+        await this.conversationsService.saveMessage(conversation.id, connection.tenantId, shared_1.MessageDirection.Outbound, shared_1.MessageRole.Manager, managerText, messaging.message?.mid);
+        const storeConfig = await this.storeConfigRepo.findOne({ where: { tenantId: connection.tenantId } });
+        if (storeConfig?.operatingMode === 'learning' && managerText) {
+            await this.learningObserver.recordManagerReply(connection.tenantId, conversation.id, managerText);
+        }
         if (conversation.status !== shared_1.ConversationStatus.HumanInControl) {
             await this.conversationsService.takeover(conversation.id, null, 'auto_detected');
             this.logger.log(`Manager reply detected → conversation ${conversation.id} set to human_in_control`);
@@ -478,6 +518,7 @@ exports.InstagramService = InstagramService = InstagramService_1 = __decorate([
     (0, common_1.Injectable)(),
     __param(7, (0, typeorm_1.InjectRepository)(pending_message_entity_1.PendingMessage)),
     __param(8, (0, typeorm_1.InjectRepository)(conversation_entity_1.Conversation)),
+    __param(9, (0, typeorm_1.InjectRepository)(store_config_entity_1.StoreConfig)),
     __metadata("design:paramtypes", [config_1.ConfigService,
         conversations_service_1.ConversationsService,
         reply_engine_service_1.ReplyEngineService,
@@ -487,6 +528,8 @@ exports.InstagramService = InstagramService = InstagramService_1 = __decorate([
         telegram_service_1.TelegramService,
         typeorm_2.Repository,
         typeorm_2.Repository,
+        typeorm_2.Repository,
+        learning_observer_service_1.LearningObserverService,
         typeorm_2.DataSource])
 ], InstagramService);
 //# sourceMappingURL=instagram.service.js.map

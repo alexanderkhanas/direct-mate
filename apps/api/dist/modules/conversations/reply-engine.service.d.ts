@@ -6,7 +6,7 @@ import { ConversationState } from './entities/conversation-state.entity';
 import { StoreConfig } from '../engine/entities/store-config.entity';
 import { AvailabilityService } from '../availability/availability.service';
 import { AuditService } from '../audit/audit.service';
-import { ClassifierService } from '../engine/classifier.service';
+import { ClassifierService, ClassificationResult } from '../engine/classifier.service';
 import { TemplateEngineService } from '../engine/template-engine.service';
 import { PolicyEngineService } from '../engine/policy-engine.service';
 import { ReplyDecision } from '@direct-mate/shared';
@@ -39,6 +39,8 @@ export interface ReplyEngineOutput {
     };
     stateUpdate: Partial<ConversationState> | null;
     orderPayload?: OrderPayload;
+    classification?: ClassificationResult;
+    templateScenario?: string;
 }
 export declare class ReplyEngineService {
     private readonly settingsRepo;

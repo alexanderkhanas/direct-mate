@@ -9,6 +9,8 @@ import { CryptoService } from '../../../common/crypto.service';
 import { TelegramService } from '../../notifications/telegram.service';
 import { PendingMessage } from './entities/pending-message.entity';
 import { Conversation } from '../../conversations/entities/conversation.entity';
+import { StoreConfig } from '../../engine/entities/store-config.entity';
+import { LearningObserverService } from '../../screenshot-training/learning-observer.service';
 interface MetaMessagingEvent {
     sender?: {
         id: string;
@@ -58,11 +60,13 @@ export declare class InstagramService implements OnModuleInit, OnModuleDestroy {
     private readonly telegramService;
     private readonly pendingMessageRepo;
     private readonly conversationRepo;
+    private readonly storeConfigRepo;
+    private readonly learningObserver;
     private readonly dataSource;
     private readonly logger;
     private readonly recentSentMids;
     private pollInterval;
-    constructor(config: ConfigService, conversationsService: ConversationsService, replyEngineService: ReplyEngineService, integrationsService: IntegrationsService, ordersService: OrdersService, cryptoService: CryptoService, telegramService: TelegramService, pendingMessageRepo: Repository<PendingMessage>, conversationRepo: Repository<Conversation>, dataSource: DataSource);
+    constructor(config: ConfigService, conversationsService: ConversationsService, replyEngineService: ReplyEngineService, integrationsService: IntegrationsService, ordersService: OrdersService, cryptoService: CryptoService, telegramService: TelegramService, pendingMessageRepo: Repository<PendingMessage>, conversationRepo: Repository<Conversation>, storeConfigRepo: Repository<StoreConfig>, learningObserver: LearningObserverService, dataSource: DataSource);
     onModuleInit(): Promise<void>;
     onModuleDestroy(): void;
     private pollTasks;
@@ -78,6 +82,7 @@ export declare class InstagramService implements OnModuleInit, OnModuleDestroy {
     private handleIncomingMessage;
     private flushPending;
     private processInbound;
+    private runLearningDryRun;
     private conversationLockKey;
     private handleManagerReply;
     private setAutoResumeDeadline;

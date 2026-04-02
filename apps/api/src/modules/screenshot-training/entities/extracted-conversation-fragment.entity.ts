@@ -16,8 +16,8 @@ export class ExtractedConversationFragment {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
 
-  @Column({ type: 'uuid' })
-  fileId!: string;
+  @Column({ type: 'uuid', nullable: true })
+  fileId!: string | null;
 
   @Column({ type: 'uuid' })
   tenantId!: string;
@@ -33,6 +33,19 @@ export class ExtractedConversationFragment {
 
   @Column({ type: 'text', default: 'pending' })
   reviewStatus!: string;
+
+  @Column({ default: 'screenshot' })
+  source!: 'screenshot' | 'live_observation';
+
+  // Bot engine analysis (learning mode only)
+  @Column({ type: 'jsonb', nullable: true })
+  classificationJson!: Record<string, unknown> | null;
+
+  @Column({ type: 'text', nullable: true })
+  botReply!: string | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  templateScenario!: string | null;
 
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt!: Date;

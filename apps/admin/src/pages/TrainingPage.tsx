@@ -9,6 +9,8 @@ import {
   Sparkles,
   Clock,
   FileCheck,
+  Wand2,
+  Bot,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import {
@@ -411,6 +413,66 @@ function VoiceSignalRow({
   );
 }
 
+/* --- Bot Analysis Panel ------------------------------------------ */
+
+function BotAnalysisPanel({ fragment }: { fragment: ExtractedFragment }) {
+  const { t } = useT();
+  const cls = fragment.classificationJson;
+
+  const templateColor =
+    fragment.templateScenario === 'handoff'
+      ? 'text-amber-600 bg-amber-50 border-amber-200'
+      : fragment.templateScenario === 'ai_fallback'
+        ? 'text-purple-600 bg-purple-50 border-purple-200'
+        : fragment.templateScenario
+          ? 'text-blue-600 bg-blue-50 border-blue-200'
+          : 'text-gray-400 bg-gray-50 border-gray-200';
+
+  return (
+    <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-3 space-y-2">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-gray-500 uppercase tracking-wide">
+        <Bot className="h-3.5 w-3.5" />
+        {t('training_ext.bot_analysis')}
+      </div>
+
+      {cls && (
+        <div className="flex flex-wrap gap-1.5">
+          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-200">
+            {cls.primaryIntent}
+          </span>
+          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-200">
+            {cls.slotAction}
+          </span>
+          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-200">
+            {cls.sentiment}
+          </span>
+          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-500 border border-gray-200">
+            {Math.round(cls.confidence * 100)}%
+          </span>
+        </div>
+      )}
+
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-gray-400">{t('training_ext.bot_template')}:</span>
+        <span className={`px-2 py-0.5 rounded border text-xs font-medium ${templateColor}`}>
+          {fragment.templateScenario ?? t('training_ext.bot_no_template')}
+        </span>
+      </div>
+
+      {fragment.botReply && (
+        <div>
+          <p className="text-xs text-gray-400 mb-1">{t('training_ext.bot_would_reply')}:</p>
+          <div className="flex justify-start">
+            <div className="max-w-[90%] px-3 py-2 rounded-xl rounded-bl-sm text-sm bg-indigo-100 text-indigo-900 border border-indigo-200">
+              {fragment.botReply}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* --- Fragment Card ------------------------------------------------ */
 
 function FragmentCard({ fragment }: { fragment: ExtractedFragment }) {
@@ -430,6 +492,12 @@ function FragmentCard({ fragment }: { fragment: ExtractedFragment }) {
   const applyFragment = useMutation({
     mutationFn: () =>
       api.post(`/training/screenshots/review/fragments/${fragment.id}/apply`),
+    onSuccess: invalidateFragments,
+  });
+
+  const analyzeFragment = useMutation({
+    mutationFn: () =>
+      api.post(`/training/screenshots/review/fragments/${fragment.id}/analyze`),
     onSuccess: invalidateFragments,
   });
 
@@ -453,8 +521,11 @@ function FragmentCard({ fragment }: { fragment: ExtractedFragment }) {
             {fragment.scenarioSuggestion && (
               <Badge variant="default">{fragment.scenarioSuggestion}</Badge>
             )}
+            {fragment.source === 'live_observation' && (
+              <Badge variant="pending">{t('training_ext.source_live')}</Badge>
+            )}
             <span className="text-xs text-gray-400">
-              {t('training_ext.confidence')}: {Math.round(fragment.confidenceScore * 100)}%
+              {t('training_ext.confidence')}: {Math.round((fragment.confidenceScore ?? 0) * 100)}%
             </span>
             <Badge
               variant={
@@ -474,6 +545,11 @@ function FragmentCard({ fragment }: { fragment: ExtractedFragment }) {
             <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
               <ChatTranscript turns={fragment.transcriptJson} />
             </div>
+          )}
+
+          {/* Bot engine analysis (live observations only) */}
+          {fragment.source === 'live_observation' && (fragment.classificationJson || fragment.templateScenario) && (
+            <BotAnalysisPanel fragment={fragment} />
           )}
 
           {/* Phrases */}
@@ -501,6 +577,24 @@ function FragmentCard({ fragment }: { fragment: ExtractedFragment }) {
                   <VoiceSignalRow key={s.id} signal={s} onUpdate={invalidateFragments} />
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* Analyze button for unanalyzed live observation fragments */}
+          {fragment.source === 'live_observation' && !fragment.scenarioSuggestion && (
+            <div className="pt-1">
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => analyzeFragment.mutate()}
+                loading={analyzeFragment.isPending}
+              >
+                <Wand2 className="h-3.5 w-3.5" />
+                {t('training_ext.analyze')}
+              </Button>
+              {analyzeFragment.isError && (
+                <span className="text-xs text-red-500 ml-2">{t('training_ext.analyze_failed')}</span>
+              )}
             </div>
           )}
 
@@ -551,36 +645,65 @@ function FragmentCard({ fragment }: { fragment: ExtractedFragment }) {
 
 /* --- Review Tab -------------------------------------------------- */
 
+type SourceFilter = 'all' | 'screenshot' | 'live_observation';
+
 function ReviewTab() {
   const { t } = useT();
+  const [source, setSource] = useState<SourceFilter>('all');
+
   const { data: fragments, isLoading } = useQuery<ExtractedFragment[]>({
-    queryKey: ['training', 'fragments'],
-    queryFn: () =>
-      api.get('/training/screenshots/review/fragments', { params: { status: 'pending' } }).then((r) => r.data),
+    queryKey: ['training', 'fragments', source],
+    queryFn: () => {
+      const params: Record<string, string> = {};
+      if (source !== 'all') params.source = source;
+      return api.get('/training/screenshots/review/fragments', { params }).then((r) => r.data);
+    },
   });
 
-  if (isLoading) return <LoadingState message={t('training_ext.loading_fragments')} />;
-
-  if (!fragments || fragments.length === 0) {
-    return (
-      <Card>
-        <EmptyState
-          icon={Image}
-          title={t('training_ext.no_fragments')}
-          description={t('training_ext.upload_process_desc')}
-        />
-      </Card>
-    );
-  }
+  const sourceOptions: { value: SourceFilter; label: string }[] = [
+    { value: 'all', label: t('training_ext.source_all') },
+    { value: 'screenshot', label: t('training_ext.source_screenshot') },
+    { value: 'live_observation', label: t('training_ext.source_live') },
+  ];
 
   return (
     <div className="space-y-4">
-      <p className="text-xs text-gray-400">
-        {t('training_ext.fragments_pending', { count: fragments.length })}
-      </p>
-      {fragments.map((f) => (
-        <FragmentCard key={f.id} fragment={f} />
-      ))}
+      <div className="flex gap-2">
+        {sourceOptions.map((o) => (
+          <button
+            key={o.value}
+            onClick={() => setSource(o.value)}
+            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+              source === o.value
+                ? 'bg-amber-400 text-white'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+
+      {isLoading ? (
+        <LoadingState message={t('training_ext.loading_fragments')} />
+      ) : !fragments || fragments.length === 0 ? (
+        <Card>
+          <EmptyState
+            icon={Image}
+            title={t('training_ext.no_fragments')}
+            description={t('training_ext.upload_process_desc')}
+          />
+        </Card>
+      ) : (
+        <>
+          <p className="text-xs text-gray-400">
+            {t('training_ext.fragments_pending', { count: fragments.length })}
+          </p>
+          {fragments.map((f) => (
+            <FragmentCard key={f.id} fragment={f} />
+          ))}
+        </>
+      )}
     </div>
   );
 }

@@ -76,6 +76,16 @@ export class StoreConfigController {
       config.handoffConfig = body.handoffConfig as any;
     if (body.fallbackConfig !== undefined)
       config.fallbackConfig = body.fallbackConfig as any;
+    if (body.operatingMode !== undefined) {
+      config.operatingMode = body.operatingMode;
+      if (body.operatingMode === 'learning' && !config.learningStartedAt) {
+        config.learningStartedAt = new Date();
+        config.learningNotifiedAt = null;
+      } else if (body.operatingMode === 'active') {
+        config.learningStartedAt = null;
+        config.learningNotifiedAt = null;
+      }
+    }
     return this.configRepo.save(config);
   }
 

@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
@@ -370,6 +370,122 @@ export class ScreenshotExtractionService {
       this.logger.error('Fragment grouping failed, fragments will remain ungrouped', err);
       // Non-fatal — fragments are still usable individually
     }
+  }
+
+  /**
+   * Run GPT text-only extraction on a live observation fragment that has no phrases/signals yet.
+   * Called on-demand from the review UI.
+   */
+  async analyzeFragment(fragmentId: string, tenantId: string): Promise<{ success: boolean }> {
+    const fragment = await this.fragmentRepo.findOne({
+      where: { id: fragmentId, tenantId },
+    });
+    if (!fragment) {
+      throw new NotFoundException('Fragment not found');
+    }
+
+    const transcript = (fragment.transcriptJson as TranscriptTurn[]) || [];
+    if (transcript.length === 0) {
+      return { success: false };
+    }
+
+    const transcriptText = transcript
+      .map((t) => `${t.speaker === 'manager' ? 'Manager' : 'Customer'}: ${t.text}`)
+      .join('\n');
+
+    const response = await this.openai.chat.completions.create({
+      model: this.model,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You are an expert at analyzing customer-manager chat conversations. ' +
+            'Extract good phrases, phrases to avoid, classify the scenario, and detect voice/tone signals. ' +
+            'Call the save_extraction function with your results.',
+        },
+        {
+          role: 'user',
+          content: `Analyze this customer-manager conversation and extract training data:\n\n${transcriptText}`,
+        },
+      ],
+      tools: EXTRACTION_TOOLS,
+      tool_choice: { type: 'function', function: { name: 'save_extraction' } },
+      max_completion_tokens: 4096,
+    } as any);
+
+    const toolCall = response.choices[0]?.message?.tool_calls?.[0];
+    if (!toolCall || toolCall.type !== 'function') {
+      this.logger.warn(`No extraction result from AI for fragment ${fragmentId}`);
+      return { success: false };
+    }
+
+    let extraction: ExtractionResult;
+    try {
+      extraction = JSON.parse((toolCall as any).function.arguments);
+    } catch (err) {
+      this.logger.error(`Failed to parse extraction JSON for fragment ${fragmentId}`, (err as Error).message);
+      return { success: false };
+    }
+
+    // Update fragment with scenario/confidence
+    await this.fragmentRepo.update(fragmentId, {
+      scenarioSuggestion: extraction.scenario,
+      confidenceScore: extraction.confidence,
+    });
+
+    // Save phrases
+    const phraseEntities: ExtractedPhrase[] = [];
+    for (const gp of extraction.good_phrases) {
+      phraseEntities.push(
+        this.phraseRepo.create({
+          tenantId,
+          fragmentId,
+          phrase: gp.phrase,
+          phraseType: 'good',
+          scenario: gp.scenario,
+          confidenceScore: extraction.confidence,
+          approvalStatus: 'pending',
+        }),
+      );
+    }
+    for (const ap of extraction.avoid_phrases) {
+      phraseEntities.push(
+        this.phraseRepo.create({
+          tenantId,
+          fragmentId,
+          phrase: ap.phrase,
+          phraseType: 'avoid',
+          scenario: ap.reason,
+          confidenceScore: extraction.confidence,
+          approvalStatus: 'pending',
+        }),
+      );
+    }
+    if (phraseEntities.length > 0) {
+      await this.phraseRepo.save(phraseEntities);
+    }
+
+    // Save voice signals
+    const signalEntities: ExtractedVoiceSignal[] = [];
+    for (const vs of extraction.voice_signals) {
+      signalEntities.push(
+        this.voiceSignalRepo.create({
+          tenantId,
+          fragmentId,
+          signalType: vs.type,
+          signalValue: vs.value,
+          evidenceText: vs.evidence,
+          confidenceScore: extraction.confidence,
+          approvalStatus: 'pending',
+        }),
+      );
+    }
+    if (signalEntities.length > 0) {
+      await this.voiceSignalRepo.save(signalEntities);
+    }
+
+    this.logger.log(`analyzeFragment: extracted ${phraseEntities.length} phrases, ${signalEntities.length} signals for fragment ${fragmentId}`);
+    return { success: true };
   }
 
   private async processFile(file: ScreenshotImportFile): Promise<void> {

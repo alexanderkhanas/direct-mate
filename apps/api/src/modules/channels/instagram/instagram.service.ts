@@ -12,6 +12,9 @@ import { TelegramService } from '../../notifications/telegram.service';
 import { Connection } from '../../integrations/entities/connection.entity';
 import { PendingMessage } from './entities/pending-message.entity';
 import { Conversation } from '../../conversations/entities/conversation.entity';
+import { ConversationState } from '../../conversations/entities/conversation-state.entity';
+import { StoreConfig } from '../../engine/entities/store-config.entity';
+import { LearningObserverService } from '../../screenshot-training/learning-observer.service';
 import { ConnectionType, ConversationStatus, MessageDirection, MessageRole, ReplyDecision } from '@direct-mate/shared';
 import { withRetry } from '../../../common/retry';
 
@@ -66,6 +69,9 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
     private readonly pendingMessageRepo: Repository<PendingMessage>,
     @InjectRepository(Conversation)
     private readonly conversationRepo: Repository<Conversation>,
+    @InjectRepository(StoreConfig)
+    private readonly storeConfigRepo: Repository<StoreConfig>,
+    private readonly learningObserver: LearningObserverService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -388,7 +394,7 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
       externalUserId,
     );
 
-    const { conversation } = await this.conversationsService.findOrCreateConversation(
+    const { conversation, state } = await this.conversationsService.findOrCreateConversation(
       connection.tenantId,
       customer.id,
       'instagram',
@@ -403,6 +409,19 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
       messageText,
       messageId,
     );
+
+    // Learning mode: record customer message immediately (before debounce)
+    // so it's in the Map when manager echo arrives (echo has no debounce).
+    // Also fire off engine dry-run immediately so bot analysis is ready before manager replies.
+    if (messageText) {
+      const storeConfig = await this.storeConfigRepo.findOne({ where: { tenantId: connection.tenantId } });
+      if (storeConfig?.operatingMode === 'learning') {
+        this.learningObserver.recordCustomerMessage(conversation.id, messageText);
+        this.runLearningDryRun(connection.tenantId, conversation.id, messageText, state).catch(
+          (err: unknown) => this.logger.error(`Learning dry-run failed: ${err}`),
+        );
+      }
+    }
 
     // Debounce: save to DB, flush when timer expires (polled every 2s)
     const debounceKey = `${externalUserId}:${channelAccountId}`;
@@ -528,6 +547,12 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
       // Skip bot processing when manager is in control
       if (currentConv?.status === ConversationStatus.HumanInControl) {
         this.logger.log(`Skipping bot reply — conversation ${conversation.id} is human_in_control`);
+        return;
+      }
+
+      // Learning mode: dry-run already fired in handleIncomingMessage — just skip reply
+      const storeConfig = await this.storeConfigRepo.findOne({ where: { tenantId: params.tenantId } });
+      if (storeConfig?.operatingMode === 'learning') {
         return;
       }
 
@@ -658,6 +683,35 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async runLearningDryRun(
+    tenantId: string,
+    conversationId: string,
+    messageText: string,
+    state: ConversationState,
+  ): Promise<void> {
+    const recentMessages = (await this.conversationsService.findById(conversationId)).messages
+      .slice(-10)
+      .map((m) => ({ role: m.role, text: m.text }));
+
+    const dryRun = await this.replyEngineService.process({
+      tenantId,
+      conversationId,
+      messageText,
+      state,
+      recentMessages,
+    });
+
+    this.learningObserver.recordBotAnalysis(conversationId, {
+      classification: dryRun.classification
+        ? (dryRun.classification as unknown as Record<string, unknown>)
+        : null,
+      botReply: dryRun.reply?.text ?? (dryRun.handoff.required ? `[handoff: ${dryRun.handoff.reason}]` : null),
+      templateScenario: dryRun.templateScenario ?? (dryRun.handoff.required ? 'handoff' : null),
+    });
+
+    this.logger.log(`Learning dry-run complete for conversation ${conversationId}: template=${dryRun.templateScenario ?? 'none'}`);
+  }
+
   private conversationLockKey(conversationId: string): number {
     // Hash UUID to a 32-bit integer for pg_advisory_lock
     let hash = 0;
@@ -688,12 +742,20 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
     );
     if (!conversation) return;
 
+    const managerText = messaging.message?.text ?? '';
+
     // Save manager's message
     await this.conversationsService.saveMessage(
       conversation.id, connection.tenantId,
       MessageDirection.Outbound, MessageRole.Manager,
-      messaging.message?.text ?? '', messaging.message?.mid,
+      managerText, messaging.message?.mid,
     );
+
+    // Learning mode: record manager reply paired with the last customer message
+    const storeConfig = await this.storeConfigRepo.findOne({ where: { tenantId: connection.tenantId } });
+    if (storeConfig?.operatingMode === 'learning' && managerText) {
+      await this.learningObserver.recordManagerReply(connection.tenantId, conversation.id, managerText);
+    }
 
     // Set conversation to human_in_control (manager already took over, no handoff needed)
     if (conversation.status !== ConversationStatus.HumanInControl) {

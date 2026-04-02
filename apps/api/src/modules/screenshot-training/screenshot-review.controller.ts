@@ -21,6 +21,7 @@ import { UpdateFragmentReviewDto } from './dto/update-fragment-review.dto';
 import { UpdatePhraseDto } from './dto/update-phrase.dto';
 import { UpdateVoiceSignalDto } from './dto/update-voice-signal.dto';
 import { ScreenshotApprovalService } from './screenshot-approval.service';
+import { ScreenshotExtractionService } from './screenshot-extraction.service';
 
 @ApiTags('training')
 @UseGuards(JwtAuthGuard)
@@ -35,12 +36,14 @@ export class ScreenshotReviewController {
     @InjectRepository(ExtractedVoiceSignal)
     private readonly voiceSignalRepo: Repository<ExtractedVoiceSignal>,
     private readonly approvalService: ScreenshotApprovalService,
+    private readonly extractionService: ScreenshotExtractionService,
   ) {}
 
   @Get('fragments')
   async listFragments(
     @CurrentUser() user: JwtPayload,
     @Query('status') status?: string,
+    @Query('source') source?: string,
   ) {
     const qb = this.fragmentRepo
       .createQueryBuilder('f')
@@ -53,6 +56,9 @@ export class ScreenshotReviewController {
 
     if (status) {
       qb.andWhere('f.review_status = :status', { status });
+    }
+    if (source) {
+      qb.andWhere('f.source = :source', { source });
     }
 
     return qb.getMany();
@@ -142,5 +148,13 @@ export class ScreenshotReviewController {
     @Param('id') id: string,
   ) {
     return this.approvalService.applyFragment(id, user.tenantId);
+  }
+
+  @Post('fragments/:id/analyze')
+  async analyzeFragment(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+  ) {
+    return this.extractionService.analyzeFragment(id, user.tenantId);
   }
 }

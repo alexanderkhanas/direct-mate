@@ -19,14 +19,17 @@ const notifications_module_1 = require("../notifications/notifications.module");
 const instagram_content_module_1 = require("./instagram/instagram-content.module");
 const pending_message_entity_1 = require("./instagram/entities/pending-message.entity");
 const conversation_entity_1 = require("../conversations/entities/conversation.entity");
+const store_config_entity_1 = require("../engine/entities/store-config.entity");
+const screenshot_training_module_1 = require("../screenshot-training/screenshot-training.module");
 let ChannelsModule = class ChannelsModule {
 };
 exports.ChannelsModule = ChannelsModule;
 exports.ChannelsModule = ChannelsModule = __decorate([
     (0, common_1.Module)({
         imports: [
-            typeorm_1.TypeOrmModule.forFeature([pending_message_entity_1.PendingMessage, conversation_entity_1.Conversation]),
-            conversations_module_1.ConversationsModule, integrations_module_1.IntegrationsModule, orders_module_1.OrdersModule, notifications_module_1.NotificationsModule, instagram_content_module_1.InstagramContentModule,
+            typeorm_1.TypeOrmModule.forFeature([pending_message_entity_1.PendingMessage, conversation_entity_1.Conversation, store_config_entity_1.StoreConfig]),
+            conversations_module_1.ConversationsModule, integrations_module_1.IntegrationsModule, orders_module_1.OrdersModule, notifications_module_1.NotificationsModule,
+            instagram_content_module_1.InstagramContentModule, screenshot_training_module_1.ScreenshotTrainingModule,
         ],
         controllers: [instagram_controller_1.InstagramController],
         providers: [instagram_service_1.InstagramService, crypto_service_1.CryptoService],

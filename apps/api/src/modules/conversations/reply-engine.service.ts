@@ -47,6 +47,9 @@ export interface ReplyEngineOutput {
   handoff: { required: boolean; reason: string | null };
   stateUpdate: Partial<ConversationState> | null;
   orderPayload?: OrderPayload;
+  // Populated in learning mode — what the engine would have done
+  classification?: ClassificationResult;
+  templateScenario?: string;
 }
 
 const LOG_FILE = path.join(process.cwd(), 'conversations.log');
@@ -1091,6 +1094,8 @@ export class ReplyEngineService {
       reply: { text: finalReply, sendNow: true, imageUrls: templateResult?.imageUrls },
       handoff: { required: false, reason: null },
       stateUpdate,
+      classification,
+      templateScenario: templateResult?.scenario ?? 'ai_fallback',
     };
   }
 

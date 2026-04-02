@@ -164,12 +164,27 @@ export interface TranscriptTurn {
   text: string;
 }
 
+export interface FragmentClassification {
+  primaryIntent: string;
+  slotAction: string;
+  recommendedAction: string;
+  conversationStage: string;
+  sentiment: string;
+  confidence: number;
+  entities: Record<string, unknown>;
+}
+
 export interface ExtractedFragment {
   id: string;
   transcriptJson: TranscriptTurn[];
   scenarioSuggestion: string | null;
   confidenceScore: number;
   reviewStatus: string;
+  source: 'screenshot' | 'live_observation';
+  // Bot engine analysis (live_observation only)
+  classificationJson: FragmentClassification | null;
+  botReply: string | null;
+  templateScenario: string | null;
   createdAt: string;
   file?: ScreenshotImportFile;
   phrases?: ExtractedPhrase[];

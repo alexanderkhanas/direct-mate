@@ -705,6 +705,11 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             this.logger.log(`Template selected: ${templateResult.templateId}`);
         }
         else {
+            if (classification.primaryIntent === 'general_question' ||
+                classification.recommendedAction === 'answer_faq') {
+                this.logger.log('general_question with no template → handoff');
+                return this.doHandoff(input, 'Клієнт поставив питання, на яке бот не знає відповіді');
+            }
             const productIntents = ['product_inquiry', 'ready_to_order', 'availability_check', 'category_browse', 'ask_price'];
             if (productIntents.includes(classification.primaryIntent) && (!productData || productData.length === 0)) {
                 this.logger.log('No template + no products found for product intent → handoff');
@@ -844,6 +849,8 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             reply: { text: finalReply, sendNow: true, imageUrls: templateResult?.imageUrls },
             handoff: { required: false, reason: null },
             stateUpdate,
+            classification,
+            templateScenario: templateResult?.scenario ?? 'ai_fallback',
         };
     }
     scenarioToAction(scenario) {
