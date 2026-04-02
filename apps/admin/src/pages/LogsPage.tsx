@@ -9,8 +9,10 @@ import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
 import { LoadingState } from '../components/ui/Spinner';
 import { EmptyState } from '../components/ui/EmptyState';
+import { useT } from '../i18n';
 
 export default function LogsPage() {
+  const { t } = useT();
   const [conversationId, setConversationId] = useState('');
   const [submitted, setSubmitted] = useState('');
 
@@ -26,8 +28,8 @@ export default function LogsPage() {
   return (
     <div className="space-y-6 max-w-3xl">
       <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Audit Logs</h1>
-        <p className="text-sm text-gray-500 mt-1">View logs by conversation ID</p>
+        <h1 className="text-2xl font-semibold text-gray-900">{t('logs.audit_logs')}</h1>
+        <p className="text-sm text-gray-500 mt-1">{t('logs.view_by_conversation')}</p>
       </div>
 
       <div className="flex gap-2">
@@ -35,11 +37,11 @@ export default function LogsPage() {
           value={conversationId}
           onChange={(e) => setConversationId(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && setSubmitted(conversationId)}
-          placeholder="Paste conversation ID…"
+          placeholder={t('logs.paste_conversation_id')}
           className="flex-1"
         />
         <Button onClick={() => setSubmitted(conversationId)} disabled={!conversationId}>
-          Load logs
+          {t('logs.load_logs')}
         </Button>
       </div>
 
@@ -48,7 +50,7 @@ export default function LogsPage() {
       {data && (
         <Card padding={false}>
           {data.items.length === 0 ? (
-            <EmptyState icon={ScrollText} title="No logs" description="No audit events for this conversation" />
+            <EmptyState icon={ScrollText} title={t('logs.no_logs')} description={t('logs.no_events')} />
           ) : (
             <div className="divide-y divide-gray-100">
               {data.items.map((log) => (

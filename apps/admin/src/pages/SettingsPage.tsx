@@ -8,8 +8,10 @@ import { Button } from '../components/ui/Button';
 import { Textarea } from '../components/ui/Textarea';
 import { Input } from '../components/ui/Input';
 import { LoadingState } from '../components/ui/Spinner';
+import { useT } from '../i18n';
 
 function BrandToneSection({ settings }: { settings: TenantSettings }) {
+  const { t } = useT();
   const qc = useQueryClient();
   const [brandTone, setBrandTone] = useState(settings.brandTonePrompt ?? '');
 
@@ -24,24 +26,25 @@ function BrandToneSection({ settings }: { settings: TenantSettings }) {
 
   return (
     <Card>
-      <h2 className="text-sm font-semibold text-gray-900 mb-4">Brand tone</h2>
+      <h2 className="text-sm font-semibold text-gray-900 mb-4">{t('settings.brand_tone')}</h2>
       <Textarea
         value={brandTone}
         onChange={(e) => setBrandTone(e.target.value)}
         rows={4}
-        placeholder="e.g. Warm, concise, friendly manager. Never invent facts about stock or pricing."
+        placeholder={t('settings_ext.brand_tone_placeholder')}
       />
       <div className="flex items-center gap-3 mt-3">
         <Button onClick={() => save.mutate()} loading={save.isPending} size="sm">
-          Save
+          {t('common.save')}
         </Button>
-        {save.isSuccess && <span className="text-xs text-emerald-600">Saved</span>}
+        {save.isSuccess && <span className="text-xs text-emerald-600">{t('settings.saved')}</span>}
       </div>
     </Card>
   );
 }
 
 function HandoffRulesSection({ settings }: { settings: TenantSettings }) {
+  const { t } = useT();
   const qc = useQueryClient();
   const [maxFailed, setMaxFailed] = useState(
     settings.handoffRules?.maxFailedTurns ?? 2,
@@ -67,10 +70,10 @@ function HandoffRulesSection({ settings }: { settings: TenantSettings }) {
 
   return (
     <Card>
-      <h2 className="text-sm font-semibold text-gray-900 mb-4">Handoff rules</h2>
+      <h2 className="text-sm font-semibold text-gray-900 mb-4">{t('settings.handoff_rules')}</h2>
       <div className="space-y-4">
         <Input
-          label="Max failed turns before handoff"
+          label={t('settings_ext.max_failed_turns')}
           type="number"
           min={1}
           max={10}
@@ -79,7 +82,7 @@ function HandoffRulesSection({ settings }: { settings: TenantSettings }) {
           className="max-w-xs"
         />
         <Input
-          label="Stock freshness (minutes)"
+          label={t('settings_ext.stock_freshness')}
           type="number"
           min={1}
           value={freshness}
@@ -93,20 +96,21 @@ function HandoffRulesSection({ settings }: { settings: TenantSettings }) {
             onChange={(e) => setSentiment(e.target.checked)}
             className="h-4 w-4 rounded border-gray-300 text-gray-900 focus:ring-gray-900"
           />
-          <span className="text-sm text-gray-700">Escalate on negative sentiment</span>
+          <span className="text-sm text-gray-700">{t('settings_ext.escalate_negative')}</span>
         </label>
       </div>
       <div className="flex items-center gap-3 mt-4">
         <Button onClick={() => save.mutate()} loading={save.isPending} size="sm">
-          Save
+          {t('common.save')}
         </Button>
-        {save.isSuccess && <span className="text-xs text-emerald-600">Saved</span>}
+        {save.isSuccess && <span className="text-xs text-emerald-600">{t('settings.saved')}</span>}
       </div>
     </Card>
   );
 }
 
 function FlowConfigSection() {
+  const { t } = useT();
   const qc = useQueryClient();
 
   const { data: config } = useQuery<any>({
@@ -149,15 +153,15 @@ function FlowConfigSection() {
   });
 
   const FIELD_OPTIONS = [
-    { value: 'height', label: 'Height' },
-    { value: 'weight', label: 'Weight' },
-    { value: 'skin_type', label: 'Skin type' },
-    { value: 'age', label: 'Age' },
+    { value: 'height', label: t('settings_ext.field_height') },
+    { value: 'weight', label: t('settings_ext.field_weight') },
+    { value: 'skin_type', label: t('settings_ext.field_skin_type') },
+    { value: 'age', label: t('settings_ext.field_age') },
   ];
 
   return (
     <Card>
-      <h2 className="text-sm font-semibold text-gray-900 mb-4">Conversation flow</h2>
+      <h2 className="text-sm font-semibold text-gray-900 mb-4">{t('settings_ext.conversation_flow')}</h2>
       <div className="space-y-5">
         {/* Pre-qualification */}
         <div>
@@ -168,19 +172,19 @@ function FlowConfigSection() {
               onChange={e => setPreQualifyEnabled(e.target.checked)}
               className="h-4 w-4 rounded border-gray-300 text-gray-900 focus:ring-gray-900"
             />
-            <span className="text-sm text-gray-700">Ask customer info before showing products</span>
+            <span className="text-sm text-gray-700">{t('settings_ext.ask_customer_info')}</span>
           </label>
 
           {preQualifyEnabled && (
             <div className="mt-3 ml-6 space-y-3">
               <Input
-                label="Pre-qualify prompt"
+                label={t('settings_ext.pre_qualify_prompt')}
                 value={preQualifyPrompt}
                 onChange={e => setPreQualifyPrompt(e.target.value)}
-                placeholder="Підкажіть ваш зріст та вагу, щоб підібрати розмір 💛"
+                placeholder="\u041f\u0456\u0434\u043a\u0430\u0436\u0456\u0442\u044c \u0432\u0430\u0448 \u0437\u0440\u0456\u0441\u0442 \u0442\u0430 \u0432\u0430\u0433\u0443, \u0449\u043e\u0431 \u043f\u0456\u0434\u0456\u0431\u0440\u0430\u0442\u0438 \u0440\u043e\u0437\u043c\u0456\u0440 \ud83d\udc9b"
               />
               <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1.5">Fields to collect</label>
+                <label className="block text-xs font-medium text-gray-600 mb-1.5">{t('settings_ext.fields_to_collect')}</label>
                 <div className="flex flex-wrap gap-2">
                   {FIELD_OPTIONS.map(f => (
                     <label key={f.value} className="flex items-center gap-1.5 cursor-pointer">
@@ -204,30 +208,31 @@ function FlowConfigSection() {
 
         {/* Variant selection mode */}
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1.5">Variant selection mode</label>
+          <label className="block text-xs font-medium text-gray-600 mb-1.5">{t('settings_ext.variant_selection_mode')}</label>
           <select
             value={variantMode}
             onChange={e => setVariantMode(e.target.value)}
             className="px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 max-w-xs"
           >
-            <option value="single">Single step (ask all at once)</option>
-            <option value="two_step">Color then size (two steps)</option>
+            <option value="single">{t('settings_ext.single_step')}</option>
+            <option value="two_step">{t('settings_ext.two_step')}</option>
           </select>
-          <p className="text-xs text-gray-400 mt-1">For products with both color and size options</p>
+          <p className="text-xs text-gray-400 mt-1">{t('settings_ext.color_size_desc')}</p>
         </div>
       </div>
 
       <div className="flex items-center gap-3 mt-4">
         <Button onClick={() => save.mutate()} loading={save.isPending} size="sm">
-          Save
+          {t('common.save')}
         </Button>
-        {save.isSuccess && <span className="text-xs text-emerald-600">Saved</span>}
+        {save.isSuccess && <span className="text-xs text-emerald-600">{t('settings.saved')}</span>}
       </div>
     </Card>
   );
 }
 
 function ExamplesSection() {
+  const { t } = useT();
   const qc = useQueryClient();
   const [showForm, setShowForm] = useState(false);
   const [customer, setCustomer] = useState('');
@@ -257,32 +262,32 @@ function ExamplesSection() {
   return (
     <Card>
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-sm font-semibold text-gray-900">Manager examples</h2>
+        <h2 className="text-sm font-semibold text-gray-900">{t('settings.manager_examples')}</h2>
         <Button
           variant="secondary"
           size="sm"
           onClick={() => setShowForm((v) => !v)}
         >
           <Plus className="h-3.5 w-3.5" />
-          Add example
+          {t('settings_ext.add_example')}
         </Button>
       </div>
 
       {showForm && (
         <div className="mb-4 p-4 bg-gray-50 rounded-lg space-y-3 border border-gray-200">
           <Textarea
-            label="Customer message"
+            label={t('settings_ext.customer_message')}
             rows={2}
             value={customer}
             onChange={(e) => setCustomer(e.target.value)}
-            placeholder="What the customer asks…"
+            placeholder={t('settings_ext.customer_asks_placeholder')}
           />
           <Textarea
-            label="Manager reply"
+            label={t('settings_ext.manager_reply')}
             rows={2}
             value={manager}
             onChange={(e) => setManager(e.target.value)}
-            placeholder="How the manager responds…"
+            placeholder={t('settings_ext.manager_responds_placeholder')}
           />
           <div className="flex gap-2">
             <Button
@@ -291,17 +296,17 @@ function ExamplesSection() {
               loading={add.isPending}
               disabled={!customer || !manager}
             >
-              Add
+              {t('common.add')}
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setShowForm(false)}>
-              Cancel
+              {t('common.cancel')}
             </Button>
           </div>
         </div>
       )}
 
       {isLoading ? (
-        <LoadingState message="Loading examples…" />
+        <LoadingState message={t('settings_ext.loading_examples')} />
       ) : (
         <div className="space-y-3">
           {data?.map((ex) => (
@@ -311,11 +316,11 @@ function ExamplesSection() {
             >
               <div className="flex-1 space-y-1.5">
                 <div>
-                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">Customer</p>
+                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">{t('settings_ext.customer_message')}</p>
                   <p className="text-sm text-gray-700">{ex.customerMessage}</p>
                 </div>
                 <div>
-                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">Manager</p>
+                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">{t('settings_ext.manager_reply')}</p>
                   <p className="text-sm text-gray-700">{ex.managerReply}</p>
                 </div>
               </div>
@@ -329,7 +334,7 @@ function ExamplesSection() {
           ))}
           {data?.length === 0 && (
             <p className="text-sm text-gray-400 text-center py-6">
-              No examples yet — add some to improve AI responses
+              {t('settings_ext.no_examples')}
             </p>
           )}
         </div>
@@ -339,6 +344,7 @@ function ExamplesSection() {
 }
 
 export default function SettingsPage() {
+  const { t } = useT();
   const { data, isLoading } = useQuery<TenantSettings>({
     queryKey: ['settings'],
     queryFn: () => api.get('/settings').then((r) => r.data),
@@ -350,8 +356,8 @@ export default function SettingsPage() {
   return (
     <div className="space-y-6 max-w-2xl">
       <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Settings</h1>
-        <p className="text-sm text-gray-500 mt-1">Configure AI behavior and handoff rules</p>
+        <h1 className="text-2xl font-semibold text-gray-900">{t('settings.title')}</h1>
+        <p className="text-sm text-gray-500 mt-1">{t('settings_ext.configure_subtitle')}</p>
       </div>
       <BrandToneSection settings={data} />
       <FlowConfigSection />

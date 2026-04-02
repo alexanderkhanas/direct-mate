@@ -28,8 +28,9 @@ import { Textarea } from '../components/ui/Textarea';
 import { Select } from '../components/ui/Select';
 import { LoadingState } from '../components/ui/Spinner';
 import { cn } from '../lib/cn';
+import { useT } from '../i18n';
 
-// ─── Helpers ──────────────────────────────────────────────────────
+// --- Helpers -----------------------------------------------------
 
 function timeAgo(dateStr: string): string {
   const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
@@ -48,18 +49,19 @@ function formatDuration(ms: number | null): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-// ─── Status badges ────────────────────────────────────────────────
+// --- Status badges -----------------------------------------------
 
 function RunStatusBadge({ status }: { status: TestRun['status'] }) {
+  const { t } = useT();
   if (status === 'running')
     return (
       <Badge variant="pending" className="gap-1">
         <Loader2 className="h-3 w-3 animate-spin" />
-        Running
+        {t('testing.status_running')}
       </Badge>
     );
-  if (status === 'completed') return <Badge variant="success">Completed</Badge>;
-  return <Badge variant="error">Failed</Badge>;
+  if (status === 'completed') return <Badge variant="success">{t('testing.status_completed')}</Badge>;
+  return <Badge variant="error">{t('testing.status_failed')}</Badge>;
 }
 
 function ScenarioStatusIcon({ status }: { status: TestRunScenario['status'] }) {
@@ -74,12 +76,13 @@ function ReviewStatusBadge({
 }: {
   status: TestRunScenario['reviewStatus'];
 }) {
-  if (status === 'approved') return <Badge variant="success">Approved</Badge>;
-  if (status === 'needs_fix') return <Badge variant="error">Needs Fix</Badge>;
-  return <Badge variant="default">Pending</Badge>;
+  const { t } = useT();
+  if (status === 'approved') return <Badge variant="success">{t('testing_ext.approved')}</Badge>;
+  if (status === 'needs_fix') return <Badge variant="error">{t('testing_ext.needs_fix')}</Badge>;
+  return <Badge variant="default">{t('testing_ext.pending')}</Badge>;
 }
 
-// ─── Assertion badge ──────────────────────────────────────────────
+// --- Assertion badge ---------------------------------------------
 
 function AssertionBadge({ assertion }: { assertion: TestAssertion }) {
   if (assertion.passed) {
@@ -106,7 +109,7 @@ function formatAssertionValue(val: unknown): string {
   return String(val);
 }
 
-// ─── Memory display ───────────────────────────────────────────────
+// --- Memory display ----------------------------------------------
 
 function MemoryPanel({ memory }: { memory: Record<string, unknown> }) {
   const [expanded, setExpanded] = useState(false);
@@ -145,7 +148,7 @@ function MemoryPanel({ memory }: { memory: Record<string, unknown> }) {
   );
 }
 
-// ─── Conversation step view ───────────────────────────────────────
+// --- Conversation step view --------------------------------------
 
 function StepView({ step }: { step: TestStep }) {
   return (
@@ -221,7 +224,7 @@ function StepView({ step }: { step: TestStep }) {
   );
 }
 
-// ─── Scenario card ────────────────────────────────────────────────
+// --- Scenario card -----------------------------------------------
 
 function ScenarioCard({
   scenario,
@@ -230,6 +233,7 @@ function ScenarioCard({
   scenario: TestRunScenario;
   runId: string;
 }) {
+  const { t } = useT();
   const qc = useQueryClient();
   const [expanded, setExpanded] = useState(false);
   const [reviewStatus, setReviewStatus] = useState(scenario.reviewStatus);
@@ -272,7 +276,7 @@ function ScenarioCard({
           {scenario.scenarioName}
         </span>
         <span className="text-xs text-gray-400 shrink-0">
-          {stepsPassed}/{stepsTotal} steps
+          {stepsPassed}/{stepsTotal} {t('testing_ext.steps')}
         </span>
         {scenario.durationMs && (
           <span className="text-xs text-gray-400 shrink-0">
@@ -302,7 +306,7 @@ function ScenarioCard({
           <div className="p-4 bg-gray-50 border-t border-gray-100 space-y-3">
             <div className="flex items-center gap-3">
               <Select
-                label="Review Status"
+                label={t('testing_ext.review_status_label')}
                 value={reviewStatus}
                 onChange={(e) =>
                   setReviewStatus(
@@ -311,17 +315,17 @@ function ScenarioCard({
                 }
                 className="max-w-xs"
               >
-                <option value="pending">Pending</option>
-                <option value="approved">Approved</option>
-                <option value="needs_fix">Needs Fix</option>
+                <option value="pending">{t('testing_ext.pending')}</option>
+                <option value="approved">{t('testing_ext.approved')}</option>
+                <option value="needs_fix">{t('testing_ext.needs_fix')}</option>
               </Select>
             </div>
             <Textarea
-              label="Comment"
+              label={t('testing_ext.comment')}
               rows={2}
               value={reviewComment}
               onChange={(e) => setReviewComment(e.target.value)}
-              placeholder="Optional review notes..."
+              placeholder={t('testing_ext.comment_placeholder')}
             />
             <Button
               size="sm"
@@ -329,7 +333,7 @@ function ScenarioCard({
               loading={updateReview.isPending}
             >
               <Save className="h-3.5 w-3.5" />
-              Save Review
+              {t('testing_ext.save_review')}
             </Button>
           </div>
         </div>
@@ -338,9 +342,10 @@ function ScenarioCard({
   );
 }
 
-// ─── Run card ─────────────────────────────────────────────────────
+// --- Run card ----------------------------------------------------
 
 function RunCard({ run }: { run: TestRun }) {
+  const { t } = useT();
   const [expanded, setExpanded] = useState(false);
 
   const { data: fullRun, isLoading } = useQuery<TestRun>({
@@ -371,11 +376,11 @@ function RunCard({ run }: { run: TestRun }) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-gray-900">
-              {passRate} passed
+              {passRate} {t('testing_ext.passed')}
             </span>
             {run.failedScenarios > 0 && (
               <span className="text-sm text-red-600">
-                {run.failedScenarios} failed
+                {run.failedScenarios} {t('testing_ext.failed')}
               </span>
             )}
           </div>
@@ -389,7 +394,7 @@ function RunCard({ run }: { run: TestRun }) {
       {/* Expanded scenarios */}
       {expanded && (
         <div className="border-t border-gray-100 p-4 space-y-2 bg-gray-50/50">
-          {isLoading && <LoadingState message="Loading scenarios..." />}
+          {isLoading && <LoadingState message={t('testing_ext.loading_scenarios')} />}
           {fullRun?.scenarios
             ?.sort((a, b) => a.scenarioFile.localeCompare(b.scenarioFile))
             .map((scenario) => (
@@ -397,7 +402,7 @@ function RunCard({ run }: { run: TestRun }) {
             ))}
           {fullRun && (!fullRun.scenarios || fullRun.scenarios.length === 0) && (
             <p className="text-sm text-gray-400 text-center py-4">
-              No scenarios found for this run.
+              {t('testing_ext.no_scenarios')}
             </p>
           )}
         </div>
@@ -406,9 +411,10 @@ function RunCard({ run }: { run: TestRun }) {
   );
 }
 
-// ─── Main page ────────────────────────────────────────────────────
+// --- Main page ---------------------------------------------------
 
 export default function TestingPage() {
+  const { t } = useT();
   const qc = useQueryClient();
 
   const { data: runs, isLoading } = useQuery<TestRun[]>({
@@ -434,10 +440,10 @@ export default function TestingPage() {
         <div>
           <h1 className="text-2xl font-semibold text-gray-900 flex items-center gap-2">
             <FlaskConical className="h-6 w-6" />
-            E2E Testing
+            {t('testing_ext.e2e_testing')}
           </h1>
           <p className="text-sm text-gray-500 mt-1">
-            Run conversation test scenarios against the reply engine
+            {t('testing_ext.run_scenarios_desc')}
           </p>
         </div>
         <Button
@@ -446,7 +452,7 @@ export default function TestingPage() {
           disabled={!!hasRunningRun}
         >
           <Play className="h-4 w-4" />
-          Run Tests
+          {t('testing_ext.run_tests')}
         </Button>
       </div>
 
@@ -456,13 +462,13 @@ export default function TestingPage() {
           <MessageSquare className="h-5 w-5 text-gray-400" />
           <div className="flex-1">
             <p className="text-sm font-medium text-gray-900">
-              Last run:{' '}
+              {t('testing_ext.last_run')}:{' '}
               <span
                 className={cn(
                   latestRun.failedScenarios > 0 ? 'text-red-600' : 'text-emerald-600',
                 )}
               >
-                {latestRun.passedScenarios}/{latestRun.totalScenarios} passed
+                {latestRun.passedScenarios}/{latestRun.totalScenarios} {t('testing_ext.passed')}
               </span>
             </p>
             <p className="text-xs text-gray-400">{timeAgo(latestRun.startedAt)}</p>
@@ -474,17 +480,17 @@ export default function TestingPage() {
       {/* Run history */}
       <div className="space-y-4">
         <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide">
-          Run History
+          {t('testing_ext.run_history')}
         </h2>
 
-        {isLoading && <LoadingState message="Loading test runs..." />}
+        {isLoading && <LoadingState message={t('testing_ext.loading_runs')} />}
 
         {!isLoading && (!runs || runs.length === 0) && (
           <Card>
             <div className="text-center py-12">
               <FlaskConical className="h-10 w-10 text-gray-300 mx-auto mb-3" />
               <p className="text-sm text-gray-500">
-                No test runs yet. Click "Run Tests" to start.
+                {t('testing_ext.no_runs')}
               </p>
             </div>
           </Card>

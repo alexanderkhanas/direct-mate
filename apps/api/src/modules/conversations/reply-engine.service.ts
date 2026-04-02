@@ -520,13 +520,23 @@ export class ReplyEngineService {
         if (priceMatch) itemPrice = parseFloat(priceMatch[0]);
       }
 
+      // Build variantName from memory or from product data
+      let variantName = memory.selectedVariantName;
+      if (!variantName && currentVariant) {
+        variantName = [...new Set([currentVariant.color, currentVariant.size].filter(Boolean))].join(', ') || 'standard';
+      }
+      if (!variantName && Array.isArray(memory.availableVariants)) {
+        const memVar = (memory.availableVariants as any[]).find(v => v.id === memory.selectedVariantId);
+        if (memVar) variantName = memVar.name;
+      }
+
       memory.cartItems.push({
         productId: memory.selectedProductId!,
         variantId: memory.selectedVariantId!,
         externalProductId: null, // resolved at order creation from DB
         externalVariantId: null,
         title: memory.selectedProductTitle!,
-        variantName: memory.selectedVariantName!,
+        variantName: variantName ?? 'standard',
         price: itemPrice,
         currency: itemCurrency,
       });

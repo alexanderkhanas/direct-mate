@@ -8,6 +8,7 @@ import { Input } from '../components/ui/Input';
 import { LoadingState } from '../components/ui/Spinner';
 import { EmptyState } from '../components/ui/EmptyState';
 import { cn } from '../lib/cn';
+import { useT } from '../i18n';
 
 function freshnessVariant(lastSyncedAt: string | null): 'success' | 'handoff' | 'error' {
   if (!lastSyncedAt) return 'error';
@@ -17,15 +18,6 @@ function freshnessVariant(lastSyncedAt: string | null): 'success' | 'handoff' | 
   return 'error';
 }
 
-function freshnessLabel(lastSyncedAt: string | null): string {
-  if (!lastSyncedAt) return 'Never';
-  const ageMinutes = Math.round((Date.now() - new Date(lastSyncedAt).getTime()) / 60_000);
-  if (ageMinutes < 1) return 'Just now';
-  if (ageMinutes < 60) return `${ageMinutes}m ago`;
-  const hours = Math.round(ageMinutes / 60);
-  return `${hours}h ago`;
-}
-
 const freshnessColors = {
   success: 'bg-emerald-400',
   handoff: 'bg-amber-400',
@@ -33,7 +25,17 @@ const freshnessColors = {
 };
 
 function ProductRow({ product }: { product: ProductRow }) {
+  const { t } = useT();
   const [expanded, setExpanded] = useState(false);
+
+  function freshnessLabel(lastSyncedAt: string | null): string {
+    if (!lastSyncedAt) return t('catalog.never');
+    const ageMinutes = Math.round((Date.now() - new Date(lastSyncedAt).getTime()) / 60_000);
+    if (ageMinutes < 1) return t('catalog.just_now');
+    if (ageMinutes < 60) return t('catalog.minutes_ago', { count: ageMinutes });
+    const hours = Math.round(ageMinutes / 60);
+    return t('catalog.hours_ago', { count: hours });
+  }
 
   return (
     <div className="border-b border-gray-100 last:border-0">
@@ -63,13 +65,13 @@ function ProductRow({ product }: { product: ProductRow }) {
             <p className="text-xs text-gray-400 mt-0.5">
               {product.sku && <span className="font-mono text-gray-500">{product.sku}</span>}
               {product.sku && ' · '}
-              {product.category ?? 'Uncategorized'} · {product.variantCount} variant
-              {product.variantCount !== 1 ? 's' : ''}
+              {product.category ?? t('catalog.uncategorized')} · {product.variantCount}{' '}
+              {product.variantCount !== 1 ? t('catalog.variants_plural') : t('catalog.variants')}
             </p>
           </div>
         </div>
         <p className="text-xs text-gray-400">
-          Updated {new Date(product.updatedAt).toLocaleDateString()}
+          {t('catalog_ext.updated_date')} {new Date(product.updatedAt).toLocaleDateString()}
         </p>
       </button>
 
@@ -80,12 +82,12 @@ function ProductRow({ product }: { product: ProductRow }) {
               <thead>
                 <tr className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
                   <th className="px-4 py-2.5 text-left font-medium w-12"></th>
-                  <th className="px-4 py-2.5 text-left font-medium">SKU</th>
-                  <th className="px-4 py-2.5 text-left font-medium">Size</th>
-                  <th className="px-4 py-2.5 text-left font-medium">Color</th>
-                  <th className="px-4 py-2.5 text-left font-medium">Price</th>
-                  <th className="px-4 py-2.5 text-left font-medium">Stock</th>
-                  <th className="px-4 py-2.5 text-left font-medium">Freshness</th>
+                  <th className="px-4 py-2.5 text-left font-medium">{t('catalog.sku')}</th>
+                  <th className="px-4 py-2.5 text-left font-medium">{t('catalog.size')}</th>
+                  <th className="px-4 py-2.5 text-left font-medium">{t('catalog.color')}</th>
+                  <th className="px-4 py-2.5 text-left font-medium">{t('catalog.price')}</th>
+                  <th className="px-4 py-2.5 text-left font-medium">{t('catalog.stock')}</th>
+                  <th className="px-4 py-2.5 text-left font-medium">{t('catalog.freshness')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
@@ -100,9 +102,9 @@ function ProductRow({ product }: { product: ProductRow }) {
                           <div className="h-8 w-8 rounded bg-gray-50" />
                         )}
                       </td>
-                      <td className="px-4 py-2.5 text-gray-500 font-mono text-xs">{v.sku ?? '—'}</td>
-                      <td className="px-4 py-2.5 text-gray-700">{v.size ?? '—'}</td>
-                      <td className="px-4 py-2.5 text-gray-700 capitalize">{v.color ?? '—'}</td>
+                      <td className="px-4 py-2.5 text-gray-500 font-mono text-xs">{v.sku ?? '\u2014'}</td>
+                      <td className="px-4 py-2.5 text-gray-700">{v.size ?? '\u2014'}</td>
+                      <td className="px-4 py-2.5 text-gray-700 capitalize">{v.color ?? '\u2014'}</td>
                       <td className="px-4 py-2.5 text-gray-700">
                         {v.price} {v.currency}
                       </td>
@@ -142,6 +144,7 @@ function ProductRow({ product }: { product: ProductRow }) {
 }
 
 export default function CatalogPage() {
+  const { t } = useT();
   const [search, setSearch] = useState('');
   const [q, setQ] = useState('');
 
@@ -154,13 +157,13 @@ export default function CatalogPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Catalog</h1>
-        <p className="text-sm text-gray-500 mt-1">Products and stock levels</p>
+        <h1 className="text-2xl font-semibold text-gray-900">{t('catalog.title')}</h1>
+        <p className="text-sm text-gray-500 mt-1">{t('catalog.subtitle')}</p>
       </div>
 
       <div className="flex gap-3">
         <Input
-          placeholder="Search products…"
+          placeholder={t('catalog.search_placeholder')}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && setQ(search)}
@@ -170,14 +173,14 @@ export default function CatalogPage() {
           onClick={() => setQ(search)}
           className="text-sm px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
         >
-          Search
+          {t('common.search')}
         </button>
         {q && (
           <button
             onClick={() => { setSearch(''); setQ(''); }}
             className="text-sm text-gray-500 hover:text-gray-700"
           >
-            Clear
+            {t('common.clear')}
           </button>
         )}
       </div>
@@ -191,8 +194,8 @@ export default function CatalogPage() {
           ) : (
             <EmptyState
               icon={Package}
-              title="No products"
-              description="Sync your catalog from n8n to see products here"
+              title={t('catalog.no_products')}
+              description={t('catalog.no_products_desc')}
             />
           )}
         </Card>

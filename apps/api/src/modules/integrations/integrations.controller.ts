@@ -184,18 +184,21 @@ export class InstagramOAuthController {
       // Exchange code for token
       const { accessToken, userId } = await this.integrationsService.exchangeCodeForToken(code);
 
-      // Get username
+      // Fetch Business Account ID + username from Graph API
+      // OAuth returns IGSID, but webhooks use Business Account ID — they're different
+      let businessAccountId = userId;
       let username: string | undefined;
       try {
         const profileRes = await fetch(`https://graph.instagram.com/me?fields=user_id,username&access_token=${accessToken}`);
         if (profileRes.ok) {
-          const profile = await profileRes.json() as { username?: string };
+          const profile = await profileRes.json() as { user_id?: number; username?: string };
+          if (profile.user_id) businessAccountId = String(profile.user_id);
           username = profile.username;
         }
       } catch { /* non-critical */ }
 
-      // Connect (exchanges short → long-lived automatically)
-      await this.integrationsService.connectInstagram(tenantId, userId, accessToken, username);
+      // Connect using Business Account ID (matches webhook entry.id)
+      await this.integrationsService.connectInstagram(tenantId, businessAccountId, accessToken, username);
 
       this.logger.log(`Instagram OAuth connected for tenant ${tenantId}, user ${userId}`);
       return res.redirect(`${adminBaseUrl}/connections?instagram=connected`);

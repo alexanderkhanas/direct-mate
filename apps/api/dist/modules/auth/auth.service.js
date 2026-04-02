@@ -138,9 +138,9 @@ let AuthService = class AuthService {
             { scenario: 'greeting', stage: 'greeting', blocks: ['Вітаю 💛 Чим можу допомогти?'], requiredVariables: [], toneTags: ['warm'], priority: 90 },
             { scenario: 'show_products', stage: 'product_discovery', blocks: ['В наявності є такі варіанти 💛\n\n{product_list}\n\nМожу підказати, який краще підійде 💛'], requiredVariables: ['product_list'], toneTags: ['warm'], priority: 90 },
             { scenario: 'show_price', stage: 'product_discovery', blocks: ['Ціна на {product_name} — {price} 💛'], requiredVariables: ['product_name', 'price'], toneTags: ['warm'], priority: 90 },
-            { scenario: 'confirm_selection', stage: 'product_selection', blocks: ['Оформлюємо {product_name} ({variant_name}), {price}? 💛'], requiredVariables: ['product_name', 'variant_name', 'price'], toneTags: ['warm'], priority: 90 },
+            { scenario: 'confirm_selection', stage: 'product_selection', blocks: ['{product_name} ({variant_name}), {price} — оформлюємо? 💛'], requiredVariables: ['product_name', 'variant_name', 'price'], toneTags: ['warm'], priority: 90 },
             { scenario: 'ask_variant_choice', stage: 'product_selection', blocks: ['У {product_name} є такі варіанти:\n{variant_list}\n\nЯкий вам подобається? 💛'], requiredVariables: ['product_name', 'variant_list'], toneTags: ['warm'], priority: 90 },
-            { scenario: 'ask_continue_or_checkout', stage: 'product_selection', blocks: ['Додала {product_name} ({variant_name}) 💛 Хочете ще щось, чи оформлюємо замовлення?'], requiredVariables: ['product_name'], toneTags: ['warm'], priority: 90 },
+            { scenario: 'ask_continue_or_checkout', stage: 'product_selection', blocks: ['{product_name} ({variant_name}) — додано 💛 Хочете ще щось, чи оформлюємо?'], requiredVariables: ['product_name'], toneTags: ['warm'], priority: 90 },
             { scenario: 'order_confirmed_ask_delivery', stage: 'checkout', blocks: ['Чудово 💛 Для оформлення напишіть:\n• ПІБ\n• Телефон\n• Місто та відділення НП'], requiredVariables: [], toneTags: ['warm'], priority: 90 },
             { scenario: 'collect_checkout_info', stage: 'checkout', blocks: ['Чудово 💛 Для оформлення напишіть, будь ласка:\n• ПІБ\n• Номер телефону\n• Місто та відділення Нової Пошти'], requiredVariables: [], toneTags: ['warm'], priority: 90 },
             { scenario: 'confirm_order', stage: 'order_confirmation', blocks: ['Дякую 💛 Ваше замовлення:\n{order_summary}\n\nОчікуйте повідомлення про відправку!'], requiredVariables: ['order_summary'], toneTags: ['warm'], priority: 90 },
@@ -148,8 +148,8 @@ let AuthService = class AuthService {
             { scenario: 'answer_payment', stage: 'faq', blocks: ['Оплата при отриманні (накладений платіж) або передоплата на картку 💛'], requiredVariables: [], toneTags: ['warm'], priority: 90 },
             { scenario: 'out_of_stock', stage: 'product_discovery', blocks: ['На жаль, {product_name} зараз немає в наявності. Можу підказати схожі варіанти або повідомити, коли з\'явиться 💛'], requiredVariables: ['product_name'], toneTags: ['warm'], priority: 90 },
             { scenario: 'product_not_found', stage: 'product_discovery', blocks: ['Зараз перевірю наявність і напишу вам 💛'], requiredVariables: [], toneTags: ['warm'], priority: 90 },
-            { scenario: 'recommend_product', stage: 'product_discovery', blocks: ['Я б радила {product_name} — {reason}. Ціна {price}. Хочете оформити? 💛'], requiredVariables: ['product_name', 'price'], toneTags: ['warm'], priority: 90 },
-            { scenario: 'ask_recommendation_from_shown', stage: 'product_discovery', blocks: ['З цих варіантів я б радила {product_name} — {reason} 💛'], requiredVariables: ['product_name'], toneTags: ['warm'], priority: 90 },
+            { scenario: 'recommend_product', stage: 'product_discovery', blocks: ['{product_name} — {reason}. Ціна {price}. Хочете оформити? 💛'], requiredVariables: ['product_name', 'price'], toneTags: ['warm'], priority: 90 },
+            { scenario: 'ask_recommendation_from_shown', stage: 'product_discovery', blocks: ['З цих варіантів раджу {product_name} — {reason} 💛'], requiredVariables: ['product_name'], toneTags: ['warm'], priority: 90 },
         ];
         for (const t of templates) {
             const entity = manager.create(response_template_entity_1.ResponseTemplate, {

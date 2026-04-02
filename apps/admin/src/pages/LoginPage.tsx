@@ -4,9 +4,11 @@ import { Zap } from 'lucide-react';
 import { api } from '../lib/api';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
+import { useT } from '../i18n';
 
 export default function LoginPage() {
   const navigate = useNavigate();
+  const { t } = useT();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -21,7 +23,7 @@ export default function LoginPage() {
       localStorage.setItem('accessToken', data.accessToken);
       navigate('/');
     } catch {
-      setError('Invalid email or password');
+      setError(t('auth.login_error'));
     } finally {
       setLoading(false);
     }
@@ -30,20 +32,18 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <div className="w-full max-w-sm">
-        {/* Logo */}
         <div className="flex flex-col items-center mb-8">
           <div className="h-12 w-12 rounded-2xl bg-gray-900 flex items-center justify-center mb-4">
             <Zap className="h-6 w-6 text-white" strokeWidth={2.5} />
           </div>
           <h1 className="text-xl font-semibold text-gray-900">DirectMate</h1>
-          <p className="text-sm text-gray-500 mt-1">Sign in to your account</p>
+          <p className="text-sm text-gray-500 mt-1">{t('auth.login_subtitle')}</p>
         </div>
 
-        {/* Card */}
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
           <form onSubmit={handleSubmit} className="space-y-4">
             <Input
-              label="Email"
+              label={t('auth.email')}
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -52,7 +52,7 @@ export default function LoginPage() {
               required
             />
             <Input
-              label="Password"
+              label={t('auth.password')}
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -68,15 +68,15 @@ export default function LoginPage() {
             )}
 
             <Button type="submit" loading={loading} className="w-full" size="lg">
-              Sign in
+              {t('auth.sign_in')}
             </Button>
           </form>
         </div>
 
         <p className="text-center text-sm text-gray-500 mt-4">
-          Don't have an account?{' '}
+          {t('auth.no_account')}{' '}
           <Link to="/register" className="text-gray-900 font-medium hover:underline">
-            Create store
+            {t('auth.create_store')}
           </Link>
         </p>
       </div>

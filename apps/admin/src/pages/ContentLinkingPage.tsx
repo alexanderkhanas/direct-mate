@@ -7,6 +7,7 @@ import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { LoadingState } from '../components/ui/Spinner';
 import { EmptyState } from '../components/ui/EmptyState';
+import { useT } from '../i18n';
 
 interface MediaMapping {
   id: string;
@@ -35,11 +36,11 @@ function MediaTypeIcon({ type }: { type: string }) {
   return <Image className="h-4 w-4 text-pink-500" />;
 }
 
-function statusBadge(mapping: MediaMapping) {
+function statusBadge(mapping: MediaMapping, unlinkedLabel: string) {
   if (mapping.confirmed && mapping.matchMethod === 'sku_from_caption') return <Badge variant="connected">SKU Match</Badge>;
   if (mapping.confirmed) return <Badge variant="connected">Confirmed</Badge>;
   if (mapping.productId) return <Badge variant="pending">Suggested</Badge>;
-  return <Badge variant="disconnected">Unlinked</Badge>;
+  return <Badge variant="disconnected">{unlinkedLabel}</Badge>;
 }
 
 function ProductLinkModal({ products, caption, onSelect, onClose }: {
@@ -135,6 +136,7 @@ function ProductLinkModal({ products, caption, onSelect, onClose }: {
 }
 
 export default function ContentLinkingPage() {
+  const { t } = useT();
   const qc = useQueryClient();
   const [filter, setFilter] = useState<'all' | 'linked' | 'unlinked'>('all');
   const [linkingMapping, setLinkingMapping] = useState<MediaMapping | null>(null);
@@ -203,16 +205,16 @@ export default function ContentLinkingPage() {
 
   const filters = [
     { key: 'all' as const, label: `All${data?.total != null ? ` (${data.total})` : ''}` },
-    { key: 'unlinked' as const, label: 'Unlinked' },
-    { key: 'linked' as const, label: 'Linked' },
+    { key: 'unlinked' as const, label: t('content.unlinked') },
+    { key: 'linked' as const, label: t('content.linked') },
   ];
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-gray-900">Content Linking</h1>
-          <p className="text-sm text-gray-500 mt-1">Link Instagram posts and stories to products</p>
+          <h1 className="text-2xl font-semibold text-gray-900">{t('content.title')}</h1>
+          <p className="text-sm text-gray-500 mt-1">{t('content.subtitle')}</p>
         </div>
         <div className="flex gap-2">
           <Button
@@ -220,14 +222,14 @@ export default function ContentLinkingPage() {
             onClick={() => setShowAddManual(true)}
           >
             <Plus className="h-4 w-4" />
-            Add manually
+            {t('content.add_manually')}
           </Button>
           <Button
             onClick={() => fetchContent.mutate()}
             loading={fetchContent.isPending}
           >
             <RefreshCw className="h-4 w-4" />
-            Fetch Content
+            {t('content.fetch_content')}
           </Button>
         </div>
       </div>
@@ -295,7 +297,7 @@ export default function ContentLinkingPage() {
                       </span>
                     </div>
                   )}
-                  {statusBadge(mapping)}
+                  {statusBadge(mapping, t('content.unlinked'))}
                 </div>
               </div>
             </button>
@@ -398,7 +400,7 @@ function ContentDetailModal({ mapping, products, onLink, onUnlink, onDelete, onC
             <div>
               <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Status</label>
               <div className="flex items-center gap-2">
-                {statusBadge(mapping)}
+                {statusBadge(mapping, t('content.unlinked'))}
                 {mapping.matchMethod && (
                   <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">{mapping.matchMethod}</span>
                 )}

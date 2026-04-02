@@ -17,6 +17,7 @@ import { api } from '../lib/api';
 import { Card } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { LoadingState } from '../components/ui/Spinner';
+import { useT } from '../i18n';
 
 interface DashboardData {
   period: { from: string; to: string };
@@ -49,13 +50,7 @@ interface DashboardData {
 const FUNNEL_COLORS = ['#3b82f6', '#8b5cf6', '#f59e0b', '#10b981'];
 const PIE_COLORS = ['#f59e0b', '#ef4444', '#8b5cf6', '#3b82f6', '#6b7280'];
 
-const REASON_LABELS: Record<string, string> = {
-  product_not_found: 'Product not found',
-  low_confidence: 'Low confidence',
-  send_failed: 'Send failed',
-  ai_fallback_failure: 'AI fallback failed',
-  unknown: 'Unknown',
-};
+// REASON_LABELS moved to useT() below
 
 function formatMs(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)}ms`;
@@ -85,6 +80,14 @@ function StatCard({ label, value, icon: Icon, color, bg }: {
 }
 
 export default function DashboardPage() {
+  const { t } = useT();
+  const REASON_LABELS: Record<string, string> = {
+    product_not_found: t('dashboard.reason_product_not_found'),
+    low_confidence: t('dashboard.reason_low_confidence'),
+    send_failed: t('dashboard.reason_send_failed'),
+    ai_fallback_failure: t('dashboard.reason_ai_fallback'),
+    unknown: t('dashboard.reason_unknown'),
+  };
   const { data, isLoading } = useQuery<DashboardData>({
     queryKey: ['analytics', 'dashboard'],
     queryFn: () => api.get('/analytics/dashboard').then((r) => r.data),
@@ -96,44 +99,44 @@ export default function DashboardPage() {
   const { summary, conversationsPerDay, funnel, handoffReasons, avgResponseTimeMs, recentOrders } = data;
 
   const funnelData = [
-    { name: 'Conversations', value: funnel.started },
-    { name: 'Products shown', value: funnel.productShown },
-    { name: 'Variant selected', value: funnel.variantSelected },
-    { name: 'Order created', value: funnel.orderCreated },
+    { name: t('dashboard.funnel_started'), value: funnel.started },
+    { name: t('dashboard.funnel_product_shown'), value: funnel.productShown },
+    { name: t('dashboard.funnel_variant_selected'), value: funnel.variantSelected },
+    { name: t('dashboard.funnel_order_created'), value: funnel.orderCreated },
   ];
 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Dashboard</h1>
-        <p className="text-sm text-gray-500 mt-1">Last 30 days analytics</p>
+        <h1 className="text-2xl font-semibold text-gray-900">{t('dashboard.title')}</h1>
+        <p className="text-sm text-gray-500 mt-1">{t('dashboard.subtitle')}</p>
       </div>
 
       {/* Summary cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
-          label="Conversations"
+          label={t('dashboard.conversations')}
           value={summary.totalConversations}
           icon={MessageSquare}
           color="text-blue-500"
           bg="bg-blue-50"
         />
         <StatCard
-          label="Automation rate"
+          label={t('dashboard.automation_rate')}
           value={`${Math.round(summary.automationRate * 100)}%`}
           icon={Bot}
           color="text-emerald-500"
           bg="bg-emerald-50"
         />
         <StatCard
-          label="Orders"
+          label={t('dashboard.orders')}
           value={summary.totalOrders}
           icon={ShoppingBag}
           color="text-violet-500"
           bg="bg-violet-50"
         />
         <StatCard
-          label="Revenue"
+          label={t('dashboard.revenue')}
           value={formatCurrency(summary.totalRevenue, summary.currency)}
           icon={TrendingUp}
           color="text-amber-500"
@@ -145,7 +148,7 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Conversations per day */}
         <Card className="lg:col-span-2">
-          <p className="text-sm font-semibold text-gray-700 mb-4">Conversations per day</p>
+          <p className="text-sm font-semibold text-gray-700 mb-4">{t('dashboard.conversations_per_day')}</p>
           <ResponsiveContainer width="100%" height={240}>
             <LineChart data={conversationsPerDay}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
@@ -157,20 +160,20 @@ export default function DashboardPage() {
               <YAxis tick={{ fontSize: 11, fill: '#9ca3af' }} allowDecimals={false} />
               <Tooltip
                 contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e5e7eb' }}
-                labelFormatter={(d: string) => new Date(d).toLocaleDateString('uk-UA')}
+                labelFormatter={(d) => new Date(String(d)).toLocaleDateString('uk-UA')}
               />
-              <Line type="monotone" dataKey="total" stroke="#3b82f6" strokeWidth={2} dot={false} name="Total" />
-              <Line type="monotone" dataKey="autoHandled" stroke="#10b981" strokeWidth={2} dot={false} name="Auto-handled" />
+              <Line type="monotone" dataKey="total" stroke="#3b82f6" strokeWidth={2} dot={false} name={t('dashboard.total')} />
+              <Line type="monotone" dataKey="autoHandled" stroke="#10b981" strokeWidth={2} dot={false} name={t('dashboard.auto_handled')} />
             </LineChart>
           </ResponsiveContainer>
         </Card>
 
         {/* Handoff reasons */}
         <Card>
-          <p className="text-sm font-semibold text-gray-700 mb-4">Handoff reasons</p>
+          <p className="text-sm font-semibold text-gray-700 mb-4">{t('dashboard.handoff_reasons')}</p>
           {handoffReasons.length === 0 ? (
             <div className="flex items-center justify-center h-48 text-sm text-gray-400">
-              No handoffs yet
+              {t('dashboard.no_handoffs')}
             </div>
           ) : (
             <ResponsiveContainer width="100%" height={240}>
@@ -184,8 +187,8 @@ export default function DashboardPage() {
                   innerRadius={50}
                   outerRadius={80}
                   paddingAngle={3}
-                  label={({ reason, count }: { reason: string; count: number }) =>
-                    `${REASON_LABELS[reason] ?? reason} (${count})`
+                  label={(props: any) =>
+                    `${REASON_LABELS[props.reason] ?? props.reason} (${props.count})`
                   }
                 >
                   {handoffReasons.map((_, i) => (
@@ -193,7 +196,7 @@ export default function DashboardPage() {
                   ))}
                 </Pie>
                 <Tooltip
-                  formatter={(value: number, name: string) => [value, REASON_LABELS[name] ?? name]}
+                  formatter={(value: any, name: any) => [value, REASON_LABELS[name] ?? name]}
                   contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e5e7eb' }}
                 />
               </PieChart>
@@ -206,7 +209,7 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Conversion funnel */}
         <Card className="lg:col-span-2">
-          <p className="text-sm font-semibold text-gray-700 mb-4">Conversion funnel</p>
+          <p className="text-sm font-semibold text-gray-700 mb-4">{t('dashboard.conversion_funnel')}</p>
           <ResponsiveContainer width="100%" height={200}>
             <BarChart data={funnelData} layout="vertical" barSize={28}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
@@ -231,14 +234,14 @@ export default function DashboardPage() {
 
         {/* Avg response time */}
         <Card>
-          <p className="text-sm font-semibold text-gray-700 mb-2">Avg response time</p>
+          <p className="text-sm font-semibold text-gray-700 mb-2">{t('dashboard.avg_response_time')}</p>
           <div className="flex items-center gap-3 mt-6">
             <div className="bg-blue-50 rounded-lg p-3">
               <Clock className="h-6 w-6 text-blue-500" />
             </div>
             <div>
               <p className="text-3xl font-semibold text-gray-900">{formatMs(avgResponseTimeMs)}</p>
-              <p className="text-xs text-gray-500 mt-1">from customer message to bot reply</p>
+              <p className="text-xs text-gray-500 mt-1">{t('dashboard.response_time_desc')}</p>
             </div>
           </div>
         </Card>
@@ -247,21 +250,21 @@ export default function DashboardPage() {
       {/* Recent orders */}
       <div>
         <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
-          Recent orders
+          {t('dashboard.recent_orders')}
         </h2>
         <Card padding={false}>
           {recentOrders.length === 0 ? (
             <div className="py-10 text-center">
-              <p className="text-sm text-gray-400">No orders yet</p>
+              <p className="text-sm text-gray-400">{t('dashboard.no_orders')}</p>
             </div>
           ) : (
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
-                  <th className="px-5 py-3 text-left font-medium">Customer</th>
-                  <th className="px-5 py-3 text-left font-medium">Status</th>
-                  <th className="px-5 py-3 text-left font-medium">Amount</th>
-                  <th className="px-5 py-3 text-left font-medium">Date</th>
+                  <th className="px-5 py-3 text-left font-medium">{t('dashboard.customer')}</th>
+                  <th className="px-5 py-3 text-left font-medium">{t('common.status')}</th>
+                  <th className="px-5 py-3 text-left font-medium">{t('dashboard.amount')}</th>
+                  <th className="px-5 py-3 text-left font-medium">{t('common.date')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">

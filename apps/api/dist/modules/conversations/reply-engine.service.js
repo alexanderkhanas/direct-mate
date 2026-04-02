@@ -384,13 +384,22 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 if (priceMatch)
                     itemPrice = parseFloat(priceMatch[0]);
             }
+            let variantName = memory.selectedVariantName;
+            if (!variantName && currentVariant) {
+                variantName = [...new Set([currentVariant.color, currentVariant.size].filter(Boolean))].join(', ') || 'standard';
+            }
+            if (!variantName && Array.isArray(memory.availableVariants)) {
+                const memVar = memory.availableVariants.find(v => v.id === memory.selectedVariantId);
+                if (memVar)
+                    variantName = memVar.name;
+            }
             memory.cartItems.push({
                 productId: memory.selectedProductId,
                 variantId: memory.selectedVariantId,
                 externalProductId: null,
                 externalVariantId: null,
                 title: memory.selectedProductTitle,
-                variantName: memory.selectedVariantName,
+                variantName: variantName ?? 'standard',
                 price: itemPrice,
                 currency: itemCurrency,
             });

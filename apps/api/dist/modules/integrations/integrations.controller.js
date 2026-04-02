@@ -206,16 +206,19 @@ let InstagramOAuthController = InstagramOAuthController_1 = class InstagramOAuth
                 return res.redirect(`${adminBaseUrl}/connections?instagram=error&reason=invalid_state`);
             }
             const { accessToken, userId } = await this.integrationsService.exchangeCodeForToken(code);
+            let businessAccountId = userId;
             let username;
             try {
                 const profileRes = await fetch(`https://graph.instagram.com/me?fields=user_id,username&access_token=${accessToken}`);
                 if (profileRes.ok) {
                     const profile = await profileRes.json();
+                    if (profile.user_id)
+                        businessAccountId = String(profile.user_id);
                     username = profile.username;
                 }
             }
             catch { }
-            await this.integrationsService.connectInstagram(tenantId, userId, accessToken, username);
+            await this.integrationsService.connectInstagram(tenantId, businessAccountId, accessToken, username);
             this.logger.log(`Instagram OAuth connected for tenant ${tenantId}, user ${userId}`);
             return res.redirect(`${adminBaseUrl}/connections?instagram=connected`);
         }

@@ -7,6 +7,7 @@ COPY packages/shared/package*.json packages/shared/
 COPY apps/admin/package*.json apps/admin/
 
 RUN npm ci --legacy-peer-deps
+RUN npm install react-is --legacy-peer-deps
 
 COPY packages/shared packages/shared
 RUN cd packages/shared && npm run build

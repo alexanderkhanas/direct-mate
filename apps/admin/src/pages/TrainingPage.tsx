@@ -24,12 +24,14 @@ import { Badge } from '../components/ui/Badge';
 import { LoadingState } from '../components/ui/Spinner';
 import { EmptyState } from '../components/ui/EmptyState';
 import { cn } from '../lib/cn';
+import { useT } from '../i18n';
 
 type Tab = 'upload' | 'review';
 
-/* ─── Upload Tab ─────────────────────────────────────────── */
+/* --- Upload Tab -------------------------------------------------- */
 
 function UploadTab() {
+  const { t } = useT();
   const qc = useQueryClient();
   const [files, setFiles] = useState<File[]>([]);
   const [dragOver, setDragOver] = useState(false);
@@ -94,7 +96,7 @@ function UploadTab() {
     <div className="space-y-6">
       {/* Drop zone */}
       <Card>
-        <h2 className="text-sm font-semibold text-gray-900 mb-4">Upload screenshots</h2>
+        <h2 className="text-sm font-semibold text-gray-900 mb-4">{t('training_ext.upload_screenshots')}</h2>
         <div
           onDragOver={(e) => {
             e.preventDefault();
@@ -112,9 +114,9 @@ function UploadTab() {
         >
           <Upload className="h-8 w-8 text-gray-300 mx-auto mb-3" />
           <p className="text-sm text-gray-500">
-            Drag and drop screenshots here, or click to browse
+            {t('training_ext.drag_drop_screenshots')}
           </p>
-          <p className="text-xs text-gray-400 mt-1">Accepts image files (PNG, JPG, WEBP)</p>
+          <p className="text-xs text-gray-400 mt-1">{t('training_ext.accepts_images')}</p>
           <input
             ref={fileInputRef}
             type="file"
@@ -133,7 +135,7 @@ function UploadTab() {
         {files.length > 0 && (
           <div className="mt-4">
             <p className="text-xs text-gray-500 mb-2">
-              {files.length} file{files.length !== 1 && 's'} selected
+              {t('training_ext.files_selected', { count: files.length })}
             </p>
             <div className="flex flex-wrap gap-3">
               {files.map((f, i) => (
@@ -166,10 +168,10 @@ function UploadTab() {
                 disabled={files.length === 0}
               >
                 <Upload className="h-3.5 w-3.5" />
-                Upload {files.length} file{files.length !== 1 && 's'}
+                {t('training_ext.upload_n_files', { count: files.length })}
               </Button>
               {upload.isError && (
-                <p className="text-xs text-red-500 mt-2">Upload failed. Please try again.</p>
+                <p className="text-xs text-red-500 mt-2">{t('training_ext.upload_failed')}</p>
               )}
             </div>
           </div>
@@ -182,7 +184,7 @@ function UploadTab() {
           <div className="flex items-center gap-3">
             <Clock className="h-4 w-4 text-gray-400 animate-pulse" />
             <div className="flex-1">
-              <p className="text-sm font-medium text-gray-900">Processing screenshots...</p>
+              <p className="text-sm font-medium text-gray-900">{t('training_ext.processing_screenshots')}</p>
               <div className="mt-2 h-2 bg-gray-100 rounded-full overflow-hidden">
                 <div
                   className="h-full bg-gray-900 rounded-full transition-all duration-500"
@@ -192,7 +194,7 @@ function UploadTab() {
                 />
               </div>
               <p className="text-xs text-gray-400 mt-1">
-                {activeJob.processedFiles} / {activeJob.totalFiles} files processed
+                {t('training_ext.files_processed', { processed: activeJob.processedFiles, total: activeJob.totalFiles })}
               </p>
             </div>
           </div>
@@ -204,7 +206,7 @@ function UploadTab() {
           <div className="flex items-center gap-3">
             <CheckCircle2 className="h-4 w-4 text-emerald-500" />
             <p className="text-sm text-gray-700">
-              Import completed — {activeJob.totalFiles} files processed.
+              {t('training_ext.import_completed', { count: activeJob.totalFiles })}
             </p>
           </div>
         </Card>
@@ -212,14 +214,14 @@ function UploadTab() {
 
       {/* Past jobs */}
       <Card>
-        <h2 className="text-sm font-semibold text-gray-900 mb-4">Import history</h2>
+        <h2 className="text-sm font-semibold text-gray-900 mb-4">{t('training.import_history')}</h2>
         {jobsLoading ? (
-          <LoadingState message="Loading jobs..." />
+          <LoadingState message={t('training_ext.loading_jobs')} />
         ) : !jobs || jobs.length === 0 ? (
           <EmptyState
             icon={Image}
-            title="No imports yet"
-            description="Upload screenshots to extract training data"
+            title={t('training_ext.no_imports')}
+            description={t('training_ext.upload_to_extract')}
           />
         ) : (
           <div className="divide-y divide-gray-100">
@@ -258,7 +260,7 @@ function UploadTab() {
   );
 }
 
-/* ─── Chat Transcript ────────────────────────────────────── */
+/* --- Chat Transcript --------------------------------------------- */
 
 function ChatTranscript({ turns }: { turns: TranscriptTurn[] }) {
   return (
@@ -290,9 +292,10 @@ function ChatTranscript({ turns }: { turns: TranscriptTurn[] }) {
   );
 }
 
-/* ─── Phrase Row ──────────────────────────────────────────── */
+/* --- Phrase Row --------------------------------------------------- */
 
 function PhraseRow({ phrase, onUpdate }: { phrase: ExtractedPhrase; onUpdate: () => void }) {
+  const { t } = useT();
   const qc = useQueryClient();
 
   const patchPhrase = useMutation({
@@ -324,14 +327,14 @@ function PhraseRow({ phrase, onUpdate }: { phrase: ExtractedPhrase; onUpdate: ()
             <button
               onClick={() => patchPhrase.mutate({ approvalStatus: 'approved' })}
               className="p-1 text-gray-300 hover:text-emerald-500 transition-colors"
-              title="Approve"
+              title={t('training.approve')}
             >
               <CheckCircle2 className="h-4 w-4" />
             </button>
             <button
               onClick={() => patchPhrase.mutate({ approvalStatus: 'rejected' })}
               className="p-1 text-gray-300 hover:text-red-500 transition-colors"
-              title="Reject"
+              title={t('training.reject')}
             >
               <XCircle className="h-4 w-4" />
             </button>
@@ -346,7 +349,7 @@ function PhraseRow({ phrase, onUpdate }: { phrase: ExtractedPhrase; onUpdate: ()
   );
 }
 
-/* ─── Voice Signal Row ───────────────────────────────────── */
+/* --- Voice Signal Row -------------------------------------------- */
 
 function VoiceSignalRow({
   signal,
@@ -355,6 +358,7 @@ function VoiceSignalRow({
   signal: ExtractedVoiceSignal;
   onUpdate: () => void;
 }) {
+  const { t } = useT();
   const qc = useQueryClient();
 
   const patchSignal = useMutation({
@@ -385,14 +389,14 @@ function VoiceSignalRow({
             <button
               onClick={() => patchSignal.mutate({ approvalStatus: 'approved' })}
               className="p-1 text-gray-300 hover:text-emerald-500 transition-colors"
-              title="Approve"
+              title={t('training.approve')}
             >
               <CheckCircle2 className="h-4 w-4" />
             </button>
             <button
               onClick={() => patchSignal.mutate({ approvalStatus: 'rejected' })}
               className="p-1 text-gray-300 hover:text-red-500 transition-colors"
-              title="Reject"
+              title={t('training.reject')}
             >
               <XCircle className="h-4 w-4" />
             </button>
@@ -407,9 +411,10 @@ function VoiceSignalRow({
   );
 }
 
-/* ─── Fragment Card ───────────────────────────────────────── */
+/* --- Fragment Card ------------------------------------------------ */
 
 function FragmentCard({ fragment }: { fragment: ExtractedFragment }) {
+  const { t } = useT();
   const qc = useQueryClient();
 
   const invalidateFragments = () => {
@@ -449,7 +454,7 @@ function FragmentCard({ fragment }: { fragment: ExtractedFragment }) {
               <Badge variant="default">{fragment.scenarioSuggestion}</Badge>
             )}
             <span className="text-xs text-gray-400">
-              Confidence: {Math.round(fragment.confidenceScore * 100)}%
+              {t('training_ext.confidence')}: {Math.round(fragment.confidenceScore * 100)}%
             </span>
             <Badge
               variant={
@@ -475,7 +480,7 @@ function FragmentCard({ fragment }: { fragment: ExtractedFragment }) {
           {fragment.phrases && fragment.phrases.length > 0 && (
             <div>
               <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-1">
-                Extracted phrases
+                {t('training_ext.extracted_phrases')}
               </p>
               <div className="divide-y divide-gray-50">
                 {fragment.phrases.map((p) => (
@@ -489,7 +494,7 @@ function FragmentCard({ fragment }: { fragment: ExtractedFragment }) {
           {fragment.voiceSignals && fragment.voiceSignals.length > 0 && (
             <div>
               <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-1">
-                Voice signals
+                {t('training_ext.voice_signals')}
               </p>
               <div className="divide-y divide-gray-50">
                 {fragment.voiceSignals.map((s) => (
@@ -508,7 +513,7 @@ function FragmentCard({ fragment }: { fragment: ExtractedFragment }) {
                 loading={patchFragment.isPending}
               >
                 <CheckCircle2 className="h-3.5 w-3.5" />
-                Approve
+                {t('training.approve')}
               </Button>
               <Button
                 size="sm"
@@ -517,7 +522,7 @@ function FragmentCard({ fragment }: { fragment: ExtractedFragment }) {
                 loading={patchFragment.isPending}
               >
                 <XCircle className="h-3.5 w-3.5" />
-                Reject
+                {t('training.reject')}
               </Button>
             </div>
           )}
@@ -531,10 +536,10 @@ function FragmentCard({ fragment }: { fragment: ExtractedFragment }) {
                 loading={applyFragment.isPending}
               >
                 <Sparkles className="h-3.5 w-3.5" />
-                Apply as training examples
+                {t('training_ext.apply_training')}
               </Button>
               {applyFragment.isSuccess && (
-                <span className="text-xs text-emerald-600 ml-2">Applied</span>
+                <span className="text-xs text-emerald-600 ml-2">{t('training_ext.applied')}</span>
               )}
             </div>
           )}
@@ -544,24 +549,25 @@ function FragmentCard({ fragment }: { fragment: ExtractedFragment }) {
   );
 }
 
-/* ─── Review Tab ─────────────────────────────────────────── */
+/* --- Review Tab -------------------------------------------------- */
 
 function ReviewTab() {
+  const { t } = useT();
   const { data: fragments, isLoading } = useQuery<ExtractedFragment[]>({
     queryKey: ['training', 'fragments'],
     queryFn: () =>
       api.get('/training/screenshots/review/fragments', { params: { status: 'pending' } }).then((r) => r.data),
   });
 
-  if (isLoading) return <LoadingState message="Loading fragments..." />;
+  if (isLoading) return <LoadingState message={t('training_ext.loading_fragments')} />;
 
   if (!fragments || fragments.length === 0) {
     return (
       <Card>
         <EmptyState
           icon={Image}
-          title="No fragments to review"
-          description="Upload and process screenshots to generate conversation fragments"
+          title={t('training_ext.no_fragments')}
+          description={t('training_ext.upload_process_desc')}
         />
       </Card>
     );
@@ -570,7 +576,7 @@ function ReviewTab() {
   return (
     <div className="space-y-4">
       <p className="text-xs text-gray-400">
-        {fragments.length} fragment{fragments.length !== 1 && 's'} pending review
+        {t('training_ext.fragments_pending', { count: fragments.length })}
       </p>
       {fragments.map((f) => (
         <FragmentCard key={f.id} fragment={f} />
@@ -579,34 +585,40 @@ function ReviewTab() {
   );
 }
 
-/* ─── Training Page ──────────────────────────────────────── */
+/* --- Training Page ----------------------------------------------- */
 
 export default function TrainingPage() {
+  const { t } = useT();
   const [tab, setTab] = useState<Tab>('upload');
+
+  const tabLabels: Record<Tab, string> = {
+    upload: t('training_ext.upload_tab'),
+    review: t('training_ext.review_tab'),
+  };
 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Training</h1>
+        <h1 className="text-2xl font-semibold text-gray-900">{t('training.title')}</h1>
         <p className="text-sm text-gray-500 mt-1">
-          Import screenshots and review extracted training data
+          {t('training.subtitle')}
         </p>
       </div>
 
       {/* Tabs */}
       <div className="flex gap-1 bg-gray-100 rounded-lg p-1 w-fit">
-        {(['upload', 'review'] as const).map((t) => (
+        {(['upload', 'review'] as const).map((tabKey) => (
           <button
-            key={t}
-            onClick={() => setTab(t)}
+            key={tabKey}
+            onClick={() => setTab(tabKey)}
             className={cn(
-              'px-4 py-1.5 text-sm font-medium rounded-md transition-colors capitalize',
-              tab === t
+              'px-4 py-1.5 text-sm font-medium rounded-md transition-colors',
+              tab === tabKey
                 ? 'bg-white text-gray-900 shadow-sm'
                 : 'text-gray-500 hover:text-gray-700',
             )}
           >
-            {t}
+            {tabLabels[tabKey]}
           </button>
         ))}
       </div>

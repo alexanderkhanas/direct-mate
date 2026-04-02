@@ -12,6 +12,12 @@ export interface Conversation {
   status: 'active' | 'human_in_control' | 'waiting_customer' | 'closed';
   needsHandoff: boolean;
   lastMessageAt: string | null;
+  customer?: {
+    id: string;
+    externalUserId: string;
+    username: string | null;
+    fullName: string | null;
+  };
 }
 
 export interface ConversationDetail extends Conversation {
@@ -19,6 +25,7 @@ export interface ConversationDetail extends Conversation {
     id: string;
     externalUserId: string;
     username: string | null;
+    fullName: string | null;
   };
   messages: Message[];
   state: ConversationState | null;

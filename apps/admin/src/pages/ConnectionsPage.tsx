@@ -8,6 +8,7 @@ import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { LoadingState } from '../components/ui/Spinner';
 import { EmptyState } from '../components/ui/EmptyState';
+import { useT } from '../i18n';
 
 type BadgeVariant = 'connected' | 'disconnected' | 'error' | 'pending';
 
@@ -19,6 +20,7 @@ function statusVariant(status: string): BadgeVariant {
 }
 
 function ConnectInstagramForm({ onSuccess, onCancel }: { onSuccess: () => void; onCancel: () => void }) {
+  const { t } = useT();
   const [error, setError] = useState('');
 
   const startOAuth = useMutation({
@@ -26,21 +28,21 @@ function ConnectInstagramForm({ onSuccess, onCancel }: { onSuccess: () => void; 
     onSuccess: (data: { redirectUrl: string }) => {
       window.location.href = data.redirectUrl;
     },
-    onError: () => setError('Failed to start Instagram login'),
+    onError: () => setError(t('connections_ext.failed_start_login')),
   });
 
   return (
     <Card>
-      <p className="text-sm font-medium text-gray-700 mb-3">Connect Instagram account</p>
+      <p className="text-sm font-medium text-gray-700 mb-3">{t('connections_ext.connect_instagram_account')}</p>
       <div className="space-y-3">
-        <p className="text-xs text-gray-500">You'll be redirected to Instagram to grant access.</p>
+        <p className="text-xs text-gray-500">{t('connections_ext.redirect_instagram')}</p>
         {error && <p className="text-xs text-red-500">{error}</p>}
         <div className="flex gap-2">
           <Button size="sm" onClick={() => startOAuth.mutate()} loading={startOAuth.isPending}>
             <Instagram className="h-4 w-4" />
-            Connect with Instagram
+            {t('connections_ext.connect_with_instagram')}
           </Button>
-          <Button size="sm" variant="secondary" onClick={onCancel}>Cancel</Button>
+          <Button size="sm" variant="secondary" onClick={onCancel}>{t('common.cancel')}</Button>
         </div>
       </div>
     </Card>
@@ -48,6 +50,7 @@ function ConnectInstagramForm({ onSuccess, onCancel }: { onSuccess: () => void; 
 }
 
 function ConnectShopifyForm({ onSuccess, onCancel }: { onSuccess: () => void; onCancel: () => void }) {
+  const { t } = useT();
   const [shopDomain, setShopDomain] = useState('');
   const [token, setToken] = useState('');
   const [shopName, setShopName] = useState('');
@@ -62,28 +65,28 @@ function ConnectShopifyForm({ onSuccess, onCancel }: { onSuccess: () => void; on
       setShopName('');
       onSuccess();
     },
-    onError: () => setError('Failed to connect — check the domain and token'),
+    onError: () => setError(t('connections_ext.failed_connect')),
   });
 
   return (
     <Card>
-      <p className="text-sm font-medium text-gray-700 mb-3">Connect Shopify store</p>
+      <p className="text-sm font-medium text-gray-700 mb-3">{t('connections_ext.connect_shopify_store')}</p>
       <div className="space-y-3">
         <Input
-          label="Shop domain"
+          label={t('connections.shop_domain')}
           value={shopDomain}
           onChange={(e) => setShopDomain(e.target.value)}
           placeholder="my-store.myshopify.com"
         />
         <Input
-          label="Admin API Access Token"
+          label={t('connections_ext.admin_api_token')}
           value={token}
           onChange={(e) => setToken(e.target.value)}
           placeholder="shpat_xxxxx"
           type="password"
         />
         <Input
-          label="Store name (optional)"
+          label={t('connections_ext.store_name_optional')}
           value={shopName}
           onChange={(e) => setShopName(e.target.value)}
           placeholder="e.g. Beauty Store"
@@ -91,9 +94,9 @@ function ConnectShopifyForm({ onSuccess, onCancel }: { onSuccess: () => void; on
         {error && <p className="text-xs text-red-500">{error}</p>}
         <div className="flex gap-2">
           <Button size="sm" onClick={() => connect.mutate()} loading={connect.isPending} disabled={!shopDomain || !token}>
-            Connect
+            {t('common.confirm')}
           </Button>
-          <Button size="sm" variant="secondary" onClick={onCancel}>Cancel</Button>
+          <Button size="sm" variant="secondary" onClick={onCancel}>{t('common.cancel')}</Button>
         </div>
       </div>
     </Card>
@@ -101,6 +104,7 @@ function ConnectShopifyForm({ onSuccess, onCancel }: { onSuccess: () => void; on
 }
 
 function TelegramConnectSection() {
+  const { t } = useT();
   const [polling, setPolling] = useState(false);
   const [deepLink, setDeepLink] = useState('');
   const [error, setError] = useState('');
@@ -118,7 +122,7 @@ function TelegramConnectSection() {
       setPolling(true);
       setError('');
     },
-    onError: () => setError('Failed to generate connect link'),
+    onError: () => setError(t('connections_ext.failed_generate_link')),
   });
 
   useEffect(() => {
@@ -143,21 +147,21 @@ function TelegramConnectSection() {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <p className="text-sm font-medium text-gray-900">Telegram</p>
+                <p className="text-sm font-medium text-gray-900">{t('connections.telegram')}</p>
                 <CheckCircle className="h-4 w-4 text-green-500" />
               </div>
-              <p className="text-xs text-gray-400">{status.chatIds.length} {status.chatIds.length === 1 ? 'connection' : 'connections'}</p>
+              <p className="text-xs text-gray-400">{status.chatIds.length} {status.chatIds.length === 1 ? t('connections_ext.connection') : t('connections_ext.connections_count')}</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Badge variant="connected">connected</Badge>
+            <Badge variant="connected">{t('connections.connected')}</Badge>
             <Button
               size="sm"
               variant="secondary"
               onClick={() => connect.mutate()}
               loading={connect.isPending}
             >
-              + Add
+              + {t('common.add')}
             </Button>
           </div>
         </div>
@@ -168,7 +172,7 @@ function TelegramConnectSection() {
                 <span className="text-xs text-gray-500 font-mono">Chat ID: {id}</span>
                 <button
                   onClick={() => {
-                    if (confirm(`Remove Telegram connection ${id}?`)) {
+                    if (confirm(t('connections_ext.remove_connection', { name: `Telegram ${id}` }))) {
                       removeTg.mutate(id);
                     }
                   }}
@@ -195,21 +199,21 @@ function TelegramConnectSection() {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <p className="text-sm font-medium text-gray-900">Telegram</p>
+                <p className="text-sm font-medium text-gray-900">{t('connections.telegram')}</p>
                 <CheckCircle className="h-4 w-4 text-green-500" />
               </div>
-              <p className="text-xs text-gray-400">{status.chatIds.length} connections</p>
+              <p className="text-xs text-gray-400">{status?.chatIds?.length ?? 0} {t('connections_ext.connections_count')}</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {polling && <span className="text-xs text-gray-400 animate-pulse">Waiting...</span>}
+            {polling && <span className="text-xs text-gray-400 animate-pulse">{t('connections_ext.waiting')}</span>}
             <a
               href={deepLink}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors"
             >
-              Open Telegram
+              {t('connections_ext.open_telegram')}
               <ExternalLink className="h-3 w-3" />
             </a>
           </div>
@@ -226,8 +230,8 @@ function TelegramConnectSection() {
             <Send className="h-4 w-4 text-gray-500" />
           </div>
           <div>
-            <p className="text-sm font-medium text-gray-900">Telegram</p>
-            <p className="text-xs text-gray-400">Manager notifications</p>
+            <p className="text-sm font-medium text-gray-900">{t('connections.telegram')}</p>
+            <p className="text-xs text-gray-400">{t('connections_ext.manager_notifications')}</p>
           </div>
         </div>
         {!deepLink ? (
@@ -236,12 +240,12 @@ function TelegramConnectSection() {
             onClick={() => connect.mutate()}
             loading={connect.isPending}
           >
-            Connect
+            {t('common.confirm')}
           </Button>
         ) : (
           <div className="flex items-center gap-2">
             {polling && (
-              <span className="text-xs text-gray-400 animate-pulse">Waiting for connection...</span>
+              <span className="text-xs text-gray-400 animate-pulse">{t('connections_ext.waiting_for_connection')}</span>
             )}
             <a
               href={deepLink}
@@ -249,7 +253,7 @@ function TelegramConnectSection() {
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors"
             >
-              Open Telegram
+              {t('connections_ext.open_telegram')}
               <ExternalLink className="h-3 w-3" />
             </a>
           </div>
@@ -283,6 +287,7 @@ function connectionSubtext(conn: any): string {
 }
 
 export default function ConnectionsPage() {
+  const { t } = useT();
   const qc = useQueryClient();
   const [showForm, setShowForm] = useState<'instagram' | 'shopify' | null>(null);
   const [oauthMessage, setOauthMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -292,15 +297,15 @@ export default function ConnectionsPage() {
     const params = new URLSearchParams(window.location.search);
     const igStatus = params.get('instagram');
     if (igStatus === 'connected') {
-      setOauthMessage({ type: 'success', text: 'Instagram connected successfully!' });
+      setOauthMessage({ type: 'success', text: t('connections_ext.instagram_connected') });
       qc.invalidateQueries({ queryKey: ['connections'] });
       window.history.replaceState({}, '', window.location.pathname);
     } else if (igStatus === 'error') {
-      const reason = params.get('reason') ?? 'unknown';
-      setOauthMessage({ type: 'error', text: `Instagram connection failed: ${reason}` });
+      const reason = params.get('reason') ?? t('common.unknown');
+      setOauthMessage({ type: 'error', text: `${t('connections_ext.instagram_failed')}: ${reason}` });
       window.history.replaceState({}, '', window.location.pathname);
     }
-  }, [qc]);
+  }, [qc, t]);
 
   const { data, isLoading } = useQuery<any[]>({
     queryKey: ['connections'],
@@ -329,13 +334,13 @@ export default function ConnectionsPage() {
       {oauthMessage && (
         <div className={`px-4 py-3 rounded-lg text-sm ${oauthMessage.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
           {oauthMessage.text}
-          <button onClick={() => setOauthMessage(null)} className="ml-2 text-xs opacity-60 hover:opacity-100">×</button>
+          <button onClick={() => setOauthMessage(null)} className="ml-2 text-xs opacity-60 hover:opacity-100">\u00d7</button>
         </div>
       )}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-gray-900">Connections</h1>
-          <p className="text-sm text-gray-500 mt-1">Manage your integrations</p>
+          <h1 className="text-2xl font-semibold text-gray-900">{t('connections.title')}</h1>
+          <p className="text-sm text-gray-500 mt-1">{t('connections.subtitle')}</p>
         </div>
         <div className="flex gap-2">
           <Button
@@ -344,7 +349,7 @@ export default function ConnectionsPage() {
             onClick={() => setShowForm(showForm === 'instagram' ? null : 'instagram')}
           >
             <Instagram className="h-4 w-4" />
-            Instagram
+            {t('connections.instagram')}
           </Button>
           <Button
             variant="secondary"
@@ -352,7 +357,7 @@ export default function ConnectionsPage() {
             onClick={() => setShowForm(showForm === 'shopify' ? null : 'shopify')}
           >
             <ShoppingBag className="h-4 w-4" />
-            Shopify
+            {t('connections.shopify')}
           </Button>
         </div>
       </div>
@@ -373,8 +378,8 @@ export default function ConnectionsPage() {
           {connections.length === 0 ? (
             <EmptyState
               icon={Plug}
-              title="No connections"
-              description="Connect your Instagram or Shopify account to get started"
+              title={t('connections_ext.no_connections')}
+              description={t('connections_ext.no_connections_desc')}
             />
           ) : (
             <div className="divide-y divide-gray-100">
@@ -391,8 +396,8 @@ export default function ConnectionsPage() {
                       <p className="text-xs text-gray-400 mt-0.5">
                         {connectionSubtext(conn)}
                         {conn.lastSyncAt
-                          ? ` · Last sync: ${new Date(conn.lastSyncAt).toLocaleString()}`
-                          : ' · Never synced'}
+                          ? ` · ${t('connections_ext.last_sync')}: ${new Date(conn.lastSyncAt).toLocaleString()}`
+                          : ` · ${t('connections.never_synced')}`}
                       </p>
                     </div>
                   </div>
@@ -403,12 +408,12 @@ export default function ConnectionsPage() {
                         onClick={() => disconnect.mutate(conn.id)}
                         className="text-xs text-gray-400 hover:text-orange-500 transition-colors"
                       >
-                        Disconnect
+                        {t('connections.disconnect')}
                       </button>
                     )}
                     <button
                       onClick={() => {
-                        if (confirm(`Remove ${connectionLabel(conn)} connection?`)) {
+                        if (confirm(t('connections_ext.remove_connection', { name: connectionLabel(conn) }))) {
                           deleteConn.mutate(conn.id);
                         }
                       }}

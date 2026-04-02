@@ -4,6 +4,7 @@ import { Zap } from 'lucide-react';
 import { api } from '../lib/api';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
+import { useT } from '../i18n';
 
 const BUSINESS_TYPES = [
   { value: 'beauty', label: 'Beauty & Cosmetics' },
@@ -13,6 +14,7 @@ const BUSINESS_TYPES = [
 
 export default function RegisterPage() {
   const navigate = useNavigate();
+  const { t } = useT();
   const [storeName, setStoreName] = useState('');
   const [businessType, setBusinessType] = useState('beauty');
   const [email, setEmail] = useState('');
@@ -44,13 +46,13 @@ export default function RegisterPage() {
         password,
       });
       localStorage.setItem('accessToken', data.accessToken);
-      navigate('/connections');
+      navigate('/onboarding');
     } catch (err: any) {
       const msg = err.response?.data?.message;
       if (msg === 'Email already registered') {
-        setError('This email is already registered. Try signing in.');
+        setError(t('auth.email_taken'));
       } else {
-        setError(msg || 'Registration failed. Please try again.');
+        setError(t('auth.register_error'));
       }
     } finally {
       setLoading(false);
@@ -64,36 +66,36 @@ export default function RegisterPage() {
           <div className="h-12 w-12 rounded-2xl bg-gray-900 flex items-center justify-center mb-4">
             <Zap className="h-6 w-6 text-white" strokeWidth={2.5} />
           </div>
-          <h1 className="text-xl font-semibold text-gray-900">Create your store</h1>
-          <p className="text-sm text-gray-500 mt-1">Set up DirectMate for your business</p>
+          <h1 className="text-xl font-semibold text-gray-900">{t('auth.register_title')}</h1>
+          <p className="text-sm text-gray-500 mt-1">{t('auth.register_subtitle')}</p>
         </div>
 
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
           <form onSubmit={handleSubmit} className="space-y-4">
             <Input
-              label="Store name"
+              label={t('auth.store_name')}
               type="text"
               value={storeName}
               onChange={(e) => setStoreName(e.target.value)}
-              placeholder="My Beauty Store"
+              placeholder="My Store"
               required
             />
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Business type</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">{t('auth.business_type')}</label>
               <select
                 value={businessType}
                 onChange={(e) => setBusinessType(e.target.value)}
                 className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
               >
-                {BUSINESS_TYPES.map((t) => (
-                  <option key={t.value} value={t.value}>{t.label}</option>
+                {BUSINESS_TYPES.map((bt) => (
+                  <option key={bt.value} value={bt.value}>{bt.label}</option>
                 ))}
               </select>
             </div>
 
             <Input
-              label="Email"
+              label={t('auth.email')}
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -103,7 +105,7 @@ export default function RegisterPage() {
             />
 
             <Input
-              label="Password"
+              label={t('auth.password')}
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -113,7 +115,7 @@ export default function RegisterPage() {
             />
 
             <Input
-              label="Confirm password"
+              label={t('auth.confirm_password')}
               type="password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
@@ -129,15 +131,15 @@ export default function RegisterPage() {
             )}
 
             <Button type="submit" loading={loading} className="w-full" size="lg">
-              Create store
+              {t('auth.create_account')}
             </Button>
           </form>
         </div>
 
         <p className="text-center text-sm text-gray-500 mt-4">
-          Already have an account?{' '}
+          {t('auth.have_account')}{' '}
           <Link to="/login" className="text-gray-900 font-medium hover:underline">
-            Sign in
+            {t('auth.sign_in')}
           </Link>
         </p>
       </div>

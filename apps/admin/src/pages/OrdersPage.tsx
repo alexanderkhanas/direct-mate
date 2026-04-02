@@ -18,6 +18,7 @@ import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { LoadingState } from '../components/ui/Spinner';
 import { EmptyState } from '../components/ui/EmptyState';
+import { useT } from '../i18n';
 
 type BadgeVariant =
   | 'active'
@@ -29,22 +30,6 @@ type BadgeVariant =
   | 'pending'
   | 'success'
   | 'default';
-
-const statusConfig: Record<string, { label: string; variant: BadgeVariant }> = {
-  draft: { label: 'Draft', variant: 'default' },
-  awaiting_manager_confirmation: { label: 'Awaiting confirmation', variant: 'pending' },
-  confirmed: { label: 'Confirmed', variant: 'success' },
-  shipped: { label: 'Shipped', variant: 'active' },
-  delivered: { label: 'Delivered', variant: 'connected' },
-  cancelled: { label: 'Cancelled', variant: 'error' },
-};
-
-const syncStatusConfig: Record<string, { label: string; variant: BadgeVariant }> = {
-  none: { label: 'Not synced', variant: 'closed' },
-  pending: { label: 'Syncing...', variant: 'pending' },
-  synced: { label: 'Synced', variant: 'success' },
-  failed: { label: 'Sync failed', variant: 'error' },
-};
 
 function formatDate(dateStr: string) {
   const d = new Date(dateStr);
@@ -63,8 +48,25 @@ function formatCurrency(amount: number | null, currency: string) {
 }
 
 function OrderRow({ order }: { order: Order }) {
+  const { t } = useT();
   const [expanded, setExpanded] = useState(false);
   const queryClient = useQueryClient();
+
+  const statusConfig: Record<string, { label: string; variant: BadgeVariant }> = {
+    draft: { label: t('orders.status_draft'), variant: 'default' },
+    awaiting_manager_confirmation: { label: t('orders.status_awaiting'), variant: 'pending' },
+    confirmed: { label: t('orders.status_confirmed'), variant: 'success' },
+    shipped: { label: t('orders.status_shipped'), variant: 'active' },
+    delivered: { label: t('orders.status_delivered'), variant: 'connected' },
+    cancelled: { label: t('orders.status_cancelled'), variant: 'error' },
+  };
+
+  const syncStatusConfig: Record<string, { label: string; variant: BadgeVariant }> = {
+    none: { label: t('orders.sync_none'), variant: 'closed' },
+    pending: { label: t('orders.sync_pending'), variant: 'pending' },
+    synced: { label: t('orders.sync_synced'), variant: 'success' },
+    failed: { label: t('orders.sync_failed'), variant: 'error' },
+  };
 
   const statusMutation = useMutation({
     mutationFn: (status: string) =>
@@ -87,7 +89,7 @@ function OrderRow({ order }: { order: Order }) {
     variant: 'default' as const,
   };
 
-  const customerName = order.customer?.fullName || 'Unknown';
+  const customerName = order.customer?.fullName || t('common.unknown');
   const productSummary =
     order.items.length > 0
       ? order.items
@@ -137,7 +139,7 @@ function OrderRow({ order }: { order: Order }) {
                 onClick={(e) => { e.stopPropagation(); retrySyncMutation.mutate(); }}
                 className="text-[10px] text-blue-500 hover:text-blue-700"
               >
-                {retrySyncMutation.isPending ? '...' : 'Retry'}
+                {retrySyncMutation.isPending ? '...' : t('orders_ext.retry')}
               </button>
             )}
           </div>
@@ -160,7 +162,7 @@ function OrderRow({ order }: { order: Order }) {
             {/* Customer info */}
             <div className="space-y-3">
               <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                Customer
+                {t('orders.customer')}
               </h4>
               <div className="space-y-2">
                 {order.customer?.fullName && (
@@ -188,7 +190,7 @@ function OrderRow({ order }: { order: Order }) {
                   </div>
                 )}
                 {!order.customer && (
-                  <p className="text-sm text-gray-400 italic">No customer info</p>
+                  <p className="text-sm text-gray-400 italic">{t('orders_ext.no_customer_info')}</p>
                 )}
               </div>
             </div>
@@ -196,7 +198,7 @@ function OrderRow({ order }: { order: Order }) {
             {/* Items */}
             <div className="space-y-3">
               <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                Items
+                {t('orders.items')}
               </h4>
               {order.items.length > 0 ? (
                 <div className="space-y-2">
@@ -224,7 +226,7 @@ function OrderRow({ order }: { order: Order }) {
                   ))}
                 </div>
               ) : (
-                <p className="text-sm text-gray-400 italic">No items</p>
+                <p className="text-sm text-gray-400 italic">{t('orders_ext.no_items')}</p>
               )}
             </div>
           </div>
@@ -232,12 +234,12 @@ function OrderRow({ order }: { order: Order }) {
           {/* Metadata row */}
           <div className="mt-4 pt-4 border-t border-gray-200 flex items-center justify-between">
             <div className="flex items-center gap-4 text-xs text-gray-400">
-              <span>Source: {order.source}</span>
+              <span>{t('orders.source')}: {order.source}</span>
               <span>ID: {order.id.slice(0, 8)}...</span>
               {order.externalOrderId && (
                 <span className="flex items-center gap-1">
                   <ExternalLink className="h-3 w-3" />
-                  External: {order.externalOrderId}
+                  {t('orders_ext.external')}: {order.externalOrderId}
                 </span>
               )}
             </div>
@@ -254,7 +256,7 @@ function OrderRow({ order }: { order: Order }) {
                     statusMutation.mutate('confirmed');
                   }}
                 >
-                  Confirm Order
+                  {t('orders_ext.confirm_order')}
                 </Button>
               )}
               {order.status === 'confirmed' && (
@@ -267,7 +269,7 @@ function OrderRow({ order }: { order: Order }) {
                     statusMutation.mutate('shipped');
                   }}
                 >
-                  Mark as Shipped
+                  {t('orders_ext.mark_shipped')}
                 </Button>
               )}
               {order.status === 'shipped' && (
@@ -280,7 +282,7 @@ function OrderRow({ order }: { order: Order }) {
                     statusMutation.mutate('delivered');
                   }}
                 >
-                  Mark as Delivered
+                  {t('orders_ext.mark_delivered')}
                 </Button>
               )}
               {order.status !== 'cancelled' && order.status !== 'delivered' && (
@@ -293,7 +295,7 @@ function OrderRow({ order }: { order: Order }) {
                     statusMutation.mutate('cancelled');
                   }}
                 >
-                  Cancel
+                  {t('common.cancel')}
                 </Button>
               )}
             </div>
@@ -305,6 +307,7 @@ function OrderRow({ order }: { order: Order }) {
 }
 
 export default function OrdersPage() {
+  const { t } = useT();
   const { data: orders, isLoading } = useQuery<Order[]>({
     queryKey: ['orders'],
     queryFn: () => api.get('/orders').then((r) => r.data),
@@ -321,9 +324,9 @@ export default function OrdersPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Orders</h1>
+        <h1 className="text-2xl font-semibold text-gray-900">{t('orders.title')}</h1>
         <p className="text-sm text-gray-500 mt-1">
-          Manage orders created from Instagram DM conversations
+          {t('orders_ext.manage_subtitle')}
         </p>
       </div>
 
@@ -331,17 +334,17 @@ export default function OrdersPage() {
       {counts && counts.total > 0 && (
         <div className="grid grid-cols-3 gap-4">
           <Card>
-            <p className="text-xs text-gray-500 font-medium uppercase tracking-wider">Total</p>
+            <p className="text-xs text-gray-500 font-medium uppercase tracking-wider">{t('orders.total')}</p>
             <p className="text-2xl font-semibold text-gray-900 mt-1">{counts.total}</p>
           </Card>
           <Card>
             <p className="text-xs text-gray-500 font-medium uppercase tracking-wider">
-              Awaiting confirmation
+              {t('orders_ext.awaiting_confirmation')}
             </p>
             <p className="text-2xl font-semibold text-yellow-600 mt-1">{counts.awaiting}</p>
           </Card>
           <Card>
-            <p className="text-xs text-gray-500 font-medium uppercase tracking-wider">Confirmed</p>
+            <p className="text-xs text-gray-500 font-medium uppercase tracking-wider">{t('orders_ext.confirmed')}</p>
             <p className="text-2xl font-semibold text-emerald-600 mt-1">{counts.confirmed}</p>
           </Card>
         </div>
@@ -353,22 +356,22 @@ export default function OrdersPage() {
           <div className="px-5 py-3 border-b border-gray-200 bg-gray-50/80 rounded-t-xl">
             <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_100px_120px_100px_140px] gap-4 items-center pr-8">
               <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                Customer
+                {t('orders.customer')}
               </span>
               <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                Products
+                {t('orders_ext.products')}
               </span>
               <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider text-right">
-                Total
+                {t('orders.total')}
               </span>
               <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                Status
+                {t('common.status')}
               </span>
               <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                Sync
+                {t('orders_ext.sync')}
               </span>
               <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider text-right">
-                Date
+                {t('common.date')}
               </span>
             </div>
           </div>
@@ -386,8 +389,8 @@ export default function OrdersPage() {
         <Card padding={false}>
           <EmptyState
             icon={ShoppingCart}
-            title="No orders yet"
-            description="Orders will appear here when customers complete checkout via Instagram DM"
+            title={t('orders_ext.no_orders_yet')}
+            description={t('orders_ext.no_orders_checkout_desc')}
           />
         </Card>
       )}

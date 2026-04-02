@@ -8,6 +8,7 @@ import { Button } from '../components/ui/Button';
 import { Textarea } from '../components/ui/Textarea';
 import { Input } from '../components/ui/Input';
 import { Select } from '../components/ui/Select';
+import { useT } from '../i18n';
 import { Badge } from '../components/ui/Badge';
 import { LoadingState } from '../components/ui/Spinner';
 import { cn } from '../lib/cn';
@@ -75,6 +76,7 @@ const SCENARIO_COLORS: Record<string, string> = {
 // --- Templates Tab ---
 
 function TemplateCard({ template }: { template: ResponseTemplate }) {
+  const { t } = useT();
   const qc = useQueryClient();
   const [expanded, setExpanded] = useState(false);
   const [blocks, setBlocks] = useState(template.blocks.join('\n'));
@@ -140,7 +142,7 @@ function TemplateCard({ template }: { template: ResponseTemplate }) {
         <span className="text-sm text-gray-600 truncate flex-1">{preview}</span>
         <span className="text-xs text-gray-400 shrink-0">P{template.priority}</span>
         <Badge variant={template.active ? 'active' : 'closed'}>
-          {template.active ? 'Active' : 'Inactive'}
+          {template.active ? t('templates.active') : t('templates.inactive')}
         </Badge>
       </button>
 
@@ -175,7 +177,7 @@ function TemplateCard({ template }: { template: ResponseTemplate }) {
               onChange={(e) => setActive(e.target.checked)}
               className="h-4 w-4 rounded border-gray-300 text-gray-900 focus:ring-gray-900"
             />
-            <span className="text-sm text-gray-700">Active</span>
+            <span className="text-sm text-gray-700">{t('templates.active')}</span>
           </label>
           <div className="flex gap-2">
             <Button size="sm" onClick={() => update.mutate()} loading={update.isPending}>
@@ -281,6 +283,7 @@ function AddTemplateForm({ onClose }: { onClose: () => void }) {
 }
 
 function TemplatesTab() {
+  const { t } = useT();
   const [showForm, setShowForm] = useState(false);
   const { data, isLoading } = useQuery<ResponseTemplate[]>({
     queryKey: ['templates'],
@@ -310,7 +313,7 @@ function TemplatesTab() {
       <div className="flex justify-end">
         <Button variant="secondary" size="sm" onClick={() => setShowForm((v) => !v)}>
           <Plus className="h-3.5 w-3.5" />
-          Add Template
+          {t('templates.add_template')}
         </Button>
       </div>
 
@@ -482,6 +485,7 @@ function PhraseBlocksTab() {
 // --- FAQ Tab ---
 
 function FaqCard({ item }: { item: FaqItem }) {
+  const { t } = useT();
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [tags, setTags] = useState(item.questionTags.join(', '));
@@ -530,7 +534,7 @@ function FaqCard({ item }: { item: FaqItem }) {
             onChange={(e) => setActive(e.target.checked)}
             className="h-4 w-4 rounded border-gray-300 text-gray-900 focus:ring-gray-900"
           />
-          <span className="text-sm text-gray-700">Active</span>
+          <span className="text-sm text-gray-700">{t('templates.active')}</span>
         </label>
         <div className="flex gap-2">
           <Button size="sm" onClick={() => update.mutate()} loading={update.isPending}>
@@ -629,20 +633,21 @@ function AddFaqForm({ onClose }: { onClose: () => void }) {
 }
 
 function FaqTab() {
+  const { t } = useT();
   const [showForm, setShowForm] = useState(false);
   const { data, isLoading } = useQuery<FaqItem[]>({
     queryKey: ['faq'],
     queryFn: () => api.get('/engine/faq').then((r) => r.data),
   });
 
-  if (isLoading) return <LoadingState message="Loading FAQ..." />;
+  if (isLoading) return <LoadingState message={t('common.loading')} />;
 
   return (
     <div className="space-y-4">
       <div className="flex justify-end">
         <Button variant="secondary" size="sm" onClick={() => setShowForm((v) => !v)}>
           <Plus className="h-3.5 w-3.5" />
-          Add FAQ
+          {t('templates.add_faq')}
         </Button>
       </div>
 
@@ -650,7 +655,7 @@ function FaqTab() {
 
       {(data ?? []).length === 0 && !showForm && (
         <p className="text-sm text-gray-400 text-center py-8">
-          No FAQ items yet — add one to get started
+          {t('templates.no_faq')}
         </p>
       )}
 
@@ -668,20 +673,21 @@ function FaqTab() {
 type Tab = 'templates' | 'phrases' | 'faq';
 
 export default function TemplatesPage() {
+  const { t } = useT();
   const [tab, setTab] = useState<Tab>('templates');
 
   const tabs: { key: Tab; label: string }[] = [
-    { key: 'templates', label: 'Templates' },
-    { key: 'phrases', label: 'Phrase Blocks' },
-    { key: 'faq', label: 'FAQ' },
+    { key: 'templates', label: t('templates.templates_tab') },
+    { key: 'phrases', label: t('templates.phrases_tab') },
+    { key: 'faq', label: t('templates.faq_tab') },
   ];
 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Templates</h1>
+        <h1 className="text-2xl font-semibold text-gray-900">{t('templates.title')}</h1>
         <p className="text-sm text-gray-500 mt-1">
-          Manage response templates, phrase blocks, and FAQ items
+          {t('templates.subtitle')}
         </p>
       </div>
 

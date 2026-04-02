@@ -8,15 +8,9 @@ import { LoadingState } from '../components/ui/Spinner';
 import { EmptyState } from '../components/ui/EmptyState';
 import { MessageSquare } from 'lucide-react';
 import { cn } from '../lib/cn';
+import { useT } from '../i18n';
 
 type Filter = 'all' | 'handoff' | 'active' | 'closed';
-
-const filters: { key: Filter; label: string }[] = [
-  { key: 'all', label: 'All' },
-  { key: 'handoff', label: 'Needs handoff' },
-  { key: 'active', label: 'Active' },
-  { key: 'closed', label: 'Closed' },
-];
 
 function statusVariant(status: string): 'active' | 'closed' | 'default' {
   if (status === 'active' || status === 'human_in_control') return 'active';
@@ -24,13 +18,21 @@ function statusVariant(status: string): 'active' | 'closed' | 'default' {
   return 'default';
 }
 
-function statusLabel(status: string): string {
-  if (status === 'human_in_control') return 'Human control';
-  return status.replace(/_/g, ' ');
-}
-
 export default function ConversationsPage() {
+  const { t } = useT();
   const [filter, setFilter] = useState<Filter>('all');
+
+  const filters: { key: Filter; label: string }[] = [
+    { key: 'all', label: t('conversations.all') },
+    { key: 'handoff', label: t('conversations.needs_handoff') },
+    { key: 'active', label: t('conversations.active') },
+    { key: 'closed', label: t('conversations.closed') },
+  ];
+
+  function statusLabel(status: string): string {
+    if (status === 'human_in_control') return t('conversations_ext.human_control');
+    return status.replace(/_/g, ' ');
+  }
 
   const queryParams =
     filter === 'handoff'
@@ -50,9 +52,9 @@ export default function ConversationsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Conversations</h1>
+        <h1 className="text-2xl font-semibold text-gray-900">{t('conversations.title')}</h1>
         <p className="text-sm text-gray-500 mt-1">
-          {data?.total != null ? `${data.total} total` : ''}
+          {data?.total != null ? `${data.total} ${t('conversations_ext.total')}` : ''}
         </p>
       </div>
 
@@ -94,13 +96,13 @@ export default function ConversationsPage() {
                 </div>
                 <div>
                   <p className="text-sm font-medium text-gray-900">
-                    {conv.customer?.username ? `@${conv.customer.username}` : conv.customer?.fullName ?? 'Unknown'}
+                    {conv.customer?.username ? `@${conv.customer.username}` : conv.customer?.fullName ?? t('conversations_ext.unknown_customer')}
                   </p>
                   <p className="text-xs text-gray-400 mt-0.5 capitalize">{conv.channel}</p>
                 </div>
               </div>
               <div className="flex items-center gap-3">
-                {conv.needsHandoff && <Badge variant="handoff">Needs handoff</Badge>}
+                {conv.needsHandoff && <Badge variant="handoff">{t('conversations.needs_handoff')}</Badge>}
                 <Badge variant={statusVariant(conv.status)}>{statusLabel(conv.status)}</Badge>
                 <span className="text-xs text-gray-400 min-w-12 text-right">
                   {conv.lastMessageAt
@@ -108,7 +110,7 @@ export default function ConversationsPage() {
                         hour: '2-digit',
                         minute: '2-digit',
                       })
-                    : '—'}
+                    : '\u2014'}
                 </span>
               </div>
             </Link>
@@ -116,8 +118,8 @@ export default function ConversationsPage() {
           {data?.items.length === 0 && (
             <EmptyState
               icon={MessageSquare}
-              title="No conversations"
-              description="Conversations will appear here when customers message your store"
+              title={t('conversations.no_conversations')}
+              description={t('conversations_ext.conversations_will_appear')}
             />
           )}
         </div>

@@ -1,4 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { LangProvider } from './i18n';
+import LandingPage from './pages/LandingPage';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import ConversationsPage from './pages/ConversationsPage';
@@ -16,19 +18,23 @@ import TenantsPage from './pages/admin/TenantsPage';
 import TenantDetailPage from './pages/admin/TenantDetailPage';
 import StatsPage from './pages/admin/StatsPage';
 import RegisterPage from './pages/RegisterPage';
+import OnboardingPage from './pages/OnboardingPage';
 import Layout from './components/Layout';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = localStorage.getItem('accessToken');
-  return token ? <>{children}</> : <Navigate to="/login" replace />;
+  return token ? <>{children}</> : <Navigate to="/welcome" replace />;
 }
 
 export default function App() {
   return (
+    <LangProvider>
     <BrowserRouter>
       <Routes>
+        <Route path="/welcome" element={<LandingPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
+        <Route path="/onboarding" element={<OnboardingPage />} />
         <Route
           path="/"
           element={
@@ -55,5 +61,6 @@ export default function App() {
         </Route>
       </Routes>
     </BrowserRouter>
+    </LangProvider>
   );
 }
