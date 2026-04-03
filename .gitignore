@@ -48,6 +48,7 @@ lerna-debug.log*
 
 # Conversation debug logs
 apps/api/conversations.log
+apps/api/simulator-output-*.json
 
 # Runtime data
 pids
