@@ -38,6 +38,7 @@ const INTENT_TO_SCENARIO: Record<string, string> = {
   ask_recommendation: 'recommend_product',
   ready_to_order: 'collect_checkout_info',
   confirm_choice: 'confirm_selection',
+  confirm_variant_available: 'confirm_variant_available',
   provide_details: 'collect_checkout_info',
   delivery_question: 'answer_delivery',
   payment_question: 'answer_payment',
@@ -54,6 +55,7 @@ const ACTION_TO_SCENARIO: Record<string, string> = {
   start_checkout: 'collect_checkout_info',
   ask_delivery: 'order_confirmed_ask_delivery',
   confirm_selection: 'confirm_selection',
+  confirm_variant_available: 'confirm_variant_available',
   show_price: 'show_price',
   greet: 'greeting',
   ask_variant_choice: 'ask_variant_choice',
@@ -174,7 +176,7 @@ export class TemplateEngineService {
 
     // Collect product image URLs for scenarios that show products
     const allProductScenarios = ['show_products'];
-    const singleProductScenarios = ['confirm_selection', 'recommend_product', 'ask_recommendation_from_shown'];
+    const singleProductScenarios = ['confirm_selection', 'confirm_variant_available', 'recommend_product', 'ask_recommendation_from_shown'];
     const imageUrls: string[] = [];
     if (productData) {
       if (allProductScenarios.includes(scenario)) {
@@ -423,9 +425,14 @@ export class TemplateEngineService {
     if (classification.entities.customerName)
       vars['customer_name'] = classification.entities.customerName;
     // NOTE: variant_name is set ONLY from matched product data or memory, not from raw entities
-    // This prevents confirming a variant that doesn't exist in the catalog
-    if (!vars['variant_name'] && memory?.selectedVariantName) {
+    // This prevents confirming a variant that doesn't exist in the catalog.
+    // Source depends on the selection state at render time (state transitions before template runs):
+    //   awaiting_confirmation → memory.selectedVariantName (variant was just matched, not yet added)
+    //   cart_item_added       → cartItems.at(-1).variantName (5.5a already moved the state and added the item)
+    if (!vars['variant_name'] && memory?.selectedVariantName && memory?.selectionState === 'awaiting_confirmation') {
       vars['variant_name'] = memory.selectedVariantName;
+    } else if (!vars['variant_name'] && memory?.selectionState === 'cart_item_added' && (memory?.cartItems as any[])?.length) {
+      vars['variant_name'] = (memory.cartItems as any[]).at(-1)?.variantName;
     }
 
     // From memory (fallback for recommendation scenarios)
@@ -474,11 +481,13 @@ export class TemplateEngineService {
       }
 
       // Build variant_name — hybrid matching against user's requested color/size
+      // Skip if memory already provided the confirmed variant (memory is authoritative —
+      // fuzzy matching could otherwise corrupt it, e.g. levenshtein('m','l')=1 matches L)
       const userColor = classification.entities.color ?? '';
       const userSize = classification.entities.size ?? '';
       const userVariantInput = userColor || userSize;
 
-      if (userVariantInput) {
+      if (!vars['variant_name'] && userVariantInput) {
         const inStockVariants = first.variants.filter((v) => v.effectiveAvailable > 0);
         const match = this.matchVariant(userVariantInput, inStockVariants);
         if (match) {
@@ -489,7 +498,7 @@ export class TemplateEngineService {
         }
         // NO fallback to first variant — if no match, variant_name stays unset
         // This forces ask_variant_choice template
-      } else if (first.variants.length === 1) {
+      } else if (first.variants.length === 1 && !vars['variant_name']) {
         // Single variant product — auto-select
         const only = first.variants[0];
         if (only.effectiveAvailable > 0) {

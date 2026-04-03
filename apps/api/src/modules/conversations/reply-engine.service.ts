@@ -330,6 +330,9 @@ export class ReplyEngineService {
       preQualifyFlowConfig?.preQualify?.enabled &&
       !memory.preQualifyCollected &&
       !memory.orderCreated &&
+      !mediaProductData && // product already known from story/post — no need to pre-qualify
+      !memory.cartItems?.length && // cart already has items — product already chosen, skip pre-qualify
+      memory.selectionState !== 'cart_item_added' && // same: selection already resolved
       (awaitingPreQualify || this.shouldSearchProducts(classification, memory))
     ) {
       // Check if this message contains pre-qualify data
@@ -384,7 +387,93 @@ export class ReplyEngineService {
 
     if (mediaProductData && mediaProductData.length > 0) {
       productData = mediaProductData;
-      isFirstProductPresentation = !memory.lastPresentedProducts?.length;
+      // Customer already saw the product in the story/post — not a "first presentation".
+      // Also populate lastPresentedProducts so downstream code (shouldSearchProducts, stage gates)
+      // knows products have been shown.
+      isFirstProductPresentation = false;
+      if (!memory.lastPresentedProducts?.length) {
+        memory.lastPresentedProducts = mediaProductData.map((p) => ({
+          title: p.product.title,
+          variants: [...new Set(p.variants.map((v) =>
+            [...new Set([v.size, v.color].filter(Boolean))].join(', ') || 'standard',
+          ))],
+          price: [
+            ...new Set(p.variants.map((v) => `${v.price} ${v.currency}`)),
+          ].join(' / '),
+        }));
+      }
+
+      // 5.5m: Pre-seed memory so variant matching works for story/post replies.
+      // Without this, memory.selectedProductId is null → 5.5c/5.5d are skipped →
+      // template engine falls through to show_products listing all variants generically.
+      const first = mediaProductData[0];
+      const inStock = first.variants.filter((v) => v.effectiveAvailable > 0);
+
+      memory.selectedProductId = first.product.id;
+      memory.selectedProductTitle = first.product.title;
+      memory.availableVariants = inStock.map((v) => ({
+        id: v.id,
+        name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+        color: v.color,
+        size: v.size,
+      }));
+
+      // Only override scenario for selection-type intents.
+      // Price / delivery / FAQ intents already work correctly with productData in context.
+      const isSelectionIntent =
+        ['availability_check', 'product_inquiry', 'general_question'].includes(classification.primaryIntent) ||
+        classification.recommendedAction === 'show_products';
+
+      if (isSelectionIntent) {
+        const userColor = classification.entities.color;
+        const userSize = classification.entities.size;
+
+        if (userColor || userSize) {
+          // Customer mentioned a specific variant — try to match FIRST regardless of inStock count.
+          // (Matching first avoids auto-selecting S when customer asked for XL which is out of stock.)
+          const matched = this.matchVariant(
+            inStock.map((v) => ({
+              id: v.id,
+              name: [...new Set([v.color, v.size].filter(Boolean))].join(', '),
+              color: v.color ?? null,
+              size: v.size ?? null,
+            })),
+            userColor,
+            userSize,
+          );
+          if (matched) {
+            memory.selectedVariantId = matched.id;
+            memory.selectedVariantName = matched.name;
+            memory.selectionState = 'awaiting_confirmation';
+            // Use size-specific confirmation template only when customer asked about a size
+            const intent = userSize ? 'confirm_variant_available' : 'confirm_choice';
+            const action = userSize ? 'confirm_variant_available' : 'confirm_selection';
+            classification.primaryIntent = intent;
+            classification.recommendedAction = action;
+            this.logger.log(`5.5m: Story reply — variant matched: ${matched.name}`);
+          } else {
+            // Mentioned variant not found/out of stock → show what is available
+            memory.selectionState = 'awaiting_variant';
+            classification.primaryIntent = 'ask_variant_choice';
+            classification.recommendedAction = 'ask_variant_choice';
+            this.logger.log(`5.5m: Story reply — variant "${userColor || userSize}" not matched`);
+          }
+        } else if (inStock.length === 1) {
+          // No specific variant mentioned AND only one option → auto-select
+          memory.selectedVariantId = inStock[0].id;
+          memory.selectedVariantName = (memory.availableVariants as Array<{ name: string }>)[0].name;
+          memory.selectionState = 'awaiting_confirmation';
+          classification.primaryIntent = 'confirm_choice'; // no size asked — use generic confirm_selection
+          classification.recommendedAction = 'confirm_selection';
+          this.logger.log(`5.5m: Story reply — single variant auto-selected: ${memory.selectedVariantName}`);
+        } else {
+          // No specific variant, multiple options → ask which they want
+          memory.selectionState = 'awaiting_variant';
+          classification.primaryIntent = 'ask_variant_choice';
+          classification.recommendedAction = 'ask_variant_choice';
+          this.logger.log(`5.5m: Story reply — product pre-seeded, no variant → ask_variant_choice`);
+        }
+      }
     }
 
     const needsSearch = !productData && this.shouldSearchProducts(classification, memory);
@@ -1359,6 +1448,11 @@ export class ReplyEngineService {
   // ─── Product search helpers ────────────────────────────────────
 
   private shouldSearchProducts(classification: ClassificationResult, memory: AssistantMemory): boolean {
+    // Product + variant already confirmed and awaiting customer's "так" — no need to search
+    if (memory.selectionState === 'awaiting_confirmation' && memory.selectedProductId && memory.selectedVariantId) {
+      return false;
+    }
+
     const searchActions = [
       'show_products',
       'recommend',
@@ -1454,6 +1548,11 @@ export class ReplyEngineService {
             size: v.size,
           }));
         }
+        break;
+      case 'confirm_variant_available':
+        memory.lastAction = 'confirmed_product';
+        memory.awaitingField = 'order_confirmation';
+        memory.selectionState = 'awaiting_confirmation';
         break;
       case 'confirm_selection':
         memory.lastAction = 'confirmed_product';

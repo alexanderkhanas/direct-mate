@@ -238,6 +238,9 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         if (preQualifyFlowConfig?.preQualify?.enabled &&
             !memory.preQualifyCollected &&
             !memory.orderCreated &&
+            !mediaProductData &&
+            !memory.cartItems?.length &&
+            memory.selectionState !== 'cart_item_added' &&
             (awaitingPreQualify || this.shouldSearchProducts(classification, memory))) {
             if (awaitingPreQualify ||
                 classification.primaryIntent === 'provide_details' ||
@@ -279,7 +282,70 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         let isFirstProductPresentation = false;
         if (mediaProductData && mediaProductData.length > 0) {
             productData = mediaProductData;
-            isFirstProductPresentation = !memory.lastPresentedProducts?.length;
+            isFirstProductPresentation = false;
+            if (!memory.lastPresentedProducts?.length) {
+                memory.lastPresentedProducts = mediaProductData.map((p) => ({
+                    title: p.product.title,
+                    variants: [...new Set(p.variants.map((v) => [...new Set([v.size, v.color].filter(Boolean))].join(', ') || 'standard'))],
+                    price: [
+                        ...new Set(p.variants.map((v) => `${v.price} ${v.currency}`)),
+                    ].join(' / '),
+                }));
+            }
+            const first = mediaProductData[0];
+            const inStock = first.variants.filter((v) => v.effectiveAvailable > 0);
+            memory.selectedProductId = first.product.id;
+            memory.selectedProductTitle = first.product.title;
+            memory.availableVariants = inStock.map((v) => ({
+                id: v.id,
+                name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+                color: v.color,
+                size: v.size,
+            }));
+            const isSelectionIntent = ['availability_check', 'product_inquiry', 'general_question'].includes(classification.primaryIntent) ||
+                classification.recommendedAction === 'show_products';
+            if (isSelectionIntent) {
+                const userColor = classification.entities.color;
+                const userSize = classification.entities.size;
+                if (userColor || userSize) {
+                    const matched = this.matchVariant(inStock.map((v) => ({
+                        id: v.id,
+                        name: [...new Set([v.color, v.size].filter(Boolean))].join(', '),
+                        color: v.color ?? null,
+                        size: v.size ?? null,
+                    })), userColor, userSize);
+                    if (matched) {
+                        memory.selectedVariantId = matched.id;
+                        memory.selectedVariantName = matched.name;
+                        memory.selectionState = 'awaiting_confirmation';
+                        const intent = userSize ? 'confirm_variant_available' : 'confirm_choice';
+                        const action = userSize ? 'confirm_variant_available' : 'confirm_selection';
+                        classification.primaryIntent = intent;
+                        classification.recommendedAction = action;
+                        this.logger.log(`5.5m: Story reply — variant matched: ${matched.name}`);
+                    }
+                    else {
+                        memory.selectionState = 'awaiting_variant';
+                        classification.primaryIntent = 'ask_variant_choice';
+                        classification.recommendedAction = 'ask_variant_choice';
+                        this.logger.log(`5.5m: Story reply — variant "${userColor || userSize}" not matched`);
+                    }
+                }
+                else if (inStock.length === 1) {
+                    memory.selectedVariantId = inStock[0].id;
+                    memory.selectedVariantName = memory.availableVariants[0].name;
+                    memory.selectionState = 'awaiting_confirmation';
+                    classification.primaryIntent = 'confirm_choice';
+                    classification.recommendedAction = 'confirm_selection';
+                    this.logger.log(`5.5m: Story reply — single variant auto-selected: ${memory.selectedVariantName}`);
+                }
+                else {
+                    memory.selectionState = 'awaiting_variant';
+                    classification.primaryIntent = 'ask_variant_choice';
+                    classification.recommendedAction = 'ask_variant_choice';
+                    this.logger.log(`5.5m: Story reply — product pre-seeded, no variant → ask_variant_choice`);
+                }
+            }
         }
         const needsSearch = !productData && this.shouldSearchProducts(classification, memory);
         if (needsSearch) {
@@ -1046,6 +1112,9 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         return bestSize;
     }
     shouldSearchProducts(classification, memory) {
+        if (memory.selectionState === 'awaiting_confirmation' && memory.selectedProductId && memory.selectedVariantId) {
+            return false;
+        }
         const searchActions = [
             'show_products',
             'recommend',
@@ -1117,6 +1186,11 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                         size: v.size,
                     }));
                 }
+                break;
+            case 'confirm_variant_available':
+                memory.lastAction = 'confirmed_product';
+                memory.awaitingField = 'order_confirmation';
+                memory.selectionState = 'awaiting_confirmation';
                 break;
             case 'confirm_selection':
                 memory.lastAction = 'confirmed_product';
