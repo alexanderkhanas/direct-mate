@@ -59,6 +59,13 @@ export declare class ReplyEngineService {
     private logToFile;
     constructor(settingsRepo: Repository<TenantSettings>, examplesRepo: Repository<ManagerExample>, storeConfigRepo: Repository<StoreConfig>, availabilityService: AvailabilityService, auditService: AuditService, classifierService: ClassifierService, templateEngine: TemplateEngineService, policyEngine: PolicyEngineService, config: ConfigService, instagramContentService: InstagramContentService);
     process(input: ReplyEngineInput): Promise<ReplyEngineOutput>;
+    private loadContext;
+    private classifyMessage;
+    private resolveMediaProduct;
+    private handlePreQualify;
+    private searchAndFilterProducts;
+    private resolveVariantSelection;
+    private buildResponse;
     private scenarioToAction;
     private resolveShortReply;
     private matchVariant;

@@ -55,6 +55,27 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         this.model = this.config.get('openai.model') ?? 'gpt-4o';
     }
     async process(input) {
+        const ctx = await this.loadContext(input);
+        const maxFailedTurns = ctx.settings?.handoffRules?.maxFailedTurns ?? 5;
+        if ((ctx.memory.failedTurns ?? 0) >= maxFailedTurns) {
+            return this.doHandoff(input, 'max_failed_turns');
+        }
+        const classifyResult = await this.classifyMessage(input, ctx);
+        if (classifyResult)
+            return classifyResult;
+        const mediaResult = await this.resolveMediaProduct(input, ctx);
+        if (mediaResult)
+            return mediaResult;
+        const preQualifyResult = await this.handlePreQualify(input, ctx);
+        if (preQualifyResult)
+            return preQualifyResult;
+        const searchResult = await this.searchAndFilterProducts(input, ctx);
+        if (searchResult)
+            return searchResult;
+        this.resolveVariantSelection(input, ctx);
+        return this.buildResponse(input, ctx);
+    }
+    async loadContext(input) {
         const [settings, storeConfig, examples, categories] = await Promise.all([
             this.settingsRepo.findOne({ where: { tenantId: input.tenantId } }),
             this.storeConfigRepo.findOne({ where: { tenantId: input.tenantId } }),
@@ -65,10 +86,6 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             this.availabilityService.getCategories(input.tenantId),
         ]);
         const memory = input.state.contextJson ?? {};
-        const maxFailedTurns = settings?.handoffRules?.maxFailedTurns ?? 5;
-        if ((memory.failedTurns ?? 0) >= maxFailedTurns) {
-            return this.doHandoff(input, 'max_failed_turns');
-        }
         const effectiveConfig = storeConfig ??
             {
                 escalationConfig: {},
@@ -77,6 +94,25 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 },
                 brandConfig: {},
             };
+        const flowConfig = effectiveConfig?.flowConfig;
+        return {
+            memory,
+            classification: undefined,
+            policy: undefined,
+            settings,
+            storeConfig,
+            effectiveConfig,
+            examples,
+            categories,
+            productData: undefined,
+            mediaProductData: undefined,
+            isFirstProductPresentation: false,
+            flowConfig,
+        };
+    }
+    async classifyMessage(input, ctx) {
+        const { memory, settings, effectiveConfig, categories } = ctx;
+        const maxFailedTurns = settings?.handoffRules?.maxFailedTurns ?? 5;
         let classification;
         try {
             classification = await this.classifierService.classify({
@@ -118,6 +154,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 maxFailedTurns,
             },
         });
+        ctx.policy = policy;
         if (policy.action === 'escalate') {
             const fallbackModel = this.config.get('openai.fallbackModel');
             if (fallbackModel) {
@@ -169,6 +206,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 const ackReply = 'Будь ласка 💛 Якщо захочете ще щось — пишіть!';
                 const stateUpdate = {};
                 stateUpdate.contextJson = memory;
+                ctx.classification = classification;
                 return {
                     decision: shared_1.ReplyDecision.Reply,
                     reply: { text: ackReply, sendNow: true },
@@ -208,31 +246,40 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             memory.selectedColor = undefined;
             this.logger.log('adds_to_cart: clearing selection for new product, keeping cart');
         }
-        let mediaProductData;
-        if (input.mediaReference) {
-            if (input.mediaReference.type === 'customer_photo') {
-                return this.doHandoff(input, 'customer_photo', 'Секунду, зараз перевірю 💛');
-            }
-            const mapping = await this.instagramContentService.findByMediaId(input.tenantId, input.mediaReference.mediaId);
-            if (mapping?.productId) {
-                mediaProductData = await this.availabilityService.findAllByProductId(mapping.productId, mapping.variantId ?? undefined);
-                this.logToFile({
-                    event: 'media_product_resolved',
-                    conversationId: input.conversationId,
-                    mediaId: input.mediaReference.mediaId,
-                    mediaType: input.mediaReference.type,
-                    productId: mapping.productId,
-                    variantId: mapping.variantId,
-                    productsFound: mediaProductData.length,
-                });
-            }
-            else {
-                this.instagramContentService
-                    .saveUnlinkedMedia(input.tenantId, input.mediaReference.mediaId, input.mediaReference.type)
-                    .catch((err) => this.logger.error('Failed to save unlinked media', err));
-                return this.doHandoff(input, 'unlinked_media_reference', 'Секунду, зараз перевірю 💛');
-            }
+        ctx.classification = classification;
+        return null;
+    }
+    async resolveMediaProduct(input, ctx) {
+        if (!input.mediaReference)
+            return null;
+        if (input.mediaReference.type === 'customer_photo') {
+            return this.doHandoff(input, 'customer_photo', 'Секунду, зараз перевірю 💛');
         }
+        const mapping = await this.instagramContentService.findByMediaId(input.tenantId, input.mediaReference.mediaId);
+        if (mapping?.productId) {
+            const mediaProductData = await this.availabilityService.findAllByProductId(mapping.productId, mapping.variantId ?? undefined);
+            ctx.mediaProductData = mediaProductData;
+            this.logToFile({
+                event: 'media_product_resolved',
+                conversationId: input.conversationId,
+                mediaId: input.mediaReference.mediaId,
+                mediaType: input.mediaReference.type,
+                productId: mapping.productId,
+                variantId: mapping.variantId,
+                productsFound: mediaProductData.length,
+            });
+        }
+        else {
+            this.instagramContentService
+                .saveUnlinkedMedia(input.tenantId, input.mediaReference.mediaId, input.mediaReference.type)
+                .catch((err) => this.logger.error('Failed to save unlinked media', err));
+            return this.doHandoff(input, 'unlinked_media_reference', 'Секунду, зараз перевірю 💛');
+        }
+        return null;
+    }
+    async handlePreQualify(input, ctx) {
+        const { memory, effectiveConfig, mediaProductData } = ctx;
+        const classification = ctx.classification;
         const preQualifyFlowConfig = effectiveConfig?.flowConfig;
         const awaitingPreQualify = memory.lastAction === 'asked_pre_qualify' && memory.awaitingField === 'pre_qualify_data';
         if (preQualifyFlowConfig?.preQualify?.enabled &&
@@ -278,6 +325,11 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 };
             }
         }
+        return null;
+    }
+    async searchAndFilterProducts(input, ctx) {
+        const { memory, mediaProductData } = ctx;
+        const classification = ctx.classification;
         let productData;
         let isFirstProductPresentation = false;
         if (mediaProductData && mediaProductData.length > 0) {
@@ -422,6 +474,13 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 }
             }
         }
+        ctx.productData = productData;
+        ctx.isFirstProductPresentation = isFirstProductPresentation;
+        return null;
+    }
+    resolveVariantSelection(input, ctx) {
+        const { memory, effectiveConfig, productData } = ctx;
+        const classification = ctx.classification;
         this.logger.log(`5.5a check: slotAction=${classification.slotAction} selState=${memory.selectionState} prodId=${!!memory.selectedProductId} varId=${!!memory.selectedVariantId}`);
         if (classification.slotAction === 'confirmation' &&
             memory.selectionState === 'awaiting_confirmation' &&
@@ -726,8 +785,11 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 this.logger.log(`5.5d: Product picked, ${effectiveVariants.length} variants — asking user (variantStep=${memory.variantStep ?? 'all'})`);
             }
         }
+    }
+    async buildResponse(input, ctx) {
+        const { memory, settings, effectiveConfig, examples, categories, productData, isFirstProductPresentation, flowConfig, policy } = ctx;
+        const classification = ctx.classification;
         const recentTemplateIds = memory.recentTemplateIds ?? [];
-        const flowConfig = effectiveConfig?.flowConfig;
         const templateResult = await this.templateEngine.render({
             tenantId: input.tenantId,
             classification,

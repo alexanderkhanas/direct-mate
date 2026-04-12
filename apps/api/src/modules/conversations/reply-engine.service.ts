@@ -20,7 +20,7 @@ import {
   TemplateEngineService,
   ProductSearchResult,
 } from '../engine/template-engine.service';
-import { PolicyEngineService } from '../engine/policy-engine.service';
+import { PolicyEngineService, PolicyEvaluation } from '../engine/policy-engine.service';
 import {
   AuditLogType,
   ConversationStateStatus,
@@ -50,6 +50,23 @@ export interface ReplyEngineOutput {
   // Populated in learning mode — what the engine would have done
   classification?: ClassificationResult;
   templateScenario?: string;
+}
+
+// ─── Internal processing context ─────────────────────────────────
+
+interface ProcessingContext {
+  memory: AssistantMemory;
+  classification: ClassificationResult;
+  policy: PolicyEvaluation;
+  settings: TenantSettings | null;
+  storeConfig: StoreConfig | null;
+  effectiveConfig: StoreConfig;
+  examples: ManagerExample[];
+  categories: string[];
+  productData: ProductSearchResult[] | undefined;
+  mediaProductData: ProductSearchResult[] | undefined;
+  isFirstProductPresentation: boolean;
+  flowConfig: Record<string, unknown> | undefined;
 }
 
 const LOG_FILE = path.join(process.cwd(), 'conversations.log');
@@ -92,6 +109,36 @@ export class ReplyEngineService {
   // ─── Main entry point ──────────────────────────────────────────
 
   async process(input: ReplyEngineInput): Promise<ReplyEngineOutput> {
+    const ctx = await this.loadContext(input);
+
+    // Pre-check: max failed turns
+    const maxFailedTurns = ctx.settings?.handoffRules?.maxFailedTurns ?? 5;
+    if ((ctx.memory.failedTurns ?? 0) >= maxFailedTurns) {
+      return this.doHandoff(input, 'max_failed_turns');
+    }
+
+    const classifyResult = await this.classifyMessage(input, ctx);
+    if (classifyResult) return classifyResult;
+
+    const mediaResult = await this.resolveMediaProduct(input, ctx);
+    if (mediaResult) return mediaResult;
+
+    const preQualifyResult = await this.handlePreQualify(input, ctx);
+    if (preQualifyResult) return preQualifyResult;
+
+    const searchResult = await this.searchAndFilterProducts(input, ctx);
+    if (searchResult) return searchResult;
+
+    this.resolveVariantSelection(input, ctx);
+
+    return this.buildResponse(input, ctx);
+  }
+
+  // ─── Step 1: Load tenant context ───────────────────────────────
+
+  private async loadContext(
+    input: ReplyEngineInput,
+  ): Promise<ProcessingContext> {
     // 1. Load store config, settings, examples, categories
     const [settings, storeConfig, examples, categories] = await Promise.all([
       this.settingsRepo.findOne({ where: { tenantId: input.tenantId } }),
@@ -105,12 +152,6 @@ export class ReplyEngineService {
 
     const memory: AssistantMemory =
       (input.state.contextJson as AssistantMemory) ?? {};
-    const maxFailedTurns = settings?.handoffRules?.maxFailedTurns ?? 5;
-
-    // Pre-check: max failed turns
-    if ((memory.failedTurns ?? 0) >= maxFailedTurns) {
-      return this.doHandoff(input, 'max_failed_turns');
-    }
 
     // Use a default store config if none exists
     const effectiveConfig = storeConfig ??
@@ -121,6 +162,35 @@ export class ReplyEngineService {
         },
         brandConfig: {},
       } as unknown as StoreConfig);
+
+    const flowConfig = effectiveConfig?.flowConfig as
+      | Record<string, unknown>
+      | undefined;
+
+    return {
+      memory,
+      classification: undefined as unknown as ClassificationResult,
+      policy: undefined as unknown as PolicyEvaluation,
+      settings,
+      storeConfig,
+      effectiveConfig,
+      examples,
+      categories,
+      productData: undefined,
+      mediaProductData: undefined,
+      isFirstProductPresentation: false,
+      flowConfig,
+    };
+  }
+
+  // ─── Step 2: Classify + policy + post-order + adds_to_cart ─────
+
+  private async classifyMessage(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+  ): Promise<ReplyEngineOutput | null> {
+    const { memory, settings, effectiveConfig, categories } = ctx;
+    const maxFailedTurns = settings?.handoffRules?.maxFailedTurns ?? 5;
 
     // 2. AI Classifier: classify intent + extract entities (NO reply text)
     let classification: ClassificationResult;
@@ -171,6 +241,7 @@ export class ReplyEngineService {
         maxFailedTurns,
       },
     });
+    ctx.policy = policy;
 
     // 4. If escalate -> handoff verification with fallback model, then return handoff
     if (policy.action === 'escalate') {
@@ -232,6 +303,7 @@ export class ReplyEngineService {
         const ackReply = 'Будь ласка 💛 Якщо захочете ще щось — пишіть!';
         const stateUpdate: Partial<ConversationState> = {};
         stateUpdate.contextJson = memory as any;
+        ctx.classification = classification;
         return {
           decision: ReplyDecision.Reply,
           reply: { text: ackReply, sendNow: true },
@@ -279,49 +351,69 @@ export class ReplyEngineService {
       this.logger.log('adds_to_cart: clearing selection for new product, keeping cart');
     }
 
-    // 4.7 Media reference resolution
-    let mediaProductData: ProductSearchResult[] | undefined;
+    ctx.classification = classification;
+    return null;
+  }
 
-    if (input.mediaReference) {
-      if (input.mediaReference.type === 'customer_photo') {
-        return this.doHandoff(input, 'customer_photo', 'Секунду, зараз перевірю 💛');
-      }
+  // ─── Step 3: Media reference resolution (block 4.7) ────────────
 
-      const mapping = await this.instagramContentService.findByMediaId(
-        input.tenantId,
-        input.mediaReference.mediaId,
-      );
+  private async resolveMediaProduct(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+  ): Promise<ReplyEngineOutput | null> {
+    if (!input.mediaReference) return null;
 
-      if (mapping?.productId) {
-        // Known product — load full product data for use in product search step
-        mediaProductData = await this.availabilityService.findAllByProductId(
-          mapping.productId,
-          mapping.variantId ?? undefined,
-        );
-        this.logToFile({
-          event: 'media_product_resolved',
-          conversationId: input.conversationId,
-          mediaId: input.mediaReference.mediaId,
-          mediaType: input.mediaReference.type,
-          productId: mapping.productId,
-          variantId: mapping.variantId,
-          productsFound: mediaProductData.length,
-        });
-      } else {
-        this.instagramContentService
-          .saveUnlinkedMedia(
-            input.tenantId,
-            input.mediaReference.mediaId,
-            input.mediaReference.type,
-          )
-          .catch((err) => this.logger.error('Failed to save unlinked media', err));
-        return this.doHandoff(
-          input,
-          'unlinked_media_reference',
-          'Секунду, зараз перевірю 💛',
-        );
-      }
+    if (input.mediaReference.type === 'customer_photo') {
+      return this.doHandoff(input, 'customer_photo', 'Секунду, зараз перевірю 💛');
     }
+
+    const mapping = await this.instagramContentService.findByMediaId(
+      input.tenantId,
+      input.mediaReference.mediaId,
+    );
+
+    if (mapping?.productId) {
+      // Known product — load full product data for use in product search step
+      const mediaProductData = await this.availabilityService.findAllByProductId(
+        mapping.productId,
+        mapping.variantId ?? undefined,
+      );
+      ctx.mediaProductData = mediaProductData;
+      this.logToFile({
+        event: 'media_product_resolved',
+        conversationId: input.conversationId,
+        mediaId: input.mediaReference.mediaId,
+        mediaType: input.mediaReference.type,
+        productId: mapping.productId,
+        variantId: mapping.variantId,
+        productsFound: mediaProductData.length,
+      });
+    } else {
+      this.instagramContentService
+        .saveUnlinkedMedia(
+          input.tenantId,
+          input.mediaReference.mediaId,
+          input.mediaReference.type,
+        )
+        .catch((err) => this.logger.error('Failed to save unlinked media', err));
+      return this.doHandoff(
+        input,
+        'unlinked_media_reference',
+        'Секунду, зараз перевірю 💛',
+      );
+    }
+
+    return null;
+  }
+
+  // ─── Step 4: Pre-qualification gate (block 4.8) ────────────────
+
+  private async handlePreQualify(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+  ): Promise<ReplyEngineOutput | null> {
+    const { memory, effectiveConfig, mediaProductData } = ctx;
+    const classification = ctx.classification;
 
     // 4.8 Pre-qualification step (e.g., ask height/weight for clothing stores)
     const preQualifyFlowConfig = (effectiveConfig?.flowConfig as any);
@@ -380,6 +472,18 @@ export class ReplyEngineService {
         };
       }
     }
+
+    return null;
+  }
+
+  // ─── Step 5: Product search + filter (block 5 + 5.5m) ──────────
+
+  private async searchAndFilterProducts(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+  ): Promise<ReplyEngineOutput | null> {
+    const { memory, mediaProductData } = ctx;
+    const classification = ctx.classification;
 
     // 5. Product search if needed (based on classification entities/keywords)
     let productData: ProductSearchResult[] | undefined;
@@ -579,6 +683,20 @@ export class ReplyEngineService {
         }
       }
     }
+
+    ctx.productData = productData;
+    ctx.isFirstProductPresentation = isFirstProductPresentation;
+    return null;
+  }
+
+  // ─── Step 6: Variant selection state machine (5.5a-5.5d) ───────
+
+  private resolveVariantSelection(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+  ): void {
+    const { memory, effectiveConfig, productData } = ctx;
+    const classification = ctx.classification;
 
     // 5.5a Full selection confirmed: product + variant both set + user confirms → proceed to checkout
     this.logger.log(`5.5a check: slotAction=${classification.slotAction} selState=${memory.selectionState} prodId=${!!memory.selectedProductId} varId=${!!memory.selectedVariantId}`);
@@ -946,10 +1064,19 @@ export class ReplyEngineService {
         this.logger.log(`5.5d: Product picked, ${effectiveVariants.length} variants — asking user (variantStep=${memory.variantStep ?? 'all'})`);
       }
     }
+  }
+
+  // ─── Step 7: Template render + memory update + order decision ──
+
+  private async buildResponse(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+  ): Promise<ReplyEngineOutput> {
+    const { memory, settings, effectiveConfig, examples, categories, productData, isFirstProductPresentation, flowConfig, policy } = ctx;
+    const classification = ctx.classification;
 
     // 6. Template Engine: select + render template
     const recentTemplateIds = memory.recentTemplateIds ?? [];
-    const flowConfig = effectiveConfig?.flowConfig as Record<string, unknown> | undefined;
     const templateResult = await this.templateEngine.render({
       tenantId: input.tenantId,
       classification,
