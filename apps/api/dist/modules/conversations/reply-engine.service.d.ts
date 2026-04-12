@@ -41,6 +41,7 @@ export interface ReplyEngineOutput {
     orderPayload?: OrderPayload;
     classification?: ClassificationResult;
     templateScenario?: string;
+    trace?: string[];
 }
 export declare class ReplyEngineService {
     private readonly settingsRepo;

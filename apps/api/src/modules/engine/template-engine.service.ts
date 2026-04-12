@@ -44,6 +44,7 @@ const INTENT_TO_SCENARIO: Record<string, string> = {
   payment_question: 'answer_payment',
   availability_check: 'show_products',
   ask_variant_choice: 'ask_variant_choice',
+  variant_not_available: 'variant_not_available',
   product_not_found: 'product_not_found',
 };
 
@@ -59,6 +60,7 @@ const ACTION_TO_SCENARIO: Record<string, string> = {
   show_price: 'show_price',
   greet: 'greeting',
   ask_variant_choice: 'ask_variant_choice',
+  variant_not_available: 'variant_not_available',
   product_not_found: 'product_not_found',
   ask_continue_or_checkout: 'ask_continue_or_checkout',
 };
@@ -433,6 +435,11 @@ export class TemplateEngineService {
       vars['variant_name'] = memory.selectedVariantName;
     } else if (!vars['variant_name'] && memory?.selectionState === 'cart_item_added' && (memory?.cartItems as any[])?.length) {
       vars['variant_name'] = (memory.cartItems as any[]).at(-1)?.variantName;
+    }
+
+    // Requested variant (for variant_not_available scenario)
+    if (memory?.requestedVariant) {
+      vars['requested_variant'] = memory.requestedVariant;
     }
 
     // From memory (fallback for recommendation scenarios)

@@ -30,6 +30,7 @@ export interface SimulatorTurnLog {
   imageUrls?: string[];
   state: Record<string, unknown>;
   assertions: Array<{ field: string; pass: boolean; expected: unknown; actual: unknown; message?: string }>;
+  trace: string[];
 }
 
 // ─── Service ─────────────────────────────────────────────────────
@@ -179,6 +180,7 @@ export class SimulatorService {
           orderCreated: memory.orderCreated,
         },
         assertions,
+        trace: result.trace ?? [],
       });
     }
 

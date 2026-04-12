@@ -56,24 +56,26 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
     }
     async process(input) {
         const ctx = await this.loadContext(input);
+        const withTrace = (r) => { r.trace = ctx.trace; return r; };
         const maxFailedTurns = ctx.settings?.handoffRules?.maxFailedTurns ?? 5;
         if ((ctx.memory.failedTurns ?? 0) >= maxFailedTurns) {
-            return this.doHandoff(input, 'max_failed_turns');
+            ctx.trace.push('pre-check: max_failed_turns exceeded');
+            return withTrace(await this.doHandoff(input, 'max_failed_turns'));
         }
         const classifyResult = await this.classifyMessage(input, ctx);
         if (classifyResult)
-            return classifyResult;
+            return withTrace(classifyResult);
         const mediaResult = await this.resolveMediaProduct(input, ctx);
         if (mediaResult)
-            return mediaResult;
+            return withTrace(mediaResult);
         const preQualifyResult = await this.handlePreQualify(input, ctx);
         if (preQualifyResult)
-            return preQualifyResult;
+            return withTrace(preQualifyResult);
         const searchResult = await this.searchAndFilterProducts(input, ctx);
         if (searchResult)
-            return searchResult;
+            return withTrace(searchResult);
         this.resolveVariantSelection(input, ctx);
-        return this.buildResponse(input, ctx);
+        return withTrace(await this.buildResponse(input, ctx));
     }
     async loadContext(input) {
         const [settings, storeConfig, examples, categories] = await Promise.all([
@@ -108,6 +110,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             mediaProductData: undefined,
             isFirstProductPresentation: false,
             flowConfig,
+            trace: [],
         };
     }
     async classifyMessage(input, ctx) {
@@ -125,9 +128,11 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         }
         catch (err) {
             this.logger.error('AI classification failed', err);
+            ctx.trace.push('classify: ai_failure → handoff');
             return this.doHandoff(input, 'ai_failure');
         }
         this.resolveShortReply(classification, memory, input.messageText);
+        ctx.trace.push(`classify: intent=${classification.primaryIntent} action=${classification.recommendedAction} slot=${classification.slotAction} conf=${classification.confidence}`);
         this.logger.log(`Classification: intent=${classification.primaryIntent} stage=${classification.conversationStage} ` +
             `action=${classification.recommendedAction} confidence=${classification.confidence} sentiment=${classification.sentiment}`);
         this.logToFile({
@@ -184,24 +189,29 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                     });
                     if (fallbackPolicy.action !== 'escalate') {
                         this.logger.log(`Fallback model overrode escalation`);
+                        ctx.trace.push(`classify: fallback model overrode escalation → continue`);
                         classification = secondOpinion;
                     }
                     else {
+                        ctx.trace.push(`classify: policy escalation confirmed by fallback → handoff (${policy.reason ?? 'policy_escalation'})`);
                         return this.doHandoff(input, policy.reason ?? 'policy_escalation');
                     }
                 }
                 catch {
                     this.logger.warn('Fallback verification failed');
+                    ctx.trace.push(`classify: fallback verification failed → handoff (${policy.reason ?? 'policy_escalation'})`);
                     return this.doHandoff(input, policy.reason ?? 'policy_escalation');
                 }
             }
             else {
+                ctx.trace.push(`classify: policy escalation, no fallback model → handoff (${policy.reason ?? 'policy_escalation'})`);
                 return this.doHandoff(input, policy.reason ?? 'policy_escalation');
             }
         }
         const POST_ORDER_PASSIVE_INTENTS = ['gratitude', 'thanks', 'small_talk', 'confirmation', 'goodbye'];
         if (memory.orderCreated) {
             if (POST_ORDER_PASSIVE_INTENTS.includes(classification.primaryIntent)) {
+                ctx.trace.push(`classify: post-order passive intent=${classification.primaryIntent} → ack reply`);
                 this.logger.log('Post-order passive intent: ' + classification.primaryIntent);
                 const ackReply = 'Будь ласка 💛 Якщо захочете ще щось — пишіть!';
                 const stateUpdate = {};
@@ -217,6 +227,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             if (classification.slotAction === 'new_inquiry' ||
                 classification.slotAction === 'adds_to_cart' ||
                 ['product_inquiry', 'ready_to_order', 'category_browse', 'greeting'].includes(classification.primaryIntent)) {
+                ctx.trace.push(`classify: post-order state reset (slotAction=${classification.slotAction} intent=${classification.primaryIntent})`);
                 memory.selectedProductId = undefined;
                 memory.selectedProductTitle = undefined;
                 memory.selectedVariantId = undefined;
@@ -236,15 +247,31 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             }
         }
         if (classification.slotAction === 'adds_to_cart' && !memory.orderCreated) {
-            memory.selectedProductId = undefined;
-            memory.selectedProductTitle = undefined;
-            memory.selectedVariantId = undefined;
-            memory.selectedVariantName = undefined;
-            memory.selectionState = undefined;
-            memory.availableVariants = undefined;
-            memory.variantStep = null;
-            memory.selectedColor = undefined;
-            this.logger.log('adds_to_cart: clearing selection for new product, keeping cart');
+            const sameProduct = memory.selectedProductTitle &&
+                (!classification.entities.productName ||
+                    memory.selectedProductTitle.toLowerCase().includes(classification.entities.productName.toLowerCase()) ||
+                    classification.entities.productName.toLowerCase().includes(memory.selectedProductTitle.toLowerCase()));
+            if (sameProduct) {
+                memory.selectedVariantId = undefined;
+                memory.selectedVariantName = undefined;
+                memory.selectionState = 'awaiting_product';
+                memory.variantStep = null;
+                memory.selectedColor = undefined;
+                ctx.trace.push(`4.6: adds_to_cart same product (${memory.selectedProductTitle}), cleared variant only, selectionState=awaiting_product`);
+                this.logger.log('adds_to_cart: same product, clearing variant for new selection');
+            }
+            else {
+                memory.selectedProductId = undefined;
+                memory.selectedProductTitle = undefined;
+                memory.selectedVariantId = undefined;
+                memory.selectedVariantName = undefined;
+                memory.selectionState = undefined;
+                memory.availableVariants = undefined;
+                memory.variantStep = null;
+                memory.selectedColor = undefined;
+                ctx.trace.push(`4.6: adds_to_cart new product, cleared all selection`);
+                this.logger.log('adds_to_cart: clearing selection for new product, keeping cart');
+            }
         }
         ctx.classification = classification;
         return null;
@@ -296,6 +323,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 this.looksLikePreQualifyData(input.messageText, preQualifyFlowConfig.preQualify.fields)) {
                 memory.preQualifyData = this.extractPreQualifyData(input.messageText, preQualifyFlowConfig.preQualify.fields);
                 memory.preQualifyCollected = true;
+                ctx.trace.push(`preQualify: data collected ${JSON.stringify(memory.preQualifyData)}`);
                 this.logger.log(`Pre-qualify data collected: ${JSON.stringify(memory.preQualifyData)}`);
                 const sizeChart = preQualifyFlowConfig.sizeChart;
                 if (sizeChart && memory.preQualifyData) {
@@ -313,6 +341,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 classification.recommendedAction = 'show_products';
             }
             else {
+                ctx.trace.push(`preQualify: gate fired, asking for pre-qualify data`);
                 if (classification.entities.category) {
                     memory.selectedCategory = classification.entities.category;
                 }
@@ -368,7 +397,9 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                         color: v.color ?? null,
                         size: v.size ?? null,
                     })), userColor, userSize);
-                    if (matched) {
+                    const requested = (userSize || userColor || '').toLowerCase().trim();
+                    const isExactMatch = matched && matched.name.toLowerCase().trim() === requested;
+                    if (matched && isExactMatch) {
                         memory.selectedVariantId = matched.id;
                         memory.selectedVariantName = matched.name;
                         memory.selectionState = 'awaiting_confirmation';
@@ -376,13 +407,18 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                         const action = userSize ? 'confirm_variant_available' : 'confirm_selection';
                         classification.primaryIntent = intent;
                         classification.recommendedAction = action;
+                        ctx.trace.push(`5.5m: exact match "${matched.name}" → awaiting_confirmation`);
                         this.logger.log(`5.5m: Story reply — variant matched: ${matched.name}`);
                     }
                     else {
                         memory.selectionState = 'awaiting_variant';
-                        classification.primaryIntent = 'ask_variant_choice';
-                        classification.recommendedAction = 'ask_variant_choice';
-                        this.logger.log(`5.5m: Story reply — variant "${userColor || userSize}" not matched`);
+                        memory.selectedVariantId = undefined;
+                        memory.selectedVariantName = undefined;
+                        memory.requestedVariant = userSize || userColor;
+                        classification.primaryIntent = 'variant_not_available';
+                        classification.recommendedAction = 'variant_not_available';
+                        ctx.trace.push(`5.5m: "${requested}" not exact match (fuzzy=${matched?.name ?? 'none'}) → variant_not_available`);
+                        this.logger.log(`5.5m: Story reply — variant "${requested}" not available, showing alternatives`);
                     }
                 }
                 else if (inStock.length === 1) {
@@ -402,6 +438,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             }
         }
         const needsSearch = !productData && this.shouldSearchProducts(classification, memory);
+        ctx.trace.push(`search: needsSearch=${needsSearch}`);
         if (needsSearch) {
             const searchKeywords = this.extractSearchKeywords(classification);
             productData = await this.searchProducts(input.tenantId, input.conversationId, searchKeywords);
@@ -424,8 +461,10 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                     this.logger.log(`Filtered products by recommended size ${recSize}: ${filtered.length} products`);
                 }
             }
+            ctx.trace.push(`search: found ${productData?.length ?? 0} products`);
             if ((!productData || productData.length === 0) &&
                 ['product_inquiry', 'ready_to_order', 'availability_check', 'category_browse'].includes(classification.primaryIntent)) {
+                ctx.trace.push('search: product not found → handoff');
                 this.logger.log('Product not found — using product_not_found template + handoff');
                 classification.recommendedAction = 'product_not_found';
                 const pnfResult = await this.templateEngine.render({
@@ -447,6 +486,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                     }
                 }
                 isFirstProductPresentation = !memory.lastPresentedProducts?.length;
+                ctx.trace.push(`search: isFirstPres=${isFirstProductPresentation} selState=${memory.selectionState}`);
                 memory.lastPresentedProducts = productData.map((p) => ({
                     title: p.product.title,
                     variants: [...new Set(p.variants.map((v) => [...new Set([v.size, v.color].filter(Boolean))].join(', ') || 'standard'))],
@@ -459,6 +499,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 const targetProduct = memory.selectedProductId
                     ? productData.find(p => p.product.id === memory.selectedProductId) ?? (productData.length === 1 ? productData[0] : null)
                     : productData.length === 1 ? productData[0] : null;
+                ctx.trace.push(`search: targetProduct=${targetProduct?.product?.title ?? 'none'}, availableVariants=${memory.availableVariants ? memory.availableVariants.length : 0}`);
                 if (targetProduct) {
                     memory.availableVariants = targetProduct.variants
                         .filter((v) => v.effectiveAvailable > 0)
@@ -474,9 +515,11 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 if (isFirstProductPresentation) {
                     memory.selectionState = 'awaiting_product';
                 }
+                ctx.trace.push(`search: upgrade check selState=${memory.selectionState} prodId=${!!memory.selectedProductId} varId=${!!memory.selectedVariantId}`);
                 if (memory.selectionState === 'awaiting_product' && memory.selectedProductId && memory.selectedVariantId) {
                     memory.selectionState = 'awaiting_confirmation';
                     classification.recommendedAction = 'confirm_selection';
+                    ctx.trace.push('search: upgraded awaiting_product → awaiting_confirmation (variant matched during search)');
                     this.logger.log('Variant already matched during search — upgrading to awaiting_confirmation');
                 }
             }
@@ -538,6 +581,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             memory.selectionState = 'cart_item_added';
             classification.primaryIntent = 'confirm_choice';
             classification.recommendedAction = 'ask_continue_or_checkout';
+            ctx.trace.push(`5.5a: cart add ${memory.selectedProductTitle} (${memory.selectedVariantName}), cart=${memory.cartItems.length}`);
             this.logger.log(`5.5a FIRED: Item added to cart: ${memory.selectedProductTitle} (${memory.selectedVariantName}). Cart has ${memory.cartItems.length} items.`);
             this.logToFile({
                 event: 'cart_item_added',
@@ -557,6 +601,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             classification.primaryIntent = 'ready_to_order';
             classification.recommendedAction = 'start_checkout';
             classification.conversationStage = 'checkout_started';
+            ctx.trace.push(`5.5a-2: checkout with ${memory.cartItems.length} items`);
             this.logger.log('Cart checkout: proceeding with ' + memory.cartItems.length + ' items');
         }
         const variantsFlowConfig = effectiveConfig?.flowConfig?.variants;
@@ -578,6 +623,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 memory.selectedVariantName = variants[0].name;
                 memory.selectionState = 'awaiting_confirmation';
                 classification.recommendedAction = 'confirm_selection';
+                ctx.trace.push('5.5b: single variant auto-selected');
                 this.logger.log('Single variant → auto-selected, proceeding to confirm_selection');
             }
             else if (hasBothDimensions && !memory.variantStep) {
@@ -585,6 +631,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 memory.variantStep = 'color';
                 classification.primaryIntent = 'ask_variant_choice';
                 classification.recommendedAction = 'ask_variant_choice';
+                ctx.trace.push('5.5b: two-step start with color');
                 this.logger.log(`Two-step variant: starting with color (${variants.length} variants)`);
             }
             else if (variants.length > 1 && (userColor || userSize)) {
@@ -594,12 +641,14 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                     memory.selectedVariantName = matched.name;
                     memory.selectionState = 'awaiting_confirmation';
                     classification.recommendedAction = 'confirm_selection';
+                    ctx.trace.push(`5.5b: variant matched ${matched.name}`);
                     this.logger.log(`Variant matched: ${matched.name}`);
                 }
                 else {
                     memory.selectionState = 'awaiting_variant';
                     classification.primaryIntent = 'ask_variant_choice';
                     classification.recommendedAction = 'ask_variant_choice';
+                    ctx.trace.push('5.5b: variant not matched → ask_variant_choice');
                     this.logger.log('Variant not matched confidently, asking user');
                 }
             }
@@ -607,6 +656,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 memory.selectionState = 'awaiting_variant';
                 classification.primaryIntent = 'ask_variant_choice';
                 classification.recommendedAction = 'ask_variant_choice';
+                ctx.trace.push(`5.5b: ${variants.length} variants → ask_variant_choice`);
                 this.logger.log(`Multiple variants (${variants.length}), asking user to choose`);
             }
         }
@@ -625,6 +675,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 const uniqueColors = [...new Set(colorVariants.map((v) => v.color))];
                 const matchedColor = this.matchColorOrSize(colorInput, uniqueColors);
                 if (matchedColor) {
+                    ctx.trace.push(`5.5b-2: color=${matchedColor}`);
                     memory.selectedColor = matchedColor;
                     const sizesForColor = variants.filter((v) => v.color && v.color.toLowerCase() === matchedColor.toLowerCase() && v.size);
                     if (sizesForColor.length > 1) {
@@ -672,6 +723,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                         memory.variantStep = null;
                         memory.selectionState = 'awaiting_confirmation';
                         classification.recommendedAction = 'confirm_selection';
+                        ctx.trace.push(`5.5b-2: size=${matchedSize} → resolved`);
                         this.logger.log(`Two-step variant: color=${memory.selectedColor}, size=${matchedSize} → resolved`);
                     }
                 }
@@ -688,6 +740,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             !memory.variantStep &&
             productData && productData.length === 1) {
             const variants = productData[0].variants.filter(v => v.effectiveAvailable > 0);
+            ctx.trace.push(`5.5c: fills_missing_slot, ${variants.length} variants`);
             const hasBothDimensions = needsTwoStepVariants &&
                 variants.some(v => v.color) && variants.some(v => v.size);
             if (variants.length > 1) {
@@ -754,11 +807,13 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             }
             const userColor = classification.entities.color;
             const userSize = classification.entities.size;
+            ctx.trace.push(`5.5d: selState=${memory.selectionState} prodId=${!!memory.selectedProductId} varId=${!!memory.selectedVariantId} variants=${effectiveVariants.length}`);
             if (effectiveVariants.length === 1) {
                 memory.selectedVariantId = effectiveVariants[0].id;
                 memory.selectedVariantName = effectiveVariants[0].name;
                 memory.selectionState = 'awaiting_confirmation';
                 classification.recommendedAction = 'confirm_selection';
+                ctx.trace.push(`5.5d: matched ${effectiveVariants[0].name} → awaiting_confirmation`);
                 this.logger.log(`5.5d: Single variant after filter → auto-selected: ${effectiveVariants[0].name}`);
             }
             else if (userColor || userSize) {
@@ -768,6 +823,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                     memory.selectedVariantName = matched.name;
                     memory.selectionState = 'awaiting_confirmation';
                     classification.recommendedAction = 'confirm_selection';
+                    ctx.trace.push(`5.5d: matched ${matched.name} → awaiting_confirmation`);
                     this.logger.log(`5.5d: Variant matched from user input: ${matched.name}`);
                 }
                 else {
@@ -776,6 +832,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                         memory.variantStep = 'color';
                     classification.primaryIntent = 'ask_variant_choice';
                     classification.recommendedAction = 'ask_variant_choice';
+                    ctx.trace.push('5.5d: not matched → awaiting_variant');
                     this.logger.log(`5.5d: Variant not matched, asking user`);
                 }
             }
@@ -789,6 +846,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 }
                 classification.primaryIntent = 'ask_variant_choice';
                 classification.recommendedAction = 'ask_variant_choice';
+                ctx.trace.push(`5.5d: ${effectiveVariants.length} variants → ask_variant_choice`);
                 this.logger.log(`5.5d: Product picked, ${effectiveVariants.length} variants — asking user (variantStep=${memory.variantStep ?? 'all'})`);
             }
         }
@@ -811,6 +869,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         let usedTemplateId;
         let actualAction;
         if (templateResult) {
+            ctx.trace.push(`template: ${templateResult.scenario} (${templateResult.templateId})`);
             finalReply = templateResult.text;
             usedTemplateId = templateResult.templateId;
             actualAction = this.scenarioToAction(templateResult.scenario);
@@ -840,13 +899,16 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             this.logger.log(`Template selected: ${templateResult.templateId}`);
         }
         else {
+            ctx.trace.push('template: none found');
             if (classification.primaryIntent === 'general_question' ||
                 classification.recommendedAction === 'answer_faq') {
+                ctx.trace.push('handoff: general_question_no_template');
                 this.logger.log('general_question with no template → handoff');
                 return this.doHandoff(input, 'Клієнт поставив питання, на яке бот не знає відповіді');
             }
             const productIntents = ['product_inquiry', 'ready_to_order', 'availability_check', 'category_browse', 'ask_price'];
             if (productIntents.includes(classification.primaryIntent) && (!productData || productData.length === 0)) {
+                ctx.trace.push('handoff: product_not_found');
                 this.logger.log('No template + no products found for product intent → handoff');
                 return this.doHandoff(input, 'product_not_found', 'Секунду, уточню наявність 💛');
             }
@@ -859,6 +921,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             }
             else if (policy.action === 'fallback' ||
                 this.policyEngine.isFallbackAllowed(classification, effectiveConfig)) {
+                ctx.trace.push('fallback: AI reply');
                 this.logger.log('No template matched, using AI fallback');
                 try {
                     finalReply = await this.aiFallbackReply({
@@ -890,6 +953,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 }
             }
             else {
+                ctx.trace.push('handoff: no_template_strict_mode');
                 this.logger.log('No template and fallback not allowed, escalating');
                 return this.doHandoff(input, 'no_template_strict_mode');
             }
@@ -907,8 +971,10 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         if (mappedStatus) {
             stateUpdate.stateStatus = mappedStatus;
         }
+        ctx.trace.push(`action: ${actualAction}`);
         this.updateMemoryFromAction(actualAction, memory, templateResult, classification, productData);
-        if (templateResult?.matchedVariantId) {
+        const skipVariantUpdate = ['variant_not_available', 'ask_variant_choice'].includes(templateResult?.scenario ?? '');
+        if (templateResult?.matchedVariantId && !skipVariantUpdate) {
             memory.selectedVariantId = templateResult.matchedVariantId;
             memory.selectedVariantName = classification.entities.color ?? classification.entities.size ?? memory.selectedVariantName;
         }
@@ -924,6 +990,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         stateUpdate.contextJson = memory;
         const alreadyOrdered = memory.orderCreated === true;
         if (actualAction === 'confirm_order' && !alreadyOrdered) {
+            ctx.trace.push('order: create_draft_order');
             memory.orderCreated = true;
             const orderPayload = this.buildOrderPayload(input, memory, classification);
             await this.auditService.log({
@@ -1003,6 +1070,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             answer_payment: 'answer_faq',
             out_of_stock: 'show_products',
             ask_variant_choice: 'ask_variant_choice',
+            variant_not_available: 'ask_variant_choice',
             product_not_found: 'ai_fallback_clarification',
             ask_continue_or_checkout: 'ask_continue_or_checkout',
         };
@@ -1305,6 +1373,8 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 memory.lastAction = 'asked_variant';
                 memory.awaitingField = memory.variantStep === 'size' ? 'size_selection' : 'variant_selection';
                 memory.selectionState = 'awaiting_variant';
+                memory.selectedVariantId = undefined;
+                memory.selectedVariantName = undefined;
                 break;
             case 'answer_faq':
                 memory.lastAction = 'answered_faq';

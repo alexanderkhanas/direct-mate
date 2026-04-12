@@ -95,6 +95,7 @@ interface TurnLog {
   imageUrls: string[] | undefined;
   state: Record<string, unknown>;
   assertions: AssertionResult[];
+  trace: string[];
 }
 
 // ─── Assertions ─────────────────────────────────────────────────
@@ -306,6 +307,7 @@ class ConversationSimulator {
           orderCreated: memory.orderCreated,
         },
         assertions,
+        trace: result.trace ?? [],
       });
     }
 
@@ -402,6 +404,15 @@ class ConversationSimulator {
           const act = JSON.stringify(a.actual) ?? 'undefined';
           console.log(`    ${c.red}✗ ${a.field}: expected ${exp}, got ${act}${c.reset}`);
         }
+      }
+    }
+
+    // Trace
+    if (result.trace?.length) {
+      console.log('');
+      console.log(`  ${c.bold}${c.dim}Trace:${c.reset}`);
+      for (const t of result.trace) {
+        console.log(`    ${c.dim}→ ${t}${c.reset}`);
       }
     }
   }

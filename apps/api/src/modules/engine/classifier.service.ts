@@ -60,6 +60,7 @@ export interface AssistantMemory {
   preQualifyData?: Record<string, string>;
   preQualifyCollected?: boolean;
   recommendedSize?: string;
+  requestedVariant?: string;
   variantStep?: 'color' | 'size' | null;
   selectedColor?: string;
 }
