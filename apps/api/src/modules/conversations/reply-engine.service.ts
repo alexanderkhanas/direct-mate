@@ -631,6 +631,13 @@ export class ReplyEngineService {
     ctx.trace.push(`search: needsSearch=${needsSearch}`);
 
     if (needsSearch) {
+      // Clear stale variant on correction so 5.5c can re-match the new one
+      if (classification.slotAction === 'correction') {
+        memory.selectedVariantId = undefined;
+        memory.selectedVariantName = undefined;
+        ctx.trace.push('search: correction — cleared selectedVariantId for re-matching');
+      }
+
       const searchKeywords = this.extractSearchKeywords(classification);
       productData = await this.searchProducts(
         input.tenantId,
@@ -645,8 +652,9 @@ export class ReplyEngineService {
         found: productData ? productData.length : 0,
       });
 
-      // Filter by recommended size if available
-      if (productData && productData.length > 0 && memory.recommendedSize) {
+      // Filter by recommended size if available (skip on correction — user explicitly chose a different size)
+      const isCorrection = classification.slotAction === 'correction';
+      if (productData && productData.length > 0 && memory.recommendedSize && !isCorrection) {
         const recSize = memory.recommendedSize;
         const filtered = productData
           .map(p => ({
@@ -1008,9 +1016,9 @@ export class ReplyEngineService {
       }
     }
 
-    // 5.5c Variant check for fills_missing_slot: user picked a product, check if variant needed
+    // 5.5c Variant check for fills_missing_slot/correction: user picked a product, check if variant needed
     if (
-      classification.slotAction === 'fills_missing_slot' &&
+      (classification.slotAction === 'fills_missing_slot' || classification.slotAction === 'correction') &&
       memory.selectedProductId &&
       !memory.selectedVariantId &&
       !memory.variantStep && // Don't interfere with two-step variant selection
@@ -1710,7 +1718,9 @@ export class ReplyEngineService {
 
   private shouldSearchProducts(classification: ClassificationResult, memory: AssistantMemory): boolean {
     // Product + variant already confirmed and awaiting customer's "так" — no need to search
-    if (memory.selectionState === 'awaiting_confirmation' && memory.selectedProductId && memory.selectedVariantId) {
+    // Exception: correction means user wants to change — must re-search to get productData for 5.5c
+    if (memory.selectionState === 'awaiting_confirmation' && memory.selectedProductId && memory.selectedVariantId
+        && classification.slotAction !== 'correction') {
       return false;
     }
 

@@ -187,8 +187,7 @@ export const SCENARIOS: Record<string, SimulatorScenario> = {
     turns: [
       { message: 'покажіть куртки' },
       { message: '175 см, 70 кг' },
-      { message: 'Nike пуховик' },
-      { message: 'чорний' },
+      { message: 'бомбер Zara' },
       { message: 'L' },
       { message: 'так' },
       { message: 'оформлюємо' },
@@ -198,13 +197,13 @@ export const SCENARIOS: Record<string, SimulatorScenario> = {
 
   clothing_correction: {
     name: 'Clothing — Variant correction',
-    description: 'Pick size M → correct to L before confirming',
+    description: 'Pick color+size → correct to different color before confirming',
     tenantId: CLOTHES_STORE,
     turns: [
       { message: 'хочу базову футболку Zara' },
       { message: '175 см, 72 кг' },
-      { message: 'M' },
-      { message: 'ні, давайте L' },
+      { message: 'White' },
+      { message: 'ні, давайте Black' },
       { message: 'так' },
       { message: 'оформлюємо' },
       { message: 'Катерина Попова, 0991112233, Полтава, НП 6' },

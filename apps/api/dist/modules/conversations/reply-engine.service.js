@@ -440,6 +440,11 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         const needsSearch = !productData && this.shouldSearchProducts(classification, memory);
         ctx.trace.push(`search: needsSearch=${needsSearch}`);
         if (needsSearch) {
+            if (classification.slotAction === 'correction') {
+                memory.selectedVariantId = undefined;
+                memory.selectedVariantName = undefined;
+                ctx.trace.push('search: correction — cleared selectedVariantId for re-matching');
+            }
             const searchKeywords = this.extractSearchKeywords(classification);
             productData = await this.searchProducts(input.tenantId, input.conversationId, searchKeywords);
             this.logToFile({
@@ -448,7 +453,8 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 keywords: searchKeywords,
                 found: productData ? productData.length : 0,
             });
-            if (productData && productData.length > 0 && memory.recommendedSize) {
+            const isCorrection = classification.slotAction === 'correction';
+            if (productData && productData.length > 0 && memory.recommendedSize && !isCorrection) {
                 const recSize = memory.recommendedSize;
                 const filtered = productData
                     .map(p => ({
@@ -734,7 +740,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 }
             }
         }
-        if (classification.slotAction === 'fills_missing_slot' &&
+        if ((classification.slotAction === 'fills_missing_slot' || classification.slotAction === 'correction') &&
             memory.selectedProductId &&
             !memory.selectedVariantId &&
             !memory.variantStep &&
@@ -1256,7 +1262,8 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         return bestSize;
     }
     shouldSearchProducts(classification, memory) {
-        if (memory.selectionState === 'awaiting_confirmation' && memory.selectedProductId && memory.selectedVariantId) {
+        if (memory.selectionState === 'awaiting_confirmation' && memory.selectedProductId && memory.selectedVariantId
+            && classification.slotAction !== 'correction') {
             return false;
         }
         const searchActions = [
