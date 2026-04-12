@@ -68,6 +68,8 @@ export declare class ReplyEngineService {
     private buildResponse;
     private scenarioToAction;
     private resolveShortReply;
+    private static readonly COLOR_TRANSLATIONS;
+    private translateColor;
     private matchVariant;
     private matchColorOrSize;
     private looksLikePreQualifyData;

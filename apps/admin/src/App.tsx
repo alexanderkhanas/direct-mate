@@ -12,6 +12,7 @@ import CatalogPage from './pages/CatalogPage';
 import TrainingPage from './pages/TrainingPage';
 import TemplatesPage from './pages/TemplatesPage';
 import TestingPage from './pages/TestingPage';
+import SimulatorPage from './pages/SimulatorPage';
 import OrdersPage from './pages/OrdersPage';
 import ContentLinkingPage from './pages/ContentLinkingPage';
 import TenantsPage from './pages/admin/TenantsPage';
@@ -52,6 +53,7 @@ export default function App() {
           <Route path="training" element={<TrainingPage />} />
           <Route path="templates" element={<TemplatesPage />} />
           <Route path="testing" element={<TestingPage />} />
+          <Route path="simulator" element={<SimulatorPage />} />
           <Route path="content-linking" element={<ContentLinkingPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="logs" element={<LogsPage />} />

@@ -7,7 +7,7 @@ import {
 import { ConversationsService } from '../conversations/conversations.service';
 import { ConversationState } from '../conversations/entities/conversation-state.entity';
 import { MessageDirection, MessageRole } from '@direct-mate/shared';
-import { SimulatorScenario } from '../../scripts/scenarios';
+import { SimulatorScenario, SimulatorTurnExpect } from '../../scripts/scenarios';
 
 // ─── Constants (different from CLI simulator to avoid conflicts) ──
 
@@ -29,6 +29,7 @@ export interface SimulatorTurnLog {
   secondaryReply?: string | null;
   imageUrls?: string[];
   state: Record<string, unknown>;
+  assertions: Array<{ field: string; pass: boolean; expected: unknown; actual: unknown; message?: string }>;
 }
 
 // ─── Service ─────────────────────────────────────────────────────
@@ -94,16 +95,6 @@ export class SimulatorService {
         );
       }
 
-      // Determine last activity (for greeting gap detection)
-      const sorted = fullConversation.messages.sort(
-        (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
-      );
-      const previousMessages = sorted.slice(0, -1);
-      const lastActivityAt =
-        previousMessages.length > 0
-          ? previousMessages[previousMessages.length - 1].createdAt
-          : undefined;
-
       // Call reply engine
       let result: ReplyEngineOutput;
       try {
@@ -113,9 +104,7 @@ export class SimulatorService {
           messageText: turn.message,
           state: freshState,
           recentMessages,
-          lastActivityAt,
           mediaReference: turn.mediaReference,
-          skipFileLog: true,
         });
       } catch (err) {
         throw new Error(
@@ -152,6 +141,9 @@ export class SimulatorService {
         unknown
       >;
 
+      // Run assertions
+      const assertions = turn.expect ? this.runAssertions(turn.expect, result, memory) : [];
+
       // Build log entry
       turnLogs.push({
         turnIndex: i,
@@ -171,8 +163,8 @@ export class SimulatorService {
         decision: result.decision,
         scenario: result.templateScenario ?? null,
         replyText: result.reply?.text ?? null,
-        prefixReply: result.prefixReply?.text ?? null,
-        secondaryReply: result.secondaryReply?.text ?? null,
+        prefixReply: null,
+        secondaryReply: null,
         imageUrls: result.reply?.imageUrls,
         state: {
           selectionState: memory.selectionState,
@@ -186,10 +178,68 @@ export class SimulatorService {
           recommendedSize: memory.recommendedSize,
           orderCreated: memory.orderCreated,
         },
+        assertions,
       });
     }
 
     return turnLogs;
+  }
+
+  private runAssertions(
+    expect: SimulatorTurnExpect,
+    result: ReplyEngineOutput,
+    memory: Record<string, unknown>,
+  ): Array<{ field: string; pass: boolean; expected: unknown; actual: unknown; message?: string }> {
+    const out: Array<{ field: string; pass: boolean; expected: unknown; actual: unknown; message?: string }> = [];
+    const arr = (v: string | string[] | undefined) => (v === undefined ? [] : Array.isArray(v) ? v : [v]);
+
+    const push = (field: string, pass: boolean, expected: unknown, actual: unknown, message?: string) => {
+      out.push({ field, pass, expected, actual, message });
+    };
+
+    if (expect.decision !== undefined) {
+      push('decision', result.decision === expect.decision, expect.decision, result.decision);
+    }
+    if (expect.scenario !== undefined) {
+      const actual = result.templateScenario ?? null;
+      push('scenario', actual === expect.scenario, expect.scenario, actual);
+    }
+    for (const sub of arr(expect.replyContains)) {
+      push('replyContains', (result.reply?.text ?? '').toLowerCase().includes(sub.toLowerCase()), sub, result.reply?.text?.slice(0, 80));
+    }
+    for (const sub of arr(expect.replyNotContains)) {
+      push('replyNotContains', !(result.reply?.text ?? '').toLowerCase().includes(sub.toLowerCase()), `NOT ${sub}`, result.reply?.text?.slice(0, 80));
+    }
+    if (expect.imageCount !== undefined) {
+      const actual = result.reply?.imageUrls?.length ?? 0;
+      push('imageCount', actual === expect.imageCount, expect.imageCount, actual);
+    }
+
+    if (expect.state) {
+      const s = expect.state;
+      if (s.selectionState !== undefined) push('state.selectionState', memory.selectionState === s.selectionState, s.selectionState, memory.selectionState);
+      if (s.selectedProductId !== undefined) {
+        if (s.selectedProductId === null) push('state.selectedProductId', !memory.selectedProductId, null, memory.selectedProductId);
+        else push('state.selectedProductId', memory.selectedProductId === s.selectedProductId, s.selectedProductId, memory.selectedProductId);
+      }
+      if (s.selectedVariantName !== undefined) push('state.selectedVariantName', memory.selectedVariantName === s.selectedVariantName, s.selectedVariantName, memory.selectedVariantName);
+      if (s.cartLength !== undefined) {
+        const actual = Array.isArray(memory.cartItems) ? memory.cartItems.length : 0;
+        push('state.cartLength', actual === s.cartLength, s.cartLength, actual);
+      }
+      if (s.cartHasVariant !== undefined) {
+        const items = Array.isArray(memory.cartItems) ? memory.cartItems as any[] : [];
+        const found = items.some(it => it.variantName === s.cartHasVariant);
+        push('state.cartHasVariant', found, s.cartHasVariant, items.map(it => it.variantName));
+      }
+      if (s.lastAction !== undefined) push('state.lastAction', memory.lastAction === s.lastAction, s.lastAction, memory.lastAction);
+      if (s.awaitingField !== undefined) push('state.awaitingField', memory.awaitingField === s.awaitingField, s.awaitingField, memory.awaitingField);
+      if (s.preQualifyCollected !== undefined) push('state.preQualifyCollected', memory.preQualifyCollected === s.preQualifyCollected, s.preQualifyCollected, memory.preQualifyCollected);
+      if (s.recommendedSize !== undefined) push('state.recommendedSize', memory.recommendedSize === s.recommendedSize, s.recommendedSize, memory.recommendedSize);
+      if (s.orderCreated !== undefined) push('state.orderCreated', memory.orderCreated === s.orderCreated, s.orderCreated, memory.orderCreated);
+    }
+
+    return out;
   }
 
   private async cleanup(tenantId: string): Promise<void> {

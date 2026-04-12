@@ -4,6 +4,7 @@ import { TestRun } from './entities/test-run.entity';
 import { TestRunScenario } from './entities/test-run-scenario.entity';
 import { TestingController } from './testing.controller';
 import { TestingService } from './testing.service';
+import { SimulatorService } from './simulator.service';
 import { ConversationsModule } from '../conversations/conversations.module';
 
 @Module({
@@ -12,6 +13,6 @@ import { ConversationsModule } from '../conversations/conversations.module';
     ConversationsModule,
   ],
   controllers: [TestingController],
-  providers: [TestingService],
+  providers: [TestingService, SimulatorService],
 })
 export class TestingModule {}

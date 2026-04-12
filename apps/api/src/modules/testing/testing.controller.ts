@@ -15,13 +15,48 @@ import {
   JwtPayload,
 } from '../../common/decorators/current-user.decorator';
 import { TestingService } from './testing.service';
+import { SimulatorService } from './simulator.service';
+import { SCENARIOS } from '../../scripts/scenarios';
 
 @ApiTags('testing')
 @UseGuards(JwtAuthGuard)
 @ApiBearerAuth()
 @Controller('testing')
 export class TestingController {
-  constructor(private readonly testingService: TestingService) {}
+  constructor(
+    private readonly testingService: TestingService,
+    private readonly simulatorService: SimulatorService,
+  ) {}
+
+  // ─── Simulator endpoints ──────────────────────────────────────
+
+  @Get('simulator/scenarios')
+  getSimulatorScenarios() {
+    return Object.entries(SCENARIOS).map(([key, s]) => ({
+      key,
+      name: s.name,
+      tenantId: s.tenantId,
+      turns: s.turns.length,
+    }));
+  }
+
+  @Post('simulator/run')
+  async runSimulatorScenario(@Body() body: { scenarioKey: string }) {
+    const scenario = SCENARIOS[body.scenarioKey];
+    if (!scenario) throw new NotFoundException(`Scenario "${body.scenarioKey}" not found`);
+    const turns = await this.simulatorService.runScenario(scenario);
+    return { scenario: body.scenarioKey, name: scenario.name, tenantId: scenario.tenantId, turns };
+  }
+
+  @Post('simulator/run-all')
+  async runAllSimulatorScenarios() {
+    const results = [];
+    for (const [key, scenario] of Object.entries(SCENARIOS)) {
+      const turns = await this.simulatorService.runScenario(scenario);
+      results.push({ scenario: key, name: scenario.name, tenantId: scenario.tenantId, turns });
+    }
+    return results;
+  }
 
   /**
    * Trigger a new test run. Returns the run ID immediately.

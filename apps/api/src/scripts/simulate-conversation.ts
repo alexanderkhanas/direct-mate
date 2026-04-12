@@ -22,7 +22,7 @@ import {
 import { ConversationsService } from '../modules/conversations/conversations.service';
 import { ConversationState } from '../modules/conversations/entities/conversation-state.entity';
 import { MessageDirection, MessageRole, ReplyDecision } from '@direct-mate/shared';
-import { SCENARIOS, SimulatorScenario } from './scenarios';
+import { SCENARIOS, SimulatorScenario, SimulatorTurnExpect } from './scenarios';
 
 // ─── Colors ──────────────────────────────────────────────────────
 
@@ -76,6 +76,14 @@ function parseArgs(): CliArgs {
 
 // ─── Turn log entry (for JSON output) ───────────────────────────
 
+interface AssertionResult {
+  field: string;
+  pass: boolean;
+  expected: unknown;
+  actual: unknown;
+  message?: string;
+}
+
 interface TurnLog {
   turnIndex: number;
   message: string;
@@ -86,6 +94,66 @@ interface TurnLog {
   replyText: string | null;
   imageUrls: string[] | undefined;
   state: Record<string, unknown>;
+  assertions: AssertionResult[];
+}
+
+// ─── Assertions ─────────────────────────────────────────────────
+
+function runAssertions(
+  expect: SimulatorTurnExpect,
+  result: ReplyEngineOutput,
+  memory: Record<string, unknown>,
+): AssertionResult[] {
+  const out: AssertionResult[] = [];
+  const arr = (v: string | string[] | undefined) => (v === undefined ? [] : Array.isArray(v) ? v : [v]);
+
+  const push = (field: string, pass: boolean, expected: unknown, actual: unknown, message?: string) => {
+    out.push({ field, pass, expected, actual, message });
+  };
+
+  if (expect.decision !== undefined) {
+    push('decision', result.decision === expect.decision, expect.decision, result.decision);
+  }
+  if (expect.scenario !== undefined) {
+    const actual = result.templateScenario ?? null;
+    push('scenario', actual === expect.scenario, expect.scenario, actual);
+  }
+  for (const sub of arr(expect.replyContains)) {
+    push('replyContains', (result.reply?.text ?? '').toLowerCase().includes(sub.toLowerCase()), sub, result.reply?.text?.slice(0, 80));
+  }
+  for (const sub of arr(expect.replyNotContains)) {
+    push('replyNotContains', !(result.reply?.text ?? '').toLowerCase().includes(sub.toLowerCase()), `NOT ${sub}`, result.reply?.text?.slice(0, 80));
+  }
+  if (expect.imageCount !== undefined) {
+    const actual = result.reply?.imageUrls?.length ?? 0;
+    push('imageCount', actual === expect.imageCount, expect.imageCount, actual);
+  }
+
+  if (expect.state) {
+    const s = expect.state;
+    if (s.selectionState !== undefined) push('state.selectionState', memory.selectionState === s.selectionState, s.selectionState, memory.selectionState);
+    if (s.selectedProductId !== undefined) {
+      if (s.selectedProductId === null) push('state.selectedProductId', !memory.selectedProductId, null, memory.selectedProductId);
+      else push('state.selectedProductId', memory.selectedProductId === s.selectedProductId, s.selectedProductId, memory.selectedProductId);
+    }
+    if (s.selectedVariantName !== undefined) push('state.selectedVariantName', memory.selectedVariantName === s.selectedVariantName, s.selectedVariantName, memory.selectedVariantName);
+    if (s.cartLength !== undefined) {
+      const actual = Array.isArray(memory.cartItems) ? memory.cartItems.length : 0;
+      push('state.cartLength', actual === s.cartLength, s.cartLength, actual);
+    }
+    if (s.cartHasVariant !== undefined) {
+      const items = Array.isArray(memory.cartItems) ? memory.cartItems as any[] : [];
+      const found = items.some(it => it.variantName === s.cartHasVariant);
+      push('state.cartHasVariant', found, s.cartHasVariant, items.map(it => it.variantName));
+    }
+    if (s.lastAction !== undefined) push('state.lastAction', memory.lastAction === s.lastAction, s.lastAction, memory.lastAction);
+    if (s.awaitingField !== undefined) push('state.awaitingField', memory.awaitingField === s.awaitingField, s.awaitingField, memory.awaitingField);
+    if (s.preQualifyCollected !== undefined) push('state.preQualifyCollected', memory.preQualifyCollected === s.preQualifyCollected, s.preQualifyCollected, memory.preQualifyCollected);
+    if (s.recommendedSize !== undefined) push('state.recommendedSize', memory.recommendedSize === s.recommendedSize, s.recommendedSize, memory.recommendedSize);
+    if (s.orderCreated !== undefined) push('state.orderCreated', memory.orderCreated === s.orderCreated, s.orderCreated, memory.orderCreated);
+  }
+
+  return out;
 }
 
 // ─── Simulator ───────────────────────────────────────────────────
@@ -199,8 +267,11 @@ class ConversationSimulator {
 
       const memory = (updatedState?.contextJson ?? {}) as Record<string, unknown>;
 
+      // Run assertions
+      const assertions = turn.expect ? runAssertions(turn.expect, result, memory) : [];
+
       // Print turn
-      this.printTurn(i + 1, turn, result, memory);
+      this.printTurn(i + 1, turn, result, memory, assertions);
 
       // Build log entry
       turnLogs.push({
@@ -234,6 +305,7 @@ class ConversationSimulator {
           recommendedSize: memory.recommendedSize,
           orderCreated: memory.orderCreated,
         },
+        assertions,
       });
     }
 
@@ -254,6 +326,7 @@ class ConversationSimulator {
     turn: { message: string; mediaReference?: { mediaId: string; type: string } },
     result: ReplyEngineOutput,
     memory: Record<string, unknown>,
+    assertions: AssertionResult[] = [],
   ): void {
     const mediaTag = turn.mediaReference ? ` ${c.magenta}[${turn.mediaReference.type}]${c.reset}` : '';
     console.log('');
@@ -313,6 +386,22 @@ class ConversationSimulator {
     for (const [key, val] of stateFields) {
       if (val !== undefined && val !== null) {
         console.log(`    ${c.yellow}${key.padEnd(22)}${c.reset} ${val}`);
+      }
+    }
+
+    if (assertions.length > 0) {
+      console.log('');
+      const failed = assertions.filter(a => !a.pass);
+      const passCount = assertions.length - failed.length;
+      if (failed.length === 0) {
+        console.log(`  ${c.green}✓ Assertions: ${passCount}/${assertions.length} passed${c.reset}`);
+      } else {
+        console.log(`  ${c.red}✗ Assertions: ${passCount}/${assertions.length} passed${c.reset}`);
+        for (const a of failed) {
+          const exp = JSON.stringify(a.expected) ?? 'undefined';
+          const act = JSON.stringify(a.actual) ?? 'undefined';
+          console.log(`    ${c.red}✗ ${a.field}: expected ${exp}, got ${act}${c.reset}`);
+        }
       }
     }
   }
@@ -410,6 +499,33 @@ async function main(): Promise<void> {
       timestamp: new Date().toISOString(),
       turns: turnLogs,
     });
+  }
+
+  // Print assertion summary for --all
+  if (args.all) {
+    let totalAssertions = 0;
+    let totalFailed = 0;
+    let failingScenarios = 0;
+    for (const entry of jsonOutput) {
+      const turns = (entry as any).turns as any[];
+      let scenarioFailed = false;
+      for (const t of turns) {
+        if (t.assertions?.length) {
+          totalAssertions += t.assertions.length;
+          const failed = t.assertions.filter((a: any) => !a.pass).length;
+          totalFailed += failed;
+          if (failed > 0) scenarioFailed = true;
+        }
+      }
+      if (scenarioFailed) failingScenarios++;
+    }
+    console.log('');
+    console.log(`${c.bold}${'═'.repeat(65)}${c.reset}`);
+    console.log(`${c.bold}  Assertion Summary${c.reset}`);
+    console.log(`${c.bold}${'═'.repeat(65)}${c.reset}`);
+    console.log(`  Total assertions: ${totalAssertions}`);
+    console.log(`  ${totalFailed === 0 ? c.green : c.red}Failed: ${totalFailed}${c.reset}`);
+    console.log(`  ${failingScenarios === 0 ? c.green : c.red}Failing scenarios: ${failingScenarios}/${jsonOutput.length}${c.reset}`);
   }
 
   // Save JSON log

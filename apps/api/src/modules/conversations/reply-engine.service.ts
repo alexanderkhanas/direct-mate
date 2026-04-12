@@ -425,6 +425,8 @@ export class ReplyEngineService {
       !mediaProductData && // product already known from story/post — no need to pre-qualify
       !memory.cartItems?.length && // cart already has items — product already chosen, skip pre-qualify
       memory.selectionState !== 'cart_item_added' && // same: selection already resolved
+      memory.selectionState !== 'awaiting_variant' && // variant selection in progress
+      memory.selectionState !== 'awaiting_confirmation' && // confirmation pending
       (awaitingPreQualify || this.shouldSearchProducts(classification, memory))
     ) {
       // Check if this message contains pre-qualify data
@@ -681,6 +683,14 @@ export class ReplyEngineService {
         if (isFirstProductPresentation) {
           memory.selectionState = 'awaiting_product';
         }
+
+        // If variant already matched during search (user specified product + color/size in one message),
+        // upgrade to awaiting_confirmation — don't force browsing when they already chose.
+        if (memory.selectionState === 'awaiting_product' && memory.selectedProductId && memory.selectedVariantId) {
+          memory.selectionState = 'awaiting_confirmation';
+          classification.recommendedAction = 'confirm_selection';
+          this.logger.log('Variant already matched during search — upgrading to awaiting_confirmation');
+        }
       }
     }
 
@@ -770,7 +780,7 @@ export class ReplyEngineService {
     // 5.5a-2: Cart checkout — user confirms "оформлюємо" when cart has items
     // Only fires when cart_item_added was set on a PREVIOUS turn (not the current one from 5.5a)
     if (
-      (classification.slotAction === 'confirmation' || classification.primaryIntent === 'ready_to_order') &&
+      (classification.slotAction === 'confirmation' || classification.primaryIntent === 'ready_to_order' || classification.primaryIntent === 'provide_details') &&
       memory.selectionState === 'cart_item_added' &&
       memory.cartItems?.length &&
       memory.lastAction === 'asked_continue_or_checkout' // Ensure this is a NEW confirmation, not the same turn as 5.5a
@@ -1371,6 +1381,39 @@ export class ReplyEngineService {
     }
   }
 
+  // ─── Color/size translation (UA ↔ EN) ─────────────────────────
+
+  private static readonly COLOR_TRANSLATIONS: Record<string, string> = {
+    // UA → EN
+    'чорний': 'black', 'чорна': 'black', 'чорне': 'black',
+    'білий': 'white', 'біла': 'white', 'біле': 'white',
+    'синій': 'blue', 'синя': 'blue', 'синє': 'blue',
+    'червоний': 'red', 'червона': 'red', 'червоне': 'red',
+    'зелений': 'green', 'зелена': 'green', 'зелене': 'green',
+    'сірий': 'grey', 'сіра': 'grey', 'сіре': 'grey',
+    'рожевий': 'pink', 'рожева': 'pink', 'рожеве': 'pink',
+    'бежевий': 'beige', 'бежева': 'beige', 'бежеве': 'beige',
+    'коричневий': 'brown', 'коричнева': 'brown', 'коричневе': 'brown',
+    'жовтий': 'yellow', 'жовта': 'yellow', 'жовте': 'yellow',
+    'фіолетовий': 'purple', 'фіолетова': 'purple', 'фіолетове': 'purple',
+    'помаранчевий': 'orange', 'помаранчева': 'orange', 'помаранчеве': 'orange',
+    'кремовий': 'cream', 'кремова': 'cream', 'кремове': 'cream',
+    'хакі': 'khaki',
+    // EN → UA (reverse for when options are in UA but user types in EN)
+    'black': 'чорний', 'white': 'білий', 'blue': 'синій',
+    'red': 'червоний', 'green': 'зелений', 'grey': 'сірий', 'gray': 'сірий',
+    'pink': 'рожевий', 'beige': 'бежевий', 'brown': 'коричневий',
+    'yellow': 'жовтий', 'purple': 'фіолетовий', 'orange': 'помаранчевий',
+    'cream': 'кремовий', 'khaki': 'хакі',
+  };
+
+  /** Translate user color input and return all possible forms (original + translated). */
+  private translateColor(input: string): string[] {
+    const lower = input.toLowerCase().trim();
+    const translated = ReplyEngineService.COLOR_TRANSLATIONS[lower];
+    return translated ? [lower, translated] : [lower];
+  }
+
   // ─── Product search helpers ────────────────────────────────────
 
   private matchVariant(
@@ -1381,11 +1424,14 @@ export class ReplyEngineService {
     const input = (userColor || userSize || '').toLowerCase().trim();
     if (!input) return null;
 
+    // Expand input with translated forms (UA↔EN)
+    const inputForms = userColor ? this.translateColor(userColor) : [input];
+
     const normalize = (s: string) => s.toLowerCase().replace(/[ʼ'ьіїєґ]/g, '').replace(/\s+/g, ' ').trim();
     const getLabel = (v: typeof variants[0]) => (v.color || v.size || v.name || '').toLowerCase();
 
-    // 1. Exact match
-    const exact = variants.find(v => getLabel(v) === input);
+    // 1. Exact match (including translated forms)
+    const exact = variants.find(v => inputForms.some(f => getLabel(v) === f));
     if (exact) return exact;
 
     // 2. Partial/contains
@@ -1448,12 +1494,17 @@ export class ReplyEngineService {
     const input = userInput.toLowerCase().trim();
     if (!input || options.length === 0) return null;
 
-    // 1. Exact match
-    const exact = options.find(o => o.toLowerCase() === input);
+    // Expand input with translated forms (UA↔EN)
+    const inputForms = this.translateColor(userInput);
+
+    // 1. Exact match (including translated forms)
+    const exact = options.find(o => inputForms.some(f => o.toLowerCase() === f));
     if (exact) return exact;
 
-    // 2. Partial/contains
-    const partial = options.filter(o => o.toLowerCase().includes(input) || input.includes(o.toLowerCase()));
+    // 2. Partial/contains (check all translated forms)
+    const partial = options.filter(o =>
+      inputForms.some(f => o.toLowerCase().includes(f) || f.includes(o.toLowerCase())),
+    );
     if (partial.length === 1) return partial[0];
 
     // 3. Normalized match

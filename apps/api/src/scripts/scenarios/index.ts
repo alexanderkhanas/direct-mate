@@ -5,9 +5,38 @@
 //   Pilot Store  (df1ab482-...) — beauty products, color variants
 //   Clothes Store (f42abe74-...) — clothing, size variants, pre-qualify enabled
 
+export interface SimulatorTurnExpect {
+  /** Expected ReplyEngineOutput.decision */
+  decision?: 'reply' | 'handoff' | 'create_draft_order';
+  /** Expected templateScenario value (e.g. 'confirm_selection') */
+  scenario?: string;
+  /** Substring(s) the main reply text MUST contain */
+  replyContains?: string | string[];
+  /** Substring(s) the main reply text MUST NOT contain */
+  replyNotContains?: string | string[];
+  /** Expected number of image URLs attached */
+  imageCount?: number;
+  /** Partial state assertions (all listed keys must match exactly) */
+  state?: {
+    selectionState?: 'awaiting_product' | 'awaiting_variant' | 'awaiting_confirmation' | 'cart_item_added' | 'confirmed' | null;
+    selectedProductId?: string | null;
+    selectedVariantName?: string | null;
+    cartLength?: number;
+    cartHasVariant?: string;
+    lastAction?: string;
+    awaitingField?: string;
+    preQualifyCollected?: boolean;
+    recommendedSize?: string;
+    orderCreated?: boolean;
+  };
+  /** Free-form note describing what this turn is testing */
+  note?: string;
+}
+
 export interface SimulatorTurn {
   message: string;
   mediaReference?: { mediaId: string; type: string };
+  expect?: SimulatorTurnExpect;
 }
 
 export interface SimulatorScenario {
@@ -142,10 +171,9 @@ export const SCENARIOS: Record<string, SimulatorScenario> = {
     description: 'Product with both color and size → pick color → pick size → confirm',
     tenantId: CLOTHES_STORE,
     turns: [
-      { message: 'хочу худі Puma' },
+      { message: 'хочу базову футболку' },
       { message: '180 см, 80 кг' },
-      { message: 'Хакі' },
-      { message: 'XL' },
+      { message: 'Zara базова, Black' },
       { message: 'так' },
       { message: 'оформлюємо' },
       { message: 'Дмитро Сидоренко, 0671234567, Одеса, НП 15' },

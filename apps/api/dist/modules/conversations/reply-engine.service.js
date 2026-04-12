@@ -288,6 +288,8 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             !mediaProductData &&
             !memory.cartItems?.length &&
             memory.selectionState !== 'cart_item_added' &&
+            memory.selectionState !== 'awaiting_variant' &&
+            memory.selectionState !== 'awaiting_confirmation' &&
             (awaitingPreQualify || this.shouldSearchProducts(classification, memory))) {
             if (awaitingPreQualify ||
                 classification.primaryIntent === 'provide_details' ||
@@ -472,6 +474,11 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 if (isFirstProductPresentation) {
                     memory.selectionState = 'awaiting_product';
                 }
+                if (memory.selectionState === 'awaiting_product' && memory.selectedProductId && memory.selectedVariantId) {
+                    memory.selectionState = 'awaiting_confirmation';
+                    classification.recommendedAction = 'confirm_selection';
+                    this.logger.log('Variant already matched during search — upgrading to awaiting_confirmation');
+                }
             }
         }
         ctx.productData = productData;
@@ -542,7 +549,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 action: 'ask_continue_or_checkout',
             });
         }
-        if ((classification.slotAction === 'confirmation' || classification.primaryIntent === 'ready_to_order') &&
+        if ((classification.slotAction === 'confirmation' || classification.primaryIntent === 'ready_to_order' || classification.primaryIntent === 'provide_details') &&
             memory.selectionState === 'cart_item_added' &&
             memory.cartItems?.length &&
             memory.lastAction === 'asked_continue_or_checkout') {
@@ -1018,13 +1025,19 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             this.logger.log(`Short reply safety net: "${text}" → rejection`);
         }
     }
+    translateColor(input) {
+        const lower = input.toLowerCase().trim();
+        const translated = ReplyEngineService_1.COLOR_TRANSLATIONS[lower];
+        return translated ? [lower, translated] : [lower];
+    }
     matchVariant(variants, userColor, userSize) {
         const input = (userColor || userSize || '').toLowerCase().trim();
         if (!input)
             return null;
+        const inputForms = userColor ? this.translateColor(userColor) : [input];
         const normalize = (s) => s.toLowerCase().replace(/[ʼ'ьіїєґ]/g, '').replace(/\s+/g, ' ').trim();
         const getLabel = (v) => (v.color || v.size || v.name || '').toLowerCase();
-        const exact = variants.find(v => getLabel(v) === input);
+        const exact = variants.find(v => inputForms.some(f => getLabel(v) === f));
         if (exact)
             return exact;
         const partial = variants.filter(v => getLabel(v).includes(input) || input.includes(getLabel(v)));
@@ -1076,10 +1089,11 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         const input = userInput.toLowerCase().trim();
         if (!input || options.length === 0)
             return null;
-        const exact = options.find(o => o.toLowerCase() === input);
+        const inputForms = this.translateColor(userInput);
+        const exact = options.find(o => inputForms.some(f => o.toLowerCase() === f));
         if (exact)
             return exact;
-        const partial = options.filter(o => o.toLowerCase().includes(input) || input.includes(o.toLowerCase()));
+        const partial = options.filter(o => inputForms.some(f => o.toLowerCase().includes(f) || f.includes(o.toLowerCase())));
         if (partial.length === 1)
             return partial[0];
         const normalize = (s) => s.toLowerCase().replace(/[ʼ'ьіїєґ]/g, '').replace(/\s+/g, ' ').trim();
@@ -1512,6 +1526,27 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
     }
 };
 exports.ReplyEngineService = ReplyEngineService;
+ReplyEngineService.COLOR_TRANSLATIONS = {
+    'чорний': 'black', 'чорна': 'black', 'чорне': 'black',
+    'білий': 'white', 'біла': 'white', 'біле': 'white',
+    'синій': 'blue', 'синя': 'blue', 'синє': 'blue',
+    'червоний': 'red', 'червона': 'red', 'червоне': 'red',
+    'зелений': 'green', 'зелена': 'green', 'зелене': 'green',
+    'сірий': 'grey', 'сіра': 'grey', 'сіре': 'grey',
+    'рожевий': 'pink', 'рожева': 'pink', 'рожеве': 'pink',
+    'бежевий': 'beige', 'бежева': 'beige', 'бежеве': 'beige',
+    'коричневий': 'brown', 'коричнева': 'brown', 'коричневе': 'brown',
+    'жовтий': 'yellow', 'жовта': 'yellow', 'жовте': 'yellow',
+    'фіолетовий': 'purple', 'фіолетова': 'purple', 'фіолетове': 'purple',
+    'помаранчевий': 'orange', 'помаранчева': 'orange', 'помаранчеве': 'orange',
+    'кремовий': 'cream', 'кремова': 'cream', 'кремове': 'cream',
+    'хакі': 'khaki',
+    'black': 'чорний', 'white': 'білий', 'blue': 'синій',
+    'red': 'червоний', 'green': 'зелений', 'grey': 'сірий', 'gray': 'сірий',
+    'pink': 'рожевий', 'beige': 'бежевий', 'brown': 'коричневий',
+    'yellow': 'жовтий', 'purple': 'фіолетовий', 'orange': 'помаранчевий',
+    'cream': 'кремовий', 'khaki': 'хакі',
+};
 exports.ReplyEngineService = ReplyEngineService = ReplyEngineService_1 = __decorate([
     (0, common_1.Injectable)(),
     __param(0, (0, typeorm_1.InjectRepository)(tenant_settings_entity_1.TenantSettings)),

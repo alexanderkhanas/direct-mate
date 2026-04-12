@@ -31,6 +31,7 @@ interface AssertionResult {
   pass: boolean;
   expected: unknown;
   actual: unknown;
+  message?: string;
 }
 
 interface TurnLog {
@@ -242,17 +243,31 @@ function renderStateKV(state: Record<string, unknown>, _t: ReturnType<typeof use
 
 // --- Assertion failures panel ---------------------------------------
 
-function AssertionPanel({ failures }: { failures: AssertionResult[] }) {
+function AssertionPanel({ assertions }: { assertions: AssertionResult[] }) {
   const { t } = useT();
   const [expanded, setExpanded] = useState(true);
 
-  if (failures.length === 0) return null;
+  if (assertions.length === 0) return null;
+
+  const failures = assertions.filter((a) => !a.pass);
 
   const formatValue = (v: unknown): string => {
     if (v === null || v === undefined) return String(v);
     if (typeof v === 'string') return v.length > 80 ? v.slice(0, 77) + '...' : v;
     return JSON.stringify(v);
   };
+
+  // All passed — green summary
+  if (failures.length === 0) {
+    return (
+      <div className="mt-1.5">
+        <span className="inline-flex items-center gap-1 text-[10px] text-emerald-600 font-medium">
+          <CheckCircle2 className="h-2.5 w-2.5" />
+          {assertions.length}/{assertions.length} {t('simulator.assertions_passed')}
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div className="mt-1.5">
@@ -273,6 +288,9 @@ function AssertionPanel({ failures }: { failures: AssertionResult[] }) {
           {failures.map((f, i) => (
             <div key={i} className="space-y-0.5">
               <div className="font-mono font-medium text-red-700">{f.field}</div>
+              {f.message && (
+                <div className="text-red-600 italic">{f.message}</div>
+              )}
               <div className="flex items-start gap-2">
                 <span className="text-gray-400 w-16 shrink-0">expected</span>
                 <span className="font-mono text-emerald-700 break-all">{formatValue(f.expected)}</span>
@@ -366,9 +384,9 @@ function TurnView({ turn }: { turn: TurnLog }) {
               <StatePanel state={turn.state} />
             </div>
 
-            {/* Assertion failures */}
+            {/* Assertions */}
             <div className="flex justify-end">
-              <AssertionPanel failures={turnAssertionFailures(turn)} />
+              <AssertionPanel assertions={turn.assertions ?? []} />
             </div>
           </div>
         </div>
@@ -440,6 +458,10 @@ function RunAllScenarioCard({ result }: { result: ScenarioResult }) {
   const [expanded, setExpanded] = useState(false);
   const passed = scenarioPassed(result);
 
+  const allAssertions = result.turns.flatMap((t) => t.assertions ?? []);
+  const assertionPassCount = allAssertions.filter((a) => a.pass).length;
+  const assertionTotal = allAssertions.length;
+
   return (
     <div className="border border-gray-200 rounded-lg overflow-hidden">
       <button
@@ -462,6 +484,14 @@ function RunAllScenarioCard({ result }: { result: ScenarioResult }) {
         <span className="text-xs text-gray-400 shrink-0">
           {result.turns.length} {t('simulator.turns')}
         </span>
+        {assertionTotal > 0 && (
+          <span className={cn(
+            'text-xs font-medium shrink-0',
+            assertionPassCount === assertionTotal ? 'text-emerald-600' : 'text-red-600',
+          )}>
+            {assertionPassCount}/{assertionTotal}
+          </span>
+        )}
         <Badge variant={passed ? 'success' : 'error'}>
           {passed ? t('simulator.passed') : t('simulator.failed')}
         </Badge>
