@@ -699,21 +699,35 @@ export class ReplyEngineService {
         const userColorForms = userColor ? this.translateColor(userColor) : [];
         const userSizeLower = userSize?.toLowerCase().trim();
         const filtered = productData
-          .map(p => ({
-            ...p,
-            variants: p.variants.filter(v => {
-              if (userColor) {
-                if (!v.color) return false; // product has no color dimension — user explicitly asked for a color
-                const vc = v.color.toLowerCase().trim();
-                if (!userColorForms.some(f => vc === f || vc.includes(f) || f.includes(vc))) return false;
+          .map(p => {
+            // Color-on-title products (e.g. "Кремова футболка") have no color
+            // variant axis; the color is baked into the title. For these, match
+            // the user's color against the product title instead of variants —
+            // if title doesn't contain the requested color, drop the whole product.
+            const productHasColorDim = p.variants.some(v => !!v.color);
+            if (userColor && !productHasColorDim) {
+              const titleLower = p.product.title.toLowerCase();
+              const titleMatchesColor = userColorForms.some(f => titleLower.includes(f));
+              if (!titleMatchesColor) {
+                return { ...p, variants: [] };
               }
-              if (userSizeLower) {
-                if (!v.size) return false;
-                if (v.size.toLowerCase().trim() !== userSizeLower) return false;
-              }
-              return true;
-            }),
-          }))
+            }
+            return {
+              ...p,
+              variants: p.variants.filter(v => {
+                if (userColor && productHasColorDim) {
+                  if (!v.color) return false;
+                  const vc = v.color.toLowerCase().trim();
+                  if (!userColorForms.some(f => vc === f || vc.includes(f) || f.includes(vc))) return false;
+                }
+                if (userSizeLower) {
+                  if (!v.size) return false;
+                  if (v.size.toLowerCase().trim() !== userSizeLower) return false;
+                }
+                return true;
+              }),
+            };
+          })
           .filter(p => p.variants.length > 0);
 
         if (filtered.length > 0) {

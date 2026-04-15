@@ -247,10 +247,11 @@ export const SCENARIOS: Record<string, SimulatorScenario> = {
         message: 'хочу замовити',
         mediaReference: { mediaId: '18111766516836068', type: 'post_share' },
         expect: {
+          state: { selectedProductId: '83895c2a-d769-477f-858a-c8496537fa5b' },
           note: 'Must resolve post_share to Zara базова футболка via instagram_media_mappings',
         },
       },
-      { message: 'M' },
+      { message: 'Black M' },
       { message: 'так' },
       { message: 'оформлюємо' },
       { message: 'Олена Коваленко, 0997654321, Львів, НП 12' },
