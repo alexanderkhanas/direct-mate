@@ -59,6 +59,12 @@ __decorate([
     (0, class_validator_1.Min)(0),
     __metadata("design:type", Number)
 ], ImportVariantDto.prototype, "inventoryQty", void 0);
+__decorate([
+    (0, swagger_1.ApiPropertyOptional)({ example: 'https://cdn.shopify.com/s/files/variant-black.jpg' }),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsOptional)(),
+    __metadata("design:type", String)
+], ImportVariantDto.prototype, "imageUrl", void 0);
 class ImportImageDto {
 }
 exports.ImportImageDto = ImportImageDto;

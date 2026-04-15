@@ -52,6 +52,10 @@ export default function ConversationDetailPage() {
 
   const customerName = data.customer.username ?? data.customer.externalUserId;
 
+  const sortedMessages = [...data.messages].sort(
+    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+  );
+
   return (
     <div className="space-y-6 max-w-3xl">
       {/* Back */}
@@ -112,7 +116,7 @@ export default function ConversationDetailPage() {
               <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Messages</p>
             </div>
             <div className="p-4 space-y-3 max-h-[500px] overflow-y-auto">
-              {data.messages.map((msg) => (
+              {sortedMessages.map((msg) => (
                 <div
                   key={msg.id}
                   className={cn(

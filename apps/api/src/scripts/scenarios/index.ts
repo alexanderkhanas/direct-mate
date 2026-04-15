@@ -166,6 +166,18 @@ export const SCENARIOS: Record<string, SimulatorScenario> = {
     ],
   },
 
+  clothing_direct_variant: {
+    name: 'Clothing — Direct variant query (single turn)',
+    description: 'User specifies color+size in first message → skip pre-qualify → confirm directly',
+    tenantId: CLOTHES_STORE,
+    turns: [
+      { message: 'Є чорна футболка в розмірі M?' },
+      { message: 'так' },
+      { message: 'оформлюємо' },
+      { message: 'Андрій Коваль, 0991234567, Київ, НП 5' },
+    ],
+  },
+
   clothing_two_step_variant: {
     name: 'Clothing — Two-step variant (color + size)',
     description: 'Product with both color and size → pick color → pick size → confirm',
@@ -212,16 +224,65 @@ export const SCENARIOS: Record<string, SimulatorScenario> = {
 
   story_reply_basic_tshirt: {
     name: 'Story Reply — Basic T-shirt (Чорна базова)',
-    description: 'Story reply for чорна базова футболка → size S → confirm',
+    description: 'Story reply: size S → variant_not_available → pick Black M → confirm → checkout',
     tenantId: CLOTHES_STORE,
     turns: [
       {
         message: 'розмір S є?',
         mediaReference: { mediaId: '18364353361207943', type: 'story_reply' },
       },
+      { message: 'Black M' },
       { message: 'так' },
       { message: 'оформлюємо' },
       { message: 'Марина Лисенко, 0961234567, Вінниця, НП 4' },
+    ],
+  },
+
+  clothing_post_share: {
+    name: 'Clothing — Post share (product card) + order',
+    description: 'User shares a product post in DM, then asks to order → should resolve shared post to product',
+    tenantId: CLOTHES_STORE,
+    turns: [
+      {
+        message: 'хочу замовити',
+        mediaReference: { mediaId: '18111766516836068', type: 'post_share' },
+        expect: {
+          note: 'Must resolve post_share to Zara базова футболка via instagram_media_mappings',
+        },
+      },
+      { message: 'M' },
+      { message: 'так' },
+      { message: 'оформлюємо' },
+      { message: 'Олена Коваленко, 0997654321, Львів, НП 12' },
+    ],
+  },
+
+  clothing_two_orders_in_row: {
+    name: 'Clothing — Two orders in one conversation',
+    description: 'Story reply order → completed → user asks new product → second order → completed',
+    tenantId: CLOTHES_STORE,
+    turns: [
+      // First order: story reply → size M
+      {
+        message: 'розмір М є в наявності?',
+        mediaReference: { mediaId: '17983952801809405', type: 'story_reply' },
+      },
+      { message: 'так' },
+      { message: 'оформлюємо' },
+      { message: 'Олена Коваленко, 0997654321, Львів, НП 12' },
+      // Second order: direct variant query after first order completed
+      {
+        message: 'Є чорна футболка в розмірі M?',
+        expect: {
+          scenario: 'confirm_variant_available',
+          imageCount: 1,
+          state: { selectionState: 'awaiting_confirmation', selectedVariantName: 'Black, M' },
+          note: 'Post-order new inquiry must reset state and resolve to confirm_variant_available with variant image',
+        },
+      },
+      { message: 'так' },
+      { message: 'оформлюємо' },
+      { message: 'Олена Коваленко, 0997654321, Львів, НП 12' },
     ],
   },
 

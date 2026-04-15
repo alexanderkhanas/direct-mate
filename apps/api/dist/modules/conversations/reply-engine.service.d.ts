@@ -68,6 +68,7 @@ export declare class ReplyEngineService {
     private resolveVariantSelection;
     private buildResponse;
     private scenarioToAction;
+    private setConfirmIntent;
     private resolveShortReply;
     private static readonly COLOR_TRANSLATIONS;
     private translateColor;

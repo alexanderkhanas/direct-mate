@@ -32,6 +32,8 @@ interface MetaMessagingEvent {
             type: string;
             payload?: {
                 url?: string;
+                ig_post_media_id?: string;
+                title?: string;
             };
         }>;
     };

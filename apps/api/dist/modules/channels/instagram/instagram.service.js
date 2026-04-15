@@ -201,6 +201,13 @@ let InstagramService = InstagramService_1 = class InstagramService {
             return { mediaId: message.reply_to.mid, type: 'post_reply' };
         }
         if (message.attachments?.length) {
+            const shareAttachment = message.attachments.find((a) => a.type === 'share');
+            if (shareAttachment?.payload?.ig_post_media_id) {
+                return {
+                    mediaId: shareAttachment.payload.ig_post_media_id,
+                    type: 'post_share',
+                };
+            }
             const mediaAttachment = message.attachments.find((a) => a.type === 'image' || a.type === 'video');
             if (mediaAttachment) {
                 return {
@@ -208,6 +215,7 @@ let InstagramService = InstagramService_1 = class InstagramService {
                     type: 'customer_photo',
                 };
             }
+            this.logger.warn(`Unrecognized attachment shape: ${JSON.stringify(message.attachments)}`);
         }
         return null;
     }

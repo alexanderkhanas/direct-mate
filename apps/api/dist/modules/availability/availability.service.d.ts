@@ -51,6 +51,7 @@ export declare class AvailabilityService {
             price: number;
             currency: string;
             effectiveAvailable: number;
+            imageUrl: string | null;
         }>;
     }>>;
     private searchAllByTitle;
@@ -70,6 +71,7 @@ export declare class AvailabilityService {
             price: number;
             currency: string;
             effectiveAvailable: number;
+            imageUrl: string | null;
         }>;
     }>>;
     getByProductId(productId: string, variantId?: string): Promise<{

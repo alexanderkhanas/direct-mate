@@ -17,6 +17,7 @@ export interface ProductSearchResult {
     price: number;
     currency: string;
     effectiveAvailable: number;
+    imageUrl: string | null;
   }>;
 }
 
@@ -98,7 +99,12 @@ export class TemplateEngineService {
       params;
 
     // 0. If products were just found for the first time, force show_products
-    if (isFirstProductPresentation && productData && productData.length > 0) {
+    //    EXCEPT when a variant was already auto-selected (user specified exactly
+    //    what they want and we matched it) — in that case go straight to confirmation.
+    const variantAlreadyResolved =
+      memory.selectionState === 'awaiting_confirmation' &&
+      !!memory.selectedVariantId;
+    if (isFirstProductPresentation && productData && productData.length > 0 && !variantAlreadyResolved) {
       this.logger.log('First product presentation — forcing show_products scenario');
       return this.renderScenario(tenantId, 'show_products', classification, productData, memory, recentTemplateIds, flowConfig);
     }
@@ -185,8 +191,22 @@ export class TemplateEngineService {
         for (const p of productData) {
           if (p.product.imageUrl) imageUrls.push(p.product.imageUrl);
         }
-      } else if (singleProductScenarios.includes(scenario) && productData[0]?.product.imageUrl) {
-        imageUrls.push(productData[0].product.imageUrl);
+      } else if (singleProductScenarios.includes(scenario)) {
+        // For single-product scenarios, prefer the selected variant's image if available.
+        // Fall back to product's main image.
+        const selectedVarId = variables['matched_variant_id'] || memory?.selectedVariantId;
+        const first = productData[0];
+        if (first) {
+          const selectedVariant = selectedVarId
+            ? first.variants.find((v) => v.id === selectedVarId)
+            : null;
+          const variantImage = selectedVariant?.imageUrl ?? null;
+          if (variantImage) {
+            imageUrls.push(variantImage);
+          } else if (first.product.imageUrl) {
+            imageUrls.push(first.product.imageUrl);
+          }
+        }
       }
     }
 
@@ -536,13 +556,31 @@ export class TemplateEngineService {
           vars['variant_type'] = 'Розміри';
           vars['variant_list'] = sizes.join(', ');
         } else {
-          // Default behavior — detect and show all variants
           const variantType = this.detectVariantType(first.variants);
           vars['variant_type'] = variantType;
-          const variantNames = inStockVars
-            .map((v) => [...new Set([v.color, v.size].filter(Boolean))].join(', '))
-            .filter(Boolean);
-          vars['variant_list'] = [...new Set(variantNames)].join(', ');
+          const hasColors = inStockVars.some(v => v.color);
+          const hasSizes = inStockVars.some(v => v.size);
+
+          if (hasColors && hasSizes) {
+            // Group by color: "White: S, M, L, XL\nBlack: S, M, L, XL"
+            const colorGroups = new Map<string, string[]>();
+            for (const v of inStockVars) {
+              if (v.color) {
+                if (!colorGroups.has(v.color)) colorGroups.set(v.color, []);
+                if (v.size && !colorGroups.get(v.color)!.includes(v.size)) {
+                  colorGroups.get(v.color)!.push(v.size);
+                }
+              }
+            }
+            vars['variant_list'] = Array.from(colorGroups.entries())
+              .map(([color, sizes]) => sizes.length ? `${color}: ${sizes.join(', ')}` : color)
+              .join('\n');
+          } else {
+            const variantNames = inStockVars
+              .map(v => [...new Set([v.color, v.size].filter(Boolean))].join(', '))
+              .filter(Boolean);
+            vars['variant_list'] = [...new Set(variantNames)].join(', ');
+          }
         }
       }
     }
@@ -705,13 +743,20 @@ export class TemplateEngineService {
           const hasSizes = displayVariants.some((v) => v.size);
 
           if (hasColors && hasSizes) {
-            // Display color and size separately
-            const uniqueColors = [...new Set(displayVariants.map((v) => v.color).filter(Boolean))];
-            const uniqueSizes = [...new Set(displayVariants.map((v) => v.size).filter(Boolean))];
-            const parts: string[] = [];
-            if (uniqueColors.length > 0) parts.push(`Кольори: ${uniqueColors.join(', ')}`);
-            if (uniqueSizes.length > 0) parts.push(`Розміри: ${uniqueSizes.join(', ')}`);
-            lines.push(parts.join(' · '));
+            // Group sizes per color: "Відтінки: White (S, M, L, XL), Black (S, M, L, XL)"
+            const colorGroups = new Map<string, string[]>();
+            for (const v of displayVariants) {
+              if (v.color) {
+                if (!colorGroups.has(v.color)) colorGroups.set(v.color, []);
+                if (v.size && !colorGroups.get(v.color)!.includes(v.size)) {
+                  colorGroups.get(v.color)!.push(v.size);
+                }
+              }
+            }
+            const grouped = Array.from(colorGroups.entries())
+              .map(([color, sizes]) => sizes.length ? `${color} (${sizes.join(', ')})` : color)
+              .join(', ');
+            lines.push(`Відтінки: ${grouped}`);
           } else {
             // Single dimension — use detected type label
             const variantNames = displayVariants

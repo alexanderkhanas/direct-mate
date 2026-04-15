@@ -130,8 +130,8 @@ export class CatalogService {
           color: v.color,
           price: v.price,
           currency: v.currency,
-          // Variant image: match by color, fallback to product image
-          imageUrl: (v.color ? colorImageMap.get(v.color.toLowerCase()) : null) ?? productImageUrl,
+          // Variant image: prefer variant's own imageUrl, then color-matched media, then product image
+          imageUrl: v.imageUrl ?? (v.color ? colorImageMap.get(v.color.toLowerCase()) : null) ?? productImageUrl,
           effectiveAvailable:
             (v.stockBalance?.availableQty ?? 0) -
             (v.stockBalance?.reservedQty ?? 0) -
@@ -183,6 +183,7 @@ export class CatalogService {
         price: number;
         currency?: string;
         inventoryQty?: number;
+        imageUrl?: string;
       }>;
       images?: Array<{
         url: string;
@@ -223,6 +224,8 @@ export class CatalogService {
               color: v.color ?? null,
               price: v.price,
               currency: v.currency ?? 'UAH',
+              // Only set imageUrl when sync sends it, so we don't wipe existing values
+              ...(v.imageUrl !== undefined && { imageUrl: v.imageUrl }),
             });
 
             if (v.inventoryQty !== undefined && v.inventoryQty !== null) {

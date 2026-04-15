@@ -45,7 +45,7 @@ export interface AssistantMemory {
   selectedProductTitle?: string;
   selectedVariantId?: string;
   selectedVariantName?: string;
-  availableVariants?: Array<{ id: string; name: string; color?: string | null; size?: string | null }> | string;
+  availableVariants?: Array<{ id: string; name: string; color?: string | null; size?: string | null; imageUrl?: string | null }> | string;
   orderCreated?: boolean;
   cartItems?: Array<{
     productId: string;

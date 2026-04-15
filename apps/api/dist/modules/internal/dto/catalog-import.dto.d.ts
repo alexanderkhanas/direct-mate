@@ -6,6 +6,7 @@ export declare class ImportVariantDto {
     price: number;
     currency?: string;
     inventoryQty?: number;
+    imageUrl?: string;
 }
 export declare class ImportImageDto {
     url: string;

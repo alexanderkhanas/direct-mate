@@ -47,6 +47,11 @@ export class ImportVariantDto {
   @IsOptional()
   @Min(0)
   inventoryQty?: number;
+
+  @ApiPropertyOptional({ example: 'https://cdn.shopify.com/s/files/variant-black.jpg' })
+  @IsString()
+  @IsOptional()
+  imageUrl?: string;
 }
 
 export class ImportImageDto {

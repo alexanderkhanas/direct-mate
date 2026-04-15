@@ -20,7 +20,7 @@ import { withRetry } from '../../../common/retry';
 
 interface MediaReference {
   mediaId: string;
-  type: 'story_reply' | 'post_reply' | 'customer_photo';
+  type: 'story_reply' | 'post_reply' | 'post_share' | 'customer_photo';
 }
 
 interface MetaMessagingEvent {
@@ -31,7 +31,10 @@ interface MetaMessagingEvent {
     text?: string;
     is_echo?: boolean;
     reply_to?: { mid?: string; story?: { id: string } };
-    attachments?: Array<{ type: string; payload?: { url?: string } }>;
+    attachments?: Array<{
+      type: string;
+      payload?: { url?: string; ig_post_media_id?: string; title?: string };
+    }>;
   };
   message_edit?: { mid: string; num_edit: number };
   timestamp: number;
@@ -256,8 +259,18 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
       return { mediaId: message.reply_to.mid, type: 'post_reply' };
     }
 
-    // Customer photo: attachments with image/video type
+    // Post share: user shared a product post from the feed.
+    // Meta sends attachments[].type='share' with payload.ig_post_media_id.
     if (message.attachments?.length) {
+      const shareAttachment = message.attachments.find((a) => a.type === 'share');
+      if (shareAttachment?.payload?.ig_post_media_id) {
+        return {
+          mediaId: shareAttachment.payload.ig_post_media_id,
+          type: 'post_share',
+        };
+      }
+
+      // Customer photo: attachments with image/video type
       const mediaAttachment = message.attachments.find(
         (a) => a.type === 'image' || a.type === 'video',
       );
@@ -267,6 +280,10 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
           type: 'customer_photo',
         };
       }
+
+      this.logger.warn(
+        `Unrecognized attachment shape: ${JSON.stringify(message.attachments)}`,
+      );
     }
 
     return null;

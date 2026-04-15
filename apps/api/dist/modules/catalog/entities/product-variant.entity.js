@@ -53,6 +53,10 @@ __decorate([
     __metadata("design:type", Boolean)
 ], ProductVariant.prototype, "active", void 0);
 __decorate([
+    (0, typeorm_1.Column)({ type: 'text', nullable: true }),
+    __metadata("design:type", Object)
+], ProductVariant.prototype, "imageUrl", void 0);
+__decorate([
     (0, typeorm_1.Column)({ type: 'jsonb', nullable: true }),
     __metadata("design:type", Object)
 ], ProductVariant.prototype, "metadata", void 0);

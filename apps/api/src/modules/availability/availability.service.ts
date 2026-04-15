@@ -221,6 +221,7 @@ export class AvailabilityService {
         price: number;
         currency: string;
         effectiveAvailable: number;
+        imageUrl: string | null;
       }>;
     }>
   > {
@@ -356,6 +357,7 @@ export class AvailabilityService {
         price: number;
         currency: string;
         effectiveAvailable: number;
+        imageUrl: string | null;
       }>;
     }>
   > {
@@ -428,6 +430,7 @@ export class AvailabilityService {
       price: number;
       currency: string;
       effectiveAvailable: number;
+      imageUrl: string | null;
     }>;
   }> {
     const productMap = new Map<string, {
@@ -439,6 +442,7 @@ export class AvailabilityService {
         price: number;
         currency: string;
         effectiveAvailable: number;
+        imageUrl: string | null;
       }>;
     }>();
 
@@ -461,6 +465,7 @@ export class AvailabilityService {
         price: Number(v.price),
         currency: v.currency,
         effectiveAvailable,
+        imageUrl: v.imageUrl ?? null,
       });
     }
 

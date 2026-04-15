@@ -54,6 +54,7 @@ export declare class CatalogService {
             price: number;
             currency?: string;
             inventoryQty?: number;
+            imageUrl?: string;
         }>;
         images?: Array<{
             url: string;

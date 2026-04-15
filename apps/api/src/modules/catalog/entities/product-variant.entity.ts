@@ -43,6 +43,9 @@ export class ProductVariant {
   @Column({ type: 'boolean', default: true })
   active!: boolean;
 
+  @Column({ type: 'text', nullable: true })
+  imageUrl!: string | null;
+
   @Column({ type: 'jsonb', nullable: true })
   metadata!: Record<string, unknown> | null;
 

@@ -120,7 +120,7 @@ let CatalogService = CatalogService_1 = class CatalogService {
                     color: v.color,
                     price: v.price,
                     currency: v.currency,
-                    imageUrl: (v.color ? colorImageMap.get(v.color.toLowerCase()) : null) ?? productImageUrl,
+                    imageUrl: v.imageUrl ?? (v.color ? colorImageMap.get(v.color.toLowerCase()) : null) ?? productImageUrl,
                     effectiveAvailable: (v.stockBalance?.availableQty ?? 0) -
                         (v.stockBalance?.reservedQty ?? 0) -
                         (v.stockBalance?.pendingCheckoutQty ?? 0),
@@ -175,6 +175,7 @@ let CatalogService = CatalogService_1 = class CatalogService {
                             color: v.color ?? null,
                             price: v.price,
                             currency: v.currency ?? 'UAH',
+                            ...(v.imageUrl !== undefined && { imageUrl: v.imageUrl }),
                         });
                         if (v.inventoryQty !== undefined && v.inventoryQty !== null) {
                             await this.upsertStockBalance(variant.id, v.inventoryQty);

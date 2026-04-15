@@ -329,6 +329,7 @@ let AvailabilityService = class AvailabilityService {
                 price: Number(v.price),
                 currency: v.currency,
                 effectiveAvailable,
+                imageUrl: v.imageUrl ?? null,
             });
         }
         return Array.from(productMap.values());

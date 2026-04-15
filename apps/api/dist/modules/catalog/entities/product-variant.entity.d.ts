@@ -10,6 +10,7 @@ export declare class ProductVariant {
     price: number;
     currency: string;
     active: boolean;
+    imageUrl: string | null;
     metadata: Record<string, unknown> | null;
     createdAt: Date;
     updatedAt: Date;

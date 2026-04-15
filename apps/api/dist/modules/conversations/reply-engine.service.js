@@ -224,9 +224,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                     stateUpdate,
                 };
             }
-            if (classification.slotAction === 'new_inquiry' ||
-                classification.slotAction === 'adds_to_cart' ||
-                ['product_inquiry', 'ready_to_order', 'category_browse', 'greeting'].includes(classification.primaryIntent)) {
+            if (!POST_ORDER_PASSIVE_INTENTS.includes(classification.primaryIntent)) {
                 ctx.trace.push(`classify: post-order state reset (slotAction=${classification.slotAction} intent=${classification.primaryIntent})`);
                 memory.selectedProductId = undefined;
                 memory.selectedProductTitle = undefined;
@@ -317,6 +315,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             memory.selectionState !== 'cart_item_added' &&
             memory.selectionState !== 'awaiting_variant' &&
             memory.selectionState !== 'awaiting_confirmation' &&
+            !classification.entities.size &&
             (awaitingPreQualify || this.shouldSearchProducts(classification, memory))) {
             if (awaitingPreQualify ||
                 classification.primaryIntent === 'provide_details' ||
@@ -337,8 +336,12 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 if (!classification.entities.category && memory.selectedCategory) {
                     classification.entities.category = memory.selectedCategory;
                 }
-                classification.primaryIntent = 'category_browse';
-                classification.recommendedAction = 'show_products';
+                const hasSpecificChoice = !!(classification.entities.productName ||
+                    (classification.entities.color && classification.entities.size));
+                if (!hasSpecificChoice) {
+                    classification.primaryIntent = 'category_browse';
+                    classification.recommendedAction = 'show_products';
+                }
             }
             else {
                 ctx.trace.push(`preQualify: gate fired, asking for pre-qualify data`);
@@ -384,6 +387,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
                 color: v.color,
                 size: v.size,
+                imageUrl: v.imageUrl ?? null,
             }));
             const isSelectionIntent = ['availability_check', 'product_inquiry', 'general_question'].includes(classification.primaryIntent) ||
                 classification.recommendedAction === 'show_products';
@@ -397,9 +401,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                         color: v.color ?? null,
                         size: v.size ?? null,
                     })), userColor, userSize);
-                    const requested = (userSize || userColor || '').toLowerCase().trim();
-                    const isExactMatch = matched && matched.name.toLowerCase().trim() === requested;
-                    if (matched && isExactMatch) {
+                    if (matched) {
                         memory.selectedVariantId = matched.id;
                         memory.selectedVariantName = matched.name;
                         memory.selectionState = 'awaiting_confirmation';
@@ -407,18 +409,37 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                         const action = userSize ? 'confirm_variant_available' : 'confirm_selection';
                         classification.primaryIntent = intent;
                         classification.recommendedAction = action;
-                        ctx.trace.push(`5.5m: exact match "${matched.name}" → awaiting_confirmation`);
+                        ctx.trace.push(`5.5m: matched "${matched.name}" → awaiting_confirmation`);
                         this.logger.log(`5.5m: Story reply — variant matched: ${matched.name}`);
                     }
                     else {
-                        memory.selectionState = 'awaiting_variant';
-                        memory.selectedVariantId = undefined;
-                        memory.selectedVariantName = undefined;
-                        memory.requestedVariant = userSize || userColor;
-                        classification.primaryIntent = 'variant_not_available';
-                        classification.recommendedAction = 'variant_not_available';
-                        ctx.trace.push(`5.5m: "${requested}" not exact match (fuzzy=${matched?.name ?? 'none'}) → variant_not_available`);
-                        this.logger.log(`5.5m: Story reply — variant "${requested}" not available, showing alternatives`);
+                        const colorForms = userColor ? this.translateColor(userColor) : [];
+                        const sizeExists = userSize && inStock.some(v => v.size?.toLowerCase() === userSize.toLowerCase());
+                        const colorExists = userColor && inStock.some(v => {
+                            if (!v.color)
+                                return false;
+                            const vc = v.color.toLowerCase();
+                            return colorForms.some(f => vc === f || vc.includes(f) || f.includes(vc));
+                        });
+                        if (sizeExists || colorExists) {
+                            memory.selectionState = 'awaiting_variant';
+                            memory.selectedVariantId = undefined;
+                            memory.selectedVariantName = undefined;
+                            classification.primaryIntent = 'ask_variant_choice';
+                            classification.recommendedAction = 'ask_variant_choice';
+                            ctx.trace.push(`5.5m: "${userSize || userColor}" exists but multiple options → ask_variant_choice`);
+                            this.logger.log(`5.5m: Story reply — dimension exists, asking for other dimension`);
+                        }
+                        else {
+                            memory.selectionState = 'awaiting_variant';
+                            memory.selectedVariantId = undefined;
+                            memory.selectedVariantName = undefined;
+                            memory.requestedVariant = userSize || userColor;
+                            classification.primaryIntent = 'variant_not_available';
+                            classification.recommendedAction = 'variant_not_available';
+                            ctx.trace.push(`5.5m: "${userSize || userColor}" not available → variant_not_available`);
+                            this.logger.log(`5.5m: Story reply — variant not available, showing alternatives`);
+                        }
                     }
                 }
                 else if (inStock.length === 1) {
@@ -454,7 +475,8 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 found: productData ? productData.length : 0,
             });
             const isCorrection = classification.slotAction === 'correction';
-            if (productData && productData.length > 0 && memory.recommendedSize && !isCorrection) {
+            const userSpecifiedSize = !!classification.entities.size;
+            if (productData && productData.length > 0 && memory.recommendedSize && !isCorrection && !userSpecifiedSize) {
                 const recSize = memory.recommendedSize;
                 const filtered = productData
                     .map(p => ({
@@ -465,6 +487,37 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 if (filtered.length > 0) {
                     productData = filtered;
                     this.logger.log(`Filtered products by recommended size ${recSize}: ${filtered.length} products`);
+                }
+            }
+            const userColor = classification.entities.color;
+            const userSize = classification.entities.size;
+            if (productData && productData.length > 0 && (userColor || userSize)) {
+                const userColorForms = userColor ? this.translateColor(userColor) : [];
+                const userSizeLower = userSize?.toLowerCase().trim();
+                const filtered = productData
+                    .map(p => ({
+                    ...p,
+                    variants: p.variants.filter(v => {
+                        if (userColor) {
+                            if (!v.color)
+                                return false;
+                            const vc = v.color.toLowerCase().trim();
+                            if (!userColorForms.some(f => vc === f || vc.includes(f) || f.includes(vc)))
+                                return false;
+                        }
+                        if (userSizeLower) {
+                            if (!v.size)
+                                return false;
+                            if (v.size.toLowerCase().trim() !== userSizeLower)
+                                return false;
+                        }
+                        return true;
+                    }),
+                }))
+                    .filter(p => p.variants.length > 0);
+                if (filtered.length > 0) {
+                    productData = filtered;
+                    ctx.trace.push(`search: filtered by user color="${userColor ?? ''}" size="${userSize ?? ''}" → ${filtered.length} products`);
                 }
             }
             ctx.trace.push(`search: found ${productData?.length ?? 0} products`);
@@ -514,6 +567,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                         name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
                         color: v.color ?? null,
                         size: v.size ?? null,
+                        imageUrl: v.imageUrl ?? null,
                     }));
                     memory.selectedProductId = targetProduct.product.id;
                     memory.selectedProductTitle = targetProduct.product.title;
@@ -628,7 +682,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 memory.selectedVariantId = variants[0].id;
                 memory.selectedVariantName = variants[0].name;
                 memory.selectionState = 'awaiting_confirmation';
-                classification.recommendedAction = 'confirm_selection';
+                this.setConfirmIntent(classification, userColor, userSize);
                 ctx.trace.push('5.5b: single variant auto-selected');
                 this.logger.log('Single variant → auto-selected, proceeding to confirm_selection');
             }
@@ -646,7 +700,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                     memory.selectedVariantId = matched.id;
                     memory.selectedVariantName = matched.name;
                     memory.selectionState = 'awaiting_confirmation';
-                    classification.recommendedAction = 'confirm_selection';
+                    this.setConfirmIntent(classification, userColor, userSize);
                     ctx.trace.push(`5.5b: variant matched ${matched.name}`);
                     this.logger.log(`Variant matched: ${matched.name}`);
                 }
@@ -695,7 +749,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                         memory.selectedVariantName = sizesForColor[0].name;
                         memory.variantStep = null;
                         memory.selectionState = 'awaiting_confirmation';
-                        classification.recommendedAction = 'confirm_selection';
+                        this.setConfirmIntent(classification, matchedColor, sizesForColor[0].size ?? undefined);
                         this.logger.log(`Two-step variant: color=${matchedColor}, single size → auto-selected`);
                     }
                     else {
@@ -705,7 +759,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                             memory.selectedVariantName = colorOnlyVariant.name;
                             memory.variantStep = null;
                             memory.selectionState = 'awaiting_confirmation';
-                            classification.recommendedAction = 'confirm_selection';
+                            this.setConfirmIntent(classification, matchedColor, undefined);
                         }
                     }
                 }
@@ -728,7 +782,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                         memory.selectedVariantName = exactVariant.name;
                         memory.variantStep = null;
                         memory.selectionState = 'awaiting_confirmation';
-                        classification.recommendedAction = 'confirm_selection';
+                        this.setConfirmIntent(classification, memory.selectedColor ?? undefined, matchedSize);
                         ctx.trace.push(`5.5b-2: size=${matchedSize} → resolved`);
                         this.logger.log(`Two-step variant: color=${memory.selectedColor}, size=${matchedSize} → resolved`);
                     }
@@ -760,6 +814,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                         name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
                         color: v.color,
                         size: v.size,
+                        imageUrl: v.imageUrl ?? null,
                     }));
                     classification.primaryIntent = 'ask_variant_choice';
                     classification.recommendedAction = 'ask_variant_choice';
@@ -771,7 +826,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                         memory.selectedVariantId = matched.id;
                         memory.selectedVariantName = matched.name;
                         memory.selectionState = 'awaiting_confirmation';
-                        classification.recommendedAction = 'confirm_selection';
+                        this.setConfirmIntent(classification, userColor, userSize);
                     }
                     else {
                         memory.selectionState = 'awaiting_variant';
@@ -786,6 +841,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                         name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
                         color: v.color,
                         size: v.size,
+                        imageUrl: v.imageUrl ?? null,
                     }));
                     classification.primaryIntent = 'ask_variant_choice';
                     classification.recommendedAction = 'ask_variant_choice';
@@ -796,7 +852,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 memory.selectedVariantId = variants[0].id;
                 memory.selectedVariantName = [...new Set([variants[0].color, variants[0].size].filter(Boolean))].join(', ') || 'standard';
                 memory.selectionState = 'awaiting_confirmation';
-                classification.recommendedAction = 'confirm_selection';
+                this.setConfirmIntent(classification, classification.entities.color, classification.entities.size);
             }
         }
         if (memory.selectionState === 'awaiting_product' &&
@@ -818,8 +874,8 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 memory.selectedVariantId = effectiveVariants[0].id;
                 memory.selectedVariantName = effectiveVariants[0].name;
                 memory.selectionState = 'awaiting_confirmation';
-                classification.recommendedAction = 'confirm_selection';
-                ctx.trace.push(`5.5d: matched ${effectiveVariants[0].name} → awaiting_confirmation`);
+                this.setConfirmIntent(classification, userColor, userSize);
+                ctx.trace.push(`5.5d: matched ${effectiveVariants[0].name} → awaiting_confirmation (intent=${classification.primaryIntent})`);
                 this.logger.log(`5.5d: Single variant after filter → auto-selected: ${effectiveVariants[0].name}`);
             }
             else if (userColor || userSize) {
@@ -828,8 +884,8 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                     memory.selectedVariantId = matched.id;
                     memory.selectedVariantName = matched.name;
                     memory.selectionState = 'awaiting_confirmation';
-                    classification.recommendedAction = 'confirm_selection';
-                    ctx.trace.push(`5.5d: matched ${matched.name} → awaiting_confirmation`);
+                    this.setConfirmIntent(classification, userColor, userSize);
+                    ctx.trace.push(`5.5d: matched ${matched.name} → awaiting_confirmation (intent=${classification.primaryIntent})`);
                     this.logger.log(`5.5d: Variant matched from user input: ${matched.name}`);
                 }
                 else {
@@ -1046,6 +1102,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             conversationId: input.conversationId,
             inbound: input.messageText,
             outbound: finalReply,
+            imageUrls: templateResult?.imageUrls,
             templateId: usedTemplateId ?? 'ai_fallback',
             templateScenario: templateResult?.scenario ?? 'ai_fallback',
             stage: classification.conversationStage,
@@ -1082,6 +1139,11 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         };
         return map[scenario] ?? scenario;
     }
+    setConfirmIntent(classification, userColor, userSize) {
+        const isVariantQuery = !!(userSize || userColor);
+        classification.primaryIntent = isVariantQuery ? 'confirm_variant_available' : 'confirm_choice';
+        classification.recommendedAction = isVariantQuery ? 'confirm_variant_available' : 'confirm_selection';
+    }
     resolveShortReply(classification, memory, messageText) {
         const text = messageText.trim().toLowerCase();
         if (text.length > 8 || classification.confidence >= 0.8)
@@ -1105,58 +1167,55 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         return translated ? [lower, translated] : [lower];
     }
     matchVariant(variants, userColor, userSize) {
-        const input = (userColor || userSize || '').toLowerCase().trim();
-        if (!input)
+        if (!userColor && !userSize)
             return null;
-        const inputForms = userColor ? this.translateColor(userColor) : [input];
+        const colorForms = userColor ? this.translateColor(userColor) : [];
         const normalize = (s) => s.toLowerCase().replace(/[ʼ'ьіїєґ]/g, '').replace(/\s+/g, ' ').trim();
-        const getLabel = (v) => (v.color || v.size || v.name || '').toLowerCase();
-        const exact = variants.find(v => inputForms.some(f => getLabel(v) === f));
-        if (exact)
-            return exact;
-        const partial = variants.filter(v => getLabel(v).includes(input) || input.includes(getLabel(v)));
-        if (partial.length === 1)
-            return partial[0];
-        const normalizedInput = normalize(input);
-        const normMatch = variants.find(v => normalize(getLabel(v)) === normalizedInput);
-        if (normMatch)
-            return normMatch;
-        const inputWords = normalizedInput.split(/[\s-]+/);
-        const wordMatches = variants
-            .map(v => {
-            const labelWords = normalize(getLabel(v)).split(/[\s-]+/);
-            const overlap = inputWords.filter(w => labelWords.some(lw => lw.includes(w) || w.includes(lw))).length;
-            return { variant: v, overlap };
-        })
-            .filter(x => x.overlap > 0)
-            .sort((a, b) => b.overlap - a.overlap);
-        if (wordMatches.length === 1)
-            return wordMatches[0].variant;
-        if (wordMatches.length > 1 && wordMatches[0].overlap > wordMatches[1].overlap) {
-            return wordMatches[0].variant;
+        let candidates = variants;
+        if (userColor && colorForms.length > 0) {
+            const colorMatched = variants.filter(v => {
+                if (!v.color)
+                    return false;
+                const vc = v.color.toLowerCase().trim();
+                const vcNorm = normalize(vc);
+                return colorForms.some(f => vc === f || vcNorm === normalize(f) || vc.includes(f) || f.includes(vc));
+            });
+            if (colorMatched.length > 0) {
+                candidates = colorMatched;
+            }
+            else {
+                return null;
+            }
         }
-        const levenshtein = (a, b) => {
-            const matrix = [];
-            for (let i = 0; i <= a.length; i++)
-                matrix[i] = [i];
-            for (let j = 0; j <= b.length; j++)
-                matrix[0][j] = j;
-            for (let i = 1; i <= a.length; i++) {
-                for (let j = 1; j <= b.length; j++) {
-                    const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-                    matrix[i][j] = Math.min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j - 1] + cost);
+        if (userSize) {
+            const us = userSize.toLowerCase().trim();
+            const sizeMatched = candidates.filter(v => {
+                if (!v.size)
+                    return false;
+                return v.size.toLowerCase().trim() === us;
+            });
+            if (sizeMatched.length > 0) {
+                candidates = sizeMatched;
+            }
+            else if (userColor) {
+                return null;
+            }
+            else {
+                const sizeFuzzy = candidates.filter(v => {
+                    if (!v.size)
+                        return false;
+                    return normalize(v.size).includes(normalize(us)) || normalize(us).includes(normalize(v.size));
+                });
+                if (sizeFuzzy.length > 0) {
+                    candidates = sizeFuzzy;
+                }
+                else {
+                    return null;
                 }
             }
-            return matrix[a.length][b.length];
-        };
-        const fuzzy = variants
-            .map(v => ({ variant: v, dist: levenshtein(normalizedInput, normalize(getLabel(v))) }))
-            .filter(x => x.dist <= 3)
-            .sort((a, b) => a.dist - b.dist);
-        if (fuzzy.length === 1)
-            return fuzzy[0].variant;
-        if (fuzzy.length > 1 && fuzzy[0].dist < fuzzy[1].dist)
-            return fuzzy[0].variant;
+        }
+        if (candidates.length === 1)
+            return candidates[0];
         return null;
     }
     matchColorOrSize(userInput, options) {
@@ -1335,6 +1394,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                         name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
                         color: v.color,
                         size: v.size,
+                        imageUrl: v.imageUrl ?? null,
                     }));
                 }
                 break;
