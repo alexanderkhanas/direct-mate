@@ -125,9 +125,15 @@ export default function LandingPage() {
             <span className="text-sm">DirectMate</span>
           </div>
           <div className="flex items-center gap-6">
-            <a href="/privacy" className="text-xs text-gray-400 hover:text-gray-600 transition-colors">
-              {t('landing.privacy')}
-            </a>
+            <Link to="/privacy" className="text-xs text-gray-400 hover:text-gray-600 transition-colors">
+              Privacy Policy
+            </Link>
+            <Link to="/terms" className="text-xs text-gray-400 hover:text-gray-600 transition-colors">
+              Terms and Conditions
+            </Link>
+            <Link to="/data-deletion" className="text-xs text-gray-400 hover:text-gray-600 transition-colors">
+              Data Deletion
+            </Link>
             <span className="text-xs text-gray-400">&copy; 2026</span>
           </div>
         </div>

@@ -400,6 +400,13 @@ export const en = {
     manager_responds_placeholder: 'How the manager responds\u2026',
     no_examples: 'No examples yet \u2014 add some to improve AI responses',
     loading_examples: 'Loading examples\u2026',
+    delete_account_title: 'Delete account',
+    delete_account_desc: 'Permanently delete your account and all associated data. This action cannot be undone.',
+    delete_account_button: 'Delete account',
+    delete_account_warning: 'This will permanently delete your store, all products, conversations, orders, templates, and settings. Type DELETE to confirm.',
+    delete_account_confirm_label: 'Type DELETE to confirm',
+    delete_account_confirm: 'Permanently delete',
+    delete_account_error: 'Failed to delete account. Please try again or contact support.',
   },
 
   // Training (extended)

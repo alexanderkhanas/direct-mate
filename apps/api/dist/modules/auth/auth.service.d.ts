@@ -13,6 +13,9 @@ export declare class AuthService {
         user: Omit<User, 'passwordHash'>;
     }>;
     me(userId: string): Promise<User>;
+    deleteAccount(userId: string, tenantId: string): Promise<{
+        success: boolean;
+    }>;
     register(dto: RegisterDto): Promise<{
         accessToken: string;
         user: any;

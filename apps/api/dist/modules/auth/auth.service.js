@@ -65,6 +65,18 @@ let AuthService = class AuthService {
             throw new common_1.NotFoundException('User not found');
         return user;
     }
+    async deleteAccount(userId, tenantId) {
+        const user = await this.userRepo.findOne({ where: { id: userId } });
+        if (!user)
+            throw new common_1.NotFoundException('User not found');
+        if (user.role !== shared_1.UserRole.Owner) {
+            throw new common_1.UnauthorizedException('Only the account owner can delete the account');
+        }
+        await this.dataSource.transaction(async (manager) => {
+            await manager.delete(tenant_entity_1.Tenant, { id: tenantId });
+        });
+        return { success: true };
+    }
     async register(dto) {
         const existingUser = await this.userRepo.findOne({ where: { email: dto.email } });
         if (existingUser)

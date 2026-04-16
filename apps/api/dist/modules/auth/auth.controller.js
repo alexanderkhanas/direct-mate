@@ -37,6 +37,9 @@ let AuthController = class AuthController {
     me(user) {
         return this.authService.me(user.sub);
     }
+    deleteAccount(user) {
+        return this.authService.deleteAccount(user.sub, user.tenantId);
+    }
 };
 exports.AuthController = AuthController;
 __decorate([
@@ -71,6 +74,16 @@ __decorate([
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", void 0)
 ], AuthController.prototype, "me", null);
+__decorate([
+    (0, common_1.Delete)('account'),
+    (0, common_1.HttpCode)(200),
+    (0, common_1.UseGuards)(jwt_auth_guard_1.JwtAuthGuard),
+    (0, swagger_1.ApiBearerAuth)(),
+    __param(0, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", void 0)
+], AuthController.prototype, "deleteAccount", null);
 exports.AuthController = AuthController = __decorate([
     (0, swagger_1.ApiTags)('auth'),
     (0, common_1.Controller)('auth'),

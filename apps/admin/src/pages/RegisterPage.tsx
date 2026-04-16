@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Zap } from 'lucide-react';
+import { ArrowLeft, Zap } from 'lucide-react';
 import { api } from '../lib/api';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
@@ -62,6 +62,10 @@ export default function RegisterPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <div className="w-full max-w-sm">
+        <Link to="/welcome" className="inline-flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-600 transition-colors mb-6">
+          <ArrowLeft className="h-4 w-4" />
+          {t('common.back')}
+        </Link>
         <div className="flex flex-col items-center mb-8">
           <div className="h-12 w-12 rounded-2xl bg-gray-900 flex items-center justify-center mb-4">
             <Zap className="h-6 w-6 text-white" strokeWidth={2.5} />

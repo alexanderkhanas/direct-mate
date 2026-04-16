@@ -20,6 +20,7 @@ import TenantDetailPage from './pages/admin/TenantDetailPage';
 import StatsPage from './pages/admin/StatsPage';
 import RegisterPage from './pages/RegisterPage';
 import OnboardingPage from './pages/OnboardingPage';
+import { PrivacyPage, TermsPage, DataDeletionPage } from './pages/PrivacyPage';
 import Layout from './components/Layout';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -33,6 +34,9 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/welcome" element={<LandingPage />} />
+        <Route path="/privacy" element={<PrivacyPage />} />
+        <Route path="/terms" element={<TermsPage />} />
+        <Route path="/data-deletion" element={<DataDeletionPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/onboarding" element={<OnboardingPage />} />

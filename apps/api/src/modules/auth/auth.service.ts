@@ -64,6 +64,20 @@ export class AuthService {
     return user;
   }
 
+  async deleteAccount(userId: string, tenantId: string): Promise<{ success: boolean }> {
+    const user = await this.userRepo.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+    if (user.role !== UserRole.Owner) {
+      throw new UnauthorizedException('Only the account owner can delete the account');
+    }
+
+    await this.dataSource.transaction(async (manager) => {
+      await manager.delete(Tenant, { id: tenantId });
+    });
+
+    return { success: true };
+  }
+
   async register(dto: RegisterDto): Promise<{ accessToken: string; user: any }> {
     // 1. Check email uniqueness globally
     const existingUser = await this.userRepo.findOne({ where: { email: dto.email } });

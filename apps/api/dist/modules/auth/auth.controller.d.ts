@@ -17,4 +17,7 @@ export declare class AuthController {
         success: boolean;
     };
     me(user: JwtPayload): Promise<import("../tenants/entities/user.entity").User>;
+    deleteAccount(user: JwtPayload): Promise<{
+        success: boolean;
+    }>;
 }

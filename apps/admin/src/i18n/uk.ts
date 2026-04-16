@@ -400,6 +400,13 @@ export const uk = {
     manager_responds_placeholder: 'Як відповідає менеджер\u2026',
     no_examples: 'Прикладів ще немає \u2014 додайте для покращення відповідей AI',
     loading_examples: 'Завантаження прикладів\u2026',
+    delete_account_title: 'Видалити акаунт',
+    delete_account_desc: "Повністю видалити ваш акаунт та всі пов'язані дані. Цю дію неможливо скасувати.",
+    delete_account_button: 'Видалити акаунт',
+    delete_account_warning: 'Це назавжди видалить ваш магазин, усі товари, розмови, замовлення, шаблони та налаштування. Введіть DELETE для підтвердження.',
+    delete_account_confirm_label: 'Введіть DELETE для підтвердження',
+    delete_account_confirm: 'Видалити назавжди',
+    delete_account_error: 'Не вдалося видалити акаунт. Спробуйте ще раз або зверніться до підтримки.',
   },
 
   // Training (extended)

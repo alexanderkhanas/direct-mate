@@ -467,6 +467,66 @@ function OperatingModeSection() {
   );
 }
 
+function DeleteAccountSection() {
+  const { t } = useT();
+  const [confirmText, setConfirmText] = useState('');
+  const [showConfirm, setShowConfirm] = useState(false);
+
+  const deleteAccount = useMutation({
+    mutationFn: () => api.delete('/auth/account'),
+    onSuccess: () => {
+      localStorage.removeItem('accessToken');
+      window.location.href = '/welcome';
+    },
+  });
+
+  return (
+    <Card>
+      <h2 className="text-sm font-semibold text-red-600 mb-1">{t('settings_ext.delete_account_title')}</h2>
+      <p className="text-xs text-gray-500 mb-4">{t('settings_ext.delete_account_desc')}</p>
+
+      {!showConfirm ? (
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => setShowConfirm(true)}
+          className="text-red-600 border-red-200 hover:bg-red-50 hover:border-red-300"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+          {t('settings_ext.delete_account_button')}
+        </Button>
+      ) : (
+        <div className="p-4 bg-red-50 rounded-lg border border-red-200 space-y-3">
+          <p className="text-sm text-red-700">{t('settings_ext.delete_account_warning')}</p>
+          <Input
+            label={t('settings_ext.delete_account_confirm_label')}
+            value={confirmText}
+            onChange={(e) => setConfirmText(e.target.value)}
+            placeholder="DELETE"
+          />
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              onClick={() => deleteAccount.mutate()}
+              loading={deleteAccount.isPending}
+              disabled={confirmText !== 'DELETE'}
+              className="bg-red-600 hover:bg-red-700 text-white"
+            >
+              {t('settings_ext.delete_account_confirm')}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => { setShowConfirm(false); setConfirmText(''); }}>
+              {t('common.cancel')}
+            </Button>
+          </div>
+          {deleteAccount.isError && (
+            <p className="text-xs text-red-600">{t('settings_ext.delete_account_error')}</p>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export default function SettingsPage() {
   const { t } = useT();
   const { data, isLoading } = useQuery<TenantSettings>({
@@ -489,6 +549,7 @@ export default function SettingsPage() {
       <AiFallbackSection />
       <HandoffRulesSection settings={data} />
       <ExamplesSection />
+      <DeleteAccountSection />
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Post, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
@@ -35,5 +35,13 @@ export class AuthController {
   @ApiBearerAuth()
   me(@CurrentUser() user: JwtPayload) {
     return this.authService.me(user.sub);
+  }
+
+  @Delete('account')
+  @HttpCode(200)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  deleteAccount(@CurrentUser() user: JwtPayload) {
+    return this.authService.deleteAccount(user.sub, user.tenantId);
   }
 }
