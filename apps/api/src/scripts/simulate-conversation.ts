@@ -200,14 +200,22 @@ class ConversationSimulator {
     for (let i = 0; i < scenario.turns.length; i++) {
       const turn = scenario.turns[i];
 
-      // Save inbound message
-      await this.conversationsService.saveMessage(
-        conversation.id,
-        scenario.tenantId,
-        MessageDirection.Inbound,
-        MessageRole.User,
-        turn.message,
-      );
+      // Normalize turn.message to array so we can simulate Instagram's
+      // 5-second debounce window that merges multiple messages into one
+      // engine call. Production code: instagram.service.ts flushPending().
+      const inboundMessages = Array.isArray(turn.message) ? turn.message : [turn.message];
+      const combinedText = inboundMessages.join('\n');
+
+      // Save each inbound message row separately (matches production)
+      for (const msg of inboundMessages) {
+        await this.conversationsService.saveMessage(
+          conversation.id,
+          scenario.tenantId,
+          MessageDirection.Inbound,
+          MessageRole.User,
+          msg,
+        );
+      }
 
       // Load recent messages
       const fullConversation = await this.conversationsService.findById(conversation.id);
@@ -232,7 +240,7 @@ class ConversationSimulator {
         result = await this.replyEngine.process({
           tenantId: scenario.tenantId,
           conversationId: conversation.id,
-          messageText: turn.message,
+          messageText: combinedText,
           state: freshState,
           recentMessages,
           mediaReference: turn.mediaReference,
@@ -271,13 +279,19 @@ class ConversationSimulator {
       // Run assertions
       const assertions = turn.expect ? runAssertions(turn.expect, result, memory) : [];
 
-      // Print turn
-      this.printTurn(i + 1, turn, result, memory, assertions);
+      // Print turn (collapsed message for display)
+      this.printTurn(
+        i + 1,
+        { message: combinedText, mediaReference: turn.mediaReference },
+        result,
+        memory,
+        assertions,
+      );
 
       // Build log entry
       turnLogs.push({
         turnIndex: i,
-        message: turn.message,
+        message: combinedText,
         mediaReference: turn.mediaReference,
         classification: result.classification
           ? {

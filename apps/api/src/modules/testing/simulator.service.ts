@@ -67,14 +67,20 @@ export class SimulatorService {
     for (let i = 0; i < scenario.turns.length; i++) {
       const turn = scenario.turns[i];
 
-      // Save inbound message
-      await this.conversationsService.saveMessage(
-        conversation.id,
-        scenario.tenantId,
-        MessageDirection.Inbound,
-        MessageRole.User,
-        turn.message,
-      );
+      // Normalize message to array to simulate Instagram debounce.
+      const inboundMessages = Array.isArray(turn.message) ? turn.message : [turn.message];
+      const combinedText = inboundMessages.join('\n');
+
+      // Save each inbound message row separately (matches production debounce).
+      for (const msg of inboundMessages) {
+        await this.conversationsService.saveMessage(
+          conversation.id,
+          scenario.tenantId,
+          MessageDirection.Inbound,
+          MessageRole.User,
+          msg,
+        );
+      }
 
       // Load recent messages
       const fullConversation = await this.conversationsService.findById(
@@ -102,7 +108,7 @@ export class SimulatorService {
         result = await this.replyEngine.process({
           tenantId: scenario.tenantId,
           conversationId: conversation.id,
-          messageText: turn.message,
+          messageText: combinedText,
           state: freshState,
           recentMessages,
           mediaReference: turn.mediaReference,
@@ -148,7 +154,7 @@ export class SimulatorService {
       // Build log entry
       turnLogs.push({
         turnIndex: i,
-        message: turn.message,
+        message: combinedText,
         mediaReference: turn.mediaReference,
         classification: result.classification
           ? {

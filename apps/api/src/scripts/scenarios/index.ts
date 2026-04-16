@@ -34,7 +34,12 @@ export interface SimulatorTurnExpect {
 }
 
 export interface SimulatorTurn {
-  message: string;
+  /**
+   * Inbound message text. Pass a string for a single message, or an array
+   * to simulate multiple messages that Instagram's 5-second debounce would
+   * combine into one engine call (joined with '\n', matching production).
+   */
+  message: string | string[];
   mediaReference?: { mediaId: string; type: string };
   expect?: SimulatorTurnExpect;
 }
@@ -235,6 +240,29 @@ export const SCENARIOS: Record<string, SimulatorScenario> = {
       { message: 'так' },
       { message: 'оформлюємо' },
       { message: 'Марина Лисенко, 0961234567, Вінниця, НП 4' },
+    ],
+  },
+
+  clothing_split_delivery_info: {
+    name: 'Clothing — Delivery info split across 3 messages',
+    description: 'User sends full name, phone, and address as 3 separate DMs → debounce combines → order created',
+    tenantId: CLOTHES_STORE,
+    turns: [
+      { message: 'Є чорна футболка в розмірі M?' },
+      { message: 'так' },
+      { message: 'оформлюємо' },
+      {
+        message: [
+          'Олена Коваленко',
+          '0997654321',
+          'Львів, НП 12',
+        ],
+        expect: {
+          decision: 'create_draft_order',
+          state: { orderCreated: true },
+          note: 'Debounce must combine 3 messages into one engine call so all delivery fields arrive together',
+        },
+      },
     ],
   },
 
