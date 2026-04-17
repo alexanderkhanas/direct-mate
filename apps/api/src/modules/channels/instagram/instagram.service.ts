@@ -193,8 +193,7 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
     });
     if (!res.ok) {
       const body = await res.text();
-      this.logger.error(`Meta API images send error ${res.status}: ${body}`);
-      return;
+      throw new Error(`Meta API images send error ${res.status}: ${body}`);
     }
     const body = await res.json() as { message_id?: string };
     if (body.message_id) {
@@ -649,12 +648,20 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
         const pageAccessToken = this.cryptoService.decrypt(encryptedToken);
         try {
           // Send product images as a single batch message before the text
-          if (result.reply.imageUrls?.length) {
-            await this.sendMetaImages(params.externalUserId, result.reply.imageUrls, pageAccessToken);
-            this.logger.log(`Sent ${result.reply.imageUrls.length} product image(s) in one message to ${params.externalUserId}`);
+          const replyText = result.reply!.text;
+          const replyImages = result.reply!.imageUrls;
+          if (replyImages?.length) {
+            await withRetry(
+              () => this.sendMetaImages(params.externalUserId, replyImages!, pageAccessToken),
+              { label: `meta-images-${params.externalUserId}`, maxAttempts: 3, baseDelayMs: 2000 },
+            );
+            this.logger.log(`Sent ${replyImages.length} product image(s) in one message to ${params.externalUserId}`);
           }
 
-          await this.sendMetaMessage(params.externalUserId, result.reply.text, pageAccessToken);
+          await withRetry(
+            () => this.sendMetaMessage(params.externalUserId, replyText, pageAccessToken),
+            { label: `meta-msg-${params.externalUserId}`, maxAttempts: 3, baseDelayMs: 2000 },
+          );
           this.logger.log(`Message sent to ${params.externalUserId} via Meta Graph API`);
         } catch (err) {
           this.logger.error(`Failed to send to Meta API for conversation ${conversation.id}`, err);

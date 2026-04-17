@@ -59,6 +59,15 @@ export class ConversationsService {
       order: { lastMessageAt: 'DESC' },
     });
 
+    // Close stale conversations (idle >72h) so returning customers get fresh state
+    if (conversation) {
+      const staleThreshold = new Date(Date.now() - 72 * 60 * 60 * 1000);
+      if (conversation.lastMessageAt && conversation.lastMessageAt < staleThreshold) {
+        await this.conversationRepo.update(conversation.id, { status: ConversationStatus.Closed });
+        conversation = null as any;
+      }
+    }
+
     if (!conversation) {
       conversation = this.conversationRepo.create({
         tenantId,

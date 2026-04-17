@@ -315,6 +315,122 @@ export const SCENARIOS: Record<string, SimulatorScenario> = {
     ],
   },
 
+  // ─── Greeting & state reset scenarios ────────────────────────────
+
+  greeting_fresh: {
+    name: 'Greeting — Fresh start, no prior state',
+    description: 'Pure greeting → should respond with greeting template, no product context',
+    tenantId: CLOTHES_STORE,
+    turns: [
+      {
+        message: 'Привіт',
+        expect: {
+          scenario: 'greeting',
+          state: { selectionState: null },
+          note: 'Pure greeting must not trigger product search or pre-qualify',
+        },
+      },
+    ],
+  },
+
+  greeting_with_product: {
+    name: 'Greeting — With product intent in same message',
+    description: '"Привіт, є куртки?" → should keep category entity and show products, not just greet',
+    tenantId: CLOTHES_STORE,
+    turns: [
+      {
+        message: 'Привіт, є куртки?',
+        expect: {
+          note: 'Greeting with entities must NOT reset state — category "Куртки" should be preserved',
+        },
+      },
+    ],
+  },
+
+  // ─── Edge case scenarios ────────────────────────────────────────
+
+  price_inquiry_direct: {
+    name: 'Price inquiry — Direct question about product price',
+    description: 'User asks about price without story context → should search and show price',
+    tenantId: CLOTHES_STORE,
+    turns: [
+      { message: 'скільки коштує Zara базова футболка?' },
+    ],
+  },
+
+  out_of_stock_size: {
+    name: 'Out of stock — Requested size unavailable',
+    description: 'User asks for XXL via story reply which doesn\'t exist → should show available sizes',
+    tenantId: CLOTHES_STORE,
+    turns: [
+      {
+        message: 'є XXL?',
+        mediaReference: { mediaId: '17983952801809405', type: 'story_reply' },
+        expect: {
+          note: 'XXL does not exist for this product — should show available sizes or out_of_stock',
+        },
+      },
+    ],
+  },
+
+  delivery_faq: {
+    name: 'FAQ — Delivery question',
+    description: 'User asks about delivery without product context → should answer FAQ',
+    tenantId: CLOTHES_STORE,
+    turns: [
+      { message: 'як відбувається доставка?' },
+    ],
+  },
+
+  payment_faq: {
+    name: 'FAQ — Payment question',
+    description: 'User asks about payment methods → should answer FAQ',
+    tenantId: CLOTHES_STORE,
+    turns: [
+      { message: 'які способи оплати?' },
+    ],
+  },
+
+  recommendation_request: {
+    name: 'Recommendation — User asks bot to choose',
+    description: 'User browsing products asks "порадьте щось" → should recommend from shown products',
+    tenantId: CLOTHES_STORE,
+    turns: [
+      { message: 'хочу футболку' },
+      { message: '175 см, 70 кг' },
+      { message: 'порадьте, яку краще взяти' },
+    ],
+  },
+
+  multi_message_first_turn: {
+    name: 'Debounce — Multi-message first inquiry',
+    description: 'User sends product question as 2 separate messages within debounce window',
+    tenantId: CLOTHES_STORE,
+    turns: [
+      {
+        message: [
+          'Привіт',
+          'є чорна футболка?',
+        ],
+        expect: {
+          note: 'Debounce combines greeting + product question — should search for product, not just greet',
+        },
+      },
+    ],
+  },
+
+  beauty_color_variant: {
+    name: 'Beauty — Direct color variant pick',
+    description: 'User asks for specific lipstick color → should match variant and confirm',
+    tenantId: PILOT_STORE,
+    turns: [
+      { message: 'хочу помаду Silk Color Nude Pink' },
+      { message: 'так' },
+      { message: 'оформлюємо' },
+      { message: 'Анна Петренко, 0991234567, Київ, НП 5' },
+    ],
+  },
+
   // ─── Handoff scenarios ───────────────────────────────────────────
   // NOTE: Simulator calls replyEngine.process() directly — no Telegram
   // or Instagram messages are sent. Safe to run without side effects.

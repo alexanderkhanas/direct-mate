@@ -31,11 +31,13 @@ const testing_module_1 = require("./modules/testing/testing.module");
 const notifications_module_1 = require("./modules/notifications/notifications.module");
 const admin_module_1 = require("./modules/admin/admin.module");
 const analytics_module_1 = require("./modules/analytics/analytics.module");
+const health_controller_1 = require("./health.controller");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
 exports.AppModule = AppModule = __decorate([
     (0, common_1.Module)({
+        controllers: [health_controller_1.HealthController],
         imports: [
             config_1.ConfigModule.forRoot({
                 isGlobal: true,

@@ -208,6 +208,27 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 return this.doHandoff(input, policy.reason ?? 'policy_escalation');
             }
         }
+        if (classification.primaryIntent === 'greeting' &&
+            memory.selectionState &&
+            !memory.orderCreated &&
+            !classification.entities.category &&
+            !classification.entities.productName) {
+            ctx.trace.push('classify: greeting with stale state → reset');
+            memory.selectedProductId = undefined;
+            memory.selectedProductTitle = undefined;
+            memory.selectedVariantId = undefined;
+            memory.selectedVariantName = undefined;
+            memory.selectionState = undefined;
+            memory.lastPresentedProducts = undefined;
+            memory.availableVariants = undefined;
+            memory.lastAction = undefined;
+            memory.awaitingField = undefined;
+            memory.cartItems = undefined;
+            memory.variantStep = null;
+            memory.selectedColor = undefined;
+            memory.preQualifyCollected = undefined;
+            memory.preQualifyData = undefined;
+        }
         const POST_ORDER_PASSIVE_INTENTS = ['gratitude', 'thanks', 'small_talk', 'confirmation', 'goodbye'];
         if (memory.orderCreated) {
             if (POST_ORDER_PASSIVE_INTENTS.includes(classification.primaryIntent)) {

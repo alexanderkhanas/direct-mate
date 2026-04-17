@@ -148,8 +148,7 @@ let InstagramService = InstagramService_1 = class InstagramService {
         });
         if (!res.ok) {
             const body = await res.text();
-            this.logger.error(`Meta API images send error ${res.status}: ${body}`);
-            return;
+            throw new Error(`Meta API images send error ${res.status}: ${body}`);
         }
         const body = await res.json();
         if (body.message_id) {
@@ -426,11 +425,13 @@ let InstagramService = InstagramService_1 = class InstagramService {
                 if (encryptedToken) {
                     const pageAccessToken = this.cryptoService.decrypt(encryptedToken);
                     try {
-                        if (result.reply.imageUrls?.length) {
-                            await this.sendMetaImages(params.externalUserId, result.reply.imageUrls, pageAccessToken);
-                            this.logger.log(`Sent ${result.reply.imageUrls.length} product image(s) in one message to ${params.externalUserId}`);
+                        const replyText = result.reply.text;
+                        const replyImages = result.reply.imageUrls;
+                        if (replyImages?.length) {
+                            await (0, retry_1.withRetry)(() => this.sendMetaImages(params.externalUserId, replyImages, pageAccessToken), { label: `meta-images-${params.externalUserId}`, maxAttempts: 3, baseDelayMs: 2000 });
+                            this.logger.log(`Sent ${replyImages.length} product image(s) in one message to ${params.externalUserId}`);
                         }
-                        await this.sendMetaMessage(params.externalUserId, result.reply.text, pageAccessToken);
+                        await (0, retry_1.withRetry)(() => this.sendMetaMessage(params.externalUserId, replyText, pageAccessToken), { label: `meta-msg-${params.externalUserId}`, maxAttempts: 3, baseDelayMs: 2000 });
                         this.logger.log(`Message sent to ${params.externalUserId} via Meta Graph API`);
                     }
                     catch (err) {
