@@ -407,6 +407,57 @@ export class ReplyEngineService {
       }
     }
 
+    // 4.6b Cart correction: "хочу тільки X" / "ні, давайте тільки Y"
+    if (
+      classification.slotAction === 'correction' &&
+      memory.cartItems?.length &&
+      memory.selectionState === 'cart_item_added'
+    ) {
+      const wantedProduct = classification.entities.productName;
+      const wantedColor = classification.entities.color;
+
+      if (wantedProduct || wantedColor) {
+        const before = memory.cartItems.length;
+
+        // Filter cart to keep only matching item(s)
+        memory.cartItems = memory.cartItems.filter(item => {
+          if (wantedProduct && !item.title.toLowerCase().includes(wantedProduct.toLowerCase())) return false;
+          if (wantedColor && !item.variantName.toLowerCase().includes(wantedColor.toLowerCase())) return false;
+          return true;
+        });
+
+        // If filtered result is still ambiguous (>1 item), narrow by color
+        if (memory.cartItems.length > 1 && wantedColor) {
+          const narrower = memory.cartItems.filter(item =>
+            item.variantName.toLowerCase().includes(wantedColor.toLowerCase()),
+          );
+          if (narrower.length > 0) memory.cartItems = narrower;
+        }
+
+        ctx.trace.push(`cart-correction: ${before} → ${memory.cartItems.length} items (kept matching "${wantedProduct ?? wantedColor}")`);
+
+        if (memory.cartItems.length === 0) {
+          // Nothing matched in cart — user wants a completely new product, clear and re-search
+          ctx.trace.push('cart-correction: no match in cart → clear + fresh search');
+          memory.selectedProductId = undefined;
+          memory.selectedProductTitle = undefined;
+          memory.selectedVariantId = undefined;
+          memory.selectedVariantName = undefined;
+          memory.selectionState = undefined;
+          memory.lastAction = undefined;
+          memory.awaitingField = undefined;
+          memory.availableVariants = undefined;
+          memory.variantStep = null;
+          memory.selectedColor = undefined;
+        } else {
+          // Cart filtered — confirm what's left
+          memory.selectionState = 'cart_item_added';
+          memory.lastAction = 'cart_corrected';
+          classification.recommendedAction = 'ask_continue_or_checkout';
+        }
+      }
+    }
+
     ctx.classification = classification;
     return null;
   }
@@ -906,16 +957,22 @@ export class ReplyEngineService {
         if (memVar) variantName = memVar.name;
       }
 
-      memory.cartItems.push({
-        productId: memory.selectedProductId!,
-        variantId: memory.selectedVariantId!,
-        externalProductId: null, // resolved at order creation from DB
-        externalVariantId: null,
-        title: memory.selectedProductTitle!,
-        variantName: variantName ?? 'standard',
-        price: itemPrice,
-        currency: itemCurrency,
-      });
+      // Skip duplicate: don't re-add if this exact variant is already in cart
+      const alreadyInCart = memory.cartItems.some(
+        item => item.variantId === memory.selectedVariantId,
+      );
+      if (!alreadyInCart) {
+        memory.cartItems.push({
+          productId: memory.selectedProductId!,
+          variantId: memory.selectedVariantId!,
+          externalProductId: null, // resolved at order creation from DB
+          externalVariantId: null,
+          title: memory.selectedProductTitle!,
+          variantName: variantName ?? 'standard',
+          price: itemPrice,
+          currency: itemCurrency,
+        });
+      }
 
       // Ask if customer wants to add more items or proceed to checkout
       memory.selectionState = 'cart_item_added';

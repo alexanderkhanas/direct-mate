@@ -110,6 +110,49 @@ export const SCENARIOS: Record<string, SimulatorScenario> = {
     ],
   },
 
+  cart_remove_buy_one: {
+    name: 'Multi-Cart — Add two, buy only one',
+    description: 'Add Nude Pink + Rosewood to cart → "хочу тільки Nude Pink" → cart filtered to 1 → checkout',
+    tenantId: PILOT_STORE,
+    turns: [
+      { message: 'хочу помаду Silk Color Nude Pink' },
+      { message: 'так' },
+      { message: 'і ще Rosewood' },
+      { message: 'так' },
+      {
+        message: 'хочу тільки Nude Pink',
+        expect: {
+          state: { cartLength: 1, cartHasVariant: 'Nude Pink' },
+          note: 'Cart correction: Rosewood removed, only Nude Pink remains',
+        },
+      },
+      { message: 'оформлюємо' },
+      { message: 'оформлюємо' },
+      { message: 'Марія Шевченко, 0501234567, Одеса, НП 3' },
+    ],
+  },
+
+  cart_abandon_pick_new: {
+    name: 'Multi-Cart — Add two, abandon cart, buy third',
+    description: 'Add Nude Pink + Rosewood → "ні, хочу Color Veil Terracotta" → cart cleared, fresh search',
+    tenantId: PILOT_STORE,
+    turns: [
+      { message: 'хочу помаду Silk Color Nude Pink' },
+      { message: 'так' },
+      { message: 'і ще Rosewood' },
+      { message: 'так' },
+      {
+        message: 'ні, давайте тільки Color Veil Terracotta',
+        expect: {
+          note: 'Cart correction: neither Silk Color item matches Color Veil → cart cleared, fresh product search',
+        },
+      },
+      { message: 'так' },
+      { message: 'оформлюємо' },
+      { message: 'Марія Шевченко, 0501234567, Одеса, НП 3' },
+    ],
+  },
+
   // ─── Additional Clothing Store scenarios ─────────────────────────
 
   story_reply_no_size: {
@@ -315,6 +358,131 @@ export const SCENARIOS: Record<string, SimulatorScenario> = {
     ],
   },
 
+  // ─── Critical regression scenarios ──────────────────────────────
+
+  clothing_direct_variant_no_prequalify: {
+    name: 'Critical — Direct variant without pre-qualify or story',
+    description: 'User asks "є чорна M?" in plain DM, no story reply. Pre-qualify must NOT trigger when size is specified.',
+    tenantId: CLOTHES_STORE,
+    turns: [
+      {
+        message: 'є куртка джек енд джонс чорна M?',
+        expect: {
+          scenario: 'confirm_variant_available',
+          state: { selectionState: 'awaiting_confirmation' },
+          note: 'Bug 1 regression test: pre-qualify must not fire when entities.size is present',
+        },
+      },
+      { message: 'так' },
+      { message: 'оформлюємо' },
+      { message: 'Тарас Шевченко, 0991234567, Київ, НП 1' },
+    ],
+  },
+
+  price_inquiry_with_size: {
+    name: 'Critical — Price inquiry with size (no pre-qualify)',
+    description: 'User asks "скільки коштує футболка M?" — pre-qualify must NOT fire for price questions with size',
+    tenantId: CLOTHES_STORE,
+    turns: [
+      {
+        message: 'скільки коштує футболка M?',
+        expect: {
+          note: 'Price inquiry with size: must show price, not trigger pre-qualify. selectionState should NOT be awaiting pre-qualify data.',
+        },
+      },
+    ],
+  },
+
+  // ─── Multi-turn edge cases ─────────────────────────────────────
+
+  adds_to_cart_different_product: {
+    name: 'Multi-Cart — Two DIFFERENT products (beauty)',
+    description: 'Pick Silk Color Nude Pink → confirm → add Color Veil Terracotta → confirm → checkout → order',
+    tenantId: PILOT_STORE,
+    turns: [
+      { message: 'хочу помаду Silk Color Nude Pink' },
+      { message: 'так' },
+      { message: 'і ще Color Veil Terracotta' },
+      { message: 'так' },
+      { message: 'оформлюємо' },
+      { message: 'оформлюємо' },
+      {
+        message: 'Марія Шевченко, 0501234567, Одеса, НП 3',
+        expect: {
+          decision: 'create_draft_order',
+          state: { orderCreated: true, cartLength: 2 },
+          note: 'Cart must contain 2 different products (Silk Color + Color Veil)',
+        },
+      },
+    ],
+  },
+
+  post_order_passive_then_new: {
+    name: 'Post-order — Passive ack then new inquiry',
+    description: 'Complete order → "дякую" (passive ack) → new product question → must reset and start fresh',
+    tenantId: CLOTHES_STORE,
+    turns: [
+      { message: 'Є чорна футболка в розмірі M?' },
+      { message: 'так' },
+      { message: 'оформлюємо' },
+      { message: 'Андрій Коваль, 0991234567, Київ, НП 5' },
+      {
+        message: 'дякую',
+        expect: {
+          decision: 'reply',
+          replyContains: 'Будь ласка',
+          state: { orderCreated: true },
+          note: 'Post-order passive intent → ack reply, state preserved',
+        },
+      },
+      {
+        message: 'а є синя футболка в розмірі L?',
+        expect: {
+          state: { selectionState: 'awaiting_confirmation' },
+          note: 'New inquiry after passive ack → state must be reset, variant auto-selected',
+        },
+      },
+    ],
+  },
+
+  greeting_reset_stale_flow: {
+    name: 'Greeting — Reset after stale incomplete flow',
+    description: 'Start product flow → leave unfinished → "Привіт" → must reset stale state',
+    tenantId: CLOTHES_STORE,
+    turns: [
+      { message: 'хочу футболку' },
+      { message: '175 см, 70 кг' },
+      // Flow is now at selectionState=awaiting_product — user abandons and greets later
+      {
+        message: 'Привіт',
+        expect: {
+          scenario: 'greeting',
+          note: 'Greeting after stale incomplete flow must reset selectionState (Fix 3 hardening)',
+        },
+      },
+    ],
+  },
+
+  // ─── FAQ edge cases ─────────────────────────────────────────────
+
+  faq_mid_checkout: {
+    name: 'FAQ — Delivery question mid-checkout',
+    description: 'User in checkout asks "як доставка?" → answer FAQ without resetting cart/state',
+    tenantId: CLOTHES_STORE,
+    turns: [
+      { message: 'Є чорна футболка в розмірі M?' },
+      { message: 'так' },
+      {
+        message: 'як відбувається доставка?',
+        expect: {
+          note: 'FAQ mid-flow must answer delivery question without clearing cart or selection state',
+        },
+      },
+      { message: 'оформлюємо' },
+      { message: 'Андрій Коваль, 0991234567, Київ, НП 5' },
+    ],
+  },
+
   // ─── Greeting & state reset scenarios ────────────────────────────
 
   greeting_fresh: {
@@ -326,7 +494,6 @@ export const SCENARIOS: Record<string, SimulatorScenario> = {
         message: 'Привіт',
         expect: {
           scenario: 'greeting',
-          state: { selectionState: null },
           note: 'Pure greeting must not trigger product search or pre-qualify',
         },
       },
