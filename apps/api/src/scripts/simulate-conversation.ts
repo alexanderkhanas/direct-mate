@@ -54,11 +54,19 @@ interface CliArgs {
   scenario: string | null;
   list: boolean;
   all: boolean;
+  tenant: string | null;
+  message: string | null;
 }
 
 function parseArgs(): CliArgs {
   const args = process.argv.slice(2);
-  const result: CliArgs = { scenario: null, list: false, all: false };
+  const result: CliArgs = {
+    scenario: null,
+    list: false,
+    all: false,
+    tenant: null,
+    message: null,
+  };
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--scenario' && args[i + 1]) {
@@ -68,6 +76,12 @@ function parseArgs(): CliArgs {
       result.list = true;
     } else if (args[i] === '--all') {
       result.all = true;
+    } else if (args[i] === '--tenant' && args[i + 1]) {
+      result.tenant = args[i + 1];
+      i++;
+    } else if (args[i] === '--message' && args[i + 1]) {
+      result.message = args[i + 1];
+      i++;
     }
   }
 
@@ -497,6 +511,17 @@ async function main(): Promise<void> {
   // Determine which scenarios to run
   let scenariosToRun: Array<[string, SimulatorScenario]>;
 
+  // --tenant + --message: ad-hoc one-turn scenario against a tenant by slug.
+  // Requires DB lookup, so we resolve the slug against the running DataSource below.
+  let adHocFromTenantMessage: { slug: string; message: string } | null = null;
+  if (args.tenant || args.message) {
+    if (!args.tenant || !args.message) {
+      console.error(`${c.red}--tenant and --message must be used together.${c.reset}`);
+      process.exit(1);
+    }
+    adHocFromTenantMessage = { slug: args.tenant, message: args.message };
+  }
+
   if (args.all) {
     scenariosToRun = Object.entries(SCENARIOS);
   } else if (args.scenario) {
@@ -506,9 +531,11 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     scenariosToRun = [[args.scenario, s]];
+  } else if (adHocFromTenantMessage) {
+    scenariosToRun = [];  // filled after DataSource boots
   } else {
     // No args — show usage + available scenarios and exit cleanly
-    console.log(`Usage: npm run simulate -- --scenario <name> | --all | --list\n`);
+    console.log(`Usage: npm run simulate -- --scenario <name> | --all | --list | --tenant <slug> --message <text>\n`);
     console.log(`${c.bold}Available scenarios:${c.reset}\n`);
     for (const [key, s] of Object.entries(SCENARIOS)) {
       console.log(`  ${c.cyan}${key.padEnd(25)}${c.reset} ${s.name} ${c.dim}(${s.turns.length} turns)${c.reset}`);
@@ -528,6 +555,27 @@ async function main(): Promise<void> {
   const dataSource = app.get(DataSource);
 
   const simulator = new ConversationSimulator(replyEngine, conversationsService, dataSource);
+
+  // Resolve ad-hoc --tenant/--message into a one-turn scenario now that the DB is up.
+  if (adHocFromTenantMessage) {
+    const { slug, message } = adHocFromTenantMessage;
+    const rows = await dataSource.query(
+      `SELECT id FROM tenants WHERE slug = $1 LIMIT 1`,
+      [slug],
+    );
+    if (rows.length === 0) {
+      console.error(`${c.red}Tenant not found: slug="${slug}"${c.reset}`);
+      await app.close();
+      process.exit(1);
+    }
+    const adHoc: SimulatorScenario = {
+      name: `ad-hoc (${slug})`,
+      description: `one-turn message: "${message}"`,
+      tenantId: rows[0].id,
+      turns: [{ message }],
+    };
+    scenariosToRun = [['__ad_hoc__', adHoc]];
+  }
 
   const jsonOutput: Record<string, unknown>[] = [];
 

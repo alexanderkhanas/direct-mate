@@ -16,6 +16,7 @@
     "migration:run": "typeorm-ts-node-commonjs migration:run -d src/database/data-source.ts",
     "migration:revert": "typeorm-ts-node-commonjs migration:revert -d src/database/data-source.ts",
     "seed": "ts-node -r tsconfig-paths/register src/database/seed.ts",
+    "seed:demo": "ts-node -r tsconfig-paths/register src/scripts/seed-demo-tenant.ts",
     "replay": "ts-node src/testing/replay.ts",
     "test:conversations": "ts-node -r tsconfig-paths/register src/testing/run-conversation-tests.ts",
     "simulate": "ts-node -r tsconfig-paths/register src/scripts/simulate-conversation.ts"
