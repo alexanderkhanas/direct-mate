@@ -206,6 +206,22 @@ class ConversationSimulator {
       const inboundMessages = Array.isArray(turn.message) ? turn.message : [turn.message];
       const combinedText = inboundMessages.join('\n');
 
+      // Resolve customer_photo URL at runtime to a fresh linked media_url
+      // so vision matching compares the same image against itself. Mirrors
+      // simulator.service.ts so CLI + API simulators behave identically.
+      let mediaReference = turn.mediaReference;
+      if ((turn as any).resolveMediaFromLinkedProduct && mediaReference?.type === 'customer_photo') {
+        const rows: Array<{ media_url: string }> = await this.dataSource.query(
+          `SELECT media_url FROM instagram_media_mappings
+           WHERE tenant_id = $1 AND product_id IS NOT NULL AND media_url IS NOT NULL
+           ORDER BY created_at DESC LIMIT 1`,
+          [scenario.tenantId],
+        );
+        if (rows[0]?.media_url) {
+          mediaReference = { ...mediaReference, mediaId: rows[0].media_url };
+        }
+      }
+
       // Save each inbound message row separately (matches production)
       for (const msg of inboundMessages) {
         await this.conversationsService.saveMessage(
@@ -243,7 +259,7 @@ class ConversationSimulator {
           messageText: combinedText,
           state: freshState,
           recentMessages,
-          mediaReference: turn.mediaReference,
+          mediaReference,
         });
       } catch (err) {
         console.error(`${c.red}ERROR on turn ${i + 1}: ${(err as Error).message}${c.reset}`);
@@ -282,7 +298,7 @@ class ConversationSimulator {
       // Print turn (collapsed message for display)
       this.printTurn(
         i + 1,
-        { message: combinedText, mediaReference: turn.mediaReference },
+        { message: combinedText, mediaReference },
         result,
         memory,
         assertions,
@@ -292,7 +308,7 @@ class ConversationSimulator {
       turnLogs.push({
         turnIndex: i,
         message: combinedText,
-        mediaReference: turn.mediaReference,
+        mediaReference,
         classification: result.classification
           ? {
               primaryIntent: result.classification.primaryIntent,

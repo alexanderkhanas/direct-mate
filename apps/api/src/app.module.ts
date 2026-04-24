@@ -22,6 +22,8 @@ import { TestingModule } from './modules/testing/testing.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
+import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
+import { SizeChartsModule } from './modules/size-charts/size-charts.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -53,6 +55,8 @@ import { HealthController } from './health.controller';
     NotificationsModule,
     AdminModule,
     AnalyticsModule,
+    SubscriptionsModule,
+    SizeChartsModule,
   ],
 })
 export class AppModule {}

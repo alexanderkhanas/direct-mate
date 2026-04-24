@@ -15,12 +15,15 @@ import TestingPage from './pages/TestingPage';
 import SimulatorPage from './pages/SimulatorPage';
 import OrdersPage from './pages/OrdersPage';
 import ContentLinkingPage from './pages/ContentLinkingPage';
+import SizeChartsPage from './pages/SizeChartsPage';
 import TenantsPage from './pages/admin/TenantsPage';
 import TenantDetailPage from './pages/admin/TenantDetailPage';
 import StatsPage from './pages/admin/StatsPage';
+import PlanConfigPage from './pages/admin/PlanConfigPage';
 import RegisterPage from './pages/RegisterPage';
 import OnboardingPage from './pages/OnboardingPage';
 import { PrivacyPage, TermsPage, DataDeletionPage } from './pages/PrivacyPage';
+import { TenantProvider } from './contexts/TenantContext';
 import Layout from './components/Layout';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -31,6 +34,7 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
 export default function App() {
   return (
     <LangProvider>
+    <TenantProvider>
     <BrowserRouter>
       <Routes>
         <Route path="/welcome" element={<LandingPage />} />
@@ -59,14 +63,17 @@ export default function App() {
           <Route path="testing" element={<TestingPage />} />
           <Route path="simulator" element={<SimulatorPage />} />
           <Route path="content-linking" element={<ContentLinkingPage />} />
+          <Route path="size-charts" element={<SizeChartsPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="logs" element={<LogsPage />} />
           <Route path="admin/stores" element={<TenantsPage />} />
           <Route path="admin/stores/:id" element={<TenantDetailPage />} />
           <Route path="admin/analytics" element={<StatsPage />} />
+          <Route path="admin/config" element={<PlanConfigPage />} />
         </Route>
       </Routes>
     </BrowserRouter>
+    </TenantProvider>
     </LangProvider>
   );
 }

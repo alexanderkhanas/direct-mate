@@ -530,6 +530,104 @@ export class InstagramContentService {
     }
   }
 
+  // ─── Customer photo matching ───────────────────────────────────
+
+  async matchCustomerPhoto(
+    tenantId: string,
+    customerImageUrl: string,
+  ): Promise<{ productId: string; variantId: string | null; confidence: number } | null> {
+    // Load linked media with images
+    const linkedMedia = await this.mappingRepo
+      .createQueryBuilder('m')
+      .where('m.tenant_id = :tenantId', { tenantId })
+      .andWhere('m.product_id IS NOT NULL')
+      .andWhere('m.media_url IS NOT NULL')
+      .orderBy('m.created_at', 'DESC')
+      .limit(10)
+      .getMany();
+
+    if (linkedMedia.length === 0) return null;
+
+    // Short-circuit: if the customer URL is exactly one of the linked media_urls,
+    // we already know the match. Skips a vision call entirely. Useful when a
+    // screenshot mapping was ingested verbatim, and for deterministic simulator runs.
+    const exact = linkedMedia.find((m) => m.mediaUrl === customerImageUrl);
+    if (exact) {
+      this.logger.log(
+        `Customer photo: exact URL match to media ${exact.instagramMediaId} → product ${exact.productId}`,
+      );
+      return {
+        productId: exact.productId!,
+        variantId: exact.variantId,
+        confidence: 1.0,
+      };
+    }
+
+    // Download customer image
+    const customerDataUrl = await this.toBase64DataUrl(customerImageUrl);
+    if (!customerDataUrl) {
+      this.logger.warn('matchCustomerPhoto: could not download customer image');
+      return null;
+    }
+
+    // Download candidate product images
+    const candidateDataUrls = await Promise.all(
+      linkedMedia.map((m) => this.toBase64DataUrl(m.mediaUrl!)),
+    );
+    const validMedia = linkedMedia.filter((_, i) => candidateDataUrls[i] !== null);
+    const validUrls = candidateDataUrls.filter((u): u is string => u !== null);
+
+    if (validMedia.length === 0) return null;
+
+    try {
+      const imageContent: OpenAI.Chat.ChatCompletionContentPart[] = [
+        {
+          type: 'image_url',
+          image_url: { url: customerDataUrl, detail: 'low' },
+        },
+        ...validUrls.map((url): OpenAI.Chat.ChatCompletionContentPart => ({
+          type: 'image_url',
+          image_url: { url, detail: 'low' },
+        })),
+        {
+          type: 'text',
+          text: `The first image is a screenshot sent by a customer. The next ${validMedia.length} images are product posts from the store (index 0 to ${validMedia.length - 1}). Does the customer's screenshot show the same product as any of the posts? Reply with JSON only: {"match": <index or -1 if no match>, "confidence": <0.0 to 1.0>}`,
+        },
+      ];
+
+      const response = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: imageContent }],
+        max_tokens: 50,
+        temperature: 0,
+      });
+
+      const text = response.choices[0]?.message?.content?.trim() ?? '';
+      const jsonMatch = text.match(/\{.*\}/s);
+      if (!jsonMatch) return null;
+
+      const result = JSON.parse(jsonMatch[0]) as { match: number; confidence: number };
+
+      if (result.match >= 0 && result.match < validMedia.length && result.confidence >= 0.7) {
+        const matched = validMedia[result.match];
+        this.logger.log(
+          `Customer photo matched to media ${matched.instagramMediaId} → product ${matched.productId} (confidence: ${result.confidence})`,
+        );
+        return {
+          productId: matched.productId!,
+          variantId: matched.variantId,
+          confidence: result.confidence,
+        };
+      }
+
+      this.logger.log(`Customer photo: no match (best: match=${result.match}, confidence=${result.confidence})`);
+      return null;
+    } catch (err) {
+      this.logger.error(`matchCustomerPhoto vision call failed: ${err}`);
+      return null;
+    }
+  }
+
   // ─── SKU matching ──────────────────────────────────────────────
 
   private async getSkuPatterns(tenantId: string): Promise<RegExp[]> {

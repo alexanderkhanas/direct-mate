@@ -1,17 +1,29 @@
+import { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, MessageSquare, ShoppingCart, Store } from 'lucide-react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { ArrowLeft, MessageSquare, ShoppingCart, Store, ExternalLink, Crown } from 'lucide-react';
 import { api } from '../../lib/api';
 import { Card } from '../../components/ui/Card';
 import { Badge } from '../../components/ui/Badge';
+import { Button } from '../../components/ui/Button';
 import { LoadingState } from '../../components/ui/Spinner';
+
+const PLAN_TYPES = ['trial', 'starter', 'professional', 'business'];
+const PLAN_STATUSES = ['active', 'past_due', 'cancelled', 'expired'];
 
 export default function TenantDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const qc = useQueryClient();
 
   const { data: tenant, isLoading: loadingTenant } = useQuery<any>({
     queryKey: ['admin-tenant', id],
     queryFn: () => api.get(`/admin/tenants/${id}`).then(r => r.data),
+  });
+
+  const { data: planData } = useQuery<any>({
+    queryKey: ['admin-tenant-plan', id],
+    queryFn: () => api.get(`/subscriptions/plan`).then(r => r.data).catch(() => null),
+    enabled: false, // We'll get plan from tenant list endpoint instead
   });
 
   const { data: conversations } = useQuery<any>({
@@ -69,6 +81,14 @@ export default function TenantDetailPage() {
           </div>
         </Card>
       </div>
+
+      {/* Actions */}
+      <div className="flex gap-3">
+        <ImpersonateButton tenantId={id!} />
+      </div>
+
+      {/* Subscription management */}
+      <SubscriptionManager tenantId={id!} />
 
       {/* Recent conversations */}
       <div>
@@ -130,5 +150,138 @@ export default function TenantDetailPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+// ─── Impersonate button ────────────────────────────────────────
+
+function ImpersonateButton({ tenantId }: { tenantId: string }) {
+  const impersonate = useMutation({
+    mutationFn: () => api.post(`/admin/tenants/${tenantId}/impersonate`).then(r => r.data),
+    onSuccess: (data: { accessToken: string }) => {
+      const url = `${window.location.origin}/login?impersonate=${data.accessToken}`;
+      window.open(url, '_blank');
+    },
+  });
+
+  return (
+    <Button
+      variant="secondary"
+      size="sm"
+      onClick={() => impersonate.mutate()}
+      loading={impersonate.isPending}
+    >
+      <ExternalLink className="h-3.5 w-3.5" />
+      Open as tenant
+    </Button>
+  );
+}
+
+// ─── Subscription manager ──────────────────────────────────────
+
+function SubscriptionManager({ tenantId }: { tenantId: string }) {
+  const qc = useQueryClient();
+
+  const { data: tenant } = useQuery<any>({
+    queryKey: ['admin-tenant', tenantId],
+    queryFn: () => api.get(`/admin/tenants/${tenantId}`).then(r => r.data),
+  });
+
+  // Get subscription from tenant list (includes subscription data)
+  const { data: tenants } = useQuery<any[]>({
+    queryKey: ['admin-tenants'],
+    queryFn: () => api.get('/admin/tenants').then(r => r.data),
+  });
+
+  const sub = tenants?.find((t: any) => t.id === tenantId)?.subscription;
+
+  const [planType, setPlanType] = useState('');
+  const [status, setStatus] = useState('');
+  const [convLimit, setConvLimit] = useState('');
+
+  // Sync form with loaded data
+  const initialized = planType || status;
+  if (!initialized && sub) {
+    setPlanType(sub.planType);
+    setStatus(sub.status);
+    setConvLimit(sub.conversationLimit?.toString() ?? '');
+  }
+
+  const save = useMutation({
+    mutationFn: () => api.patch(`/admin/tenants/${tenantId}/subscription`, {
+      planType: planType || undefined,
+      status: status || undefined,
+      conversationLimit: convLimit === '' ? null : parseInt(convLimit, 10),
+    }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin-tenants'] });
+      qc.invalidateQueries({ queryKey: ['admin-tenant', tenantId] });
+    },
+  });
+
+  return (
+    <Card>
+      <div className="flex items-center gap-2 mb-4">
+        <Crown className="h-4 w-4 text-amber-500" />
+        <h2 className="text-sm font-semibold text-gray-900">Subscription</h2>
+        {sub && (
+          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ml-auto ${
+            sub.status === 'active'
+              ? sub.planType === 'trial' ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'
+              : sub.status === 'past_due' ? 'bg-red-50 text-red-700'
+              : 'bg-gray-100 text-gray-500'
+          }`}>
+            {sub.planType} · {sub.status}
+          </span>
+        )}
+      </div>
+
+      {sub?.trialEndsAt && (
+        <p className="text-xs text-gray-500 mb-3">
+          Trial ends: {new Date(sub.trialEndsAt).toLocaleDateString()}
+          {sub.currentPeriodEnd && ` · Period ends: ${new Date(sub.currentPeriodEnd).toLocaleDateString()}`}
+        </p>
+      )}
+
+      <div className="grid grid-cols-3 gap-3">
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Plan</label>
+          <select
+            value={planType}
+            onChange={e => setPlanType(e.target.value)}
+            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900"
+          >
+            {PLAN_TYPES.map(p => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Status</label>
+          <select
+            value={status}
+            onChange={e => setStatus(e.target.value)}
+            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900"
+          >
+            {PLAN_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Conv. limit</label>
+          <input
+            type="number"
+            value={convLimit}
+            onChange={e => setConvLimit(e.target.value)}
+            placeholder="unlimited"
+            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900"
+          />
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3 mt-3">
+        <Button onClick={() => save.mutate()} loading={save.isPending} size="sm">
+          Save
+        </Button>
+        {save.isSuccess && <span className="text-xs text-emerald-600">Saved</span>}
+      </div>
+    </Card>
   );
 }

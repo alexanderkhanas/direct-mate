@@ -1,3 +1,4 @@
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { TenantSettings } from '../tenants/entities/tenant-settings.entity';
@@ -12,6 +13,7 @@ import { PolicyEngineService } from '../engine/policy-engine.service';
 import { ReplyDecision } from '@direct-mate/shared';
 import { OrderPayload } from '../orders/interfaces/order-payload.interface';
 import { InstagramContentService } from '../channels/instagram/instagram-content.service';
+import { SizeChartsService } from '../size-charts/size-charts.service';
 export interface ReplyEngineInput {
     tenantId: string;
     conversationId: string;
@@ -54,11 +56,13 @@ export declare class ReplyEngineService {
     private readonly policyEngine;
     private readonly config;
     private readonly instagramContentService;
+    private readonly subscriptionsService;
+    private readonly sizeChartsService;
     private readonly logger;
     private readonly openai;
     private readonly model;
     private logToFile;
-    constructor(settingsRepo: Repository<TenantSettings>, examplesRepo: Repository<ManagerExample>, storeConfigRepo: Repository<StoreConfig>, availabilityService: AvailabilityService, auditService: AuditService, classifierService: ClassifierService, templateEngine: TemplateEngineService, policyEngine: PolicyEngineService, config: ConfigService, instagramContentService: InstagramContentService);
+    constructor(settingsRepo: Repository<TenantSettings>, examplesRepo: Repository<ManagerExample>, storeConfigRepo: Repository<StoreConfig>, availabilityService: AvailabilityService, auditService: AuditService, classifierService: ClassifierService, templateEngine: TemplateEngineService, policyEngine: PolicyEngineService, config: ConfigService, instagramContentService: InstagramContentService, subscriptionsService: SubscriptionsService, sizeChartsService: SizeChartsService);
     process(input: ReplyEngineInput): Promise<ReplyEngineOutput>;
     private loadContext;
     private classifyMessage;
@@ -87,5 +91,6 @@ export declare class ReplyEngineService {
     private aiFallbackReply;
     private buildProductContext;
     private buildMemoryContext;
+    private handleSizeChartRequest;
     private doHandoff;
 }

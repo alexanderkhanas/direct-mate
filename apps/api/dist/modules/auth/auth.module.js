@@ -21,6 +21,7 @@ const response_template_entity_1 = require("../engine/entities/response-template
 const auth_controller_1 = require("./auth.controller");
 const auth_service_1 = require("./auth.service");
 const jwt_strategy_1 = require("./strategies/jwt.strategy");
+const subscriptions_module_1 = require("../subscriptions/subscriptions.module");
 let AuthModule = class AuthModule {
 };
 exports.AuthModule = AuthModule;
@@ -29,6 +30,7 @@ exports.AuthModule = AuthModule = __decorate([
         imports: [
             typeorm_1.TypeOrmModule.forFeature([user_entity_1.User, tenant_entity_1.Tenant, tenant_settings_entity_1.TenantSettings, store_config_entity_1.StoreConfig, response_template_entity_1.ResponseTemplate]),
             passport_1.PassportModule,
+            subscriptions_module_1.SubscriptionsModule,
             throttler_1.ThrottlerModule.forRoot([{ ttl: 60000, limit: 5 }]),
             jwt_1.JwtModule.registerAsync({
                 imports: [config_1.ConfigModule],

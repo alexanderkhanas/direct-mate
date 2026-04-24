@@ -3,6 +3,8 @@ export default () => ({
   port: parseInt(process.env.PORT ?? '3000', 10),
   app: {
     backendBaseUrl: process.env.BACKEND_BASE_URL ?? 'http://host.docker.internal:3000',
+    baseUrl: process.env.APP_BASE_URL ?? 'http://localhost:3000',
+    adminUrl: process.env.ADMIN_BASE_URL ?? 'http://localhost:5173',
   },
   database: {
     url: process.env.DATABASE_URL,
@@ -38,5 +40,8 @@ export default () => ({
     botToken: process.env.TELEGRAM_BOT_TOKEN ?? '',
     webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET ?? '',
     botUsername: process.env.TELEGRAM_BOT_USERNAME ?? 'DirectMateBot',
+  },
+  mono: {
+    merchantToken: process.env.MONO_MERCHANT_TOKEN ?? '',
   },
 });

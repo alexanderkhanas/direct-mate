@@ -13,8 +13,16 @@ interface TenantRow {
   slug: string;
   isActive: boolean;
   createdAt: string;
-  connections: { instagram?: string; shopify?: string; telegram?: boolean };
-  stats: { totalConversations: number; totalOrders: number; lastActivity: string | null };
+  connections: Array<{ type: string; status: string }>;
+  conversationCount: number;
+  orderCount: number;
+  subscription?: {
+    planType: string;
+    status: string;
+    trialEndsAt: string | null;
+    currentPeriodEnd: string | null;
+    conversationLimit: number | null;
+  } | null;
 }
 
 export default function TenantsPage() {
@@ -53,13 +61,13 @@ export default function TenantsPage() {
                 <div>
                   <p className="text-sm font-medium text-gray-900">{tenant.name}</p>
                   <div className="flex items-center gap-3 mt-1">
-                    {tenant.connections.instagram && (
-                      <Instagram className={`h-3.5 w-3.5 ${tenant.connections.instagram === 'connected' ? 'text-pink-500' : 'text-gray-300'}`} />
+                    {tenant.connections?.some((c: any) => c.type === 'instagram') && (
+                      <Instagram className={`h-3.5 w-3.5 ${tenant.connections.find((c: any) => c.type === 'instagram')?.status === 'connected' ? 'text-pink-500' : 'text-gray-300'}`} />
                     )}
-                    {tenant.connections.shopify && (
-                      <ShoppingBag className={`h-3.5 w-3.5 ${tenant.connections.shopify === 'connected' ? 'text-green-500' : 'text-gray-300'}`} />
+                    {tenant.connections?.some((c: any) => c.type === 'shopify') && (
+                      <ShoppingBag className={`h-3.5 w-3.5 ${tenant.connections.find((c: any) => c.type === 'shopify')?.status === 'connected' ? 'text-green-500' : 'text-gray-300'}`} />
                     )}
-                    {tenant.connections.telegram && (
+                    {tenant.connections?.some((c: any) => c.type === 'telegram') && (
                       <Send className="h-3.5 w-3.5 text-blue-500" />
                     )}
                     <span className="text-xs text-gray-400">
@@ -72,12 +80,22 @@ export default function TenantsPage() {
               <div className="flex items-center gap-6">
                 <div className="flex items-center gap-1.5 text-xs text-gray-500">
                   <MessageSquare className="h-3.5 w-3.5" />
-                  {tenant.stats.totalConversations}
+                  {tenant.conversationCount}
                 </div>
                 <div className="flex items-center gap-1.5 text-xs text-gray-500">
                   <ShoppingCart className="h-3.5 w-3.5" />
-                  {tenant.stats.totalOrders}
+                  {tenant.orderCount}
                 </div>
+                {tenant.subscription && (
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                    tenant.subscription.status === 'active'
+                      ? tenant.subscription.planType === 'trial' ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'
+                      : tenant.subscription.status === 'past_due' ? 'bg-red-50 text-red-700'
+                      : 'bg-gray-100 text-gray-500'
+                  }`}>
+                    {tenant.subscription.planType}{tenant.subscription.status !== 'active' ? ` · ${tenant.subscription.status}` : ''}
+                  </span>
+                )}
                 <Badge variant={tenant.isActive ? 'connected' : 'disconnected'}>
                   {tenant.isActive ? 'Active' : 'Inactive'}
                 </Badge>

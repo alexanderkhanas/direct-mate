@@ -12,11 +12,13 @@ import { ResponseTemplate } from '../engine/entities/response-template.entity';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
+import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([User, Tenant, TenantSettings, StoreConfig, ResponseTemplate]),
     PassportModule,
+    SubscriptionsModule,
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 5 }]),
     JwtModule.registerAsync({
       imports: [ConfigModule],

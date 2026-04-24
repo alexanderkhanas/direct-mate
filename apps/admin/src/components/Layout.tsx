@@ -18,10 +18,12 @@ import {
   Store,
   BarChart3,
   Globe,
+  Ruler,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { cn } from '../lib/cn';
 import { useT, type Lang } from '../i18n';
+import { useTenantContext } from '../contexts/TenantContext';
 
 const navItems = [
   { to: '/', key: 'nav.dashboard', icon: LayoutDashboard, exact: true },
@@ -34,6 +36,7 @@ const navItems = [
   { to: '/testing', key: 'nav.testing', icon: FlaskConical },
   { to: '/simulator', key: 'nav.simulator', icon: Play },
   { to: '/content-linking', key: 'nav.content', icon: ImagePlus },
+  { to: '/size-charts', key: 'nav.size_charts', icon: Ruler },
   { to: '/settings', key: 'nav.settings', icon: Settings },
   { to: '/logs', key: 'nav.logs', icon: ScrollText },
 ];
@@ -64,7 +67,11 @@ export default function Layout() {
   const toggleLang = () => setLang(lang === 'uk' ? 'en' : 'uk');
 
   return (
-    <div className="flex h-screen bg-gray-50">
+    <div className="flex flex-col h-screen bg-gray-50">
+      {/* Admin top bar (superadmin only) */}
+      {isSuperadmin && <AdminTopBar />}
+
+      <div className="flex flex-1 overflow-hidden">
       <aside className="w-56 bg-white border-r border-gray-200 flex flex-col">
         {/* Logo */}
         <div className="flex items-center gap-2.5 px-5 py-4 border-b border-gray-100">
@@ -100,33 +107,7 @@ export default function Layout() {
             );
           })}
 
-          {isSuperadmin && (
-            <>
-              <div className="mx-3 my-2 border-t border-gray-200" />
-              <p className="px-3 text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">{t('nav.admin')}</p>
-              {adminItems.map((item) => {
-                const active = location.pathname.startsWith(item.to);
-                return (
-                  <Link
-                    key={item.to}
-                    to={item.to}
-                    className={cn(
-                      'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors',
-                      active
-                        ? 'bg-indigo-50 text-indigo-700'
-                        : 'text-gray-500 hover:text-indigo-700 hover:bg-indigo-50',
-                    )}
-                  >
-                    <item.icon
-                      className={cn('h-4 w-4', active ? 'text-indigo-600' : 'text-gray-400')}
-                      strokeWidth={active ? 2.5 : 2}
-                    />
-                    {t(item.key)}
-                  </Link>
-                );
-              })}
-            </>
-          )}
+          {/* Admin items moved to top bar */}
         </nav>
 
         {/* Language + User + Sign out */}
@@ -160,6 +141,52 @@ export default function Layout() {
           <Outlet />
         </div>
       </main>
+      </div>
+    </div>
+  );
+}
+
+function AdminTopBar() {
+  const location = useLocation();
+  const { selectedTenantId, setSelectedTenantId, tenants } = useTenantContext();
+
+  const adminLinks = [
+    { to: '/admin/stores', label: 'Stores', icon: Store },
+    { to: '/admin/analytics', label: 'Analytics', icon: BarChart3 },
+    { to: '/admin/config', label: 'Config', icon: Settings },
+  ];
+
+  return (
+    <div className="bg-indigo-600 text-white px-4 py-1.5 flex items-center gap-4 text-xs">
+      <span className="font-semibold tracking-wide uppercase text-indigo-200 mr-2">Admin</span>
+      {adminLinks.map((link) => (
+        <Link
+          key={link.to}
+          to={link.to}
+          className={cn(
+            'flex items-center gap-1.5 px-2.5 py-1 rounded font-medium transition-colors',
+            location.pathname.startsWith(link.to)
+              ? 'bg-indigo-500 text-white'
+              : 'text-indigo-200 hover:text-white hover:bg-indigo-500/50',
+          )}
+        >
+          <link.icon className="h-3.5 w-3.5" />
+          {link.label}
+        </Link>
+      ))}
+      <div className="ml-auto flex items-center gap-2">
+        <Store className="h-3.5 w-3.5 text-indigo-300" />
+        <select
+          value={selectedTenantId ?? ''}
+          onChange={(e) => setSelectedTenantId(e.target.value || null)}
+          className="bg-indigo-500 text-white text-xs border border-indigo-400 rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-white/30"
+        >
+          <option value="">All stores</option>
+          {tenants.map((t) => (
+            <option key={t.id} value={t.id}>{t.name}</option>
+          ))}
+        </select>
+      </div>
     </div>
   );
 }

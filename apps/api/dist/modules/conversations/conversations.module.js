@@ -24,6 +24,8 @@ const availability_module_1 = require("../availability/availability.module");
 const audit_module_1 = require("../audit/audit.module");
 const engine_module_1 = require("../engine/engine.module");
 const instagram_content_module_1 = require("../channels/instagram/instagram-content.module");
+const subscriptions_module_1 = require("../subscriptions/subscriptions.module");
+const size_charts_module_1 = require("../size-charts/size-charts.module");
 let ConversationsModule = class ConversationsModule {
 };
 exports.ConversationsModule = ConversationsModule;
@@ -43,6 +45,8 @@ exports.ConversationsModule = ConversationsModule = __decorate([
             audit_module_1.AuditModule,
             engine_module_1.EngineModule,
             instagram_content_module_1.InstagramContentModule,
+            subscriptions_module_1.SubscriptionsModule,
+            size_charts_module_1.SizeChartsModule,
         ],
         controllers: [conversations_controller_1.ConversationsController, conversation_reply_controller_1.ConversationReplyController],
         providers: [conversations_service_1.ConversationsService, reply_engine_service_1.ReplyEngineService],

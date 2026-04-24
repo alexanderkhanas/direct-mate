@@ -67,6 +67,7 @@ export declare class InstagramService implements OnModuleInit, OnModuleDestroy {
     private readonly dataSource;
     private readonly logger;
     private readonly recentSentMids;
+    private readonly recentSendByRecipient;
     private pollInterval;
     constructor(config: ConfigService, conversationsService: ConversationsService, replyEngineService: ReplyEngineService, integrationsService: IntegrationsService, ordersService: OrdersService, cryptoService: CryptoService, telegramService: TelegramService, pendingMessageRepo: Repository<PendingMessage>, conversationRepo: Repository<Conversation>, storeConfigRepo: Repository<StoreConfig>, learningObserver: LearningObserverService, dataSource: DataSource);
     onModuleInit(): Promise<void>;
@@ -86,6 +87,7 @@ export declare class InstagramService implements OnModuleInit, OnModuleDestroy {
     private processInbound;
     private runLearningDryRun;
     private conversationLockKey;
+    private hasRecentOutbound;
     private handleManagerReply;
     private setAutoResumeDeadline;
 }

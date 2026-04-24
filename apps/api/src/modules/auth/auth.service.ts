@@ -17,6 +17,7 @@ import { ResponseTemplate } from '../engine/entities/response-template.entity';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { JwtPayload } from '../../common/decorators/current-user.decorator';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 
 @Injectable()
 export class AuthService {
@@ -25,6 +26,7 @@ export class AuthService {
     private readonly userRepo: Repository<User>,
     private readonly jwtService: JwtService,
     private readonly dataSource: DataSource,
+    private readonly subscriptionsService: SubscriptionsService,
   ) {}
 
   async login(dto: LoginDto): Promise<{ accessToken: string; user: Omit<User, 'passwordHash'> }> {
@@ -141,7 +143,7 @@ export class AuthService {
         tenantId: savedTenant.id,
       };
 
-      return {
+      const result = {
         accessToken: this.jwtService.sign(payload),
         user: {
           id: savedUser.id,
@@ -150,6 +152,18 @@ export class AuthService {
           tenantId: savedTenant.id,
         },
       };
+
+      // Create trial plan OUTSIDE the transaction — if Mono API is down,
+      // registration still succeeds and trial can be created manually later.
+      setTimeout(async () => {
+        try {
+          await this.subscriptionsService.createTrialForTenant(savedTenant.id);
+        } catch (err) {
+          console.error(`Trial creation failed for tenant ${savedTenant.id}:`, err);
+        }
+      }, 0);
+
+      return result;
     });
   }
 

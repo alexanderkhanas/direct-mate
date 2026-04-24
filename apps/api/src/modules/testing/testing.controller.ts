@@ -6,8 +6,10 @@ import {
   Param,
   Patch,
   Post,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import {
@@ -16,7 +18,25 @@ import {
 } from '../../common/decorators/current-user.decorator';
 import { TestingService } from './testing.service';
 import { SimulatorService } from './simulator.service';
-import { SCENARIOS } from '../../scripts/scenarios';
+import { SCENARIOS, SimulatorScenario } from '../../scripts/scenarios';
+
+/**
+ * Returns scenarios visible to the caller:
+ * - Superadmin without X-Tenant-Id header → all scenarios (all stores)
+ * - Everyone else (including superadmin with tenant override) → scenarios matching current tenantId
+ */
+function filterScenariosForRequest(
+  req: Request & { user: JwtPayload },
+  effectiveTenantId: string,
+): Array<[string, SimulatorScenario]> {
+  const rawUser = req.user;
+  const hasTenantOverride = Boolean(req.headers['x-tenant-id']);
+  const isSuperadminGlobal = rawUser?.role === 'superadmin' && !hasTenantOverride;
+
+  const entries = Object.entries(SCENARIOS);
+  if (isSuperadminGlobal) return entries;
+  return entries.filter(([, s]) => s.tenantId === effectiveTenantId);
+}
 
 @ApiTags('testing')
 @UseGuards(JwtAuthGuard)
@@ -31,8 +51,11 @@ export class TestingController {
   // ─── Simulator endpoints ──────────────────────────────────────
 
   @Get('simulator/scenarios')
-  getSimulatorScenarios() {
-    return Object.entries(SCENARIOS).map(([key, s]) => ({
+  getSimulatorScenarios(
+    @Req() req: Request & { user: JwtPayload },
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return filterScenariosForRequest(req, user.tenantId).map(([key, s]) => ({
       key,
       name: s.name,
       tenantId: s.tenantId,
@@ -41,17 +64,27 @@ export class TestingController {
   }
 
   @Post('simulator/run')
-  async runSimulatorScenario(@Body() body: { scenarioKey: string }) {
-    const scenario = SCENARIOS[body.scenarioKey];
-    if (!scenario) throw new NotFoundException(`Scenario "${body.scenarioKey}" not found`);
+  async runSimulatorScenario(
+    @Body() body: { scenarioKey: string },
+    @Req() req: Request & { user: JwtPayload },
+    @CurrentUser() user: JwtPayload,
+  ) {
+    const visible = filterScenariosForRequest(req, user.tenantId);
+    const entry = visible.find(([key]) => key === body.scenarioKey);
+    if (!entry) throw new NotFoundException(`Scenario "${body.scenarioKey}" not found`);
+    const [, scenario] = entry;
     const turns = await this.simulatorService.runScenario(scenario);
     return { scenario: body.scenarioKey, name: scenario.name, tenantId: scenario.tenantId, turns };
   }
 
   @Post('simulator/run-all')
-  async runAllSimulatorScenarios() {
+  async runAllSimulatorScenarios(
+    @Req() req: Request & { user: JwtPayload },
+    @CurrentUser() user: JwtPayload,
+  ) {
+    const visible = filterScenariosForRequest(req, user.tenantId);
     const results = [];
-    for (const [key, scenario] of Object.entries(SCENARIOS)) {
+    for (const [key, scenario] of visible) {
       const turns = await this.simulatorService.runScenario(scenario);
       results.push({ scenario: key, name: scenario.name, tenantId: scenario.tenantId, turns });
     }

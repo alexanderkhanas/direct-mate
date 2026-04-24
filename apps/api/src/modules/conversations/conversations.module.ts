@@ -15,6 +15,8 @@ import { AvailabilityModule } from '../availability/availability.module';
 import { AuditModule } from '../audit/audit.module';
 import { EngineModule } from '../engine/engine.module';
 import { InstagramContentModule } from '../channels/instagram/instagram-content.module';
+import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
+import { SizeChartsModule } from '../size-charts/size-charts.module';
 
 @Module({
   imports: [
@@ -31,6 +33,8 @@ import { InstagramContentModule } from '../channels/instagram/instagram-content.
     AuditModule,
     EngineModule,
     InstagramContentModule,
+    SubscriptionsModule,
+    SizeChartsModule,
   ],
   controllers: [ConversationsController, ConversationReplyController],
   providers: [ConversationsService, ReplyEngineService],

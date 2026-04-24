@@ -48,6 +48,7 @@ let InstagramService = InstagramService_1 = class InstagramService {
         this.dataSource = dataSource;
         this.logger = new common_1.Logger(InstagramService_1.name);
         this.recentSentMids = new Set();
+        this.recentSendByRecipient = new Map();
         this.pollInterval = null;
     }
     async onModuleInit() {
@@ -106,6 +107,7 @@ let InstagramService = InstagramService_1 = class InstagramService {
         }
     }
     async sendMetaMessage(recipientId, text, pageAccessToken) {
+        this.recentSendByRecipient.set(recipientId, Date.now());
         const res = await fetch('https://graph.instagram.com/v21.0/me/messages', {
             method: 'POST',
             headers: {
@@ -130,6 +132,7 @@ let InstagramService = InstagramService_1 = class InstagramService {
         return mid;
     }
     async sendMetaImages(recipientId, imageUrls, pageAccessToken) {
+        this.recentSendByRecipient.set(recipientId, Date.now());
         const res = await fetch('https://graph.instagram.com/v21.0/me/messages', {
             method: 'POST',
             headers: {
@@ -230,6 +233,21 @@ let InstagramService = InstagramService_1 = class InstagramService {
                     if (this.recentSentMids.has(mid)) {
                         this.recentSentMids.delete(mid);
                         continue;
+                    }
+                    const recipientId = messaging.recipient?.id;
+                    if (recipientId) {
+                        const lastSendTs = this.recentSendByRecipient.get(recipientId);
+                        if (lastSendTs && Date.now() - lastSendTs < 10_000) {
+                            this.logger.debug(`Skipping echo within 10s send window for ${recipientId}`);
+                            continue;
+                        }
+                    }
+                    if (recipientId) {
+                        const isOurEcho = await this.hasRecentOutbound(recipientId, 20_000);
+                        if (isOurEcho) {
+                            this.logger.debug(`Skipping echo: DB shows recent outbound to ${recipientId} (post-restart dedup)`);
+                            continue;
+                        }
                     }
                     await this.handleManagerReply(messaging, entryId ?? '').catch(err => this.logger.error('handleManagerReply failed', err));
                     continue;
@@ -490,6 +508,24 @@ let InstagramService = InstagramService_1 = class InstagramService {
             hash = ((hash << 5) - hash + conversationId.charCodeAt(i)) | 0;
         }
         return hash;
+    }
+    async hasRecentOutbound(customerExternalId, windowMs) {
+        try {
+            const rows = await this.dataSource.query(`SELECT EXISTS (
+           SELECT 1
+           FROM messages m
+           JOIN conversations c ON c.id = m.conversation_id
+           JOIN customers cu ON cu.id = c.customer_id
+           WHERE cu.external_user_id = $1
+             AND m.direction = 'outbound'
+             AND m.created_at > NOW() - ($2::int * INTERVAL '1 millisecond')
+         ) AS exists`, [customerExternalId, windowMs]);
+            return rows[0]?.exists === true;
+        }
+        catch (err) {
+            this.logger.warn(`hasRecentOutbound query failed: ${err.message}`);
+            return false;
+        }
     }
     async handleManagerReply(messaging, channelAccountId) {
         const customerId = messaging.recipient?.id;

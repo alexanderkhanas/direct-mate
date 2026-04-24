@@ -3,6 +3,8 @@ declare const _default: () => {
     port: number;
     app: {
         backendBaseUrl: string;
+        baseUrl: string;
+        adminUrl: string;
     };
     database: {
         url: string | undefined;
@@ -38,6 +40,9 @@ declare const _default: () => {
         botToken: string;
         webhookSecret: string;
         botUsername: string;
+    };
+    mono: {
+        merchantToken: string;
     };
 };
 export default _default;

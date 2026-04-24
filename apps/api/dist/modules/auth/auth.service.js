@@ -24,11 +24,13 @@ const tenant_entity_1 = require("../tenants/entities/tenant.entity");
 const tenant_settings_entity_1 = require("../tenants/entities/tenant-settings.entity");
 const store_config_entity_1 = require("../engine/entities/store-config.entity");
 const response_template_entity_1 = require("../engine/entities/response-template.entity");
+const subscriptions_service_1 = require("../subscriptions/subscriptions.service");
 let AuthService = class AuthService {
-    constructor(userRepo, jwtService, dataSource) {
+    constructor(userRepo, jwtService, dataSource, subscriptionsService) {
         this.userRepo = userRepo;
         this.jwtService = jwtService;
         this.dataSource = dataSource;
+        this.subscriptionsService = subscriptionsService;
     }
     async login(dto) {
         const user = await this.userRepo.findOne({
@@ -123,7 +125,7 @@ let AuthService = class AuthService {
                 role: savedUser.role,
                 tenantId: savedTenant.id,
             };
-            return {
+            const result = {
                 accessToken: this.jwtService.sign(payload),
                 user: {
                     id: savedUser.id,
@@ -132,6 +134,15 @@ let AuthService = class AuthService {
                     tenantId: savedTenant.id,
                 },
             };
+            setTimeout(async () => {
+                try {
+                    await this.subscriptionsService.createTrialForTenant(savedTenant.id);
+                }
+                catch (err) {
+                    console.error(`Trial creation failed for tenant ${savedTenant.id}:`, err);
+                }
+            }, 0);
+            return result;
         });
     }
     slugify(name) {
@@ -184,6 +195,7 @@ exports.AuthService = AuthService = __decorate([
     __param(0, (0, typeorm_1.InjectRepository)(user_entity_1.User)),
     __metadata("design:paramtypes", [typeorm_2.Repository,
         jwt_1.JwtService,
-        typeorm_2.DataSource])
+        typeorm_2.DataSource,
+        subscriptions_service_1.SubscriptionsService])
 ], AuthService);
 //# sourceMappingURL=auth.service.js.map

@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
@@ -29,6 +30,7 @@ import {
 } from '@direct-mate/shared';
 import { OrderPayload } from '../orders/interfaces/order-payload.interface';
 import { InstagramContentService } from '../channels/instagram/instagram-content.service';
+import { SizeChartsService } from '../size-charts/size-charts.service';
 
 // ─── Public interfaces ───────────────────────────────────────────
 
@@ -102,6 +104,9 @@ export class ReplyEngineService {
     private readonly policyEngine: PolicyEngineService,
     private readonly config: ConfigService,
     private readonly instagramContentService: InstagramContentService,
+    @Inject(forwardRef(() => SubscriptionsService))
+    private readonly subscriptionsService: SubscriptionsService,
+    private readonly sizeChartsService: SizeChartsService,
   ) {
     this.openai = new OpenAI({
       apiKey: this.config.get<string>('openai.apiKey'),
@@ -115,6 +120,18 @@ export class ReplyEngineService {
     const ctx = await this.loadContext(input);
     const withTrace = (r: ReplyEngineOutput) => { r.trace = ctx.trace; return r; };
 
+    // 1.5. Subscription gate: soft-block if trial expired or plan inactive
+    const planActive = await this.subscriptionsService.isActive(input.tenantId);
+    if (!planActive) {
+      ctx.trace.push('subscription: inactive → soft block');
+      return withTrace({
+        decision: ReplyDecision.Reply,
+        reply: { text: null as any, sendNow: false },
+        handoff: { required: true, reason: 'subscription_expired' },
+        stateUpdate: {},
+      });
+    }
+
     // Pre-check: max failed turns
     const maxFailedTurns = ctx.settings?.handoffRules?.maxFailedTurns ?? 5;
     if ((ctx.memory.failedTurns ?? 0) >= maxFailedTurns) {
@@ -127,6 +144,9 @@ export class ReplyEngineService {
 
     const mediaResult = await this.resolveMediaProduct(input, ctx);
     if (mediaResult) return withTrace(mediaResult);
+
+    const sizeChartResult = await this.handleSizeChartRequest(input, ctx);
+    if (sizeChartResult) return withTrace(sizeChartResult);
 
     const preQualifyResult = await this.handlePreQualify(input, ctx);
     if (preQualifyResult) return withTrace(preQualifyResult);
@@ -383,6 +403,51 @@ export class ReplyEngineService {
          memory.selectedProductTitle.toLowerCase().includes(classification.entities.productName.toLowerCase()) ||
          classification.entities.productName.toLowerCase().includes(memory.selectedProductTitle.toLowerCase()));
 
+      // If the pending variant was already confirmed ("так" → awaiting_confirmation)
+      // and the user is pivoting to another variant/product ("і ще Rosewood" / "і ще Color Veil"),
+      // commit the pending one to the cart before clearing. Applies to both same-product
+      // and different-product branches — otherwise the earlier selection is lost.
+      // Idempotent via the alreadyInCart guard.
+      if (
+        memory.selectionState === 'awaiting_confirmation' &&
+        memory.selectedProductId &&
+        memory.selectedVariantId &&
+        memory.selectedVariantName
+      ) {
+        if (!memory.cartItems) memory.cartItems = [];
+        const alreadyInCart = memory.cartItems.some(
+          (it) =>
+            it.productId === memory.selectedProductId &&
+            it.variantId === memory.selectedVariantId,
+        );
+        if (!alreadyInCart) {
+          let itemPrice = 0;
+          let itemCurrency = 'UAH';
+          const memVar = Array.isArray(memory.availableVariants)
+            ? (memory.availableVariants as any[]).find(
+                (v) => v.id === memory.selectedVariantId,
+              )
+            : null;
+          if (memVar?.price) {
+            itemPrice = memVar.price;
+            itemCurrency = memVar.currency ?? 'UAH';
+          }
+          memory.cartItems.push({
+            productId: memory.selectedProductId,
+            variantId: memory.selectedVariantId,
+            externalProductId: null,
+            externalVariantId: null,
+            title: memory.selectedProductTitle ?? '',
+            variantName: memory.selectedVariantName,
+            price: itemPrice,
+            currency: itemCurrency,
+          });
+          ctx.trace.push(
+            `4.6: committed pending ${memory.selectedVariantName} before switching (cart=${memory.cartItems.length})`,
+          );
+        }
+      }
+
       if (sameProduct) {
         // Same product, different variant — keep product-level state, clear variant only
         memory.selectedVariantId = undefined;
@@ -471,6 +536,32 @@ export class ReplyEngineService {
     if (!input.mediaReference) return null;
 
     if (input.mediaReference.type === 'customer_photo') {
+      // Try to match customer screenshot to a linked product before handoff
+      try {
+        const match = await this.instagramContentService.matchCustomerPhoto(
+          input.tenantId,
+          input.mediaReference.mediaId,
+        );
+        if (match) {
+          ctx.trace.push(`customer_photo: matched to product ${match.productId} (confidence=${match.confidence})`);
+          const mediaProductData = await this.availabilityService.findAllByProductId(
+            match.productId,
+            match.variantId ?? undefined,
+          );
+          ctx.mediaProductData = mediaProductData;
+          this.logToFile({
+            event: 'customer_photo_matched',
+            conversationId: input.conversationId,
+            productId: match.productId,
+            confidence: match.confidence,
+          });
+          return null; // continue normal flow with resolved product
+        }
+      } catch (err) {
+        this.logger.error('Customer photo matching failed, falling back to handoff', err);
+      }
+
+      ctx.trace.push('customer_photo: no product match → handoff');
       return this.doHandoff(input, 'customer_photo', 'Секунду, зараз перевірю 💛');
     }
 
@@ -2292,6 +2383,95 @@ export class ReplyEngineService {
     }
 
     return parts.join('\n');
+  }
+
+  // ─── Size chart handler ────────────────────────────────────────
+
+  private async handleSizeChartRequest(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+  ): Promise<ReplyEngineOutput | null> {
+    if (ctx.classification.primaryIntent !== 'size_chart_request') return null;
+
+    const memory = ctx.memory;
+    const entities = ctx.classification.entities;
+
+    let brand: string | null = null;
+    let category: string | null = entities.category ?? memory.selectedCategory ?? null;
+
+    const contextProductId =
+      ctx.mediaProductData?.[0]?.product?.id ?? memory.selectedProductId ?? null;
+    if (contextProductId) {
+      const info = await this.sizeChartsService.getBrandAndCategoryForProduct(
+        input.tenantId,
+        contextProductId,
+      );
+      brand = info.brand ?? brand;
+      category = info.category ?? category;
+    }
+
+    const chart = await this.sizeChartsService.resolveForContext(input.tenantId, {
+      brand,
+      category,
+    });
+
+    if (!chart) {
+      ctx.trace.push('size_chart_request: no chart matched → silent handoff');
+      this.logToFile({
+        event: 'size_chart_no_match',
+        conversationId: input.conversationId,
+        inbound: input.messageText,
+        brand,
+        category,
+      });
+      return this.doHandoff(input, 'size_chart_not_available');
+    }
+
+    const variables: Record<string, string> = { name: chart.name };
+    if (brand) variables.brand = brand;
+
+    const rendered = await this.templateEngine.renderCustomScenario(
+      input.tenantId,
+      'show_size_chart',
+      variables,
+    );
+    const text = rendered?.text ?? 'Ось наша розмірна сітка 💛';
+    const publicUrl = this.sizeChartsService.publicUrl(chart.imagePath);
+
+    ctx.trace.push(
+      `size_chart_request: resolved chart ${chart.id} (brand=${brand ?? '-'}, category=${category ?? '-'})`,
+    );
+
+    await this.auditService.log({
+      tenantId: input.tenantId,
+      conversationId: input.conversationId,
+      type: AuditLogType.AiDecision,
+      details: {
+        decision: ReplyDecision.Reply,
+        intent: 'size_chart_request',
+        templateId: rendered?.templateId ?? 'no_template',
+        chartId: chart.id,
+      },
+    });
+
+    this.logToFile({
+      event: 'size_chart_sent',
+      conversationId: input.conversationId,
+      inbound: input.messageText,
+      chartId: chart.id,
+      chartName: chart.name,
+      imageUrl: publicUrl,
+      brand,
+      category,
+    });
+
+    return {
+      decision: ReplyDecision.Reply,
+      reply: { text, sendNow: true, imageUrls: [publicUrl] },
+      handoff: { required: false, reason: null },
+      stateUpdate: null,
+      templateScenario: rendered?.scenario ?? 'show_size_chart',
+    };
   }
 
   // ─── Handoff helper ────────────────────────────────────────────

@@ -1,12 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { Tenant } from '../tenants/entities/tenant.entity';
 import { User } from '../tenants/entities/user.entity';
 import { Conversation } from '../conversations/entities/conversation.entity';
 import { Order } from '../orders/entities/order.entity';
 import { Connection } from '../integrations/entities/connection.entity';
 import { Message } from '../conversations/entities/message.entity';
+import { SubscriptionPlan } from '../subscriptions/entities/subscription-plan.entity';
 
 const SYSTEM_TENANT_ID = '00000000-0000-0000-0000-000000000000';
 
@@ -25,6 +26,9 @@ export class AdminService {
     private readonly connectionRepo: Repository<Connection>,
     @InjectRepository(Message)
     private readonly messageRepo: Repository<Message>,
+    @InjectRepository(SubscriptionPlan)
+    private readonly planRepo: Repository<SubscriptionPlan>,
+    private readonly dataSource: DataSource,
   ) {}
 
   async listTenants() {
@@ -36,10 +40,11 @@ export class AdminService {
 
     return Promise.all(
       filtered.map(async (tenant) => {
-        const [conversationCount, orderCount, connections] = await Promise.all([
+        const [conversationCount, orderCount, connections, plan] = await Promise.all([
           this.conversationRepo.count({ where: { tenantId: tenant.id } }),
           this.orderRepo.count({ where: { tenantId: tenant.id } }),
           this.connectionRepo.find({ where: { tenantId: tenant.id } }),
+          this.planRepo.findOne({ where: { tenantId: tenant.id } }),
         ]);
 
         return {
@@ -55,6 +60,13 @@ export class AdminService {
             type: c.type,
             status: c.status,
           })),
+          subscription: plan ? {
+            planType: plan.planType,
+            status: plan.status,
+            trialEndsAt: plan.trialEndsAt,
+            currentPeriodEnd: plan.currentPeriodEnd,
+            conversationLimit: plan.conversationLimit,
+          } : null,
         };
       }),
     );
@@ -199,6 +211,104 @@ export class AdminService {
       where: { tenantId },
       relations: ['items'],
       order: { createdAt: 'DESC' },
+    });
+  }
+
+  async updateSubscription(
+    tenantId: string,
+    updates: { planType?: string; status?: string; conversationLimit?: number | null },
+  ) {
+    let plan = await this.planRepo.findOne({ where: { tenantId } });
+    if (!plan) {
+      plan = this.planRepo.create({ tenantId, planType: 'trial', status: 'active' });
+    }
+    if (updates.planType !== undefined) plan.planType = updates.planType;
+    if (updates.status !== undefined) plan.status = updates.status;
+    if (updates.conversationLimit !== undefined) plan.conversationLimit = updates.conversationLimit;
+    return this.planRepo.save(plan);
+  }
+
+  async getAdminAnalytics() {
+    const [
+      globalStats,
+      planBreakdown,
+      recentSignups,
+      topTenants,
+      dailyConversations,
+    ] = await Promise.all([
+      this.getGlobalStats(),
+      // Plan distribution
+      this.planRepo
+        .createQueryBuilder('p')
+        .select('p.plan_type', 'planType')
+        .addSelect('p.status', 'status')
+        .addSelect('COUNT(*)', 'count')
+        .groupBy('p.plan_type')
+        .addGroupBy('p.status')
+        .getRawMany() as Promise<Array<{ planType: string; status: string; count: string }>>,
+      // Recent signups (last 30 days)
+      this.tenantRepo
+        .createQueryBuilder('t')
+        .where('t.id != :systemId', { systemId: SYSTEM_TENANT_ID })
+        .andWhere('t.created_at > :since', { since: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) })
+        .orderBy('t.created_at', 'DESC')
+        .take(10)
+        .getMany(),
+      // Top tenants by conversation count
+      this.dataSource.query(`
+        SELECT t.id, t.name, t.slug,
+          COUNT(DISTINCT c.id) as conversation_count,
+          COUNT(DISTINCT o.id) as order_count,
+          sp.plan_type, sp.status as plan_status
+        FROM tenants t
+        LEFT JOIN conversations c ON c.tenant_id = t.id
+        LEFT JOIN orders o ON o.tenant_id = t.id
+        LEFT JOIN subscription_plans sp ON sp.tenant_id = t.id
+        WHERE t.id != $1
+        GROUP BY t.id, t.name, t.slug, sp.plan_type, sp.status
+        ORDER BY conversation_count DESC
+        LIMIT 10
+      `, [SYSTEM_TENANT_ID]),
+      // Daily conversations (last 30 days)
+      this.dataSource.query(`
+        SELECT DATE(created_at) as date, COUNT(*) as count
+        FROM conversations
+        WHERE created_at > NOW() - INTERVAL '30 days'
+        GROUP BY DATE(created_at)
+        ORDER BY date ASC
+      `),
+    ]);
+
+    // Aggregate plan distribution
+    const planDistribution: Record<string, { active: number; trial: number; pastDue: number; cancelled: number; expired: number }> = {};
+    for (const row of planBreakdown) {
+      if (!planDistribution[row.planType]) {
+        planDistribution[row.planType] = { active: 0, trial: 0, pastDue: 0, cancelled: 0, expired: 0 };
+      }
+      const count = parseInt(row.count, 10);
+      if (row.status === 'active') planDistribution[row.planType].active = count;
+      else if (row.status === 'past_due') planDistribution[row.planType].pastDue = count;
+      else if (row.status === 'cancelled') planDistribution[row.planType].cancelled = count;
+      else if (row.status === 'expired') planDistribution[row.planType].expired = count;
+    }
+
+    return {
+      ...globalStats,
+      planDistribution,
+      recentSignups: recentSignups.map(t => ({
+        id: t.id,
+        name: t.name,
+        slug: t.slug,
+        createdAt: t.createdAt,
+      })),
+      topTenants,
+      dailyConversations,
+    };
+  }
+
+  async getTenantOwner(tenantId: string) {
+    return this.userRepo.findOne({
+      where: { tenantId, role: 'owner' as any },
     });
   }
 }

@@ -58,6 +58,10 @@ const DEBOUNCE_MS = 10_000; // 10 seconds
 export class InstagramService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(InstagramService.name);
   private readonly recentSentMids = new Set<string>();
+  // Per-recipient timestamp of our last outbound send. Used to filter out
+  // bot's own echoes that arrive before we register the MID (race condition
+  // between Meta's fetch response and Meta's echo webhook).
+  private readonly recentSendByRecipient = new Map<string, number>();
   private pollInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(
@@ -146,6 +150,7 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
     text: string,
     pageAccessToken: string,
   ): Promise<string | null> {
+    this.recentSendByRecipient.set(recipientId, Date.now());
     const res = await fetch('https://graph.instagram.com/v21.0/me/messages', {
       method: 'POST',
       headers: {
@@ -175,6 +180,7 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
     imageUrls: string[],
     pageAccessToken: string,
   ): Promise<void> {
+    this.recentSendByRecipient.set(recipientId, Date.now());
     const res = await fetch('https://graph.instagram.com/v21.0/me/messages', {
       method: 'POST',
       headers: {
@@ -304,6 +310,31 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
           if (this.recentSentMids.has(mid)) {
             this.recentSentMids.delete(mid);
             continue; // Bot echo, skip
+          }
+          // Race-condition guard: the echo may arrive before we've registered
+          // the MID (Meta fires the webhook in parallel with the HTTP response).
+          // If we sent something to this recipient in the last 10s, treat it as
+          // our own echo, not a manager reply.
+          const recipientId = messaging.recipient?.id;
+          if (recipientId) {
+            const lastSendTs = this.recentSendByRecipient.get(recipientId);
+            if (lastSendTs && Date.now() - lastSendTs < 10_000) {
+              this.logger.debug(`Skipping echo within 10s send window for ${recipientId}`);
+              continue;
+            }
+          }
+          // Persistent fallback: the in-memory maps clear on restart. Before
+          // treating this as a manager reply, check the DB for a recent
+          // outbound message to this recipient's conversation. If the bot sent
+          // anything in the last 20s, this is almost certainly its own echo.
+          if (recipientId) {
+            const isOurEcho = await this.hasRecentOutbound(recipientId, 20_000);
+            if (isOurEcho) {
+              this.logger.debug(
+                `Skipping echo: DB shows recent outbound to ${recipientId} (post-restart dedup)`,
+              );
+              continue;
+            }
           }
           // Manager replied in Instagram DMs
           await this.handleManagerReply(messaging, entryId ?? '').catch(err =>
@@ -743,6 +774,35 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
       hash = ((hash << 5) - hash + conversationId.charCodeAt(i)) | 0;
     }
     return hash;
+  }
+
+  /**
+   * Persistent fallback for bot-echo detection. Returns true if the bot sent
+   * an outbound message to this customer's conversation within `windowMs`.
+   * Used when the in-memory dedup maps miss (e.g. after a server restart).
+   */
+  private async hasRecentOutbound(
+    customerExternalId: string,
+    windowMs: number,
+  ): Promise<boolean> {
+    try {
+      const rows: Array<{ exists: boolean }> = await this.dataSource.query(
+        `SELECT EXISTS (
+           SELECT 1
+           FROM messages m
+           JOIN conversations c ON c.id = m.conversation_id
+           JOIN customers cu ON cu.id = c.customer_id
+           WHERE cu.external_user_id = $1
+             AND m.direction = 'outbound'
+             AND m.created_at > NOW() - ($2::int * INTERVAL '1 millisecond')
+         ) AS exists`,
+        [customerExternalId, windowMs],
+      );
+      return rows[0]?.exists === true;
+    } catch (err) {
+      this.logger.warn(`hasRecentOutbound query failed: ${(err as Error).message}`);
+      return false;
+    }
   }
 
   // ─── Manager reply detection ──────────────────────────────────

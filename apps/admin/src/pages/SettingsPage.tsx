@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, useEffect } from 'react';
-import { Plus, Trash2 } from 'lucide-react';
+import { Plus, Trash2, Crown, ArrowRight, Check } from 'lucide-react';
 import { api } from '../lib/api';
 import { TenantSettings, ManagerExample } from '../types';
 import { Card } from '../components/ui/Card';
@@ -467,6 +467,146 @@ function OperatingModeSection() {
   );
 }
 
+function SubscriptionSection() {
+  const { t } = useT();
+  const qc = useQueryClient();
+
+  const { data: planData } = useQuery<{
+    plan: { planType: string; status: string; trialEndsAt: string | null; currentPeriodEnd: string | null } | null;
+    usage: { used: number; limit: number | null; percentUsed: number | null };
+    planConfig: { displayName: string; price: number; conversationLimit: number | null } | null;
+    trialDaysRemaining: number | null;
+  }>({
+    queryKey: ['subscription-plan'],
+    queryFn: () => api.get('/subscriptions/plan').then(r => r.data),
+  });
+
+  const { data: configs } = useQuery<Array<{
+    planType: string; displayName: string; price: number; conversationLimit: number | null; igAccountsLimit: number;
+  }>>({
+    queryKey: ['available-plans'],
+    queryFn: () => api.get('/subscriptions/plans').then(r => r.data),
+  });
+
+  const upgrade = useMutation({
+    mutationFn: (planType: string) => api.post('/subscriptions/upgrade', { planType }).then(r => r.data),
+    onSuccess: (data: { pageUrl: string }) => {
+      window.location.href = data.pageUrl;
+    },
+  });
+
+  const cancel = useMutation({
+    mutationFn: () => api.post('/subscriptions/cancel'),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['subscription-plan'] }),
+  });
+
+  const plan = planData?.plan;
+  const usage = planData?.usage;
+  const trialDays = planData?.trialDaysRemaining;
+
+  const statusColor = !plan ? 'bg-gray-100 text-gray-500'
+    : plan.status === 'active' && plan.planType === 'trial' ? 'bg-amber-50 text-amber-700'
+    : plan.status === 'active' ? 'bg-emerald-50 text-emerald-700'
+    : plan.status === 'past_due' ? 'bg-red-50 text-red-700'
+    : 'bg-gray-100 text-gray-500';
+
+  return (
+    <Card>
+      <div className="flex items-center gap-2 mb-4">
+        <Crown className="h-4 w-4 text-amber-500" />
+        <h2 className="text-sm font-semibold text-gray-900">{t('settings_ext.subscription_title')}</h2>
+        {plan && (
+          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ml-auto ${statusColor}`}>
+            {plan.planType === 'trial' ? 'Trial' : planData?.planConfig?.displayName ?? plan.planType} · {plan.status}
+          </span>
+        )}
+      </div>
+
+      {/* Trial countdown */}
+      {plan?.planType === 'trial' && trialDays != null && (
+        <div className={`rounded-lg p-3 mb-4 ${trialDays <= 3 ? 'bg-red-50 border border-red-200' : 'bg-amber-50 border border-amber-200'}`}>
+          <p className={`text-sm font-medium ${trialDays <= 3 ? 'text-red-700' : 'text-amber-700'}`}>
+            {trialDays > 0 ? `${trialDays} ${t('settings_ext.trial_days_left')}` : t('settings_ext.trial_expired')}
+          </p>
+          <p className="text-xs text-gray-500 mt-0.5">{t('settings_ext.trial_upgrade_hint')}</p>
+        </div>
+      )}
+
+      {/* Usage bar */}
+      {usage && usage.limit && (
+        <div className="mb-4">
+          <div className="flex justify-between text-xs text-gray-500 mb-1">
+            <span>{t('settings_ext.conversations_this_month')}</span>
+            <span>{usage.used} / {usage.limit}</span>
+          </div>
+          <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all ${(usage.percentUsed ?? 0) > 100 ? 'bg-red-500' : (usage.percentUsed ?? 0) > 80 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+              style={{ width: `${Math.min(usage.percentUsed ?? 0, 100)}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Current period */}
+      {plan?.currentPeriodEnd && plan.planType !== 'trial' && (
+        <p className="text-xs text-gray-400 mb-4">
+          {t('settings_ext.next_billing')}: {new Date(plan.currentPeriodEnd).toLocaleDateString()}
+        </p>
+      )}
+
+      {/* Plan cards */}
+      {configs && configs.length > 0 && (
+        <div className="space-y-2 mb-4">
+          <p className="text-xs font-medium text-gray-600">{plan?.planType === 'trial' ? t('settings_ext.choose_plan') : t('settings_ext.change_plan')}</p>
+          <div className="grid grid-cols-3 gap-2">
+            {configs.map(cfg => {
+              const isCurrent = plan?.planType === cfg.planType;
+              return (
+                <button
+                  key={cfg.planType}
+                  onClick={() => !isCurrent && upgrade.mutate(cfg.planType)}
+                  disabled={isCurrent || upgrade.isPending}
+                  className={`text-left p-3 rounded-lg border transition-colors ${
+                    isCurrent
+                      ? 'border-emerald-300 bg-emerald-50'
+                      : 'border-gray-200 hover:border-indigo-300 hover:bg-indigo-50 cursor-pointer'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-semibold text-gray-900">{cfg.displayName}</p>
+                    {isCurrent && <Check className="h-3.5 w-3.5 text-emerald-600" />}
+                  </div>
+                  <p className="text-lg font-bold text-gray-900 mt-1">{(cfg.price / 100).toFixed(0)} <span className="text-xs font-normal text-gray-400">UAH/mo</span></p>
+                  <p className="text-xs text-gray-400 mt-1">
+                    {cfg.conversationLimit ? `${cfg.conversationLimit} convs` : 'Unlimited'} · {cfg.igAccountsLimit} IG
+                  </p>
+                  {!isCurrent && (
+                    <span className="text-xs text-indigo-600 font-medium mt-2 inline-flex items-center gap-1">
+                      {t('settings_ext.upgrade_button')} <ArrowRight className="h-3 w-3" />
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Cancel */}
+      {plan && plan.planType !== 'trial' && plan.status === 'active' && (
+        <button
+          onClick={() => { if (window.confirm(t('settings_ext.cancel_confirm'))) cancel.mutate(); }}
+          className="text-xs text-gray-400 hover:text-red-500 transition-colors"
+        >
+          {t('settings_ext.cancel_subscription')}
+        </button>
+      )}
+      {cancel.isSuccess && <p className="text-xs text-gray-500 mt-1">{t('settings_ext.cancel_success')}</p>}
+    </Card>
+  );
+}
+
 function DeleteAccountSection() {
   const { t } = useT();
   const [confirmText, setConfirmText] = useState('');
@@ -549,6 +689,7 @@ export default function SettingsPage() {
       <AiFallbackSection />
       <HandoffRulesSection settings={data} />
       <ExamplesSection />
+      <SubscriptionSection />
       <DeleteAccountSection />
     </div>
   );

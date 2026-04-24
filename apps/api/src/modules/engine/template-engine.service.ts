@@ -47,6 +47,7 @@ const INTENT_TO_SCENARIO: Record<string, string> = {
   ask_variant_choice: 'ask_variant_choice',
   variant_not_available: 'variant_not_available',
   product_not_found: 'product_not_found',
+  size_chart_request: 'show_size_chart',
 };
 
 // ─── Action-to-scenario fallback mapping ─────────────────────────
@@ -216,6 +217,35 @@ export class TemplateEngineService {
       scenario,
       matchedVariantId: variables['matched_variant_id'],
       imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
+    };
+  }
+
+  /**
+   * Render a scenario with an explicit variable bag, bypassing the standard
+   * classification/product-based variable builder. Used for size_chart flows
+   * where the variables (brand, name) come from a separate resolver rather
+   * than from the classifier entities.
+   */
+  async renderCustomScenario(
+    tenantId: string,
+    scenario: string,
+    variables: Record<string, string>,
+  ): Promise<TemplateRenderResult | null> {
+    const templates = await this.templateRepo.find({
+      where: { tenantId, scenario, active: true },
+      order: { priority: 'DESC' },
+    });
+    if (templates.length === 0) return null;
+
+    const viable = templates.filter((t) => this.hasRequiredVariables(t, variables));
+    if (viable.length === 0) return null;
+
+    const selected = viable[0];
+    const text = this.interpolateTemplate(selected, variables);
+    return {
+      text,
+      templateId: selected.id,
+      scenario,
     };
   }
 

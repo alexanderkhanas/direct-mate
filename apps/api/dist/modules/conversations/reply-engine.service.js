@@ -15,6 +15,7 @@ var ReplyEngineService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ReplyEngineService = void 0;
 const common_1 = require("@nestjs/common");
+const subscriptions_service_1 = require("../subscriptions/subscriptions.service");
 const typeorm_1 = require("@nestjs/typeorm");
 const config_1 = require("@nestjs/config");
 const typeorm_2 = require("typeorm");
@@ -31,13 +32,14 @@ const template_engine_service_1 = require("../engine/template-engine.service");
 const policy_engine_service_1 = require("../engine/policy-engine.service");
 const shared_1 = require("@direct-mate/shared");
 const instagram_content_service_1 = require("../channels/instagram/instagram-content.service");
+const size_charts_service_1 = require("../size-charts/size-charts.service");
 const LOG_FILE = path.join(process.cwd(), 'conversations.log');
 let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
     logToFile(entry) {
         const line = JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n';
         fs.appendFile(LOG_FILE, line, () => { });
     }
-    constructor(settingsRepo, examplesRepo, storeConfigRepo, availabilityService, auditService, classifierService, templateEngine, policyEngine, config, instagramContentService) {
+    constructor(settingsRepo, examplesRepo, storeConfigRepo, availabilityService, auditService, classifierService, templateEngine, policyEngine, config, instagramContentService, subscriptionsService, sizeChartsService) {
         this.settingsRepo = settingsRepo;
         this.examplesRepo = examplesRepo;
         this.storeConfigRepo = storeConfigRepo;
@@ -48,6 +50,8 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         this.policyEngine = policyEngine;
         this.config = config;
         this.instagramContentService = instagramContentService;
+        this.subscriptionsService = subscriptionsService;
+        this.sizeChartsService = sizeChartsService;
         this.logger = new common_1.Logger(ReplyEngineService_1.name);
         this.openai = new openai_1.default({
             apiKey: this.config.get('openai.apiKey'),
@@ -57,6 +61,16 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
     async process(input) {
         const ctx = await this.loadContext(input);
         const withTrace = (r) => { r.trace = ctx.trace; return r; };
+        const planActive = await this.subscriptionsService.isActive(input.tenantId);
+        if (!planActive) {
+            ctx.trace.push('subscription: inactive → soft block');
+            return withTrace({
+                decision: shared_1.ReplyDecision.Reply,
+                reply: { text: null, sendNow: false },
+                handoff: { required: true, reason: 'subscription_expired' },
+                stateUpdate: {},
+            });
+        }
         const maxFailedTurns = ctx.settings?.handoffRules?.maxFailedTurns ?? 5;
         if ((ctx.memory.failedTurns ?? 0) >= maxFailedTurns) {
             ctx.trace.push('pre-check: max_failed_turns exceeded');
@@ -68,6 +82,9 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         const mediaResult = await this.resolveMediaProduct(input, ctx);
         if (mediaResult)
             return withTrace(mediaResult);
+        const sizeChartResult = await this.handleSizeChartRequest(input, ctx);
+        if (sizeChartResult)
+            return withTrace(sizeChartResult);
         const preQualifyResult = await this.handlePreQualify(input, ctx);
         if (preQualifyResult)
             return withTrace(preQualifyResult);
@@ -270,6 +287,37 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 (!classification.entities.productName ||
                     memory.selectedProductTitle.toLowerCase().includes(classification.entities.productName.toLowerCase()) ||
                     classification.entities.productName.toLowerCase().includes(memory.selectedProductTitle.toLowerCase()));
+            if (memory.selectionState === 'awaiting_confirmation' &&
+                memory.selectedProductId &&
+                memory.selectedVariantId &&
+                memory.selectedVariantName) {
+                if (!memory.cartItems)
+                    memory.cartItems = [];
+                const alreadyInCart = memory.cartItems.some((it) => it.productId === memory.selectedProductId &&
+                    it.variantId === memory.selectedVariantId);
+                if (!alreadyInCart) {
+                    let itemPrice = 0;
+                    let itemCurrency = 'UAH';
+                    const memVar = Array.isArray(memory.availableVariants)
+                        ? memory.availableVariants.find((v) => v.id === memory.selectedVariantId)
+                        : null;
+                    if (memVar?.price) {
+                        itemPrice = memVar.price;
+                        itemCurrency = memVar.currency ?? 'UAH';
+                    }
+                    memory.cartItems.push({
+                        productId: memory.selectedProductId,
+                        variantId: memory.selectedVariantId,
+                        externalProductId: null,
+                        externalVariantId: null,
+                        title: memory.selectedProductTitle ?? '',
+                        variantName: memory.selectedVariantName,
+                        price: itemPrice,
+                        currency: itemCurrency,
+                    });
+                    ctx.trace.push(`4.6: committed pending ${memory.selectedVariantName} before switching (cart=${memory.cartItems.length})`);
+                }
+            }
             if (sameProduct) {
                 memory.selectedVariantId = undefined;
                 memory.selectedVariantName = undefined;
@@ -339,6 +387,25 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         if (!input.mediaReference)
             return null;
         if (input.mediaReference.type === 'customer_photo') {
+            try {
+                const match = await this.instagramContentService.matchCustomerPhoto(input.tenantId, input.mediaReference.mediaId);
+                if (match) {
+                    ctx.trace.push(`customer_photo: matched to product ${match.productId} (confidence=${match.confidence})`);
+                    const mediaProductData = await this.availabilityService.findAllByProductId(match.productId, match.variantId ?? undefined);
+                    ctx.mediaProductData = mediaProductData;
+                    this.logToFile({
+                        event: 'customer_photo_matched',
+                        conversationId: input.conversationId,
+                        productId: match.productId,
+                        confidence: match.confidence,
+                    });
+                    return null;
+                }
+            }
+            catch (err) {
+                this.logger.error('Customer photo matching failed, falling back to handoff', err);
+            }
+            ctx.trace.push('customer_photo: no product match → handoff');
             return this.doHandoff(input, 'customer_photo', 'Секунду, зараз перевірю 💛');
         }
         const mapping = await this.instagramContentService.findByMediaId(input.tenantId, input.mediaReference.mediaId);
@@ -1714,6 +1781,70 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         }
         return parts.join('\n');
     }
+    async handleSizeChartRequest(input, ctx) {
+        if (ctx.classification.primaryIntent !== 'size_chart_request')
+            return null;
+        const memory = ctx.memory;
+        const entities = ctx.classification.entities;
+        let brand = null;
+        let category = entities.category ?? memory.selectedCategory ?? null;
+        const contextProductId = ctx.mediaProductData?.[0]?.product?.id ?? memory.selectedProductId ?? null;
+        if (contextProductId) {
+            const info = await this.sizeChartsService.getBrandAndCategoryForProduct(input.tenantId, contextProductId);
+            brand = info.brand ?? brand;
+            category = info.category ?? category;
+        }
+        const chart = await this.sizeChartsService.resolveForContext(input.tenantId, {
+            brand,
+            category,
+        });
+        if (!chart) {
+            ctx.trace.push('size_chart_request: no chart matched → silent handoff');
+            this.logToFile({
+                event: 'size_chart_no_match',
+                conversationId: input.conversationId,
+                inbound: input.messageText,
+                brand,
+                category,
+            });
+            return this.doHandoff(input, 'size_chart_not_available');
+        }
+        const variables = { name: chart.name };
+        if (brand)
+            variables.brand = brand;
+        const rendered = await this.templateEngine.renderCustomScenario(input.tenantId, 'show_size_chart', variables);
+        const text = rendered?.text ?? 'Ось наша розмірна сітка 💛';
+        const publicUrl = this.sizeChartsService.publicUrl(chart.imagePath);
+        ctx.trace.push(`size_chart_request: resolved chart ${chart.id} (brand=${brand ?? '-'}, category=${category ?? '-'})`);
+        await this.auditService.log({
+            tenantId: input.tenantId,
+            conversationId: input.conversationId,
+            type: shared_1.AuditLogType.AiDecision,
+            details: {
+                decision: shared_1.ReplyDecision.Reply,
+                intent: 'size_chart_request',
+                templateId: rendered?.templateId ?? 'no_template',
+                chartId: chart.id,
+            },
+        });
+        this.logToFile({
+            event: 'size_chart_sent',
+            conversationId: input.conversationId,
+            inbound: input.messageText,
+            chartId: chart.id,
+            chartName: chart.name,
+            imageUrl: publicUrl,
+            brand,
+            category,
+        });
+        return {
+            decision: shared_1.ReplyDecision.Reply,
+            reply: { text, sendNow: true, imageUrls: [publicUrl] },
+            handoff: { required: false, reason: null },
+            stateUpdate: null,
+            templateScenario: rendered?.scenario ?? 'show_size_chart',
+        };
+    }
     async doHandoff(input, reason, softMessage) {
         await this.auditService.log({
             tenantId: input.tenantId,
@@ -1763,6 +1894,7 @@ exports.ReplyEngineService = ReplyEngineService = ReplyEngineService_1 = __decor
     __param(0, (0, typeorm_1.InjectRepository)(tenant_settings_entity_1.TenantSettings)),
     __param(1, (0, typeorm_1.InjectRepository)(manager_example_entity_1.ManagerExample)),
     __param(2, (0, typeorm_1.InjectRepository)(store_config_entity_1.StoreConfig)),
+    __param(10, (0, common_1.Inject)((0, common_1.forwardRef)(() => subscriptions_service_1.SubscriptionsService))),
     __metadata("design:paramtypes", [typeorm_2.Repository,
         typeorm_2.Repository,
         typeorm_2.Repository,
@@ -1772,6 +1904,8 @@ exports.ReplyEngineService = ReplyEngineService = ReplyEngineService_1 = __decor
         template_engine_service_1.TemplateEngineService,
         policy_engine_service_1.PolicyEngineService,
         config_1.ConfigService,
-        instagram_content_service_1.InstagramContentService])
+        instagram_content_service_1.InstagramContentService,
+        subscriptions_service_1.SubscriptionsService,
+        size_charts_service_1.SizeChartsService])
 ], ReplyEngineService);
 //# sourceMappingURL=reply-engine.service.js.map
