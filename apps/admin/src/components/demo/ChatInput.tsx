@@ -4,10 +4,11 @@ interface ChatInputProps {
   value: string;
   onChange: (v: string) => void;
   onSend: () => void;
+  disabled?: boolean;
 }
 
-export function ChatInput({ value, onChange, onSend }: ChatInputProps) {
-  const canSend = value.trim().length > 0;
+export function ChatInput({ value, onChange, onSend, disabled = false }: ChatInputProps) {
+  const canSend = !disabled && value.trim().length > 0;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -23,8 +24,15 @@ export function ChatInput({ value, onChange, onSend }: ChatInputProps) {
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder="Напишіть повідомлення..."
-        className="flex-1 min-w-0 bg-gray-50 border border-gray-200 rounded-full px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-900/10 focus:border-gray-300"
+        disabled={disabled}
+        placeholder={
+          disabled ? 'Сценарій активний' : 'Напишіть повідомлення...'
+        }
+        className={`flex-1 min-w-0 border rounded-full px-4 py-2 text-sm focus:outline-none focus:ring-2 ${
+          disabled
+            ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed placeholder:text-gray-400'
+            : 'bg-gray-50 border-gray-200 focus:ring-gray-900/10 focus:border-gray-300'
+        }`}
       />
       <button
         type="submit"

@@ -28,6 +28,10 @@ infra/docker/    — Docker Compose (Postgres on port 5433)
 - **n8n for external orchestration** (Shopify/OpenCart sync workflows) — calls backend internal endpoints
 - **InternalApiKeyGuard** for n8n-facing endpoints (`x-internal-key` header)
 - **JwtAuthGuard** for admin-facing endpoints
+- **Demo tenant isolation** — `tenants.is_demo BOOLEAN`. Demo 
+  traffic uses tenant slug='demo'. Analytics queries must filter 
+  is_demo=false. ordersService creates no orders for is_demo 
+  tenants (tech debt: explicit guard pending)
 
 ### Database
 - PostgreSQL in Docker, port **5433** (5432 taken by another project)
@@ -229,8 +233,47 @@ Templates, phrase blocks, and FAQ items are separate tables per tenant.
 - ConnectionsPage has pre-existing TypeScript errors
 - Some `as any` casts on TypeORM jsonb column updates
 - Shopify sync stores colors in `size` field (selectedOptions[0] → size mapping)
+- `DemoMessageBufferService` duplicates production buffer logic in `instagram.service.ts`; refactor to a shared service when per-tenant debounce config or a second channel arrives
+- Add a `tenant.is_demo` guard inside `ordersService.createFromConversation()` as belt-and-braces. Current demo path explicitly skips order creation, but a defensive refusal at the orders layer would prevent a future code path from accidentally persisting a demo order
+- Multi-process deployments break the in-memory demo buffer (the `Map` is per-process and the same `sessionKey` could land on different workers). Move to Redis when scaling beyond a single replica
+- Demo session story is mostly working in 3.1 because `findOrCreateConversation` reuses by `(tenantId, customerId, channel='demo', channelAccountId=sessionKey)`. Step 3.2 adds explicit session TTL/expiry, server-issued sessionKeys, an in-widget "Start new conversation" button, and rate-limit tracking that survives sessionKey rotation
+- `DemoBudgetService.chargeEstimate` charges classifier on every demo call and fallback at p=0.20 because `ReplyEngineService` exposes no per-call token usage. Overcounts ~2× on fallback. Replace with real per-call usage telemetry when `ReplyEngineService` plumbs `usage.prompt_tokens` / `completion_tokens` from the OpenAI SDK response
+- `DemoRateLimiterService` uses a per-process in-memory `Map` — same multi-process gap as the demo buffer; fold into the same Redis migration when scaling beyond a single replica
+- `app.set('trust proxy', true)` in `apps/api/src/main.ts` is permissive — accepts any `X-Forwarded-For`. Tighten to a fixed hop count or a specific subnet once the deploy topology is fixed (Cloudflare → nginx → Node)
+- E2E test scaffold (`apps/api/test/jest-e2e.json`, `test/tsconfig.json`, `test/setup-env.ts`, `test/demo/setup.ts`) currently only covers the `/demo` endpoint. Other modules (auth, conversations, channels) have no e2e coverage. Reuse the same config when a second module needs e2e tests
 
 ## Issue Triage Protocol
+
+When encountering a conversation issue, ALWAYS classify it first 
+before fixing:
+
+1. **Bug** — code doesn't do what the architecture intended 
+   (missing memory write, wrong variable, typo). Quick fix.
+   
+2. **AI went wrong** — classifier returned wrong intent/slotAction/
+   entities. Fix by improving prompt, adding examples, or enriching 
+   context.
+
+3. **Architectural** — the design can't handle this case (missing 
+   state, no template for scenario, flow doesn't support this 
+   path). Needs refactor/plan.
+
+State the classification before proposing a fix. This prevents 
+over-engineering bugs and under-engineering architectural gaps.
+
+### Investigation order for any issue
+
+1. Reproduce in simulator first: `npm run simulate -- --tenant 
+   <slug> --message "<text>"`
+2. Read the trace output — engine emits structured trace at every 
+   pipeline stage
+3. If classification is wrong → AI went wrong path
+4. If classification correct but engine takes wrong action → 
+   reread reply-engine.service.ts:46-57 (process() entry point) 
+   and walk through the steps
+5. If state machine is in unexpected selectionState → check the 
+   transitions in the 5.5 selection block (reply-engine flow)
+6. Only after #1-5 done, propose a fix
 
 When encountering a conversation issue, ALWAYS classify it first before fixing:
 
@@ -239,6 +282,37 @@ When encountering a conversation issue, ALWAYS classify it first before fixing:
 3. **Architectural** — the design can't handle this case (missing state, no template for scenario, flow doesn't support this path). Needs refactor/plan.
 
 State the classification before proposing a fix. This prevents over-engineering bugs and under-engineering architectural gaps.
+
+## Production patterns to replicate
+
+When building any new caller of ReplyEngineService (demo, batch 
+processor, future channels), replicate the production pattern from 
+`instagram.service.ts:606-622`:
+
+```typescript
+const recentMessages = (await conversationsService.findById(
+  conversationId
+)).messages.slice(-10).map(m => ({ role: m.role, text: m.text }));
+
+await replyEngineService.process({
+  tenantId,
+  conversationId,
+  messageText: combinedText,    // joined buffer texts if debounced
+  state: freshState,             // load fresh from DB before call
+  recentMessages,                // last 10 from DB at call time
+  mediaReference,                // optional, omit for text-only
+});
+```
+
+Critical: recentMessages is loaded from DB AT CALL TIME, not 
+cached, not empty. The engine relies on this to maintain 
+conversation context across debounced messages.
+
+When implementing a new caller, do NOT pass `isDemo` flags or 
+similar branches into ReplyEngineService — keep it pure. Suppress 
+side effects at the caller boundary (skip order dispatch, skip 
+Telegram, skip Meta send) rather than instructing the engine to 
+behave differently.
 
 ## Dev Commands
 

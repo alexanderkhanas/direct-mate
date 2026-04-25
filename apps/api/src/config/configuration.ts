@@ -44,4 +44,33 @@ export default () => ({
   mono: {
     merchantToken: process.env.MONO_MERCHANT_TOKEN ?? '',
   },
+  demo: {
+    debounceMs: parseInt(process.env.DEMO_DEBOUNCE_MS ?? '1500', 10),
+    maxMessageLength: parseInt(process.env.DEMO_MAX_MESSAGE_LENGTH ?? '500', 10),
+    rateLimit: {
+      sessionsPerHour: parseInt(
+        process.env.DEMO_RATE_LIMIT_SESSIONS_PER_HOUR ?? '5',
+        10,
+      ),
+    },
+    budget: {
+      classifierCentsPerDay: parseInt(
+        process.env.DEMO_BUDGET_CENTS_GPT54_MINI ?? '1500',
+        10,
+      ),
+      fallbackCentsPerDay: parseInt(
+        process.env.DEMO_BUDGET_CENTS_GPT54 ?? '500',
+        10,
+      ),
+    },
+    cors: {
+      allowedOrigins: (
+        process.env.DEMO_CORS_ALLOWED_ORIGINS ??
+        'https://directmate.ua,https://www.directmate.ua'
+      )
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    },
+  },
 });

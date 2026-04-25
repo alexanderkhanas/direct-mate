@@ -8,6 +8,8 @@ export interface Turn {
   delayMs?: number;
   /** Bot turn renders the grey handoff banner instead of a speech bubble. */
   isHandoff?: boolean;
+  /** Append a small italic gray hint under the bubble. Used for live-mode aggregation. */
+  aggregatedHint?: boolean;
 }
 
 export interface Scenario {

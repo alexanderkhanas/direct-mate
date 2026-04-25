@@ -1,15 +1,11 @@
 import { Scenario } from './types';
 
-// Real Zara product photo for "Zara Базова футболка oversize" (black) —
-// used everywhere that product appears. Served from Zara's public CDN.
-// Other images fall back to picsum.photos with stable seeds because the
-// source.unsplash.com/?query endpoint was deprecated and silently stopped
-// returning images.
-const IMG_ZARA_OVERSIZE =
-  'https://static.zara.net/assets/public/8cd8/2ec0/9c1f4668babd/d3368d7ebfe1/00722404800-000-e1/00722404800-000-e1.jpg';
-// Real Zara print t-shirt photo for "Zara Футболка з принтом".
-const IMG_TSHIRT_PRINT =
-  'https://static.zara.net/assets/public/60a8/0475/3c1e487e81bb/24a54dffa2ae/04805321800-a1/04805321800-a1.jpg';
+// Self-hosted product photos seeded by apps/api/src/scripts/seed-demo-tenant.ts.
+// Files live in apps/api/test-assets/ (committed) and are copied to
+// apps/api/uploads/ on seed run. Served by the backend at /uploads/<file>;
+// admin's Vite proxy forwards /uploads to the API in dev.
+const IMG_ZARA_OVERSIZE = '/uploads/demo-p-01.jpg';
+const IMG_TSHIRT_PRINT = '/uploads/demo-p-06.webp';
 const IMG_SIZE_CHART = 'https://picsum.photos/seed/dm-zara-sizechart/600/800';
 
 export const SCENARIOS: Scenario[] = [

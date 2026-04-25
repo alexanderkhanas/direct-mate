@@ -13,4 +13,12 @@ export const validationSchema = Joi.object({
   OPENAI_API_KEY: Joi.string().allow('').default(''),
   OPENAI_MODEL: Joi.string().default('gpt-4o'),
   INTERNAL_API_KEY: Joi.string().required(),
+  DEMO_DEBOUNCE_MS: Joi.number().default(1500),
+  DEMO_MAX_MESSAGE_LENGTH: Joi.number().default(500),
+  DEMO_RATE_LIMIT_SESSIONS_PER_HOUR: Joi.number().default(5),
+  DEMO_BUDGET_CENTS_GPT54_MINI: Joi.number().default(1500),
+  DEMO_BUDGET_CENTS_GPT54: Joi.number().default(500),
+  DEMO_CORS_ALLOWED_ORIGINS: Joi.string().default(
+    'https://directmate.ua,https://www.directmate.ua',
+  ),
 });

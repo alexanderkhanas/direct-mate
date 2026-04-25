@@ -14,10 +14,36 @@ export function MessageBubble({ turn }: { turn: DisplayedTurn }) {
   }
 
   const isUser = turn.role === 'user';
+  const images = turn.imageUrls ?? [];
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} demo-msg-in`}>
-      <div className={`max-w-[80%] ${isUser ? 'items-end' : 'items-start'} flex flex-col gap-1`}>
+      <div className={`max-w-[80%] ${isUser ? 'items-end' : 'items-start'} flex flex-col gap-1.5`}>
+        {/* Images render first, in Instagram-DM stacked layout for 2+ */}
+        {images.length === 1 && (
+          <img
+            src={images[0]}
+            alt=""
+            className="rounded-3xl max-w-[220px] w-full h-auto object-cover border border-gray-100 bg-gray-50"
+            loading="lazy"
+          />
+        )}
+        {images.length >= 2 && (
+          <div className="relative w-[240px] h-[300px]">
+            <img
+              src={images[0]}
+              alt=""
+              className="absolute top-0 left-0 w-[170px] h-[220px] rounded-3xl object-cover border-2 border-white shadow-md bg-gray-50"
+              loading="lazy"
+            />
+            <img
+              src={images[1]}
+              alt=""
+              className="absolute bottom-0 right-0 w-[170px] h-[220px] rounded-3xl object-cover border-2 border-white shadow-md bg-gray-50"
+              loading="lazy"
+            />
+          </div>
+        )}
         {turn.text && (
           <div
             className={
@@ -29,15 +55,11 @@ export function MessageBubble({ turn }: { turn: DisplayedTurn }) {
             {turn.text}
           </div>
         )}
-        {turn.imageUrls?.map((url) => (
-          <img
-            key={url}
-            src={url}
-            alt=""
-            className="rounded-2xl max-w-[220px] w-full h-auto object-cover border border-gray-100 bg-gray-50"
-            loading="lazy"
-          />
-        ))}
+        {turn.aggregatedHint && (
+          <p className="text-[11px] italic text-gray-400 px-1">
+            💬 Об'єднано в одну відповідь
+          </p>
+        )}
       </div>
     </div>
   );

@@ -239,6 +239,31 @@ const PRODUCTS: ProductSpec[] = [
   },
 ];
 
+// ─── Product image map ──────────────────────────────────────────
+// One image per product, copied from apps/api/test-assets/ to uploads/
+// on first run. Stored as `/uploads/<file>` in product_media.url so the
+// admin's Vite proxy + the backend serve them at the same relative path.
+const PRODUCT_IMAGES: Record<string, string> = {
+  'demo-p-01': 'demo-p-01.jpg',
+  'demo-p-02': 'demo-p-02.jpg',
+  'demo-p-03': 'demo-p-03.jpg',
+  'demo-p-04': 'demo-p-04.jpg',
+  'demo-p-05': 'demo-p-05.jpg',
+  'demo-p-06': 'demo-p-06.webp',
+  'demo-p-07': 'demo-p-07.avif',
+  'demo-p-08': 'demo-p-08.avif',
+  'demo-p-09': 'demo-p-09.avif',
+  'demo-p-10': 'demo-p-10.jpg',
+  'demo-p-11': 'demo-p-11.avif',
+  'demo-p-12': 'demo-p-12.avif',
+  'demo-p-13': 'demo-p-13.avif',
+  'demo-p-14': 'demo-p-14.avif',
+  'demo-p-15': 'demo-p-15.avif',
+  'demo-p-16': 'demo-p-16.avif',
+  'demo-p-17': 'demo-p-17.webp',
+  'demo-p-18': 'demo-p-18.avif',
+};
+
 // ─── Size chart specs ────────────────────────────────────────────
 
 interface SizeChartSpec {
@@ -296,6 +321,10 @@ async function seed() {
 
   // 5. Products, variants, stock
   await seedCatalog(demoTenantId);
+
+  // 5b. Product images (copy files, then product_media rows)
+  await copyProductImages();
+  await seedProductMedia(demoTenantId);
 
   // 6. Size charts (copy files, then DB rows)
   await copyChartImages();
@@ -553,6 +582,58 @@ async function upsertStock(variantId: string, stock: number): Promise<void> {
 }
 
 // ─── Section 6: size charts ─────────────────────────────────────
+
+async function copyProductImages(): Promise<void> {
+  const uploadsDir = path.join(process.cwd(), 'uploads');
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+  const testAssetsDir = path.join(__dirname, '..', '..', 'test-assets');
+  let copied = 0;
+  let skipped = 0;
+  for (const file of Object.values(PRODUCT_IMAGES)) {
+    const src = path.join(testAssetsDir, file);
+    const dest = path.join(uploadsDir, file);
+    if (!fs.existsSync(src)) {
+      console.warn(`! product image source missing: ${src} — skipped`);
+      continue;
+    }
+    if (fs.existsSync(dest)) {
+      skipped++;
+      continue;
+    }
+    fs.copyFileSync(src, dest);
+    copied++;
+  }
+  console.log(`✓ product images: ${copied} copied, ${skipped} already existed`);
+}
+
+async function seedProductMedia(tenantId: string): Promise<void> {
+  let created = 0;
+  let existed = 0;
+  for (const [externalId, file] of Object.entries(PRODUCT_IMAGES)) {
+    const url = `/uploads/${file}`;
+    const result = await AppDataSource.query(
+      `INSERT INTO product_media (product_id, url, sort_order, color)
+       SELECT p.id, $1, 0, NULL
+       FROM products p
+       WHERE p.tenant_id = $2 AND p.external_product_id = $3
+         AND NOT EXISTS (
+           SELECT 1 FROM product_media pm WHERE pm.product_id = p.id
+         )
+       RETURNING id`,
+      [url, tenantId, externalId],
+    );
+    if (result.length > 0) {
+      created++;
+      console.log(`✓ media for ${externalId}`);
+    } else {
+      existed++;
+      console.log(`- media exists for ${externalId}`);
+    }
+  }
+  console.log(`✓ product_media: ${created} created, ${existed} existed`);
+}
 
 async function copyChartImages(): Promise<void> {
   const uploadsDir = path.join(process.cwd(), 'uploads');

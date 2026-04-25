@@ -44,5 +44,19 @@ declare const _default: () => {
     mono: {
         merchantToken: string;
     };
+    demo: {
+        debounceMs: number;
+        maxMessageLength: number;
+        rateLimit: {
+            sessionsPerHour: number;
+        };
+        budget: {
+            classifierCentsPerDay: number;
+            fallbackCentsPerDay: number;
+        };
+        cors: {
+            allowedOrigins: string[];
+        };
+    };
 };
 export default _default;

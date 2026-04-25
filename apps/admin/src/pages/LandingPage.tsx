@@ -1,4 +1,6 @@
+import { lazy, Suspense, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
+import { analytics } from '../lib/analytics';
 import {
   MessageSquare,
   Image,
@@ -10,10 +12,54 @@ import {
   Shield,
 } from 'lucide-react';
 import { useT } from '../i18n';
-import { DemoWidget } from '../components/demo';
+
+const DemoWidget = lazy(() =>
+  import('../components/demo').then((m) => ({ default: m.DemoWidget })),
+);
 
 export default function LandingPage() {
   const { t } = useT();
+
+  const scrollToDemo = () => {
+    document.getElementById('demo')?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start',
+    });
+  };
+
+  // demo_section_visible — fires once per session, 1s dwell at threshold 0.3.
+  // Lives outside the lazy-loaded widget so it captures eyeballs even when
+  // the demo chunk hasn't loaded yet (the lazy-load attribution metric).
+  const demoSectionRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (sessionStorage.getItem('demo_section_visible_fired') === '1') return;
+    const el = demoSectionRef.current;
+    if (!el) return;
+    let timer: number | null = null;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (entry.isIntersecting) {
+          if (timer == null) {
+            timer = window.setTimeout(() => {
+              sessionStorage.setItem('demo_section_visible_fired', '1');
+              analytics.demoSectionVisible();
+              observer.disconnect();
+            }, 1000);
+          }
+        } else if (timer != null) {
+          clearTimeout(timer);
+          timer = null;
+        }
+      },
+      { threshold: 0.3 },
+    );
+    observer.observe(el);
+    return () => {
+      if (timer != null) clearTimeout(timer);
+      observer.disconnect();
+    };
+  }, []);
 
   const features = [
     { icon: Bot, titleKey: 'landing.feature_ai_title', descKey: 'landing.feature_ai_desc' },
@@ -40,7 +86,11 @@ export default function LandingPage() {
             <Link to="/login" className="text-sm text-gray-600 hover:text-gray-900 transition-colors px-4 py-2">
               {t('landing.cta_signin')}
             </Link>
-            <Link to="/register" className="text-sm bg-gray-900 text-white px-4 py-2 rounded-lg hover:bg-gray-800 transition-colors">
+            <Link
+              to="/register"
+              onClick={() => analytics.ctaClicked('header', 'primary_cta')}
+              className="text-sm bg-gray-900 text-white px-4 py-2 rounded-lg hover:bg-gray-800 transition-colors"
+            >
               {t('landing.cta_create')}
             </Link>
           </div>
@@ -59,14 +109,37 @@ export default function LandingPage() {
           {t('landing.hero_subtitle')}
         </p>
         <div className="mt-10 flex items-center justify-center gap-4">
-          <Link to="/register" className="inline-flex items-center gap-2 bg-gray-900 text-white px-6 py-3 rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors">
+          <Link
+            to="/register"
+            onClick={() => analytics.ctaClicked('hero', 'primary_cta')}
+            className="inline-flex items-center gap-2 bg-gray-900 text-white px-6 py-3 rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors"
+          >
             {t('landing.cta_create')}
             <ArrowRight className="h-4 w-4" />
           </Link>
-          <Link to="/login" className="inline-flex items-center gap-2 text-gray-600 px-6 py-3 rounded-lg text-sm font-medium hover:text-gray-900 transition-colors border border-gray-200 hover:border-gray-300">
-            {t('landing.cta_signin')}
-          </Link>
+          <button
+            type="button"
+            onClick={() => {
+              analytics.ctaClicked('hero', 'demo_scroll');
+              scrollToDemo();
+            }}
+            className="inline-flex items-center gap-2 text-gray-700 px-6 py-3 rounded-lg text-sm font-medium hover:text-gray-900 transition-colors border border-gray-300 hover:border-gray-400 bg-transparent"
+          >
+            Подивитись демо ↓
+          </button>
         </div>
+      </section>
+
+      <section ref={demoSectionRef} id="demo" className="max-w-6xl mx-auto px-6 py-20 scroll-mt-16">
+        <div className="text-center mb-10">
+          <h2 className="text-3xl font-bold text-gray-900">Спробуйте зараз</h2>
+          <p className="mt-3 text-gray-500 max-w-lg mx-auto">
+            Оберіть сценарій — побачите як DirectMate відповідає реальним клієнтам у DM.
+          </p>
+        </div>
+        <Suspense fallback={<div className="h-[600px]" aria-hidden />}>
+          <DemoWidget />
+        </Suspense>
       </section>
 
       <section className="max-w-6xl mx-auto px-6 py-20">
@@ -107,22 +180,16 @@ export default function LandingPage() {
         </div>
       </section>
 
-      <section className="max-w-6xl mx-auto px-6 py-20">
-        <div className="text-center mb-10">
-          <h2 className="text-3xl font-bold text-gray-900">Спробуйте зараз</h2>
-          <p className="mt-3 text-gray-500 max-w-lg mx-auto">
-            Оберіть сценарій — побачите як DirectMate відповідає реальним клієнтам у DM.
-          </p>
-        </div>
-        <DemoWidget />
-      </section>
-
       <section className="max-w-6xl mx-auto px-6 py-20 text-center">
         <div className="bg-gray-900 rounded-2xl px-8 py-14">
           <Shield className="h-8 w-8 text-gray-400 mx-auto mb-4" />
           <h2 className="text-3xl font-bold text-white">{t('landing.cta_bottom_title')}</h2>
           <p className="mt-3 text-gray-400 max-w-lg mx-auto">{t('landing.cta_bottom_subtitle')}</p>
-          <Link to="/register" className="mt-8 inline-flex items-center gap-2 bg-white text-gray-900 px-6 py-3 rounded-lg text-sm font-medium hover:bg-gray-100 transition-colors">
+          <Link
+            to="/register"
+            onClick={() => analytics.ctaClicked('bottom_cta', 'primary_cta')}
+            className="mt-8 inline-flex items-center gap-2 bg-white text-gray-900 px-6 py-3 rounded-lg text-sm font-medium hover:bg-gray-100 transition-colors"
+          >
             {t('landing.cta_bottom_button')}
             <ArrowRight className="h-4 w-4" />
           </Link>

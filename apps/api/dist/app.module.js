@@ -33,6 +33,7 @@ const admin_module_1 = require("./modules/admin/admin.module");
 const analytics_module_1 = require("./modules/analytics/analytics.module");
 const subscriptions_module_1 = require("./modules/subscriptions/subscriptions.module");
 const size_charts_module_1 = require("./modules/size-charts/size-charts.module");
+const demo_module_1 = require("./modules/demo/demo.module");
 const health_controller_1 = require("./health.controller");
 let AppModule = class AppModule {
 };
@@ -69,6 +70,7 @@ exports.AppModule = AppModule = __decorate([
             analytics_module_1.AnalyticsModule,
             subscriptions_module_1.SubscriptionsModule,
             size_charts_module_1.SizeChartsModule,
+            demo_module_1.DemoModule,
         ],
     })
 ], AppModule);
