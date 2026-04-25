@@ -10,6 +10,7 @@ import {
   Shield,
 } from 'lucide-react';
 import { useT } from '../i18n';
+import { DemoWidget } from '../components/demo';
 
 export default function LandingPage() {
   const { t } = useT();
@@ -104,6 +105,16 @@ export default function LandingPage() {
             ))}
           </div>
         </div>
+      </section>
+
+      <section className="max-w-6xl mx-auto px-6 py-20">
+        <div className="text-center mb-10">
+          <h2 className="text-3xl font-bold text-gray-900">Спробуйте зараз</h2>
+          <p className="mt-3 text-gray-500 max-w-lg mx-auto">
+            Оберіть сценарій — побачите як DirectMate відповідає реальним клієнтам у DM.
+          </p>
+        </div>
+        <DemoWidget />
       </section>
 
       <section className="max-w-6xl mx-auto px-6 py-20 text-center">

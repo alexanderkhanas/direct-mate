@@ -1,0 +1,1 @@
+export { DemoWidget } from './DemoWidget';
