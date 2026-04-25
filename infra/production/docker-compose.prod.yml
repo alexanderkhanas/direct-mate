@@ -48,6 +48,12 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET}
       TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-DirectMateBot}
+      DEMO_DEBOUNCE_MS: ${DEMO_DEBOUNCE_MS:-1500}
+      DEMO_MAX_MESSAGE_LENGTH: ${DEMO_MAX_MESSAGE_LENGTH:-500}
+      DEMO_RATE_LIMIT_SESSIONS_PER_HOUR: ${DEMO_RATE_LIMIT_SESSIONS_PER_HOUR:-5}
+      DEMO_BUDGET_CENTS_GPT54_MINI: ${DEMO_BUDGET_CENTS_GPT54_MINI:-1500}
+      DEMO_BUDGET_CENTS_GPT54: ${DEMO_BUDGET_CENTS_GPT54:-500}
+      DEMO_CORS_ALLOWED_ORIGINS: ${DEMO_CORS_ALLOWED_ORIGINS:-https://${DOMAIN}}
     volumes:
       - uploads:/app/apps/api/uploads
       - logs:/app/apps/api/logs
@@ -58,6 +64,9 @@ services:
     build:
       context: ../../
       dockerfile: infra/production/admin.prod.Dockerfile
+      args:
+        VITE_POSTHOG_KEY: ${VITE_POSTHOG_KEY:-}
+        VITE_POSTHOG_HOST: ${VITE_POSTHOG_HOST:-https://eu.i.posthog.com}
     restart: unless-stopped
     networks:
       - internal

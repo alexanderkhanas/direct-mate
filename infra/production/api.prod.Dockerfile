@@ -24,6 +24,9 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages/shared ./packages/shared
 COPY --from=builder /app/apps/api/dist ./apps/api/dist
 COPY --from=builder /app/apps/api/package.json ./apps/api/
+# Demo seed reads source images from test-assets/. Ship the dir so
+# `npm run seed:demo:prod` can copy them into uploads/ on first run.
+COPY --from=builder /app/apps/api/test-assets ./apps/api/test-assets
 
 ENV NODE_ENV=production
 EXPOSE 3000

@@ -2,6 +2,14 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
 
+# Build-time env vars consumed by Vite. Must be ARG (not ENV-only) because
+# Vite inlines `import.meta.env.VITE_*` at build time. Defaults are empty so
+# the bundle gracefully no-ops PostHog if the build happens without these.
+ARG VITE_POSTHOG_KEY=
+ARG VITE_POSTHOG_HOST=https://eu.i.posthog.com
+ENV VITE_POSTHOG_KEY=$VITE_POSTHOG_KEY
+ENV VITE_POSTHOG_HOST=$VITE_POSTHOG_HOST
+
 COPY package*.json .npmrc ./
 COPY packages/shared/package*.json packages/shared/
 COPY apps/admin/package*.json apps/admin/
