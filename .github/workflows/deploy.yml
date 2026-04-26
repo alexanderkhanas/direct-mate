@@ -59,6 +59,16 @@ jobs:
             -e "ssh -i ~/.ssh/deploy_key" \
             ./ $SERVER_USER@$SERVER_HOST:$DEPLOY_PATH/
 
+      - name: Render nginx config (substitute DOMAIN placeholder)
+        # rsync ships nginx/conf.d/default.conf with ${DOMAIN} placeholders.
+        # Substitute them on the server using DOMAIN from .env so nginx can
+        # actually parse the file. Mirrors what infra/production/deploy.sh does.
+        run: |
+          ssh -i ~/.ssh/deploy_key $SERVER_USER@$SERVER_HOST \
+            'cd /opt/directmate/infra/production && \
+             set -a && . ./.env && set +a && \
+             sed -i "s|\${DOMAIN}|$DOMAIN|g" nginx/conf.d/default.conf'
+
       - name: Build Docker images on server
         run: |
           ssh -i ~/.ssh/deploy_key $SERVER_USER@$SERVER_HOST \
@@ -73,3 +83,11 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key $SERVER_USER@$SERVER_HOST \
             "cd /opt/directmate/infra/production && docker compose -f docker-compose.prod.yml up -d --remove-orphans && docker image prune -f"
+
+      - name: Reload nginx
+        # `docker compose up -d --remove-orphans` only recreates containers
+        # whose images changed. nginx config is mounted from disk, so config
+        # changes need an explicit reload (no downtime, soft reload).
+        run: |
+          ssh -i ~/.ssh/deploy_key $SERVER_USER@$SERVER_HOST \
+            "docker exec production-nginx-1 nginx -t && docker exec production-nginx-1 nginx -s reload"
