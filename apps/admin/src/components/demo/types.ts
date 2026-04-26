@@ -1,3 +1,5 @@
+import type { ReactNode } from 'react';
+
 export type Role = 'user' | 'bot';
 
 export interface Turn {
@@ -15,7 +17,8 @@ export interface Turn {
 export interface Scenario {
   key: string;
   title: string;
-  icon?: string;
+  /** Lucide icon node rendered in the chip. Cross-platform consistent vs emoji. */
+  icon?: ReactNode;
   turns: Turn[];
 }
 

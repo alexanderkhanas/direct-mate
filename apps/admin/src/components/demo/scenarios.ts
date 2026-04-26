@@ -1,4 +1,12 @@
+import { createElement } from 'react';
+import { Zap, Ruler, Table, UserCircle } from 'lucide-react';
 import { Scenario } from './types';
+
+const iconClass = 'h-3.5 w-3.5';
+const ICON_QUICK = createElement(Zap, { className: iconClass, strokeWidth: 2.5 });
+const ICON_RULER = createElement(Ruler, { className: iconClass });
+const ICON_CHART = createElement(Table, { className: iconClass });
+const ICON_HANDOFF = createElement(UserCircle, { className: iconClass });
 
 // Self-hosted product photos seeded by apps/api/src/scripts/seed-demo-tenant.ts.
 // Files live in apps/api/test-assets/ (committed) and are copied to
@@ -12,7 +20,7 @@ export const SCENARIOS: Scenario[] = [
   {
     key: 'quick_purchase',
     title: 'Швидка покупка',
-    icon: '⚡',
+    icon: ICON_QUICK,
     turns: [
       { role: 'user', text: 'є чорна футболка в розмірі M?' },
       { role: 'bot', text: 'Zara Базова футболка oversize — 799 UAH 💛', imageUrls: [IMG_ZARA_OVERSIZE] },
@@ -26,7 +34,7 @@ export const SCENARIOS: Scenario[] = [
   {
     key: 'size_recommender',
     title: 'Підбір розміру',
-    icon: '📏',
+    icon: ICON_RULER,
     turns: [
       { role: 'user', text: 'хочу футболку' },
       { role: 'bot', text: 'Які у вас параметри? Зріст і вага, щоб підібрати розмір 💛' },
@@ -43,7 +51,7 @@ export const SCENARIOS: Scenario[] = [
   {
     key: 'size_chart_request',
     title: 'Розмірна сітка',
-    icon: '📋',
+    icon: ICON_CHART,
     turns: [
       { role: 'user', text: 'а розмірна сітка Zara є?' },
       { role: 'bot', text: 'Ось розмірна сітка Zara 💛', imageUrls: [IMG_SIZE_CHART] },
@@ -59,7 +67,7 @@ export const SCENARIOS: Scenario[] = [
   {
     key: 'handoff_graceful',
     title: 'Передача оператору',
-    icon: '🤝',
+    icon: ICON_HANDOFF,
     turns: [
       { role: 'user', text: 'у мене скарга на попереднє замовлення' },
       { role: 'bot', text: 'Розмову передано оператору', isHandoff: true, delayMs: 400 },

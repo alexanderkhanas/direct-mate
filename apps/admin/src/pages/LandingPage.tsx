@@ -97,7 +97,7 @@ export default function LandingPage() {
         </div>
       </nav>
 
-      <section className="max-w-6xl mx-auto px-4 sm:px-6 pt-12 sm:pt-20 pb-10 sm:pb-16 text-center">
+      <section className="max-w-6xl mx-auto px-4 sm:px-6 pt-20 sm:pt-32 pb-10 sm:pb-16 text-center">
         <div className="inline-flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-full px-3 sm:px-4 py-1.5 mb-5 sm:mb-6">
           <Zap className="h-3.5 w-3.5 text-amber-500" />
           <span className="text-xs font-medium text-gray-600">{t('landing.tagline')}</span>
@@ -108,11 +108,11 @@ export default function LandingPage() {
         <p className="mt-4 sm:mt-6 text-base sm:text-lg text-gray-500 max-w-2xl mx-auto leading-relaxed">
           {t('landing.hero_subtitle')}
         </p>
-        <div className="mt-8 sm:mt-10 flex flex-col sm:flex-row items-stretch sm:items-center sm:justify-center gap-3 sm:gap-4 max-w-sm sm:max-w-none mx-auto">
+        <div className="mt-8 sm:mt-10 flex flex-col items-center sm:flex-row sm:justify-center gap-3 sm:gap-4 max-w-sm sm:max-w-none mx-auto">
           <Link
             to="/register"
             onClick={() => analytics.ctaClicked('hero', 'primary_cta')}
-            className="inline-flex items-center justify-center gap-2 bg-gray-900 text-white px-6 py-3 rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors whitespace-nowrap"
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 bg-gray-900 text-white px-6 py-3 rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors whitespace-nowrap"
           >
             {t('landing.cta_create')}
             <ArrowRight className="h-4 w-4" />
@@ -123,18 +123,21 @@ export default function LandingPage() {
               analytics.ctaClicked('hero', 'demo_scroll');
               scrollToDemo();
             }}
-            className="inline-flex items-center justify-center gap-2 text-gray-700 px-6 py-3 rounded-lg text-sm font-medium hover:text-gray-900 transition-colors border border-gray-300 hover:border-gray-400 bg-transparent whitespace-nowrap"
+            className="inline-flex items-center justify-center gap-2 text-gray-600 bg-white border border-gray-200 px-5 py-2.5 sm:px-6 sm:py-3 rounded-lg text-sm font-medium hover:text-gray-900 hover:border-gray-300 transition-colors whitespace-nowrap"
           >
             Подивитись демо ↓
           </button>
         </div>
       </section>
 
-      <section ref={demoSectionRef} id="demo" className="max-w-6xl mx-auto px-4 sm:px-6 py-12 sm:py-20 scroll-mt-16">
+      <section ref={demoSectionRef} id="demo" className="max-w-6xl mx-auto px-4 sm:px-6 pt-10 sm:pt-24 pb-16 sm:pb-24 scroll-mt-16">
         <div className="text-center mb-8 sm:mb-10">
           <h2 className="text-2xl sm:text-3xl font-bold text-gray-900">Спробуйте зараз</h2>
           <p className="mt-2 sm:mt-3 text-sm sm:text-base text-gray-500 max-w-lg mx-auto">
-            Оберіть сценарій — побачите як DirectMate відповідає реальним клієнтам у діректі.
+            <span className="sm:hidden">Оберіть сценарій нижче ↓</span>
+            <span className="hidden sm:inline">
+              Оберіть сценарій — побачите як DirectMate відповідає реальним клієнтам у діректі.
+            </span>
           </p>
         </div>
         <Suspense fallback={<div className="h-[600px]" aria-hidden />}>
@@ -142,7 +145,7 @@ export default function LandingPage() {
         </Suspense>
       </section>
 
-      <section className="max-w-6xl mx-auto px-4 sm:px-6 py-12 sm:py-20">
+      <section className="max-w-6xl mx-auto px-4 sm:px-6 py-16 sm:py-24">
         <div className="text-center mb-10 sm:mb-14">
           <h2 className="text-2xl sm:text-3xl font-bold text-gray-900">{t('landing.features_title')}</h2>
           <p className="mt-2 sm:mt-3 text-sm sm:text-base text-gray-500">{t('landing.features_subtitle')}</p>
@@ -160,7 +163,7 @@ export default function LandingPage() {
         </div>
       </section>
 
-      <section className="bg-gray-50 py-12 sm:py-20">
+      <section className="bg-gray-50 py-16 sm:py-24">
         <div className="max-w-6xl mx-auto px-4 sm:px-6">
           <div className="text-center mb-10 sm:mb-14">
             <h2 className="text-2xl sm:text-3xl font-bold text-gray-900">{t('landing.steps_title')}</h2>
@@ -180,7 +183,7 @@ export default function LandingPage() {
         </div>
       </section>
 
-      <section className="max-w-6xl mx-auto px-4 sm:px-6 py-12 sm:py-20 text-center">
+      <section className="max-w-6xl mx-auto px-4 sm:px-6 py-16 sm:py-24 text-center">
         <div className="bg-gray-900 rounded-2xl px-6 sm:px-8 py-10 sm:py-14">
           <Shield className="h-8 w-8 text-gray-400 mx-auto mb-4" />
           <h2 className="text-2xl sm:text-3xl font-bold text-white">{t('landing.cta_bottom_title')}</h2>

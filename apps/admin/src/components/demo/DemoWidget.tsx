@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Zap, RotateCcw } from 'lucide-react';
+import { RotateCcw, Lightbulb } from 'lucide-react';
 import type { AxiosError } from 'axios';
 import { ScenarioChooser } from './ScenarioChooser';
 import { MessageBubble } from './MessageBubble';
@@ -357,8 +357,8 @@ export function DemoWidget() {
       <div className="w-full max-w-[420px] md:max-w-[600px] mx-auto rounded-3xl border border-gray-200 bg-white shadow-xl overflow-hidden flex flex-col">
         {/* Header */}
         <div className="flex items-center gap-2.5 px-3.5 py-3 border-b border-gray-100">
-          <div className="h-8 w-8 rounded-full bg-gradient-to-br from-pink-400 via-purple-500 to-indigo-500 flex items-center justify-center shrink-0">
-            <Zap className="h-4 w-4 text-white" strokeWidth={2.5} />
+          <div className="h-8 w-8 rounded-full bg-gradient-to-br from-pink-400 via-purple-500 to-indigo-500 flex items-center justify-center shrink-0 text-white text-sm font-semibold">
+            S
           </div>
           <div className="min-w-0 flex-1">
             <p className="text-sm font-semibold text-gray-900 truncate">StyleBoutique UA</p>
@@ -369,7 +369,11 @@ export function DemoWidget() {
         {/* Messages */}
         <div
           ref={listRef}
-          className="flex-1 overflow-y-auto px-3.5 py-4 space-y-3 bg-white min-h-[320px] max-h-[520px]"
+          className={`flex-1 overflow-y-auto px-3.5 py-4 space-y-3 bg-white max-h-[520px] ${
+            messages.length === 0 && !isTyping
+              ? 'min-h-[180px]'
+              : 'min-h-[320px]'
+          }`}
         >
           {messages.length === 0 && !isTyping && (
             <div className="h-full flex items-center justify-center">
@@ -408,8 +412,11 @@ export function DemoWidget() {
             </button>
           </div>
         ) : (
-          <p className="text-[11px] italic text-gray-400 px-3.5 pt-2 text-center">
-            💬 Можете писати кілька повідомлень — бот зачекає поки ви закінчите
+          <p className="text-[11px] italic text-gray-400 px-3.5 pt-2 text-center flex items-start justify-center gap-1.5">
+            <Lightbulb className="h-3 w-3 shrink-0 mt-0.5 text-amber-400" aria-hidden />
+            <span>
+              Спробуйте замовити сукню або футболку — просто напишіть в чат і побачите, як DirectMate відповідає клієнту та надсилає фото товару!
+            </span>
           </p>
         )}
         <ChatInput

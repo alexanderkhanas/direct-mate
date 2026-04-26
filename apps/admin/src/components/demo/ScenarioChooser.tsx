@@ -26,7 +26,7 @@ export function ScenarioChooser({
                 : 'bg-white text-gray-700 border border-gray-200 hover:border-gray-300 hover:bg-gray-50'
             }`}
           >
-            {s.icon && <span aria-hidden>{s.icon}</span>}
+            {s.icon && <span aria-hidden className="inline-flex">{s.icon}</span>}
             {s.title}
           </button>
         );
