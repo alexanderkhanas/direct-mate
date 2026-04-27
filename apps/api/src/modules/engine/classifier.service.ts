@@ -12,6 +12,7 @@ export interface ClassificationResult {
     category?: string;
     color?: string;
     size?: string;
+    skinType?: string;
     quantity?: number;
     customerName?: string;
     phone?: string;
@@ -60,6 +61,22 @@ export interface AssistantMemory {
   preQualifyData?: Record<string, string>;
   preQualifyCollected?: boolean;
   recommendedSize?: string;
+  recommendedSkinType?: string;
+  skinTypeCollected?: boolean;
+  /**
+   * After-search-offered flow: bot just appended the offer suffix
+   * ("Хочете, допоможу..."). Used to prevent re-appending the offer on
+   * subsequent turns. Cleared once the user answers (yes/no) or moves the
+   * conversation on (picks variant, asks something else).
+   */
+  shouldOfferSizeHelp?: boolean;
+  /**
+   * Set together with `shouldOfferSizeHelp`. Signals the next turn that a
+   * 'confirmation' / 'rejection' slotAction should be interpreted as a
+   * yes/no answer to the offer (not a generic confirm). Cleared on any
+   * answer or topic shift.
+   */
+  awaitingPreQualifyAnswer?: boolean;
   requestedVariant?: string;
   variantStep?: 'color' | 'size' | null;
   selectedColor?: string;
@@ -105,6 +122,7 @@ const CLASSIFY_MESSAGE_TOOL: OpenAI.Chat.ChatCompletionTool = {
             category: { type: 'string' },
             color: { type: 'string' },
             size: { type: 'string' },
+            skin_type: { type: 'string' },
             quantity: { type: 'number' },
             customer_name: { type: 'string' },
             phone: { type: 'string' },
@@ -215,8 +233,51 @@ export class ClassifierService {
     memory: AssistantMemory;
     categories: string[];
     currentStage?: string;
+    tenantBusinessType?: 'clothing' | 'cosmetics';
   }): Promise<ClassificationResult> {
     const memoryContext = this.buildMemoryContext(params.memory);
+
+    const cosmeticsRule = params.tenantBusinessType === 'cosmetics'
+      ? [
+          ``,
+          `SKIN TYPE DETECTION (cosmetics tenant):`,
+          `- If the customer mentions any skin condition or concern, extract it into entities.skin_type.`,
+          `- Canonical values: жирна, суха, нормальна, комбінована, чутлива.`,
+          `- Examples (input → skin_type):`,
+          `    "шкіра жирна" → "жирна"`,
+          `    "Т-зона блищить" → "комбінована"`,
+          `    "схильна до сухості" → "суха"`,
+          `    "чутлива, з куперозом" → "чутлива"`,
+          `- If the customer's phrasing maps cleanly to one of the 5 values, output that value verbatim.`,
+          `- If unsure, leave the field unset.`,
+        ].join('\n')
+      : '';
+
+    const pendingOfferRule = params.memory.awaitingPreQualifyAnswer
+      ? [
+          ``,
+          `PENDING OFFER ANSWER (the bot just asked "Хочете, допоможу з розміром?" — categorize the customer's reply):`,
+          `- Set slot_action='confirmation' for ANY accept, including elaborated ones:`,
+          `    "так" → confirmation`,
+          `    "давайте" → confirmation`,
+          `    "допоможіть" → confirmation`,
+          `    "допоможіть з розміром" → confirmation`,
+          `    "допоможіть підібрати" → confirmation`,
+          `    "допоможи з вибором" → confirmation`,
+          `    "потрібна допомога" → confirmation`,
+          `    "так, давайте" → confirmation`,
+          `- Set slot_action='rejection' for ANY decline:`,
+          `    "ні" → rejection`,
+          `    "не треба" → rejection`,
+          `    "сам(а) визначусь" → rejection`,
+          `    "ні дякую, гляну" → rejection`,
+          `- Topic shift (use the natural slot_action, NOT confirmation/rejection):`,
+          `    "а скільки коштує?" → asks_question`,
+          `    "хочу куртку" → new_inquiry`,
+          `    "а є знижки?" → asks_question`,
+          `- IMPORTANT: do NOT extract entities.size from the meta-word "розмір" itself. Only extract a size when a canonical value is present (XS/S/M/L/XL or numeric like 36/38/40/42).`,
+        ].join('\n')
+      : '';
 
     const systemPrompt = [
       `You are a message classifier for an online store's Instagram DM assistant.`,
@@ -238,6 +299,8 @@ export class ClassifierService {
         ? `Current conversation stage: ${params.currentStage}`
         : '',
       memoryContext ? `\n${memoryContext}` : '',
+      cosmeticsRule,
+      pendingOfferRule,
       ``,
       `IMPORTANT RULES:`,
       `- Short replies ("так", "добре", "давайте", "цей", a color, a size) must be interpreted in context of the last action.`,
@@ -325,6 +388,7 @@ export class ClassifierService {
         category: raw.entities?.category,
         color: raw.entities?.color,
         size: raw.entities?.size,
+        skinType: raw.entities?.skin_type,
         quantity: raw.entities?.quantity,
         customerName: raw.entities?.customer_name,
         phone: raw.entities?.phone,
@@ -349,6 +413,7 @@ export class ClassifierService {
     memory: AssistantMemory;
     categories: string[];
     currentStage?: string;
+    tenantBusinessType?: 'clothing' | 'cosmetics';
   }): Promise<ClassificationResult> {
     const fallbackModel = this.config.get<string>('openai.fallbackModel');
     if (!fallbackModel) {
@@ -417,6 +482,15 @@ export class ClassifierService {
     }
     if (memory.preQualifyCollected && memory.preQualifyData) {
       parts.push(`- Pre-qualify data: ${JSON.stringify(memory.preQualifyData)}`);
+    }
+    if (memory.recommendedSize) {
+      parts.push(`- Recommended size: ${memory.recommendedSize}`);
+    }
+    if (memory.recommendedSkinType) {
+      parts.push(`- Recommended skin type: ${memory.recommendedSkinType}`);
+    }
+    if (memory.awaitingPreQualifyAnswer) {
+      parts.push(`- Pending offer: bot asked "Хочете, допоможу з розміром?" — customer's next message is their answer (accept / decline / topic shift)`);
     }
 
     return parts.join('\n');

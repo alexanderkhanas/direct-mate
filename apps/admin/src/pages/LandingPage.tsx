@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { analytics } from '../lib/analytics';
 import {
@@ -10,15 +10,46 @@ import {
   Bot,
   Zap,
   Shield,
+  Shirt,
+  Sparkles,
 } from 'lucide-react';
 import { useT } from '../i18n';
+import { Tabs } from '../components/ui/Tabs';
+import { getScenariosForTenant, type DemoTenantSlug } from '../components/demo/scenarios';
 
 const DemoWidget = lazy(() =>
   import('../components/demo').then((m) => ({ default: m.DemoWidget })),
 );
 
+const DEMO_TABS: Array<{ value: DemoTenantSlug; label: string; icon: React.ReactNode; brandName: string }> = [
+  {
+    value: 'demo-women-clothes',
+    label: 'Жіночий одяг',
+    icon: <Shirt className="h-3.5 w-3.5" />,
+    brandName: 'StyleBoutique UA',
+  },
+  {
+    value: 'demo-cosmetics',
+    label: 'Косметика',
+    icon: <Sparkles className="h-3.5 w-3.5" />,
+    brandName: 'Glow Cosmetics',
+  },
+];
+
 export default function LandingPage() {
   const { t } = useT();
+
+  const [tenantSlug, setTenantSlug] = useState<DemoTenantSlug>('demo-women-clothes');
+  const scenarios = useMemo(() => getScenariosForTenant(tenantSlug), [tenantSlug]);
+  const brandName = useMemo(
+    () => DEMO_TABS.find((tab) => tab.value === tenantSlug)?.brandName,
+    [tenantSlug],
+  );
+
+  const handleTabChange = (slug: DemoTenantSlug) => {
+    setTenantSlug(slug);
+    analytics.demoTabSwitched(slug);
+  };
 
   const scrollToDemo = () => {
     document.getElementById('demo')?.scrollIntoView({
@@ -140,8 +171,21 @@ export default function LandingPage() {
             </span>
           </p>
         </div>
+        <Tabs<DemoTenantSlug>
+          value={tenantSlug}
+          onChange={handleTabChange}
+          options={DEMO_TABS.map(({ value, label, icon }) => ({ value, label, icon }))}
+          ariaLabel="Demo tenant"
+        />
         <Suspense fallback={<div className="h-[600px]" aria-hidden />}>
-          <DemoWidget />
+          {/* key={tenantSlug} forces a fresh DemoWidget instance per tab so
+              messages, refs, and playback state reset cleanly on tab switch. */}
+          <DemoWidget
+            key={tenantSlug}
+            tenantSlug={tenantSlug}
+            scenarios={scenarios}
+            brandName={brandName}
+          />
         </Suspense>
       </section>
 

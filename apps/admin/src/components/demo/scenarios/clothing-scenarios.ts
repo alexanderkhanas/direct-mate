@@ -1,6 +1,6 @@
 import { createElement } from 'react';
 import { Zap, Ruler, Table, UserCircle } from 'lucide-react';
-import { Scenario } from './types';
+import { Scenario } from '../types';
 
 const iconClass = 'h-3.5 w-3.5';
 const ICON_QUICK = createElement(Zap, { className: iconClass, strokeWidth: 2.5 });
@@ -8,15 +8,15 @@ const ICON_RULER = createElement(Ruler, { className: iconClass });
 const ICON_CHART = createElement(Table, { className: iconClass });
 const ICON_HANDOFF = createElement(UserCircle, { className: iconClass });
 
-// Self-hosted product photos seeded by apps/api/src/scripts/seed-demo-tenant.ts.
-// Files live in apps/api/test-assets/ (committed) and are copied to
-// apps/api/uploads/ on seed run. Served by the backend at /uploads/<file>;
+// Self-hosted product photos seeded by apps/api/src/scripts/seed-demo-women-clothes.ts
+// (Phase 4). Files live in apps/api/test-assets/ (committed) and are copied
+// to apps/api/uploads/ on seed run. Served by the backend at /uploads/<file>;
 // admin's Vite proxy forwards /uploads to the API in dev.
 const IMG_ZARA_OVERSIZE = '/uploads/demo-p-01.jpg';
 const IMG_TSHIRT_PRINT = '/uploads/demo-p-06.webp';
 const IMG_SIZE_CHART = 'https://picsum.photos/seed/dm-zara-sizechart/600/800';
 
-export const SCENARIOS: Scenario[] = [
+export const CLOTHING_SCENARIOS: Scenario[] = [
   {
     key: 'quick_purchase',
     title: 'Швидка покупка',

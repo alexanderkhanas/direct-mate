@@ -165,6 +165,9 @@ function runAssertions(
     if (s.awaitingField !== undefined) push('state.awaitingField', memory.awaitingField === s.awaitingField, s.awaitingField, memory.awaitingField);
     if (s.preQualifyCollected !== undefined) push('state.preQualifyCollected', memory.preQualifyCollected === s.preQualifyCollected, s.preQualifyCollected, memory.preQualifyCollected);
     if (s.recommendedSize !== undefined) push('state.recommendedSize', memory.recommendedSize === s.recommendedSize, s.recommendedSize, memory.recommendedSize);
+    if (s.recommendedSkinType !== undefined) push('state.recommendedSkinType', memory.recommendedSkinType === s.recommendedSkinType, s.recommendedSkinType, memory.recommendedSkinType);
+    if (s.shouldOfferSizeHelp !== undefined) push('state.shouldOfferSizeHelp', !!memory.shouldOfferSizeHelp === s.shouldOfferSizeHelp, s.shouldOfferSizeHelp, !!memory.shouldOfferSizeHelp);
+    if (s.awaitingPreQualifyAnswer !== undefined) push('state.awaitingPreQualifyAnswer', !!memory.awaitingPreQualifyAnswer === s.awaitingPreQualifyAnswer, s.awaitingPreQualifyAnswer, !!memory.awaitingPreQualifyAnswer);
     if (s.orderCreated !== undefined) push('state.orderCreated', memory.orderCreated === s.orderCreated, s.orderCreated, memory.orderCreated);
   }
 
@@ -189,11 +192,23 @@ class ConversationSimulator {
   }
 
   async run(scenario: SimulatorScenario): Promise<TurnLog[]> {
+    // Resolve `tenantId` if it's a slug instead of a UUID. Slug form lets
+    // vertical scenarios (cosmetics) avoid hardcoding env-specific UUIDs.
+    // Shadow the param so all downstream refs to `scenario.tenantId` use
+    // the resolved value without further renaming.
+    const resolvedTenantId = await this.resolveTenantId(scenario.tenantId);
+    scenario = { ...scenario, tenantId: resolvedTenantId };
+
     const turnLogs: TurnLog[] = [];
 
     // Clean up previous sim data for this tenant
     await this.cleanup(scenario.tenantId);
 
+    // Apply flowConfigOverride if present; restore in finally so a thrown
+    // assertion still reverts the temporary config change.
+    const restoreFlowConfig = await this.applyFlowConfigOverride(scenario);
+
+    try {
     // Create customer + conversation
     const customer = await this.conversationsService.findOrCreateCustomer(
       scenario.tenantId,
@@ -356,6 +371,56 @@ class ConversationSimulator {
     }
 
     return turnLogs;
+    } finally {
+      await restoreFlowConfig();
+    }
+  }
+
+  /**
+   * If `tenantId` is already a UUID, return as-is. Otherwise treat it as a
+   * tenant slug and look up the UUID. Throws if the slug resolves to nothing.
+   */
+  private async resolveTenantId(tenantIdOrSlug: string): Promise<string> {
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (UUID_RE.test(tenantIdOrSlug)) return tenantIdOrSlug;
+    const rows: Array<{ id: string }> = await this.dataSource.query(
+      `SELECT id FROM tenants WHERE slug = $1 LIMIT 1`,
+      [tenantIdOrSlug],
+    );
+    if (rows.length === 0) {
+      throw new Error(`Scenario tenantId/slug "${tenantIdOrSlug}" not found in tenants table`);
+    }
+    return rows[0].id;
+  }
+
+  /**
+   * Apply scenario.flowConfigOverride as a shallow merge onto the tenant's
+   * current store_configs.flow_config. Returns a function that restores the
+   * original value. Both apply and restore are no-ops when override is unset.
+   */
+  private async applyFlowConfigOverride(
+    scenario: SimulatorScenario,
+  ): Promise<() => Promise<void>> {
+    if (!scenario.flowConfigOverride) {
+      return async () => {};
+    }
+    const rows: Array<{ flow_config: Record<string, unknown> | null }> =
+      await this.dataSource.query(
+        `SELECT flow_config FROM store_configs WHERE tenant_id = $1 LIMIT 1`,
+        [scenario.tenantId],
+      );
+    const original = rows[0]?.flow_config ?? {};
+    const merged = { ...original, ...scenario.flowConfigOverride };
+    await this.dataSource.query(
+      `UPDATE store_configs SET flow_config = $1 WHERE tenant_id = $2`,
+      [JSON.stringify(merged), scenario.tenantId],
+    );
+    return async () => {
+      await this.dataSource.query(
+        `UPDATE store_configs SET flow_config = $1 WHERE tenant_id = $2`,
+        [JSON.stringify(original), scenario.tenantId],
+      );
+    };
   }
 
   private printHeader(scenario: SimulatorScenario, conversationId: string): void {
@@ -585,36 +650,48 @@ async function main(): Promise<void> {
       scenario: key,
       name: scenario.name,
       tenantId: scenario.tenantId,
+      flaky: scenario.flaky === true,
       timestamp: new Date().toISOString(),
       turns: turnLogs,
     });
   }
 
-  // Print assertion summary for --all
+  // Print assertion summary for --all. Flaky scenarios contribute to a
+  // separate counter and DO NOT cause non-zero exit — they're best-effort
+  // tests of LLM-extraction robustness, not engine-flow correctness.
+  let gatingFailingScenarios = 0;
   if (args.all) {
     let totalAssertions = 0;
-    let totalFailed = 0;
-    let failingScenarios = 0;
+    let gatingFailed = 0;
+    let flakyFailed = 0;
+    let flakyFailingScenarios = 0;
     for (const entry of jsonOutput) {
       const turns = (entry as any).turns as any[];
+      const isFlaky = (entry as any).flaky === true;
       let scenarioFailed = false;
       for (const t of turns) {
         if (t.assertions?.length) {
           totalAssertions += t.assertions.length;
           const failed = t.assertions.filter((a: any) => !a.pass).length;
-          totalFailed += failed;
+          if (isFlaky) flakyFailed += failed;
+          else gatingFailed += failed;
           if (failed > 0) scenarioFailed = true;
         }
       }
-      if (scenarioFailed) failingScenarios++;
+      if (scenarioFailed) {
+        if (isFlaky) flakyFailingScenarios++;
+        else gatingFailingScenarios++;
+      }
     }
     console.log('');
     console.log(`${c.bold}${'═'.repeat(65)}${c.reset}`);
     console.log(`${c.bold}  Assertion Summary${c.reset}`);
     console.log(`${c.bold}${'═'.repeat(65)}${c.reset}`);
     console.log(`  Total assertions: ${totalAssertions}`);
-    console.log(`  ${totalFailed === 0 ? c.green : c.red}Failed: ${totalFailed}${c.reset}`);
-    console.log(`  ${failingScenarios === 0 ? c.green : c.red}Failing scenarios: ${failingScenarios}/${jsonOutput.length}${c.reset}`);
+    console.log(`  ${gatingFailed === 0 ? c.green : c.red}Failed (gating): ${gatingFailed}${c.reset}`);
+    console.log(`  ${c.dim}Failed (flaky, non-gating): ${flakyFailed}${c.reset}`);
+    console.log(`  ${gatingFailingScenarios === 0 ? c.green : c.red}Failing scenarios (gating): ${gatingFailingScenarios}/${jsonOutput.length}${c.reset}`);
+    console.log(`  ${c.dim}Failing scenarios (flaky): ${flakyFailingScenarios}/${jsonOutput.length}${c.reset}`);
   }
 
   // Save JSON log
@@ -625,6 +702,11 @@ async function main(): Promise<void> {
   console.log(`\n${c.dim}Log saved: ${logFile}${c.reset}`);
 
   await app.close();
+
+  // Non-zero exit ONLY on gating failures (flaky scenarios are warnings).
+  if (gatingFailingScenarios > 0) {
+    process.exit(1);
+  }
 }
 
 main().catch((err) => {

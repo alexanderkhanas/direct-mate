@@ -133,6 +133,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
     async classifyMessage(input, ctx) {
         const { memory, settings, effectiveConfig, categories } = ctx;
         const maxFailedTurns = settings?.handoffRules?.maxFailedTurns ?? 5;
+        const tenantBusinessType = effectiveConfig?.flowConfig?.businessType ?? 'clothing';
         let classification;
         try {
             classification = await this.classifierService.classify({
@@ -141,6 +142,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 memory,
                 categories,
                 currentStage: this.getCurrentStage(input.state),
+                tenantBusinessType,
             });
         }
         catch (err) {
@@ -187,6 +189,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                         memory,
                         categories,
                         currentStage: this.getCurrentStage(input.state),
+                        tenantBusinessType,
                     });
                     this.logToFile({
                         event: 'handoff_verification',
@@ -245,6 +248,10 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             memory.selectedColor = undefined;
             memory.preQualifyCollected = undefined;
             memory.preQualifyData = undefined;
+            memory.skinTypeCollected = undefined;
+            memory.recommendedSkinType = undefined;
+            memory.shouldOfferSizeHelp = undefined;
+            memory.awaitingPreQualifyAnswer = undefined;
         }
         const POST_ORDER_PASSIVE_INTENTS = ['gratitude', 'thanks', 'small_talk', 'confirmation', 'goodbye'];
         if (memory.orderCreated) {
@@ -279,6 +286,10 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 memory.selectedColor = undefined;
                 memory.preQualifyCollected = undefined;
                 memory.preQualifyData = undefined;
+                memory.skinTypeCollected = undefined;
+                memory.recommendedSkinType = undefined;
+                memory.shouldOfferSizeHelp = undefined;
+                memory.awaitingPreQualifyAnswer = undefined;
                 this.logger.log('State reset: new inquiry after completed order');
             }
         }
@@ -431,10 +442,55 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         return null;
     }
     async handlePreQualify(input, ctx) {
+        const businessType = ctx.effectiveConfig?.flowConfig?.businessType ?? 'clothing';
+        if (businessType === 'cosmetics') {
+            return this.handlePreQualifyCosmetics(input, ctx);
+        }
+        return this.handlePreQualifyClothing(input, ctx);
+    }
+    async handlePreQualifyClothing(input, ctx) {
         const { memory, effectiveConfig, mediaProductData } = ctx;
         const classification = ctx.classification;
         const preQualifyFlowConfig = effectiveConfig?.flowConfig;
-        const awaitingPreQualify = memory.lastAction === 'asked_pre_qualify' && memory.awaitingField === 'pre_qualify_data';
+        const strategy = preQualifyFlowConfig?.preQualifyStrategy ?? 'after_search_offered';
+        const awaitingPreQualify = memory.lastAction === 'asked_pre_qualify' &&
+            memory.awaitingField === 'pre_qualify_data';
+        if (memory.awaitingPreQualifyAnswer) {
+            const yesNo = this.classifyOfferAnswer(classification);
+            if (yesNo === 'yes') {
+                ctx.trace.push('preQualify: offer accepted → ask height/weight');
+                memory.awaitingPreQualifyAnswer = false;
+                memory.shouldOfferSizeHelp = false;
+                const prompt = preQualifyFlowConfig.preQualify?.prompt ||
+                    'Підкажіть ваш зріст та вагу, щоб підібрати розмір 💛';
+                memory.lastAction = 'asked_pre_qualify';
+                memory.awaitingField = 'pre_qualify_data';
+                return {
+                    decision: shared_1.ReplyDecision.Reply,
+                    reply: { text: prompt, sendNow: true },
+                    handoff: { required: false, reason: null },
+                    stateUpdate: { contextJson: memory },
+                };
+            }
+            if (yesNo === 'no') {
+                ctx.trace.push('preQualify: offer declined → short ack');
+                memory.awaitingPreQualifyAnswer = false;
+                memory.shouldOfferSizeHelp = false;
+                memory.lastAction = 'declined_offer';
+                return {
+                    decision: shared_1.ReplyDecision.Reply,
+                    reply: {
+                        text: 'Окей 💛 Як визначитесь — пишіть',
+                        sendNow: true,
+                    },
+                    handoff: { required: false, reason: null },
+                    stateUpdate: { contextJson: memory },
+                };
+            }
+            ctx.trace.push('preQualify: offer ignored (user moved on) → clear flags');
+            memory.awaitingPreQualifyAnswer = false;
+            memory.shouldOfferSizeHelp = false;
+        }
         if (preQualifyFlowConfig?.preQualify?.enabled &&
             !memory.preQualifyCollected &&
             !memory.orderCreated &&
@@ -444,6 +500,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             memory.selectionState !== 'awaiting_variant' &&
             memory.selectionState !== 'awaiting_confirmation' &&
             !classification.entities.size &&
+            !classification.entities.productName &&
             (awaitingPreQualify || this.shouldSearchProducts(classification, memory))) {
             if (awaitingPreQualify ||
                 classification.primaryIntent === 'provide_details' ||
@@ -470,13 +527,15 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                     classification.primaryIntent = 'category_browse';
                     classification.recommendedAction = 'show_products';
                 }
+                return null;
             }
-            else {
-                ctx.trace.push(`preQualify: gate fired, asking for pre-qualify data`);
+            if (strategy === 'before_search') {
+                ctx.trace.push('preQualify: before_search → ask height/weight');
                 if (classification.entities.category) {
                     memory.selectedCategory = classification.entities.category;
                 }
-                const prompt = preQualifyFlowConfig.preQualify.prompt || 'Підкажіть ваш зріст та вагу, щоб підібрати розмір 💛';
+                const prompt = preQualifyFlowConfig.preQualify.prompt ||
+                    'Підкажіть ваш зріст та вагу, щоб підібрати розмір 💛';
                 memory.lastAction = 'asked_pre_qualify';
                 memory.awaitingField = 'pre_qualify_data';
                 return {
@@ -485,6 +544,115 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                     handoff: { required: false, reason: null },
                     stateUpdate: { contextJson: memory },
                 };
+            }
+            ctx.trace.push('preQualify: after_search_offered → continue to search, will append offer');
+            if (classification.entities.category) {
+                memory.selectedCategory = classification.entities.category;
+            }
+        }
+        return null;
+    }
+    classifyOfferAnswer(classification) {
+        const hasProductEntities = !!(classification.entities.productName ||
+            classification.entities.color ||
+            classification.entities.size ||
+            classification.entities.skinType);
+        if (hasProductEntities)
+            return 'other';
+        if (classification.slotAction === 'confirmation')
+            return 'yes';
+        if (classification.slotAction === 'rejection')
+            return 'no';
+        return 'other';
+    }
+    async handlePreQualifyCosmetics(input, ctx) {
+        const { memory, effectiveConfig, mediaProductData } = ctx;
+        const classification = ctx.classification;
+        const preQualifyFlowConfig = effectiveConfig?.flowConfig;
+        const strategy = preQualifyFlowConfig?.preQualifyStrategy ?? 'after_search_offered';
+        const awaitingPreQualify = memory.lastAction === 'asked_pre_qualify' &&
+            memory.awaitingField === 'pre_qualify_data';
+        if (classification.entities.skinType && !memory.skinTypeCollected) {
+            memory.recommendedSkinType = classification.entities.skinType;
+            memory.skinTypeCollected = true;
+            memory.preQualifyData = { skinType: classification.entities.skinType };
+            memory.preQualifyCollected = true;
+            memory.lastAction = 'recommended_skin_type';
+            ctx.trace.push(`preQualifyCosmetics: skinType=${classification.entities.skinType} captured`);
+            if (!classification.entities.category && memory.selectedCategory) {
+                classification.entities.category = memory.selectedCategory;
+            }
+            if (!classification.entities.productName) {
+                classification.primaryIntent = 'category_browse';
+                classification.recommendedAction = 'show_products';
+            }
+            return null;
+        }
+        if (memory.awaitingPreQualifyAnswer) {
+            const yesNo = this.classifyOfferAnswer(classification);
+            if (yesNo === 'yes') {
+                ctx.trace.push('preQualifyCosmetics: offer accepted → ask skin type');
+                memory.awaitingPreQualifyAnswer = false;
+                memory.shouldOfferSizeHelp = false;
+                const prompt = preQualifyFlowConfig.preQualify?.prompt ||
+                    'Який у вас тип шкіри? (жирна / суха / нормальна / комбінована / чутлива) 💛';
+                memory.lastAction = 'asked_pre_qualify';
+                memory.awaitingField = 'pre_qualify_data';
+                return {
+                    decision: shared_1.ReplyDecision.Reply,
+                    reply: { text: prompt, sendNow: true },
+                    handoff: { required: false, reason: null },
+                    stateUpdate: { contextJson: memory },
+                };
+            }
+            if (yesNo === 'no') {
+                ctx.trace.push('preQualifyCosmetics: offer declined → short ack');
+                memory.awaitingPreQualifyAnswer = false;
+                memory.shouldOfferSizeHelp = false;
+                memory.lastAction = 'declined_offer';
+                return {
+                    decision: shared_1.ReplyDecision.Reply,
+                    reply: {
+                        text: 'Окей 💛 Як визначитесь — пишіть',
+                        sendNow: true,
+                    },
+                    handoff: { required: false, reason: null },
+                    stateUpdate: { contextJson: memory },
+                };
+            }
+            ctx.trace.push('preQualifyCosmetics: offer ignored (user moved on)');
+            memory.awaitingPreQualifyAnswer = false;
+            memory.shouldOfferSizeHelp = false;
+        }
+        if (preQualifyFlowConfig?.preQualify?.enabled &&
+            !memory.skinTypeCollected &&
+            !memory.orderCreated &&
+            !mediaProductData &&
+            !memory.cartItems?.length &&
+            memory.selectionState !== 'cart_item_added' &&
+            memory.selectionState !== 'awaiting_variant' &&
+            memory.selectionState !== 'awaiting_confirmation' &&
+            !classification.entities.productName &&
+            (awaitingPreQualify || this.shouldSearchProducts(classification, memory))) {
+            if (strategy === 'before_search') {
+                ctx.trace.push('preQualifyCosmetics: before_search → ask skin type');
+                if (classification.entities.category) {
+                    memory.selectedCategory = classification.entities.category;
+                }
+                const prompt = preQualifyFlowConfig.preQualify.prompt ||
+                    'Який у вас тип шкіри? (жирна / суха / нормальна / комбінована / чутлива) 💛';
+                memory.lastAction = 'asked_pre_qualify';
+                memory.awaitingField = 'pre_qualify_data';
+                return {
+                    decision: shared_1.ReplyDecision.Reply,
+                    reply: { text: prompt, sendNow: true },
+                    handoff: { required: false, reason: null },
+                    stateUpdate: { contextJson: memory },
+                };
+            }
+            ctx.trace.push('preQualifyCosmetics: after_search_offered → continue to search, will append offer');
+            if (classification.entities.category) {
+                memory.selectedCategory = classification.entities.category;
             }
         }
         return null;
@@ -810,7 +978,8 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             variantsFlowConfig.askSequence.includes('color') &&
             variantsFlowConfig.askSequence.includes('size');
         if (classification.slotAction === 'confirmation' &&
-            memory.selectionState === 'awaiting_confirmation' &&
+            (memory.selectionState === 'awaiting_confirmation' ||
+                (memory.selectionState === 'awaiting_variant' && !memory.variantStep)) &&
             memory.selectedProductId &&
             !memory.selectedVariantId) {
             const rawVariants = memory.availableVariants;
@@ -870,7 +1039,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             const variants = Array.isArray(rawVariants) ? rawVariants : [];
             const userColor = classification.entities.color;
             const userSize = classification.entities.size;
-            if (memory.variantStep === 'color' && (userColor || (!userSize && input.messageText.trim()))) {
+            if (memory.variantStep === 'color' && (userColor || input.messageText.trim())) {
                 const colorInput = userColor || input.messageText.trim();
                 const colorVariants = variants.filter((v) => v.color);
                 const uniqueColors = [...new Set(colorVariants.map((v) => v.color))];
@@ -1076,8 +1245,47 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             finalReply = templateResult.text;
             usedTemplateId = templateResult.templateId;
             actualAction = this.scenarioToAction(templateResult.scenario);
-            if (memory.recommendedSize && memory.lastAction === 'recommended_size') {
-                finalReply = `За вашими параметрами рекомендую розмір ${memory.recommendedSize} 💛\n\n${finalReply}`;
+            const buildResponseBusinessType = effectiveConfig?.flowConfig?.businessType ?? 'clothing';
+            if (buildResponseBusinessType === 'clothing') {
+                if (memory.recommendedSize && memory.lastAction === 'recommended_size') {
+                    finalReply = `За вашими параметрами рекомендую розмір ${memory.recommendedSize} 💛\n\n${finalReply}`;
+                }
+            }
+            if (buildResponseBusinessType === 'cosmetics') {
+                if (memory.recommendedSkinType && memory.lastAction === 'recommended_skin_type') {
+                    const SKIN_TYPE_GENITIVE = {
+                        'жирна': 'жирної',
+                        'суха': 'сухої',
+                        'нормальна': 'нормальної',
+                        'комбінована': 'комбінованої',
+                        'чутлива': 'чутливої',
+                    };
+                    const skinTypeGenitive = SKIN_TYPE_GENITIVE[memory.recommendedSkinType.toLowerCase()] ??
+                        memory.recommendedSkinType;
+                    finalReply = `Для ${skinTypeGenitive} шкіри підбираю варіанти 💛\n\n${finalReply}`;
+                }
+            }
+            const buildResponseStrategy = effectiveConfig?.flowConfig?.preQualifyStrategy ??
+                'after_search_offered';
+            const justAnsweredPreQualify = memory.lastAction === 'recommended_size' ||
+                memory.lastAction === 'recommended_skin_type' ||
+                memory.lastAction === 'asked_pre_qualify';
+            const userAlreadyGavePreQualifyInfo = (buildResponseBusinessType === 'clothing' && !!classification.entities.size) ||
+                (buildResponseBusinessType === 'cosmetics' && !!classification.entities.skinType);
+            if (buildResponseStrategy === 'after_search_offered' &&
+                templateResult.scenario === 'show_products' &&
+                !memory.shouldOfferSizeHelp &&
+                !justAnsweredPreQualify &&
+                !userAlreadyGavePreQualifyInfo &&
+                ((buildResponseBusinessType === 'clothing' && !memory.recommendedSize) ||
+                    (buildResponseBusinessType === 'cosmetics' && !memory.recommendedSkinType))) {
+                const offerSuffix = buildResponseBusinessType === 'cosmetics'
+                    ? '\n\nХочете, допоможу підібрати під ваш тип шкіри? 💛'
+                    : '\n\nХочете, допоможу з розміром? 💛';
+                finalReply = `${finalReply}${offerSuffix}`;
+                memory.shouldOfferSizeHelp = true;
+                memory.awaitingPreQualifyAnswer = true;
+                ctx.trace.push(`offer_suffix: appended (${buildResponseBusinessType})`);
             }
             const classifierAction = classification.recommendedAction;
             if (actualAction !== classifierAction) {
@@ -1186,9 +1394,17 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             stateUpdate.selectedProductId = first.product.id;
             memory.selectedProductId = first.product.id;
             memory.selectedProductTitle = memory.selectedProductTitle || first.product.title;
-            const inStockVariant = first.variants.find((v) => v.effectiveAvailable > 0);
-            stateUpdate.selectedVariantId =
-                inStockVariant?.id ?? first.variants[0]?.id;
+            const askingForVariant = memory.selectionState === 'awaiting_variant' ||
+                classification.recommendedAction === 'ask_variant_choice' ||
+                templateResult?.scenario === 'ask_variant_choice';
+            if (!askingForVariant) {
+                const inStockVariant = first.variants.find((v) => v.effectiveAvailable > 0);
+                stateUpdate.selectedVariantId =
+                    inStockVariant?.id ?? first.variants[0]?.id;
+            }
+            else {
+                stateUpdate.selectedVariantId = memory.selectedVariantId ?? null;
+            }
         }
         stateUpdate.contextJson = memory;
         const alreadyOrdered = memory.orderCreated === true;

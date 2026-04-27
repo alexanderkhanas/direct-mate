@@ -3,6 +3,12 @@ name: Deploy to Production
 on:
   push:
     branches: [main]
+  # Manual trigger for the seed-demo job below. Push events run build + deploy
+  # only; seed-demo is skipped because it hard-deletes and rebuilds the demo
+  # tenants — wasteful on every push. Run it manually from the Actions tab
+  # when shipping a demo-tenant change (new vertical, schema migration that
+  # affects demo data, etc.).
+  workflow_dispatch:
 
 env:
   SERVER_HOST: ${{ secrets.SERVER_HOST }}
@@ -91,3 +97,37 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key $SERVER_USER@$SERVER_HOST \
             "docker exec production-nginx-1 nginx -t && docker exec production-nginx-1 nginx -s reload"
+
+  seed-demo:
+    # Manual-only. Hard-deletes legacy `slug='demo'` (cascades through 25 FKs)
+    # and rebuilds `demo-women-clothes` + `demo-cosmetics` from the TS template
+    # files + product data. Idempotent on re-run, but each run does real work
+    # (DELETE + INSERT) so don't fire on every push.
+    #
+    # Restart api after the seed so DemoService.onModuleInit picks up the new
+    # is_demo=true tenants (boot-time cache).
+    needs: deploy
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H $SERVER_HOST >> ~/.ssh/known_hosts
+
+      - name: Run demo seeds
+        run: |
+          ssh -i ~/.ssh/deploy_key $SERVER_USER@$SERVER_HOST \
+            "cd /opt/directmate/infra/production && docker compose -f docker-compose.prod.yml run --rm api npm run seed:demo:prod:all"
+
+      - name: Restart api so DemoService picks up new tenants
+        run: |
+          ssh -i ~/.ssh/deploy_key $SERVER_USER@$SERVER_HOST \
+            "cd /opt/directmate/infra/production && docker compose -f docker-compose.prod.yml restart api"
+
+      - name: Verify demo tenants exist
+        run: |
+          ssh -i ~/.ssh/deploy_key $SERVER_USER@$SERVER_HOST \
+            "docker exec production-postgres-1 psql -U postgres -d directmate -c \"SELECT slug, is_demo, flow_config -> 'businessType' AS bt, flow_config -> 'preQualifyStrategy' AS strat FROM tenants t JOIN store_configs sc ON sc.tenant_id=t.id WHERE t.slug LIKE 'demo%' ORDER BY t.slug;\""

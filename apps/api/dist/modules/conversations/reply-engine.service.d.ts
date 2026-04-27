@@ -68,6 +68,9 @@ export declare class ReplyEngineService {
     private classifyMessage;
     private resolveMediaProduct;
     private handlePreQualify;
+    private handlePreQualifyClothing;
+    private classifyOfferAnswer;
+    private handlePreQualifyCosmetics;
     private searchAndFilterProducts;
     private resolveVariantSelection;
     private buildResponse;

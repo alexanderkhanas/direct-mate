@@ -5,11 +5,19 @@ import { ScenarioChooser } from './ScenarioChooser';
 import { MessageBubble } from './MessageBubble';
 import { TypingIndicator } from './TypingIndicator';
 import { ChatInput } from './ChatInput';
-import { SCENARIOS } from './scenarios';
-import { DisplayedTurn } from './types';
+import { DisplayedTurn, Scenario } from './types';
 import { publicApi } from '../../lib/publicApi';
 import { analytics } from '../../lib/analytics';
 import './demo.css';
+
+export interface DemoWidgetProps {
+  /** Demo tenant slug routed to /demo/message — also tags analytics events. */
+  tenantSlug: string;
+  /** Scenario set rendered in the chooser; lifted to LandingPage so a tab switch swaps the set. */
+  scenarios: Scenario[];
+  /** Header title shown above the chat (e.g. "StyleBoutique UA" / "Glow Cosmetics"). */
+  brandName?: string;
+}
 
 // Timing constants (ms)
 const TURN_BASE_DELAY = 400;
@@ -46,7 +54,11 @@ interface DemoApiErrorBody {
   error?: { code?: string; message?: string | string[] };
 }
 
-export function DemoWidget() {
+export function DemoWidget({
+  tenantSlug,
+  scenarios,
+  brandName = 'StyleBoutique UA',
+}: DemoWidgetProps) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [messages, setMessages] = useState<DisplayedTurn[]>([]);
   const [isTyping, setIsTyping] = useState(false);
@@ -99,7 +111,7 @@ export function DemoWidget() {
         if (entry.isIntersecting) {
           if (timer == null) {
             timer = window.setTimeout(() => {
-              analytics.demoViewed('landing');
+              analytics.demoViewed('landing', tenantSlug);
               observer.disconnect();
             }, 2000);
           }
@@ -121,7 +133,7 @@ export function DemoWidget() {
   // via `playbackDone` being reset to false below.
   useEffect(() => {
     if (!selectedKey) return;
-    const scenario = SCENARIOS.find((s) => s.key === selectedKey);
+    const scenario = scenarios.find((s) => s.key === selectedKey);
     if (!scenario) return;
 
     runIdRef.current += 1;
@@ -173,7 +185,7 @@ export function DemoWidget() {
   }, [selectedKey]);
 
   const handleSelect = (key: string) => {
-    analytics.demoScenarioClicked(key);
+    analytics.demoScenarioClicked(key, tenantSlug);
     setSelectedKey(key);
   };
 
@@ -186,7 +198,7 @@ export function DemoWidget() {
     ) {
       liveModeStartedRef.current = true;
       sessionStorage.setItem('demo_live_mode_started', '1');
-      analytics.demoLiveModeStarted();
+      analytics.demoLiveModeStarted(tenantSlug);
     }
   };
 
@@ -234,6 +246,7 @@ export function DemoWidget() {
       const { data } = await publicApi.post<DemoApiResponse>('/demo/message', {
         sessionKey: sessionKeyRef.current,
         text,
+        tenantSlug,
       });
 
       if (sendId !== liveSendIdRef.current) return;
@@ -249,7 +262,7 @@ export function DemoWidget() {
       setIsTyping(false);
 
       if (data.decision === 'budget_exceeded') {
-        analytics.demoErrorReceived('budget_exceeded');
+        analytics.demoErrorReceived('budget_exceeded', tenantSlug);
         setMessages((prev) => [
           ...prev,
           {
@@ -264,7 +277,7 @@ export function DemoWidget() {
       // Successful send — increment counter and emit analytics. Errors
       // and budget_exceeded above don't tick this (they fire demo_error_received).
       messageIndexRef.current += 1;
-      analytics.demoMessageSent(messageIndexRef.current, data.isAggregated);
+      analytics.demoMessageSent(messageIndexRef.current, data.isAggregated, tenantSlug);
 
       if (data.handoff?.required) {
         setMessages((prev) => [
@@ -307,7 +320,7 @@ export function DemoWidget() {
           : typeof errMessage === 'string' && errMessage.includes(needle);
 
       if (status === 400 && errCode === 'VALIDATION_ERROR' && messageMatches('too_long')) {
-        analytics.demoErrorReceived('too_long');
+        analytics.demoErrorReceived('too_long', tenantSlug);
         // Atomic update: drop the optimistic user bubble AND append the bot
         // bubble in one setMessages call so the user never sees a flicker
         // where their bubble is removed before the bot reply appears.
@@ -323,7 +336,7 @@ export function DemoWidget() {
       }
 
       if (status === 429 && errCode === 'RATE_LIMITED') {
-        analytics.demoErrorReceived('rate_limit');
+        analytics.demoErrorReceived('rate_limit', tenantSlug);
         const retryAfterRaw = axiosErr.response?.headers?.['retry-after'];
         const retryAfter = retryAfterRaw ? parseInt(String(retryAfterRaw), 10) : 3600;
         const minutes = Math.max(1, Math.ceil(retryAfter / 60));
@@ -349,7 +362,7 @@ export function DemoWidget() {
   return (
     <div ref={widgetRootRef} className="w-full">
       <ScenarioChooser
-        scenarios={SCENARIOS}
+        scenarios={scenarios}
         selectedKey={selectedKey}
         onSelect={handleSelect}
       />
@@ -361,7 +374,7 @@ export function DemoWidget() {
             S
           </div>
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-semibold text-gray-900 truncate">StyleBoutique UA</p>
+            <p className="text-sm font-semibold text-gray-900 truncate">{brandName}</p>
             <p className="text-[11px] text-gray-400">Відповідає через DirectMate</p>
           </div>
         </div>

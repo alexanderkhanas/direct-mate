@@ -44,11 +44,19 @@ export class SimulatorService {
   ) {}
 
   async runScenario(scenario: SimulatorScenario): Promise<SimulatorTurnLog[]> {
+    // Resolve slug → UUID if needed (parity with the CLI runner).
+    const resolvedTenantId = await this.resolveTenantId(scenario.tenantId);
+    scenario = { ...scenario, tenantId: resolvedTenantId };
+
     const turnLogs: SimulatorTurnLog[] = [];
 
     // Clean up previous sim data for this tenant
     await this.cleanup(scenario.tenantId);
 
+    // Apply flowConfigOverride if present; restore in finally.
+    const restoreFlowConfig = await this.applyFlowConfigOverride(scenario);
+
+    try {
     // Create customer + conversation
     const customer = await this.conversationsService.findOrCreateCustomer(
       scenario.tenantId,
@@ -206,6 +214,47 @@ export class SimulatorService {
     }
 
     return turnLogs;
+    } finally {
+      await restoreFlowConfig();
+    }
+  }
+
+  private async resolveTenantId(tenantIdOrSlug: string): Promise<string> {
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (UUID_RE.test(tenantIdOrSlug)) return tenantIdOrSlug;
+    const rows: Array<{ id: string }> = await this.dataSource.query(
+      `SELECT id FROM tenants WHERE slug = $1 LIMIT 1`,
+      [tenantIdOrSlug],
+    );
+    if (rows.length === 0) {
+      throw new Error(`Scenario tenantId/slug "${tenantIdOrSlug}" not found in tenants table`);
+    }
+    return rows[0].id;
+  }
+
+  private async applyFlowConfigOverride(
+    scenario: SimulatorScenario,
+  ): Promise<() => Promise<void>> {
+    if (!scenario.flowConfigOverride) {
+      return async () => {};
+    }
+    const rows: Array<{ flow_config: Record<string, unknown> | null }> =
+      await this.dataSource.query(
+        `SELECT flow_config FROM store_configs WHERE tenant_id = $1 LIMIT 1`,
+        [scenario.tenantId],
+      );
+    const original = rows[0]?.flow_config ?? {};
+    const merged = { ...original, ...scenario.flowConfigOverride };
+    await this.dataSource.query(
+      `UPDATE store_configs SET flow_config = $1 WHERE tenant_id = $2`,
+      [JSON.stringify(merged), scenario.tenantId],
+    );
+    return async () => {
+      await this.dataSource.query(
+        `UPDATE store_configs SET flow_config = $1 WHERE tenant_id = $2`,
+        [JSON.stringify(original), scenario.tenantId],
+      );
+    };
   }
 
   private runAssertions(
@@ -259,6 +308,9 @@ export class SimulatorService {
       if (s.awaitingField !== undefined) push('state.awaitingField', memory.awaitingField === s.awaitingField, s.awaitingField, memory.awaitingField);
       if (s.preQualifyCollected !== undefined) push('state.preQualifyCollected', memory.preQualifyCollected === s.preQualifyCollected, s.preQualifyCollected, memory.preQualifyCollected);
       if (s.recommendedSize !== undefined) push('state.recommendedSize', memory.recommendedSize === s.recommendedSize, s.recommendedSize, memory.recommendedSize);
+      if (s.recommendedSkinType !== undefined) push('state.recommendedSkinType', memory.recommendedSkinType === s.recommendedSkinType, s.recommendedSkinType, memory.recommendedSkinType);
+      if (s.shouldOfferSizeHelp !== undefined) push('state.shouldOfferSizeHelp', !!memory.shouldOfferSizeHelp === s.shouldOfferSizeHelp, s.shouldOfferSizeHelp, !!memory.shouldOfferSizeHelp);
+      if (s.awaitingPreQualifyAnswer !== undefined) push('state.awaitingPreQualifyAnswer', !!memory.awaitingPreQualifyAnswer === s.awaitingPreQualifyAnswer, s.awaitingPreQualifyAnswer, !!memory.awaitingPreQualifyAnswer);
       if (s.orderCreated !== undefined) push('state.orderCreated', memory.orderCreated === s.orderCreated, s.orderCreated, memory.orderCreated);
     }
 

@@ -1,6 +1,6 @@
 // Clothes Store — clothing, size variants, pre-qualify enabled.
 
-import { CLOTHES_STORE, SimulatorScenario } from '../types';
+import { CLOTHES_STORE, DEMO_WOMEN_CLOTHES_SLUG, SimulatorScenario } from '../types';
 
 export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
   story_reply_clothing: {
@@ -19,9 +19,10 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
   },
 
   pre_qualify_flow: {
-    name: 'Pre-Qualify — Clothing with height/weight',
-    description: 'Product inquiry → pre-qualify → filtered results → pick → confirm → order',
+    name: 'Pre-Qualify — Clothing with height/weight (legacy before_search)',
+    description: 'Product inquiry → pre-qualify ask → filtered results → pick → confirm → order. Pinned to before_search via override (clothes-store DB defaults to after_search_offered for the new demo UX).',
     tenantId: CLOTHES_STORE,
+    flowConfigOverride: { preQualifyStrategy: 'before_search' },
     turns: [
       { message: 'хочу футболку' },
       { message: '180 см, 75 кг' },
@@ -105,8 +106,9 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
 
   clothing_two_step_variant: {
     name: 'Clothing — Two-step variant (color + size)',
-    description: 'Product with both color and size → pick color → pick size → confirm',
+    description: 'Product with both color and size → pick color → pick size → confirm. Pinned to before_search to preserve T1=ask, T2=params shape.',
     tenantId: CLOTHES_STORE,
+    flowConfigOverride: { preQualifyStrategy: 'before_search' },
     turns: [
       { message: 'хочу базову футболку' },
       { message: '180 см, 80 кг' },
@@ -119,8 +121,9 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
 
   clothing_category_browse: {
     name: 'Clothing — Category browse',
-    description: 'Browse by category (куртки) → pick product → pick size → confirm',
+    description: 'Browse by category (куртки) → pick product → pick size → confirm. Pinned to before_search.',
     tenantId: CLOTHES_STORE,
+    flowConfigOverride: { preQualifyStrategy: 'before_search' },
     turns: [
       { message: 'покажіть куртки' },
       { message: '175 см, 70 кг' },
@@ -134,8 +137,9 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
 
   clothing_correction: {
     name: 'Clothing — Variant correction',
-    description: 'Pick color+size → correct to different color before confirming',
+    description: 'Pick color+size → correct to different color before confirming. Pinned to before_search.',
     tenantId: CLOTHES_STORE,
+    flowConfigOverride: { preQualifyStrategy: 'before_search' },
     turns: [
       { message: 'хочу базову футболку Zara' },
       { message: '175 см, 72 кг' },
@@ -300,8 +304,9 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
 
   greeting_reset_stale_flow: {
     name: 'Greeting — Reset after stale incomplete flow',
-    description: 'Start product flow → leave unfinished → "Привіт" → must reset stale state',
+    description: 'Start product flow → leave unfinished → "Привіт" → must reset stale state. Pinned to before_search so T2 is the natural answer to bot ask.',
     tenantId: CLOTHES_STORE,
+    flowConfigOverride: { preQualifyStrategy: 'before_search' },
     turns: [
       { message: 'хочу футболку' },
       { message: '175 см, 70 кг' },
@@ -412,8 +417,9 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
 
   recommendation_request: {
     name: 'Recommendation — User asks bot to choose',
-    description: 'User browsing products asks "порадьте щось" → should recommend from shown products',
+    description: 'User browsing products asks "порадьте щось" → should recommend from shown products. Pinned to before_search.',
     tenantId: CLOTHES_STORE,
+    flowConfigOverride: { preQualifyStrategy: 'before_search' },
     turns: [
       { message: 'хочу футболку' },
       { message: '175 см, 70 кг' },
@@ -628,4 +634,150 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
       { message: 'де моє замовлення? я замовляв тиждень тому і досі немає трек-номера' },
     ],
   },
-};
+
+  // ─── after_search_offered flow (clothes-store DB default) ──────
+
+  clothing_after_search_yes_to_offer: {
+    name: 'Clothing — after_search_offered, user accepts size help',
+    description:
+      'T1 product browse → bot shows products + offer suffix; T2 "так" → bot asks height/weight; T3 "180 80" → recommend size, show filtered products with prefix.',
+    tenantId: CLOTHES_STORE,
+    turns: [
+      {
+        message: 'хочу футболку',
+        expect: {
+          replyContains: ['Хочете, допоможу з розміром'],
+          state: { awaitingPreQualifyAnswer: true, shouldOfferSizeHelp: true },
+        },
+      },
+      {
+        message: 'так',
+        expect: {
+          replyContains: ['зріст', 'вагу'],
+          state: {
+            awaitingPreQualifyAnswer: false,
+            lastAction: 'asked_pre_qualify',
+            awaitingField: 'pre_qualify_data',
+          },
+        },
+      },
+      {
+        message: '180 80',
+        expect: {
+          replyContains: ['рекомендую розмір'],
+          state: { preQualifyCollected: true, recommendedSize: 'L' },
+        },
+      },
+    ],
+  },
+
+  clothing_after_search_no_to_offer: {
+    name: 'Clothing — after_search_offered, user declines size help',
+    description:
+      'T1 product browse → offer; T2 "ні" → short ack reply, no re-offer; flags cleared.',
+    tenantId: CLOTHES_STORE,
+    turns: [
+      {
+        message: 'хочу футболку',
+        expect: {
+          replyContains: ['Хочете, допоможу з розміром'],
+          state: { awaitingPreQualifyAnswer: true },
+        },
+      },
+      {
+        message: 'ні, дякую',
+        expect: {
+          replyNotContains: ['зріст', 'вагу'],
+          state: {
+            awaitingPreQualifyAnswer: false,
+            lastAction: 'declined_offer',
+          },
+        },
+      },
+    ],
+  },
+
+  clothing_after_search_skip_offer_pick_variant: {
+    name: 'Clothing — after_search_offered, user picks variant directly',
+    description:
+      'T1 offer; T2 user names a color ("беру синю") — entities present → not yes/no, ignore offer, continue normal flow. State flags cleared.',
+    tenantId: CLOTHES_STORE,
+    turns: [
+      {
+        message: 'хочу футболку',
+        expect: {
+          replyContains: ['Хочете, допоможу з розміром'],
+          state: { awaitingPreQualifyAnswer: true },
+        },
+      },
+      {
+        message: 'беру синю',
+        expect: {
+          replyNotContains: ['зріст', 'вагу'],
+          state: { awaitingPreQualifyAnswer: false, shouldOfferSizeHelp: false },
+        },
+      },
+    ],
+  },
+
+  clothing_size_in_first_message: {
+    name: 'Clothing — size short-circuit on first message (after_search_offered)',
+    description:
+      'T1 user provides size upfront ("розміру M") → entities.size short-circuits gate; no offer suffix appended (user already gave size).',
+    tenantId: CLOTHES_STORE,
+    turns: [
+      {
+        message: 'хочу футболку розміру M',
+        expect: {
+          replyNotContains: ['Хочете, допоможу з розміром'],
+        },
+      },
+    ],
+  },
+
+  clothing_help_size: {
+    name: 'Clothing — user asks for size help directly',
+    description:
+      'User asks for size help without waiting for offer → should respond with pre-qualify questions',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    turns: [
+      {
+        message: 'хочу замовити сукню',
+      }, 
+      {
+        message: 'допоможіть з розміром',
+        expect: {
+          replyContains: ['зріст', 'вагу'],
+          state: { awaitingPreQualifyAnswer: false, lastAction: 'asked_pre_qualify', awaitingField: 'pre_qualify_data' },
+        },
+      }
+    ]
+  }, 
+
+  clothing_suggestion_multiple_variants: {
+    name: 'Clothing — Suggestion with multiple variants available',
+    description:
+      'After recommendation narrows to size L, user accepts product but Red+L and Black+L both exist → bot must ask which color, not auto-pick.',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    turns: [
+      {
+        message: 'хочу сукню',
+      },
+      {
+        message: '170 см 70 кг',
+      },
+      {
+        message: 'давайте цю сукню',
+        expect: {
+          scenario: 'ask_variant_choice',
+          replyContains: ['Red', 'Black'],
+          replyNotContains: ['оформлюємо?'],
+          state: {
+            selectionState: 'awaiting_variant',
+            recommendedSize: 'L',
+          },
+        },
+      }
+    ]
+  }
+}

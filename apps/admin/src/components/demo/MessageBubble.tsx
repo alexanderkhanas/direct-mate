@@ -1,13 +1,25 @@
+import { ShieldAlert, BellRing } from 'lucide-react';
 import { DisplayedTurn } from './types';
 
 export function MessageBubble({ turn }: { turn: DisplayedTurn }) {
-  // Handoff banner — system-style, centered, no bubble.
+  // Handoff system card — two lines explaining both that the bot stopped
+  // AND that the manager has been notified in Telegram. Demo-only marketing
+  // affordance: prospective customer evaluating the bot wants to see how
+  // escalation looks. (Production Instagram silent-handoff invariant is
+  // unaffected — the bot's reply text upstream stays neutral; this card is
+  // a frontend-only system annotation, not part of the engine reply.)
   if (turn.isHandoff) {
     return (
       <div className="flex justify-center demo-msg-in">
-        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-100 text-gray-500 text-xs">
-          <span aria-hidden>👤</span>
-          <span>{turn.text}</span>
+        <div className="max-w-[85%] rounded-2xl bg-amber-50 border border-amber-200 px-4 py-3">
+          <div className="flex items-center gap-2 text-[12px] font-semibold text-amber-900">
+            <ShieldAlert className="h-3.5 w-3.5 shrink-0" aria-hidden />
+            <span>Бот зупинив розмову</span>
+          </div>
+          <div className="flex items-center gap-2 text-[11px] text-amber-700 mt-1">
+            <BellRing className="h-3 w-3 shrink-0" aria-hidden />
+            <span>Менеджер отримав сповіщення в Telegram</span>
+          </div>
         </div>
       </div>
     );
@@ -28,7 +40,7 @@ export function MessageBubble({ turn }: { turn: DisplayedTurn }) {
             loading="lazy"
           />
         )}
-        {images.length >= 2 && (
+        {images.length === 2 && (
           <div className="relative w-[240px] h-[300px]">
             <img
               src={images[0]}
@@ -42,6 +54,19 @@ export function MessageBubble({ turn }: { turn: DisplayedTurn }) {
               className="absolute bottom-0 right-0 w-[170px] h-[220px] rounded-3xl object-cover border-2 border-white shadow-md bg-gray-50"
               loading="lazy"
             />
+          </div>
+        )}
+        {images.length >= 3 && (
+          <div className="grid grid-cols-2 gap-2 w-[260px]">
+            {images.slice(0, 4).map((src, i) => (
+              <img
+                key={i}
+                src={src}
+                alt=""
+                className="rounded-2xl object-cover w-full h-[140px] border border-gray-100 bg-gray-50"
+                loading="lazy"
+              />
+            ))}
           </div>
         )}
         {turn.text && (

@@ -217,6 +217,8 @@ export class ReplyEngineService {
   ): Promise<ReplyEngineOutput | null> {
     const { memory, settings, effectiveConfig, categories } = ctx;
     const maxFailedTurns = settings?.handoffRules?.maxFailedTurns ?? 5;
+    const tenantBusinessType: 'clothing' | 'cosmetics' =
+      ((effectiveConfig?.flowConfig as any)?.businessType as 'clothing' | 'cosmetics') ?? 'clothing';
 
     // 2. AI Classifier: classify intent + extract entities (NO reply text)
     let classification: ClassificationResult;
@@ -227,6 +229,7 @@ export class ReplyEngineService {
         memory,
         categories,
         currentStage: this.getCurrentStage(input.state),
+        tenantBusinessType,
       });
     } catch (err) {
       this.logger.error('AI classification failed', err);
@@ -285,6 +288,7 @@ export class ReplyEngineService {
               memory,
               categories,
               currentStage: this.getCurrentStage(input.state),
+              tenantBusinessType,
             });
 
           this.logToFile({
@@ -350,6 +354,10 @@ export class ReplyEngineService {
       memory.selectedColor = undefined;
       memory.preQualifyCollected = undefined;
       memory.preQualifyData = undefined;
+      memory.skinTypeCollected = undefined;
+      memory.recommendedSkinType = undefined;
+      memory.shouldOfferSizeHelp = undefined;
+      memory.awaitingPreQualifyAnswer = undefined;
     }
 
     // 4.5. Post-order state management
@@ -392,6 +400,10 @@ export class ReplyEngineService {
         memory.selectedColor = undefined;
         memory.preQualifyCollected = undefined;
         memory.preQualifyData = undefined;
+        memory.skinTypeCollected = undefined;
+        memory.recommendedSkinType = undefined;
+        memory.shouldOfferSizeHelp = undefined;
+        memory.awaitingPreQualifyAnswer = undefined;
         this.logger.log('State reset: new inquiry after completed order');
       }
     }
@@ -610,68 +622,40 @@ export class ReplyEngineService {
     input: ReplyEngineInput,
     ctx: ProcessingContext,
   ): Promise<ReplyEngineOutput | null> {
+    const businessType =
+      ((ctx.effectiveConfig?.flowConfig as any)?.businessType as 'clothing' | 'cosmetics') ?? 'clothing';
+    if (businessType === 'cosmetics') {
+      return this.handlePreQualifyCosmetics(input, ctx);
+    }
+    return this.handlePreQualifyClothing(input, ctx);
+  }
+
+  private async handlePreQualifyClothing(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+  ): Promise<ReplyEngineOutput | null> {
     const { memory, effectiveConfig, mediaProductData } = ctx;
     const classification = ctx.classification;
 
-    // 4.8 Pre-qualification step (e.g., ask height/weight for clothing stores)
-    const preQualifyFlowConfig = (effectiveConfig?.flowConfig as any);
-    const awaitingPreQualify = memory.lastAction === 'asked_pre_qualify' && memory.awaitingField === 'pre_qualify_data';
-    if (
-      preQualifyFlowConfig?.preQualify?.enabled &&
-      !memory.preQualifyCollected &&
-      !memory.orderCreated &&
-      !mediaProductData && // product already known from story/post — no need to pre-qualify
-      !memory.cartItems?.length && // cart already has items — product already chosen, skip pre-qualify
-      memory.selectionState !== 'cart_item_added' && // same: selection already resolved
-      memory.selectionState !== 'awaiting_variant' && // variant selection in progress
-      memory.selectionState !== 'awaiting_confirmation' && // confirmation pending
-      !classification.entities.size && // user already specified size — nothing to recommend
-      (awaitingPreQualify || this.shouldSearchProducts(classification, memory))
-    ) {
-      // Check if this message contains pre-qualify data
-      if (
-        awaitingPreQualify ||
-        classification.primaryIntent === 'provide_details' ||
-        this.looksLikePreQualifyData(input.messageText, preQualifyFlowConfig.preQualify.fields)
-      ) {
-        memory.preQualifyData = this.extractPreQualifyData(input.messageText, preQualifyFlowConfig.preQualify.fields);
-        memory.preQualifyCollected = true;
-        ctx.trace.push(`preQualify: data collected ${JSON.stringify(memory.preQualifyData)}`);
-        this.logger.log(`Pre-qualify data collected: ${JSON.stringify(memory.preQualifyData)}`);
+    const preQualifyFlowConfig = effectiveConfig?.flowConfig as any;
+    const strategy: 'before_search' | 'after_search_offered' =
+      preQualifyFlowConfig?.preQualifyStrategy ?? 'after_search_offered';
+    const awaitingPreQualify =
+      memory.lastAction === 'asked_pre_qualify' &&
+      memory.awaitingField === 'pre_qualify_data';
 
-        // Size recommendation from size chart
-        const sizeChart = preQualifyFlowConfig.sizeChart as Record<string, { heightMin: number; heightMax: number; weightMin: number; weightMax: number }> | undefined;
-        if (sizeChart && memory.preQualifyData) {
-          const recommended = this.recommendSize(memory.preQualifyData, sizeChart);
-          if (recommended) {
-            memory.recommendedSize = recommended;
-            this.logger.log(`Recommended size: ${recommended}`);
-            // Prepend size recommendation to the response
-            memory.lastAction = 'recommended_size';
-          }
-        }
-        // Restore category from memory so product search can proceed
-        if (!classification.entities.category && memory.selectedCategory) {
-          classification.entities.category = memory.selectedCategory;
-        }
-        // Only force show_products override when user hasn't already chosen a specific variant.
-        // If they named a product or color+size, let the normal slot-filling flow match directly.
-        const hasSpecificChoice = !!(
-          classification.entities.productName ||
-          (classification.entities.color && classification.entities.size)
-        );
-        if (!hasSpecificChoice) {
-          classification.primaryIntent = 'category_browse';
-          classification.recommendedAction = 'show_products';
-        }
-        // Continue to product search below
-      } else {
-        // Ask for pre-qualify data — save category for use after pre-qualify response
-        ctx.trace.push(`preQualify: gate fired, asking for pre-qualify data`);
-        if (classification.entities.category) {
-          memory.selectedCategory = classification.entities.category;
-        }
-        const prompt = preQualifyFlowConfig.preQualify.prompt || 'Підкажіть ваш зріст та вагу, щоб підібрати розмір 💛';
+    // ─── Yes/no answer to a previous offer (after_search_offered T2) ───
+    // Must run BEFORE the gate, because the user's "так" doesn't carry
+    // product intent — the outer gate's shouldSearchProducts would say no.
+    if (memory.awaitingPreQualifyAnswer) {
+      const yesNo = this.classifyOfferAnswer(classification);
+      if (yesNo === 'yes') {
+        ctx.trace.push('preQualify: offer accepted → ask height/weight');
+        memory.awaitingPreQualifyAnswer = false;
+        memory.shouldOfferSizeHelp = false;
+        const prompt =
+          preQualifyFlowConfig.preQualify?.prompt ||
+          'Підкажіть ваш зріст та вагу, щоб підібрати розмір 💛';
         memory.lastAction = 'asked_pre_qualify';
         memory.awaitingField = 'pre_qualify_data';
         return {
@@ -681,8 +665,249 @@ export class ReplyEngineService {
           stateUpdate: { contextJson: memory as any },
         };
       }
+      if (yesNo === 'no') {
+        ctx.trace.push('preQualify: offer declined → short ack');
+        memory.awaitingPreQualifyAnswer = false;
+        memory.shouldOfferSizeHelp = false;
+        memory.lastAction = 'declined_offer';
+        return {
+          decision: ReplyDecision.Reply,
+          reply: {
+            text: 'Окей 💛 Як визначитесь — пишіть',
+            sendNow: true,
+          },
+          handoff: { required: false, reason: null },
+          stateUpdate: { contextJson: memory as any },
+        };
+      }
+      // 'other' → user moved on (named a product / asked something else).
+      // Clear the offer flags and fall through to normal flow.
+      ctx.trace.push('preQualify: offer ignored (user moved on) → clear flags');
+      memory.awaitingPreQualifyAnswer = false;
+      memory.shouldOfferSizeHelp = false;
     }
-    // no ctx.trace needed, the guard just didn't fire
+
+    // ─── Pre-qualify gate ──────────────────────────────────────────
+    if (
+      preQualifyFlowConfig?.preQualify?.enabled &&
+      !memory.preQualifyCollected &&
+      !memory.orderCreated &&
+      !mediaProductData &&
+      !memory.cartItems?.length &&
+      memory.selectionState !== 'cart_item_added' &&
+      memory.selectionState !== 'awaiting_variant' &&
+      memory.selectionState !== 'awaiting_confirmation' &&
+      !classification.entities.size &&        // size already provided → skip
+      !classification.entities.productName && // specific product → skip (NEW short-circuit)
+      (awaitingPreQualify || this.shouldSearchProducts(classification, memory))
+    ) {
+      // Branch (a): user supplied pre-qualify data this turn
+      if (
+        awaitingPreQualify ||
+        classification.primaryIntent === 'provide_details' ||
+        this.looksLikePreQualifyData(input.messageText, preQualifyFlowConfig.preQualify.fields)
+      ) {
+        memory.preQualifyData = this.extractPreQualifyData(
+          input.messageText,
+          preQualifyFlowConfig.preQualify.fields,
+        );
+        memory.preQualifyCollected = true;
+        ctx.trace.push(`preQualify: data collected ${JSON.stringify(memory.preQualifyData)}`);
+        this.logger.log(`Pre-qualify data collected: ${JSON.stringify(memory.preQualifyData)}`);
+
+        const sizeChart = preQualifyFlowConfig.sizeChart as
+          | Record<string, { heightMin: number; heightMax: number; weightMin: number; weightMax: number }>
+          | undefined;
+        if (sizeChart && memory.preQualifyData) {
+          const recommended = this.recommendSize(memory.preQualifyData, sizeChart);
+          if (recommended) {
+            memory.recommendedSize = recommended;
+            this.logger.log(`Recommended size: ${recommended}`);
+            memory.lastAction = 'recommended_size';
+          }
+        }
+        if (!classification.entities.category && memory.selectedCategory) {
+          classification.entities.category = memory.selectedCategory;
+        }
+        const hasSpecificChoice = !!(
+          classification.entities.productName ||
+          (classification.entities.color && classification.entities.size)
+        );
+        if (!hasSpecificChoice) {
+          classification.primaryIntent = 'category_browse';
+          classification.recommendedAction = 'show_products';
+        }
+        return null;
+      }
+
+      // Branch (b): no data yet. Strategy decides whether to ask now or offer later.
+      if (strategy === 'before_search') {
+        ctx.trace.push('preQualify: before_search → ask height/weight');
+        if (classification.entities.category) {
+          memory.selectedCategory = classification.entities.category;
+        }
+        const prompt =
+          preQualifyFlowConfig.preQualify.prompt ||
+          'Підкажіть ваш зріст та вагу, щоб підібрати розмір 💛';
+        memory.lastAction = 'asked_pre_qualify';
+        memory.awaitingField = 'pre_qualify_data';
+        return {
+          decision: ReplyDecision.Reply,
+          reply: { text: prompt, sendNow: true },
+          handoff: { required: false, reason: null },
+          stateUpdate: { contextJson: memory as any },
+        };
+      }
+
+      // strategy === 'after_search_offered': fall through to product search.
+      // buildResponse will append the offer suffix after rendering products.
+      ctx.trace.push('preQualify: after_search_offered → continue to search, will append offer');
+      if (classification.entities.category) {
+        memory.selectedCategory = classification.entities.category;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Detect whether a turn is a yes/no answer to the offer.
+   *
+   * 'yes'   — pure confirmation, no NEW product entities (e.g. "так", "давайте")
+   * 'no'    — pure rejection (e.g. "ні", "не треба")
+   * 'other' — user moved on (named a product/variant, asked something else,
+   *           or otherwise signalled topic shift)
+   *
+   * `entities.category` is intentionally NOT in the moved-on check: the
+   * classifier carries category forward as conversation context (e.g.
+   * T1 "хочу футболку" → category='Футболки' persists into T2 "так"),
+   * so its presence does not mean the user introduced new info.
+   */
+  private classifyOfferAnswer(
+    classification: ClassificationResult,
+  ): 'yes' | 'no' | 'other' {
+    const hasProductEntities = !!(
+      classification.entities.productName ||
+      classification.entities.color ||
+      classification.entities.size ||
+      classification.entities.skinType
+    );
+    if (hasProductEntities) return 'other';
+    if (classification.slotAction === 'confirmation') return 'yes';
+    if (classification.slotAction === 'rejection') return 'no';
+    return 'other';
+  }
+
+  private async handlePreQualifyCosmetics(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+  ): Promise<ReplyEngineOutput | null> {
+    const { memory, effectiveConfig, mediaProductData } = ctx;
+    const classification = ctx.classification;
+
+    const preQualifyFlowConfig = effectiveConfig?.flowConfig as any;
+    const strategy: 'before_search' | 'after_search_offered' =
+      preQualifyFlowConfig?.preQualifyStrategy ?? 'after_search_offered';
+    const awaitingPreQualify =
+      memory.lastAction === 'asked_pre_qualify' &&
+      memory.awaitingField === 'pre_qualify_data';
+
+    // Capture skin type whenever it's extracted, regardless of gate. This
+    // means a user saying "хочу крем для жирної шкіри" sets recommendedSkinType
+    // even if a productName short-circuit would otherwise skip the gate.
+    if (classification.entities.skinType && !memory.skinTypeCollected) {
+      memory.recommendedSkinType = classification.entities.skinType;
+      memory.skinTypeCollected = true;
+      memory.preQualifyData = { skinType: classification.entities.skinType };
+      memory.preQualifyCollected = true;
+      memory.lastAction = 'recommended_skin_type';
+      ctx.trace.push(`preQualifyCosmetics: skinType=${classification.entities.skinType} captured`);
+      if (!classification.entities.category && memory.selectedCategory) {
+        classification.entities.category = memory.selectedCategory;
+      }
+      if (!classification.entities.productName) {
+        classification.primaryIntent = 'category_browse';
+        classification.recommendedAction = 'show_products';
+      }
+      return null;
+    }
+
+    // Yes/no answer to a previous offer — runs BEFORE the gate (mirror of clothing).
+    if (memory.awaitingPreQualifyAnswer) {
+      const yesNo = this.classifyOfferAnswer(classification);
+      if (yesNo === 'yes') {
+        ctx.trace.push('preQualifyCosmetics: offer accepted → ask skin type');
+        memory.awaitingPreQualifyAnswer = false;
+        memory.shouldOfferSizeHelp = false;
+        const prompt =
+          preQualifyFlowConfig.preQualify?.prompt ||
+          'Який у вас тип шкіри? (жирна / суха / нормальна / комбінована / чутлива) 💛';
+        memory.lastAction = 'asked_pre_qualify';
+        memory.awaitingField = 'pre_qualify_data';
+        return {
+          decision: ReplyDecision.Reply,
+          reply: { text: prompt, sendNow: true },
+          handoff: { required: false, reason: null },
+          stateUpdate: { contextJson: memory as any },
+        };
+      }
+      if (yesNo === 'no') {
+        ctx.trace.push('preQualifyCosmetics: offer declined → short ack');
+        memory.awaitingPreQualifyAnswer = false;
+        memory.shouldOfferSizeHelp = false;
+        memory.lastAction = 'declined_offer';
+        return {
+          decision: ReplyDecision.Reply,
+          reply: {
+            text: 'Окей 💛 Як визначитесь — пишіть',
+            sendNow: true,
+          },
+          handoff: { required: false, reason: null },
+          stateUpdate: { contextJson: memory as any },
+        };
+      }
+      ctx.trace.push('preQualifyCosmetics: offer ignored (user moved on)');
+      memory.awaitingPreQualifyAnswer = false;
+      memory.shouldOfferSizeHelp = false;
+    }
+
+    // Gate
+    if (
+      preQualifyFlowConfig?.preQualify?.enabled &&
+      !memory.skinTypeCollected &&
+      !memory.orderCreated &&
+      !mediaProductData &&
+      !memory.cartItems?.length &&
+      memory.selectionState !== 'cart_item_added' &&
+      memory.selectionState !== 'awaiting_variant' &&
+      memory.selectionState !== 'awaiting_confirmation' &&
+      !classification.entities.productName &&  // specific product → skip (NEW short-circuit)
+      (awaitingPreQualify || this.shouldSearchProducts(classification, memory))
+    ) {
+      if (strategy === 'before_search') {
+        ctx.trace.push('preQualifyCosmetics: before_search → ask skin type');
+        if (classification.entities.category) {
+          memory.selectedCategory = classification.entities.category;
+        }
+        const prompt =
+          preQualifyFlowConfig.preQualify.prompt ||
+          'Який у вас тип шкіри? (жирна / суха / нормальна / комбінована / чутлива) 💛';
+        memory.lastAction = 'asked_pre_qualify';
+        memory.awaitingField = 'pre_qualify_data';
+        return {
+          decision: ReplyDecision.Reply,
+          reply: { text: prompt, sendNow: true },
+          handoff: { required: false, reason: null },
+          stateUpdate: { contextJson: memory as any },
+        };
+      }
+
+      // strategy === 'after_search_offered': fall through; offer suffix appended later.
+      ctx.trace.push('preQualifyCosmetics: after_search_offered → continue to search, will append offer');
+      if (classification.entities.category) {
+        memory.selectedCategory = classification.entities.category;
+      }
+    }
 
     return null;
   }
@@ -1107,7 +1332,8 @@ export class ReplyEngineService {
 
     if (
       classification.slotAction === 'confirmation' &&
-      memory.selectionState === 'awaiting_confirmation' &&
+      (memory.selectionState === 'awaiting_confirmation' ||
+        (memory.selectionState === 'awaiting_variant' && !memory.variantStep)) &&
       memory.selectedProductId &&
       !memory.selectedVariantId
     ) {
@@ -1177,7 +1403,7 @@ export class ReplyEngineService {
       const userColor = classification.entities.color;
       const userSize = classification.entities.size;
 
-      if (memory.variantStep === 'color' && (userColor || (!userSize && input.messageText.trim()))) {
+      if (memory.variantStep === 'color' && (userColor || input.messageText.trim())) {
         // User picked a color — match it
         const colorInput = userColor || input.messageText.trim();
         const colorVariants = variants.filter((v: any) => v.color);
@@ -1433,9 +1659,77 @@ export class ReplyEngineService {
       // Use the template's actual scenario for memory tracking (may differ from classifier due to stage gates)
       actualAction = this.scenarioToAction(templateResult.scenario);
 
-      // Prepend size recommendation if just collected
-      if (memory.recommendedSize && memory.lastAction === 'recommended_size') {
-        finalReply = `За вашими параметрами рекомендую розмір ${memory.recommendedSize} 💛\n\n${finalReply}`;
+      // Prepend pre-qualify recommendation if just collected. Each businessType
+      // branch reads only its own memory flag — no shared state between
+      // verticals, so a stale flag from one businessType cannot trigger the
+      // wrong prefix on a request handled by another.
+      const buildResponseBusinessType =
+        ((effectiveConfig?.flowConfig as any)?.businessType as 'clothing' | 'cosmetics') ?? 'clothing';
+
+      if (buildResponseBusinessType === 'clothing') {
+        if (memory.recommendedSize && memory.lastAction === 'recommended_size') {
+          finalReply = `За вашими параметрами рекомендую розмір ${memory.recommendedSize} 💛\n\n${finalReply}`;
+        }
+      }
+
+      if (buildResponseBusinessType === 'cosmetics') {
+        if (memory.recommendedSkinType && memory.lastAction === 'recommended_skin_type') {
+          // Inflect the canonical nominative skin type into Ukrainian genitive
+          // so the prefix reads naturally ("Для жирної шкіри..." not
+          // "Для жирна шкіри..."). Falls back to the canonical form for any
+          // unrecognized value (engine survives, prefix reads slightly off).
+          const SKIN_TYPE_GENITIVE: Record<string, string> = {
+            'жирна': 'жирної',
+            'суха': 'сухої',
+            'нормальна': 'нормальної',
+            'комбінована': 'комбінованої',
+            'чутлива': 'чутливої',
+          };
+          const skinTypeGenitive =
+            SKIN_TYPE_GENITIVE[memory.recommendedSkinType.toLowerCase()] ??
+            memory.recommendedSkinType;
+          finalReply = `Для ${skinTypeGenitive} шкіри підбираю варіанти 💛\n\n${finalReply}`;
+        }
+      }
+
+      // ─── after_search_offered: append size-help offer suffix ───────
+      // Conditions (all must be true):
+      //   1. Strategy is 'after_search_offered'
+      //   2. We just rendered show_products (i.e. presented options to user)
+      //   3. User has NOT yet provided pre-qualify data
+      //      (recommendedSize/recommendedSkinType unset)
+      //   4. We haven't already offered (shouldOfferSizeHelp not set)
+      //   5. User isn't in mid-pre-qualify-Q-A
+      const buildResponseStrategy: 'before_search' | 'after_search_offered' =
+        ((effectiveConfig?.flowConfig as any)?.preQualifyStrategy as 'before_search' | 'after_search_offered') ??
+        'after_search_offered';
+      const justAnsweredPreQualify =
+        memory.lastAction === 'recommended_size' ||
+        memory.lastAction === 'recommended_skin_type' ||
+        memory.lastAction === 'asked_pre_qualify';
+      // Don't append the offer if the user already gave the relevant info
+      // upfront (size for clothing, skinType for cosmetics) — they don't need
+      // help with what they already specified.
+      const userAlreadyGavePreQualifyInfo =
+        (buildResponseBusinessType === 'clothing' && !!classification.entities.size) ||
+        (buildResponseBusinessType === 'cosmetics' && !!classification.entities.skinType);
+      if (
+        buildResponseStrategy === 'after_search_offered' &&
+        templateResult.scenario === 'show_products' &&
+        !memory.shouldOfferSizeHelp &&
+        !justAnsweredPreQualify &&
+        !userAlreadyGavePreQualifyInfo &&
+        ((buildResponseBusinessType === 'clothing' && !memory.recommendedSize) ||
+          (buildResponseBusinessType === 'cosmetics' && !memory.recommendedSkinType))
+      ) {
+        const offerSuffix =
+          buildResponseBusinessType === 'cosmetics'
+            ? '\n\nХочете, допоможу підібрати під ваш тип шкіри? 💛'
+            : '\n\nХочете, допоможу з розміром? 💛';
+        finalReply = `${finalReply}${offerSuffix}`;
+        memory.shouldOfferSizeHelp = true;
+        memory.awaitingPreQualifyAnswer = true;
+        ctx.trace.push(`offer_suffix: appended (${buildResponseBusinessType})`);
       }
 
       // Log if stage gate overrode the classifier's recommendation
@@ -1573,11 +1867,25 @@ export class ReplyEngineService {
       stateUpdate.selectedProductId = first.product.id;
       memory.selectedProductId = first.product.id;
       memory.selectedProductTitle = memory.selectedProductTitle || first.product.title;
-      const inStockVariant = first.variants.find(
-        (v) => v.effectiveAvailable > 0,
-      );
-      stateUpdate.selectedVariantId =
-        inStockVariant?.id ?? first.variants[0]?.id;
+
+      // Only auto-pick a variant when the engine has NOT decided to ask the user.
+      // 5.5b/c/d set selectionState='awaiting_variant' on ambiguity; the template
+      // engine routes to ask_variant_choice in that case. Auto-picking here would
+      // write a phantom variantId into state and break the next turn (CLAUDE.md
+      // invariant: no fallback to first variant).
+      const askingForVariant =
+        memory.selectionState === 'awaiting_variant' ||
+        classification.recommendedAction === 'ask_variant_choice' ||
+        templateResult?.scenario === 'ask_variant_choice';
+      if (!askingForVariant) {
+        const inStockVariant = first.variants.find(
+          (v) => v.effectiveAvailable > 0,
+        );
+        stateUpdate.selectedVariantId =
+          inStockVariant?.id ?? first.variants[0]?.id;
+      } else {
+        stateUpdate.selectedVariantId = memory.selectedVariantId ?? null;
+      }
     }
 
     stateUpdate.contextJson = memory as any;

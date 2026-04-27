@@ -32,15 +32,23 @@ export class DemoRateLimiterService implements OnModuleDestroy {
   }
 
   /**
-   * Counts NEW sessionKeys per IP within a rolling 1h window. Existing
-   * sessionKeys (a session that's already been seen) pass through freely.
+   * Counts NEW sessionKeys per (IP, tenantSlug) within a rolling 1h window.
+   * Existing sessionKeys (a session that's already been seen) pass through
+   * freely. Per-(IP, tenantSlug) keying prevents a user testing two demo
+   * tabs from exhausting the quota across both — each tenantSlug gets its
+   * own quota window.
    */
-  acceptSession(ip: string, sessionKey: string): RateLimitDecision {
+  acceptSession(
+    ip: string,
+    sessionKey: string,
+    tenantSlug: string,
+  ): RateLimitDecision {
+    const key = `${ip}::${tenantSlug}`;
     const now = Date.now();
-    let entry = this.entries.get(ip);
+    let entry = this.entries.get(key);
     if (!entry || now - entry.windowStart > WINDOW_MS) {
       entry = { sessionKeys: new Set(), windowStart: now };
-      this.entries.set(ip, entry);
+      this.entries.set(key, entry);
     }
     if (entry.sessionKeys.has(sessionKey)) return { ok: true };
     if (entry.sessionKeys.size >= this.limit) {
@@ -56,9 +64,9 @@ export class DemoRateLimiterService implements OnModuleDestroy {
 
   private sweep(): void {
     const cutoff = Date.now() - WINDOW_MS;
-    for (const [ip, entry] of this.entries.entries()) {
+    for (const [key, entry] of this.entries.entries()) {
       if (entry.windowStart < cutoff) {
-        this.entries.delete(ip);
+        this.entries.delete(key);
       }
     }
   }

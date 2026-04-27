@@ -28,10 +28,17 @@ infra/docker/    — Docker Compose (Postgres on port 5433)
 - **n8n for external orchestration** (Shopify/OpenCart sync workflows) — calls backend internal endpoints
 - **InternalApiKeyGuard** for n8n-facing endpoints (`x-internal-key` header)
 - **JwtAuthGuard** for admin-facing endpoints
-- **Demo tenant isolation** — `tenants.is_demo BOOLEAN`. Demo 
-  traffic uses tenant slug='demo'. Analytics queries must filter 
-  is_demo=false. ordersService creates no orders for is_demo 
-  tenants (tech debt: explicit guard pending)
+- **Demo tenant isolation** — `tenants.is_demo BOOLEAN`. Demo
+  traffic uses one of two tenants: `slug='demo-women-clothes'`
+  (clothing vertical, after_search_offered strategy) or
+  `slug='demo-cosmetics'` (cosmetics vertical, before_search
+  strategy). The legacy `slug='demo'` was hard-deleted in Phase 4
+  seed; do not reintroduce it. Analytics queries must filter
+  `is_demo=false`. `ordersService` creates no orders for is_demo
+  tenants (tech debt: explicit guard pending). Frontend `/demo/message`
+  takes optional `tenantSlug` (defaults to `demo-women-clothes`),
+  rate limiter keys on `(ip, tenantSlug)` so both tabs have
+  independent quota.
 
 ### Database
 - PostgreSQL in Docker, port **5433** (5432 taken by another project)
@@ -52,6 +59,19 @@ infra/docker/    — Docker Compose (Postgres on port 5433)
 - Full database schema (18+ tables) with initial migration
 - Instagram webhook handler with debouncing (5s), message_edit fallback, echo filtering
 - **Template-based reply engine** with slot-filling flow, AI classification only
+- **Business-type-aware engine routing** — `flow_config.businessType` (`'clothing' | 'cosmetics'`) drives
+  per-vertical pre-qualify and template selection. Independent of strategy.
+- **`preQualifyStrategy` field** (`'before_search' | 'after_search_offered'`) — orthogonal to businessType.
+  Defaults: clothing demo → `after_search_offered` (browse + offer size help), cosmetics demo → `before_search`
+  (ask skin type immediately). Yes/no detection on offer responses uses `classifier.slotAction`
+  (`'confirmation'` / `'rejection'`); negative reply gets a hardcoded short ack (no LLM call).
+- **Multi-tenant demo** — 2 demo tenants seeded via per-vertical builders:
+  `demo-women-clothes` (18 clothing products, 3 size charts) and `demo-cosmetics` (10 cosmetics products,
+  13 variant images served from `/uploads/cosmetics/`). Both `is_demo=true`. Old single `demo` tenant
+  was deleted via `seed-demo-women-clothes.ts` Phase 4 transition step.
+- **Templates as code** for demo tenants — TypeScript files at `apps/api/src/scripts/seed/templates/`
+  (base + clothing + cosmetics) are the single source of truth. `getTemplatesForBusinessType()` merges
+  base + vertical at seed time. Production tenants still author templates in DB via the admin panel.
 - Product catalog with multi-strategy search (ILIKE + trigram fuzzy on title/category)
 - Availability service with stock checking
 - Crypto service (AES-256-GCM) for encrypting access tokens
@@ -241,6 +261,19 @@ Templates, phrase blocks, and FAQ items are separate tables per tenant.
 - `DemoRateLimiterService` uses a per-process in-memory `Map` — same multi-process gap as the demo buffer; fold into the same Redis migration when scaling beyond a single replica
 - `app.set('trust proxy', true)` in `apps/api/src/main.ts` is permissive — accepts any `X-Forwarded-For`. Tighten to a fixed hop count or a specific subnet once the deploy topology is fixed (Cloudflare → nginx → Node)
 - E2E test scaffold (`apps/api/test/jest-e2e.json`, `test/tsconfig.json`, `test/setup-env.ts`, `test/demo/setup.ts`) currently only covers the `/demo` endpoint. Other modules (auth, conversations, channels) have no e2e coverage. Reuse the same config when a second module needs e2e tests
+- `preQualifyStrategy` is implemented for clothing + cosmetics business types. Default per vertical: clothing→`after_search_offered`, cosmetics→`before_search`. Per-tenant override via `flow_config.preQualifyStrategy`. Yes/no answer to the offer suffix is detected via `classifier.slotAction` (`'confirmation'` / `'rejection'`). Negative response gets a hardcoded short ack ("Окей 💛 Як визначитесь — пишіть") instead of an AI-generated reply (deviation from Phase 6 spec — see next bullet).
+- **Negative-offer reply is hardcoded, not AI-generated**, contrary to the Phase 6 spec's "route to AI fallback" framing. Reasoning: the response space is tiny (one-line ack), determinism + zero LLM cost outweigh tonal variation. If we later want variation per brand voice, we can promote `decline_offer` to a template scenario (one DB row per tenant) — that's still cheaper than per-request LLM.
+- Yes/no offer detection uses `classifier.slotAction` — there is no dedicated `confirmed`/`negated` value on `primaryIntent`, so `slotAction.confirmation`/`rejection` is the canonical classifier-driven yes/no signal (zero regex, zero keyword lists). If yes/no detection becomes unreliable in the wild, add a dedicated few-shot example block to the classifier system prompt for the offer-response context.
+- `ask_size_choice` template assumes `{variant_list}` interpolates available sizes when user picked a color/style without a size. If a user-picked-variant flow is added that exposes a different shape (e.g. an `available_sizes` variable distinct from `variant_list`), the template engine variable resolution needs the new var added to its known-keys list.
+- Cosmetics demo image URLs are downloaded into `apps/api/test-assets/cosmetics/` from public CDNs (Ukrainian e-commerce sites). Risk of CDN rotation. If images break, the seed log will report `! image source missing: ...` and the `product_media.url` rows still get inserted — the broken image becomes a missing visual in the demo widget but does not break flow. Re-download from alternate sources via curl if any URL rots.
+- `variants.color` and `variants.size` columns are semantically reused for non-clothing verticals. Cosmetics demo stores Маска variants ("Зволожуюча/Очищувальна/Освітлююча") in `color` and SPF variants ("SPF 30/SPF 50") in `size`. Known schema overload. When a third + fourth non-clothing vertical lands (sport supplements: dose × flavor; etc.), refactor to typed `attribute_1`/`attribute_2` columns with optional labels — separate PR.
+- `DemoService.onModuleInit` resolves all `is_demo=true` tenants once at boot into an in-memory `Map<slug, tenantId>`. Seeding new demo tenants requires an API restart for the controller to see them. Acceptable now; revisit if we ever do hot-add tenants. The deploy order is therefore: migrations → seed → restart api.
+- `flow_config` is still typed as `Record<string, unknown>` on `StoreConfig`; reads use `(flowConfig as any).preQualifyStrategy` / `.businessType` etc. Defining a typed `FlowConfig` interface (with `businessType`, `preQualifyStrategy`, `preQualify`, `sizeChart`, `sizeChartMappings`) in `apps/api/src/modules/engine/entities/store-config.entity.ts` is a separate cleanup PR. Knock-on: the simulator's `flowConfigOverride` field is also `Record<string, unknown>`.
+- Templates code-as-source-of-truth applies to demo tenants ONLY. Production tenants (`clothes-store`, `pilot`, future paying customers) still author templates in DB via the admin panel. Future: extend the code-source pattern to a "starter pack" for new production tenants — they fork from a vertical preset and edit in admin. Until then: any change to production-tenant templates must go through admin UI / direct DB edit, NOT the seed/templates/ files.
+- `entities.size` field has no canonical-value constraint. The classifier could extract any string into `entities.size` because the tool definition at `apps/api/src/modules/engine/classifier.service.ts` (`CLASSIFY_MESSAGE_TOOL.parameters.entities.properties.size`) is `{ type: 'string' }` with no description or enum. The `pendingOfferRule` few-shot rule guards the immediate hazard (don't extract "розмір" as size when answering an offer) but a broader fix — adding a `description` enumerating canonical sizes (XS/S/M/L/XL + numeric 36-50) — would harden every size-extracting context. Defer until a second symptom appears.
+- If cosmetics ever flips to `after_search_offered` (via `flow_config.preQualifyStrategy` override or future product decision), mirror the clothing `pendingOfferRule` for skin-type offer responses (e.g. "допоможіть з типом шкіри" / "підкажіть з вибором" should map to `slot_action='confirmation'`). Currently cosmetics defaults to `before_search` so the offer-suffix path never fires, but it's the same regression class — the classifier needs an explicit conditional rule + memory-context signal whenever an offer is pending.
+- Per-variant images for clothing demo are not seeded. Mango Сукня міді and other women-clothes items use a single product-level `imageUrl`; all variants share it. The new `ask_variant_choice` image fallback gracefully falls back to the product image, so the visual is just one image instead of N. To showcase per-variant images on the Жіночий одяг tab, populate `apps/api/src/scripts/seed/data/clothing-women-products.ts` variant entries with per-variant `imageFile` (one per color, optionally per (color, size)) and download corresponding test-assets. Cosmetics already does this for masks.
+- `MessageBubble.tsx` caps `imageUrls` at 4 visible images (`images.slice(0, 4)`). Variants 5+ are dropped from the visual but still listed in the `{variant_list}` template text. Acceptable while max candidate variants per turn ≤4. If a catalog with >4 candidate variants per choice ever appears, swap the 2-col grid for a horizontally scrollable carousel.
 
 ## Issue Triage Protocol
 
@@ -313,6 +346,54 @@ similar branches into ReplyEngineService — keep it pure. Suppress
 side effects at the caller boundary (skip order dispatch, skip 
 Telegram, skip Meta send) rather than instructing the engine to 
 behave differently.
+
+### Templates code-as-source-of-truth (demo tenants only)
+
+For demo tenants, response templates live in TypeScript files at
+`apps/api/src/scripts/seed/templates/{base,clothing,cosmetics}/index.ts`
+and are inserted into `response_templates` rows by the seed scripts.
+`getTemplatesForBusinessType('clothing' | 'cosmetics')` merges base
++ vertical with vertical-wins-on-collision dedup. Production tenants
+keep their templates DB-authored via the admin panel; this pattern
+is for showcase tenants only. To add a new vertical, drop a new
+folder under `seed/templates/<vertical>/index.ts`, add the vertical
+to `getTemplatesForBusinessType`, write a builder + entry-point seed
+script (see Builders pattern below), and follow
+`docs/onboarding-new-business-type.md`.
+
+### Builders pattern
+
+Each demo vertical has a builder at
+`apps/api/src/scripts/seed/builders/<vertical>-builder.ts` that
+orchestrates the full insert pipeline (tenant + settings + store_config
++ catalog + media + size_charts + templates). Common primitives —
+`deleteTenantBySlug`, `assertNoOrphans`, `createTenant`,
+`createTenantSettings`, `createStoreConfig`, `seedCatalog`,
+`copyImages`, `seedProductMedia`, `seedResponseTemplates` — live in
+`tenant-builder.ts`. Each entry-point script
+(`seed-demo-<vertical>.ts`) does:
+1. `deleteTenantBySlug(ds, '<slug>')` (CASCADE)
+2. `assertNoOrphans(ds, ['<slug>'])` (defensive)
+3. `build<Vertical>Tenant(ds, opts)`
+This idempotency pattern lets seeds re-run safely.
+
+### Strategy-aware engine flow
+
+`handlePreQualify` is a thin dispatcher reading
+`flow_config.businessType` and routing to
+`handlePreQualifyClothing` or `handlePreQualifyCosmetics`. Each
+handler reads `flow_config.preQualifyStrategy` and either:
+- `before_search` → ask pre-qualify question, return prompt
+- `after_search_offered` → fall through, `buildResponse` appends a
+  per-vertical offer suffix when the rendered scenario is
+  `show_products` and the user hasn't supplied the relevant entity
+- `awaitingPreQualifyAnswer` flag drives the next-turn yes/no path;
+  `classifyOfferAnswer` uses `slotAction.confirmation`/`rejection`
+  with NO regex/keyword matching (purely classifier-driven).
+
+When a new businessType is added, add `handlePreQualify<Vertical>`
+mirroring the existing two and extend the `handlePreQualify`
+dispatcher.
 
 ## Dev Commands
 

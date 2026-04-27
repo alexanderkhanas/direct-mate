@@ -5,6 +5,7 @@ import {
   HttpException,
   HttpStatus,
   Ip,
+  NotFoundException,
   Post,
   Res,
   ServiceUnavailableException,
@@ -12,7 +13,7 @@ import {
 import { ApiTags } from '@nestjs/swagger';
 import { Response } from 'express';
 import { DemoMessageDto } from './dto/demo-message.dto';
-import { DemoService } from './demo.service';
+import { DemoService, DEFAULT_DEMO_TENANT_SLUG } from './demo.service';
 import { DemoMessageBufferService, DemoReplyPayload } from './demo-message-buffer.service';
 import { DemoRateLimiterService } from './demo-rate-limiter.service';
 
@@ -32,14 +33,19 @@ export class DemoController {
     @Ip() ip: string,
     @Res({ passthrough: true }) res: Response,
   ): Promise<DemoReplyPayload> {
-    const tenantId = this.demoService.getTenantId();
-    if (!tenantId) {
+    if (!this.demoService.hasAnyTenant()) {
       throw new ServiceUnavailableException(
-        'Demo tenant not provisioned. Run npm run seed:demo.',
+        'No demo tenants provisioned. Run the demo seed scripts.',
       );
     }
 
-    const decision = this.rateLimiter.acceptSession(ip, dto.sessionKey);
+    const slug = dto.tenantSlug ?? DEFAULT_DEMO_TENANT_SLUG;
+    const tenantId = this.demoService.getTenantId(slug);
+    if (!tenantId) {
+      throw new NotFoundException(`Demo tenant not found: ${slug}`);
+    }
+
+    const decision = this.rateLimiter.acceptSession(ip, dto.sessionKey, slug);
     if (!decision.ok) {
       res.setHeader('Retry-After', String(decision.retryAfterSeconds));
       throw new HttpException(

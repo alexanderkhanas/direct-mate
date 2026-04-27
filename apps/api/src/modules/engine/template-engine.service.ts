@@ -186,6 +186,7 @@ export class TemplateEngineService {
     // Collect product image URLs for scenarios that show products
     const allProductScenarios = ['show_products'];
     const singleProductScenarios = ['confirm_selection', 'confirm_variant_available', 'recommend_product', 'ask_recommendation_from_shown'];
+    const variantChoiceScenarios = ['ask_variant_choice'];
     const imageUrls: string[] = [];
     if (productData) {
       if (allProductScenarios.includes(scenario)) {
@@ -204,6 +205,28 @@ export class TemplateEngineService {
           const variantImage = selectedVariant?.imageUrl ?? null;
           if (variantImage) {
             imageUrls.push(variantImage);
+          } else if (first.product.imageUrl) {
+            imageUrls.push(first.product.imageUrl);
+          }
+        }
+      } else if (variantChoiceScenarios.includes(scenario)) {
+        // For variant-choice, attach one image per candidate variant (deduped).
+        // Fallback: per-variant images → product image → no images.
+        const first = productData[0];
+        if (first) {
+          const narrowed = memory?.recommendedSize
+            ? first.variants.filter(
+                (v) => !v.size || v.size.toLowerCase() === memory!.recommendedSize!.toLowerCase(),
+              )
+            : first.variants;
+          const inStock = narrowed.filter((v) => v.effectiveAvailable > 0);
+          const candidates = inStock.length > 0 ? inStock : narrowed;
+          const variantImages = candidates
+            .map((v) => v.imageUrl)
+            .filter((url): url is string => !!url);
+          const dedupedVariantImages = Array.from(new Set(variantImages));
+          if (dedupedVariantImages.length > 0) {
+            imageUrls.push(...dedupedVariantImages);
           } else if (first.product.imageUrl) {
             imageUrls.push(first.product.imageUrl);
           }
@@ -344,13 +367,18 @@ export class TemplateEngineService {
     // Special case: ask_recommendation when products were already shown
     if (
       (intent === 'ask_recommendation' || act === 'ask_recommendation') &&
-      memory?.lastPresentedProducts?.length
+      memory?.lastPresentedProducts?.length &&
+      memory?.selectionState !== 'awaiting_variant'
     ) {
       return 'ask_recommendation_from_shown';
     }
 
     // Special case: confirm_choice after recommendation → confirm_selection
-    if (act === 'confirm_choice' && memory?.lastAction === 'gave_recommendation') {
+    if (
+      act === 'confirm_choice' &&
+      memory?.lastAction === 'gave_recommendation' &&
+      memory?.selectionState !== 'awaiting_variant'
+    ) {
       return 'confirm_selection';
     }
 
