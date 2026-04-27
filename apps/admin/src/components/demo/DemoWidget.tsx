@@ -38,6 +38,7 @@ const generateSessionKey = (): string => {
 
 interface DemoApiResponse {
   reply: { text: string; imageUrls?: string[] } | null;
+  extraReplies?: Array<{ text: string; imageUrls?: string[] }>;
   decision:
     | 'reply'
     | 'handoff'
@@ -303,6 +304,25 @@ export function DemoWidget({
             id: nextId(),
           },
         ]);
+        // Cascade follow-up bubbles (size chart, etc.) with a small stagger
+        // so each lands as its own message, matching scenario-playback feel.
+        const extras = data.extraReplies ?? [];
+        extras.forEach((extra, idx) => {
+          if (!extra.text && !extra.imageUrls?.length) return;
+          const delay = 800 + idx * 600;
+          setTimeout(() => {
+            if (sendId !== liveSendIdRef.current) return;
+            setMessages((prev) => [
+              ...prev,
+              {
+                role: 'bot' as const,
+                text: extra.text,
+                imageUrls: extra.imageUrls,
+                id: nextId(),
+              },
+            ]);
+          }, delay);
+        });
       }
       // 'noop' / null reply → render nothing, drop typing
     } catch (err) {

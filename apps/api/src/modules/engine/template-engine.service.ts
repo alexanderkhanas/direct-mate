@@ -45,6 +45,8 @@ const INTENT_TO_SCENARIO: Record<string, string> = {
   payment_question: 'answer_payment',
   availability_check: 'show_products',
   ask_variant_choice: 'ask_variant_choice',
+  ask_size_for_color: 'ask_size_for_color',
+  ask_color_for_size: 'ask_color_for_size',
   variant_not_available: 'variant_not_available',
   product_not_found: 'product_not_found',
   size_chart_request: 'show_size_chart',
@@ -62,6 +64,8 @@ const ACTION_TO_SCENARIO: Record<string, string> = {
   show_price: 'show_price',
   greet: 'greeting',
   ask_variant_choice: 'ask_variant_choice',
+  ask_size_for_color: 'ask_size_for_color',
+  ask_color_for_size: 'ask_color_for_size',
   variant_not_available: 'variant_not_available',
   product_not_found: 'product_not_found',
   ask_continue_or_checkout: 'ask_continue_or_checkout',
@@ -186,7 +190,7 @@ export class TemplateEngineService {
     // Collect product image URLs for scenarios that show products
     const allProductScenarios = ['show_products'];
     const singleProductScenarios = ['confirm_selection', 'confirm_variant_available', 'recommend_product', 'ask_recommendation_from_shown'];
-    const variantChoiceScenarios = ['ask_variant_choice'];
+    const variantChoiceScenarios = ['ask_variant_choice', 'ask_size_for_color', 'ask_color_for_size'];
     const imageUrls: string[] = [];
     if (productData) {
       if (allProductScenarios.includes(scenario)) {
@@ -212,13 +216,27 @@ export class TemplateEngineService {
       } else if (variantChoiceScenarios.includes(scenario)) {
         // For variant-choice, attach one image per candidate variant (deduped).
         // Fallback: per-variant images → product image → no images.
+        // Narrow by recommendedSize for the both-ambiguous case, and by the
+        // user-provided axis for the partial-variant scenarios so the image
+        // set matches the asked-about candidates.
         const first = productData[0];
         if (first) {
-          const narrowed = memory?.recommendedSize
-            ? first.variants.filter(
-                (v) => !v.size || v.size.toLowerCase() === memory!.recommendedSize!.toLowerCase(),
-              )
-            : first.variants;
+          let narrowed = first.variants;
+          if (memory?.recommendedSize) {
+            narrowed = narrowed.filter(
+              (v) => !v.size || v.size.toLowerCase() === memory!.recommendedSize!.toLowerCase(),
+            );
+          }
+          if (scenario === 'ask_size_for_color' && memory?.selectedColor) {
+            narrowed = narrowed.filter(
+              (v) => !v.color || v.color.toLowerCase() === memory!.selectedColor!.toLowerCase(),
+            );
+          }
+          if (scenario === 'ask_color_for_size' && memory?.selectedSize) {
+            narrowed = narrowed.filter(
+              (v) => !v.size || v.size.toLowerCase() === memory!.selectedSize!.toLowerCase(),
+            );
+          }
           const inStock = narrowed.filter((v) => v.effectiveAvailable > 0);
           const candidates = inStock.length > 0 ? inStock : narrowed;
           const variantImages = candidates
@@ -502,6 +520,16 @@ export class TemplateEngineService {
       vars['color'] = classification.entities.color;
     if (classification.entities.size)
       vars['size'] = classification.entities.size;
+    // Memory fallback: when user provided color/size in a prior turn but
+    // didn't repeat it on the current turn (e.g., asking back for the
+    // missing axis), the partial-variant templates still need {color}
+    // or {size} to render.
+    if (!vars['color'] && memory?.selectedColor) {
+      vars['color'] = memory.selectedColor;
+    }
+    if (!vars['size'] && memory?.selectedSize) {
+      vars['size'] = memory.selectedSize;
+    }
     if (classification.entities.customerName)
       vars['customer_name'] = classification.entities.customerName;
     // NOTE: variant_name is set ONLY from matched product data or memory, not from raw entities
@@ -600,8 +628,16 @@ export class TemplateEngineService {
         const inStockVars = first.variants.filter((v) => v.effectiveAvailable > 0);
 
         if (suppressSizes || memory?.variantStep === 'color') {
-          // Show only unique colors (sizes suppressed by pre-qualify or two-step flow)
-          const colors = [...new Set(inStockVars.map((v) => v.color).filter(Boolean))] as string[];
+          // Show only unique colors (sizes suppressed by pre-qualify or two-step flow).
+          // If user already picked a size (ask_color_for_size flow), narrow colors
+          // to those that have that size in stock.
+          let colorCandidates = inStockVars;
+          if (memory?.selectedSize) {
+            colorCandidates = colorCandidates.filter(
+              (v) => v.size && v.size.toLowerCase() === memory!.selectedSize!.toLowerCase(),
+            );
+          }
+          const colors = [...new Set(colorCandidates.map((v) => v.color).filter(Boolean))] as string[];
           vars['variant_type'] = 'Відтінки';
           vars['variant_list'] = colors.join(', ');
         } else if (memory?.variantStep === 'size') {
@@ -647,7 +683,13 @@ export class TemplateEngineService {
     const suppressSizesFromMemory = !!memory?.recommendedSize;
     if (!vars['variant_list'] && Array.isArray(memory?.availableVariants) && memory.availableVariants.length > 0) {
       if (suppressSizesFromMemory || memory?.variantStep === 'color') {
-        const colors = [...new Set(memory.availableVariants.map((v: any) => v.color).filter(Boolean))];
+        let candidates = memory.availableVariants;
+        if (memory?.selectedSize) {
+          candidates = candidates.filter(
+            (v: any) => v.size && v.size.toLowerCase() === memory!.selectedSize!.toLowerCase(),
+          );
+        }
+        const colors = [...new Set(candidates.map((v: any) => v.color).filter(Boolean))];
         vars['variant_list'] = colors.join(', ');
         vars['variant_type'] = 'Відтінки';
       } else if (memory?.variantStep === 'size') {

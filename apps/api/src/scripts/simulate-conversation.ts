@@ -107,6 +107,7 @@ interface TurnLog {
   scenario: string | null;
   replyText: string | null;
   imageUrls: string[] | undefined;
+  extraReplies: Array<{ text: string; imageUrls?: string[] }> | null;
   state: Record<string, unknown>;
   assertions: AssertionResult[];
   trace: string[];
@@ -142,6 +143,21 @@ function runAssertions(
   if (expect.imageCount !== undefined) {
     const actual = result.reply?.imageUrls?.length ?? 0;
     push('imageCount', actual === expect.imageCount, expect.imageCount, actual);
+  }
+  if (expect.extraReplyCount !== undefined) {
+    const actual = result.extraReplies?.length ?? 0;
+    push('extraReplyCount', actual === expect.extraReplyCount, expect.extraReplyCount, actual);
+  }
+  if (expect.extraReplyImageContains !== undefined) {
+    const sub = expect.extraReplyImageContains.toLowerCase();
+    const allUrls = (result.extraReplies ?? []).flatMap((r) => r.imageUrls ?? []);
+    const found = allUrls.some((u) => u.toLowerCase().includes(sub));
+    push(
+      'extraReplyImageContains',
+      found,
+      sub,
+      allUrls.length ? allUrls : '(no extra image urls)',
+    );
   }
 
   if (expect.state) {
@@ -353,6 +369,7 @@ class ConversationSimulator {
         scenario: result.templateScenario ?? null,
         replyText: result.reply?.text ?? null,
         imageUrls: result.reply?.imageUrls,
+        extraReplies: result.extraReplies ?? null,
         state: {
           selectionState: memory.selectionState,
           selectedProductId: memory.selectedProductId,

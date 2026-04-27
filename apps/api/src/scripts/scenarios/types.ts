@@ -11,6 +11,10 @@ export interface SimulatorTurnExpect {
   replyNotContains?: string | string[];
   /** Expected number of image URLs attached */
   imageCount?: number;
+  /** Expected number of follow-up replies (extraReplies array length). */
+  extraReplyCount?: number;
+  /** Substring that at least one extraReplies[*].imageUrls entry must contain. */
+  extraReplyImageContains?: string;
   /** Partial state assertions (all listed keys must match exactly) */
   state?: {
     selectionState?: 'awaiting_product' | 'awaiting_variant' | 'awaiting_confirmation' | 'cart_item_added' | 'confirmed' | null;

@@ -244,6 +244,13 @@ export interface SizeChartSpec {
 
 export const CLOTHING_SIZE_CHARTS: SizeChartSpec[] = [
   {
+    name: 'Mango dresses',
+    imageFile: 'demo-chart-mango.png',
+    brands: ['mango'],
+    categories: ['сукні'],
+    isDefault: false,
+  },
+  {
     name: 'Zara footwear-free sizing',
     imageFile: 'demo-chart-zara.png',
     brands: ['zara'],

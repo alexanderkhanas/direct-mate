@@ -80,6 +80,7 @@ export interface AssistantMemory {
   requestedVariant?: string;
   variantStep?: 'color' | 'size' | null;
   selectedColor?: string;
+  selectedSize?: string;
 }
 
 // ─── OpenAI tool definition ──────────────────────────────────────
@@ -478,6 +479,9 @@ export class ClassifierService {
       parts.push(`- Variant selection step: ${memory.variantStep}`);
       if (memory.selectedColor) {
         parts.push(`- Selected color: ${memory.selectedColor}`);
+      }
+      if (memory.selectedSize) {
+        parts.push(`- Selected size: ${memory.selectedSize}`);
       }
     }
     if (memory.preQualifyCollected && memory.preQualifyData) {

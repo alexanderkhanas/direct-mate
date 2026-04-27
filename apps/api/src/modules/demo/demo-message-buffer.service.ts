@@ -32,6 +32,12 @@ export type DemoDecision = ReplyDecision | 'budget_exceeded';
 
 export interface DemoReplyPayload {
   reply: { text: string; imageUrls?: string[] } | null;
+  /**
+   * Follow-up bubbles rendered sequentially after the primary reply.
+   * Frontend cascades them with a small delay so each lands as its own
+   * message bubble.
+   */
+  extraReplies?: Array<{ text: string; imageUrls?: string[] }>;
   decision: DemoDecision;
   scenario: string | null;
   isAggregated: boolean;
@@ -236,8 +242,14 @@ export class DemoMessageBufferService implements OnModuleDestroy {
       // engine. p=0.20 overcounts by ~2× in expectation — a deliberate
       // conservative bias.
       const inputTokens = Math.max(1, Math.ceil(combinedText.length / 3));
-      const outputTokens = result.reply?.text
-        ? Math.max(1, Math.ceil(result.reply.text.length / 3))
+      const primaryOutputChars = result.reply?.text?.length ?? 0;
+      const extraOutputChars = (result.extraReplies ?? []).reduce(
+        (sum, r) => sum + (r.text?.length ?? 0),
+        0,
+      );
+      const totalOutputChars = primaryOutputChars + extraOutputChars;
+      const outputTokens = totalOutputChars > 0
+        ? Math.max(1, Math.ceil(totalOutputChars / 3))
         : 200;
       await this.budgetService.chargeEstimate(
         this.classifierModel,
@@ -268,6 +280,18 @@ export class DemoMessageBufferService implements OnModuleDestroy {
           result.reply.text,
         );
       }
+      // Persist follow-up bubbles as separate messages so the conversation
+      // log mirrors what the customer sees.
+      for (const extra of result.extraReplies ?? []) {
+        if (!extra.text) continue;
+        await this.conversationsService.saveMessage(
+          entry.conversationId,
+          entry.tenantId,
+          MessageDirection.Outbound,
+          MessageRole.Assistant,
+          extra.text,
+        );
+      }
 
       // Demo intentionally skips ordersService.createFromConversation()
       // and conversationsService.escalate() / Telegram notify. The reply
@@ -277,6 +301,9 @@ export class DemoMessageBufferService implements OnModuleDestroy {
         reply: result.reply
           ? { text: result.reply.text, imageUrls: result.reply.imageUrls }
           : null,
+        extraReplies: result.extraReplies?.length
+          ? result.extraReplies.map((r) => ({ text: r.text, imageUrls: r.imageUrls }))
+          : undefined,
         decision: result.decision,
         scenario: result.templateScenario ?? null,
         isAggregated,

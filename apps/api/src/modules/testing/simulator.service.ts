@@ -286,6 +286,21 @@ export class SimulatorService {
       const actual = result.reply?.imageUrls?.length ?? 0;
       push('imageCount', actual === expect.imageCount, expect.imageCount, actual);
     }
+    if (expect.extraReplyCount !== undefined) {
+      const actual = result.extraReplies?.length ?? 0;
+      push('extraReplyCount', actual === expect.extraReplyCount, expect.extraReplyCount, actual);
+    }
+    if (expect.extraReplyImageContains !== undefined) {
+      const sub = expect.extraReplyImageContains.toLowerCase();
+      const allUrls = (result.extraReplies ?? []).flatMap((r) => r.imageUrls ?? []);
+      const found = allUrls.some((u) => u.toLowerCase().includes(sub));
+      push(
+        'extraReplyImageContains',
+        found,
+        sub,
+        allUrls.length ? allUrls : '(no extra image urls)',
+      );
+    }
 
     if (expect.state) {
       const s = expect.state;

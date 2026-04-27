@@ -115,4 +115,20 @@ export const COSMETICS_SCENARIOS: Record<string, SimulatorScenario> = {
       },
     ],
   },
+
+  cosmetics_no_chart_attach: {
+    name: 'Cosmetics — variant choice does NOT attach a size chart (no charts seeded)',
+    description:
+      'Cosmetics tenant has no size_charts rows. Even when asking for a variant, resolveForContext returns null → silent skip. Confirms cosmetics never gets a chart bubble.',
+    tenantId: DEMO_COSMETICS_SLUG,
+    turns: [
+      { message: 'хочу маску' },
+      {
+        message: 'першу',
+        expect: {
+          extraReplyCount: 0,
+        },
+      },
+    ],
+  },
 };

@@ -35,6 +35,11 @@ export interface ReplyEngineOutput {
         sendNow: boolean;
         imageUrls?: string[];
     } | null;
+    extraReplies?: Array<{
+        text: string;
+        sendNow: boolean;
+        imageUrls?: string[];
+    }>;
     handoff: {
         required: boolean;
         reason: string | null;
@@ -74,8 +79,10 @@ export declare class ReplyEngineService {
     private searchAndFilterProducts;
     private resolveVariantSelection;
     private buildResponse;
+    private maybeAttachSizeChart;
     private scenarioToAction;
     private setConfirmIntent;
+    private buildAvailableVariantsList;
     private resolveShortReply;
     private static readonly COLOR_TRANSLATIONS;
     private translateColor;

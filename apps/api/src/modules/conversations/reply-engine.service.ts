@@ -46,6 +46,12 @@ export interface ReplyEngineInput {
 export interface ReplyEngineOutput {
   decision: ReplyDecision;
   reply: { text: string; sendNow: boolean; imageUrls?: string[] } | null;
+  /**
+   * Optional follow-up replies appended after the primary reply. Currently
+   * consumed by the demo channel (renders sequentially in the widget).
+   * Production Instagram path ignores; track tech debt to iterate on prod.
+   */
+  extraReplies?: Array<{ text: string; sendNow: boolean; imageUrls?: string[] }>;
   handoff: { required: boolean; reason: string | null };
   stateUpdate: Partial<ConversationState> | null;
   orderPayload?: OrderPayload;
@@ -352,6 +358,7 @@ export class ReplyEngineService {
       memory.cartItems = undefined;
       memory.variantStep = null;
       memory.selectedColor = undefined;
+      memory.selectedSize = undefined;
       memory.preQualifyCollected = undefined;
       memory.preQualifyData = undefined;
       memory.skinTypeCollected = undefined;
@@ -398,6 +405,7 @@ export class ReplyEngineService {
         memory.cartItems = undefined;
         memory.variantStep = null;
         memory.selectedColor = undefined;
+        memory.selectedSize = undefined;
         memory.preQualifyCollected = undefined;
         memory.preQualifyData = undefined;
         memory.skinTypeCollected = undefined;
@@ -467,6 +475,7 @@ export class ReplyEngineService {
         memory.selectionState = 'awaiting_product';
         memory.variantStep = null;
         memory.selectedColor = undefined;
+        memory.selectedSize = undefined;
         ctx.trace.push(`4.6: adds_to_cart same product (${memory.selectedProductTitle}), cleared variant only, selectionState=awaiting_product`);
         this.logger.log('adds_to_cart: same product, clearing variant for new selection');
       } else {
@@ -479,6 +488,7 @@ export class ReplyEngineService {
         memory.availableVariants = undefined;
         memory.variantStep = null;
         memory.selectedColor = undefined;
+        memory.selectedSize = undefined;
         ctx.trace.push(`4.6: adds_to_cart new product, cleared all selection`);
         this.logger.log('adds_to_cart: clearing selection for new product, keeping cart');
       }
@@ -526,6 +536,7 @@ export class ReplyEngineService {
           memory.availableVariants = undefined;
           memory.variantStep = null;
           memory.selectedColor = undefined;
+          memory.selectedSize = undefined;
         } else {
           // Cart filtered — confirm what's left
           memory.selectionState = 'cart_item_added';
@@ -736,6 +747,12 @@ export class ReplyEngineService {
         if (!hasSpecificChoice) {
           classification.primaryIntent = 'category_browse';
           classification.recommendedAction = 'show_products';
+          // Also reset dialogueAct: classifier may have labelled "170 60" as
+          // 'ask_recommendation', which template-engine routes to
+          // ask_recommendation_from_shown (singular product). When no specific
+          // choice, we want show_products (lists all matches) so user sees the
+          // full set narrowed by their size.
+          classification.dialogueAct = 'general_chat';
         }
         return null;
       }
@@ -1413,15 +1430,38 @@ export class ReplyEngineService {
         if (matchedColor) {
           ctx.trace.push(`5.5b-2: color=${matchedColor}`);
           memory.selectedColor = matchedColor;
+
+          // Early-resolve: if size is already known from a prior turn
+          // (ask_color_for_size flow's follow-up), don't transition into a
+          // size step — resolve directly to the exact (color, size) variant.
+          if (memory.selectedSize) {
+            const exactVariant = variants.find(
+              (v: any) =>
+                v.color && v.color.toLowerCase() === matchedColor.toLowerCase() &&
+                v.size && v.size.toLowerCase() === memory!.selectedSize!.toLowerCase(),
+            );
+            if (exactVariant) {
+              memory.selectedVariantId = exactVariant.id;
+              memory.selectedVariantName = exactVariant.name;
+              memory.variantStep = null;
+              memory.selectionState = 'awaiting_confirmation';
+              this.setConfirmIntent(classification, matchedColor, memory.selectedSize);
+              ctx.trace.push(`5.5b-2: color+selectedSize matched → resolved`);
+              return;
+            }
+            // Else fall through — exact (color, size) not in stock; let the
+            // standard size-step handler explain what's available.
+          }
+
           // Check if sizes exist for this color
           const sizesForColor = variants.filter(
             (v: any) => v.color && v.color.toLowerCase() === matchedColor.toLowerCase() && v.size,
           );
           if (sizesForColor.length > 1) {
-            // Multiple sizes — ask for size
+            // Multiple sizes — ask for size, with dedicated partial-variant wording
             memory.variantStep = 'size';
-            classification.primaryIntent = 'ask_variant_choice';
-            classification.recommendedAction = 'ask_variant_choice';
+            classification.primaryIntent = 'ask_size_for_color';
+            classification.recommendedAction = 'ask_size_for_color';
             this.logger.log(`Two-step variant: color=${matchedColor}, asking for size (${sizesForColor.length} options)`);
           } else if (sizesForColor.length === 1) {
             // Only one size for this color — auto-select
@@ -1507,13 +1547,7 @@ export class ReplyEngineService {
           // Two-step: start with color
           memory.selectionState = 'awaiting_variant';
           memory.variantStep = 'color';
-          memory.availableVariants = variants.map(v => ({
-            id: v.id,
-            name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
-            color: v.color,
-            size: v.size,
-            imageUrl: v.imageUrl ?? null,
-          }));
+          memory.availableVariants = this.buildAvailableVariantsList(variants);
           classification.primaryIntent = 'ask_variant_choice';
           classification.recommendedAction = 'ask_variant_choice';
           this.logger.log(`5.5c two-step: Product selected, starting with color (${variants.length} variants)`);
@@ -1528,19 +1562,35 @@ export class ReplyEngineService {
             memory.selectionState = 'awaiting_confirmation';
             this.setConfirmIntent(classification, userColor, userSize);
           } else {
+            // Match was ambiguous (multiple variants fit one provided axis).
+            // Preserve the known axis and route to the partial-variant scenario
+            // so the bot asks ONLY about the missing axis with dedicated wording.
+            // Explicitly clear the OTHER axis to prevent stale state from a prior
+            // selection from over-narrowing the variant list / image set.
             memory.selectionState = 'awaiting_variant';
-            classification.primaryIntent = 'ask_variant_choice';
-            classification.recommendedAction = 'ask_variant_choice';
+            memory.availableVariants = this.buildAvailableVariantsList(variants);
+            if (userColor && !userSize) {
+              memory.selectedColor = userColor;
+              memory.selectedSize = undefined;
+              memory.variantStep = 'size';
+              classification.primaryIntent = 'ask_size_for_color';
+              classification.recommendedAction = 'ask_size_for_color';
+              ctx.trace.push('5.5c: color matched, size ambiguous → ask_size_for_color');
+            } else if (userSize && !userColor) {
+              memory.selectedSize = userSize;
+              memory.selectedColor = undefined;
+              memory.variantStep = 'color';
+              classification.primaryIntent = 'ask_color_for_size';
+              classification.recommendedAction = 'ask_color_for_size';
+              ctx.trace.push('5.5c: size matched, color ambiguous → ask_color_for_size');
+            } else {
+              classification.primaryIntent = 'ask_variant_choice';
+              classification.recommendedAction = 'ask_variant_choice';
+            }
           }
         } else {
           memory.selectionState = 'awaiting_variant';
-          memory.availableVariants = variants.map(v => ({
-            id: v.id,
-            name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
-            color: v.color,
-            size: v.size,
-            imageUrl: v.imageUrl ?? null,
-          }));
+          memory.availableVariants = this.buildAvailableVariantsList(variants);
           classification.primaryIntent = 'ask_variant_choice';
           classification.recommendedAction = 'ask_variant_choice';
           this.logger.log(`5.5c: Product selected, ${variants.length} variants — asking user`);
@@ -1855,7 +1905,7 @@ export class ReplyEngineService {
 
     // Update selected variant ID from template variable matching
     // Skip for variant_not_available / ask_variant_choice — those scenarios explicitly cleared the variant
-    const skipVariantUpdate = ['variant_not_available', 'ask_variant_choice'].includes(templateResult?.scenario ?? '');
+    const skipVariantUpdate = ['variant_not_available', 'ask_variant_choice', 'ask_size_for_color', 'ask_color_for_size'].includes(templateResult?.scenario ?? '');
     if (templateResult?.matchedVariantId && !skipVariantUpdate) {
       memory.selectedVariantId = templateResult.matchedVariantId;
       memory.selectedVariantName = classification.entities.color ?? classification.entities.size ?? memory.selectedVariantName;
@@ -1864,20 +1914,34 @@ export class ReplyEngineService {
     // Set product IDs if product search found results — sync to BOTH state and memory
     if (productData && productData.length > 0) {
       const first = productData[0];
-      stateUpdate.selectedProductId = first.product.id;
-      memory.selectedProductId = first.product.id;
-      memory.selectedProductTitle = memory.selectedProductTitle || first.product.title;
+
+      // Only auto-pick a product when there isn't genuine ambiguity. When the
+      // engine showed multiple products and the user hasn't chosen one yet,
+      // writing selectedProductId = productData[0].id would silently lock the
+      // funnel onto the first product on the next turn (search.targetProduct
+      // narrows to it, second product disappears).
+      const askingForProduct =
+        memory.selectionState === 'awaiting_product' && productData.length > 1;
+      if (!askingForProduct) {
+        stateUpdate.selectedProductId = first.product.id;
+        memory.selectedProductId = first.product.id;
+        memory.selectedProductTitle = memory.selectedProductTitle || first.product.title;
+      } else {
+        stateUpdate.selectedProductId = memory.selectedProductId ?? null;
+      }
 
       // Only auto-pick a variant when the engine has NOT decided to ask the user.
       // 5.5b/c/d set selectionState='awaiting_variant' on ambiguity; the template
       // engine routes to ask_variant_choice in that case. Auto-picking here would
       // write a phantom variantId into state and break the next turn (CLAUDE.md
-      // invariant: no fallback to first variant).
+      // invariant: no fallback to first variant). Also suppress when product is
+      // unresolved — a variant id without a product id is meaningless.
+      const variantAskingScenarios = ['ask_variant_choice', 'ask_size_for_color', 'ask_color_for_size'];
       const askingForVariant =
         memory.selectionState === 'awaiting_variant' ||
-        classification.recommendedAction === 'ask_variant_choice' ||
-        templateResult?.scenario === 'ask_variant_choice';
-      if (!askingForVariant) {
+        variantAskingScenarios.includes(classification.recommendedAction) ||
+        variantAskingScenarios.includes(templateResult?.scenario ?? '');
+      if (!askingForProduct && !askingForVariant) {
         const inStockVariant = first.variants.find(
           (v) => v.effectiveAvailable > 0,
         );
@@ -1958,14 +2022,77 @@ export class ReplyEngineService {
       memory,
     });
 
+    // Auto-attach size chart for size-asking scenarios when single-product
+    // context is locked. Trigger gate (per locked decision):
+    //   scenario === 'ask_size_for_color'
+    //   OR (scenario === 'ask_variant_choice' AND memory.variantStep === 'size')
+    //   AND productData?.length === 1
+    //   AND chart resolves for the product's brand/category
+    // No-match: silent skip — no extra bubble, no caption.
+    const extraReplies = await this.maybeAttachSizeChart(
+      input,
+      ctx,
+      templateResult?.scenario,
+    );
+
     return {
       decision: ReplyDecision.Reply,
       reply: { text: finalReply, sendNow: true, imageUrls: templateResult?.imageUrls },
+      extraReplies,
       handoff: { required: false, reason: null },
       stateUpdate,
       classification,
       templateScenario: templateResult?.scenario ?? 'ai_fallback',
     };
+  }
+
+  /**
+   * If the engine is asking the customer for a size and a chart is on file
+   * for this product, return a follow-up reply with the chart image and a
+   * short caption. Otherwise return undefined (silent skip).
+   */
+  private async maybeAttachSizeChart(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+    scenario: string | undefined,
+  ): Promise<ReplyEngineOutput['extraReplies']> {
+    if (!scenario) return undefined;
+    const isSizeForColor = scenario === 'ask_size_for_color';
+    const isVariantChoiceSizeStep =
+      scenario === 'ask_variant_choice' && ctx.memory.variantStep === 'size';
+    if (!isSizeForColor && !isVariantChoiceSizeStep) return undefined;
+    if (!ctx.productData || ctx.productData.length !== 1) return undefined;
+
+    const productId = ctx.productData[0].product.id;
+    const { brand, category } =
+      await this.sizeChartsService.getBrandAndCategoryForProduct(input.tenantId, productId);
+    const chart = await this.sizeChartsService.resolveForContext(input.tenantId, {
+      brand,
+      category,
+    });
+    if (!chart) {
+      ctx.trace.push('size_chart auto-attach: no chart matched (silent skip)');
+      return undefined;
+    }
+    ctx.trace.push(
+      `size_chart auto-attach: ${chart.id} (brand=${brand ?? '-'}, category=${category ?? '-'})`,
+    );
+    // Use a root-relative URL (matches product_media.url convention).
+    // Demo widget loads it via the Vite proxy to /uploads/...; Instagram
+    // production path would need an absolute URL — but Instagram doesn't
+    // iterate extraReplies yet (tech debt), so we don't need to dual-emit.
+    // When Instagram support lands, resolve the absolute URL at the send
+    // boundary the same way product_media URLs are resolved.
+    const chartImageUrl = chart.imagePath.startsWith('/')
+      ? chart.imagePath
+      : `/${chart.imagePath}`;
+    return [
+      {
+        text: 'Надсилаю вам розмірну сітку 💛',
+        sendNow: true,
+        imageUrls: [chartImageUrl],
+      },
+    ];
   }
 
   // ─── Product search helpers ────────────────────────────────────
@@ -2013,6 +2140,23 @@ export class ReplyEngineService {
     const isVariantQuery = !!(userSize || userColor);
     classification.primaryIntent = isVariantQuery ? 'confirm_variant_available' : 'confirm_choice';
     classification.recommendedAction = isVariantQuery ? 'confirm_variant_available' : 'confirm_selection';
+  }
+
+  /**
+   * Serialize variants for memory.availableVariants. 5.5c has multiple
+   * sites with this same shape; centralized here to prevent drift when the
+   * per-variant memory entry shape evolves.
+   */
+  private buildAvailableVariantsList(
+    variants: Array<{ id: string; color: string | null; size: string | null; imageUrl?: string | null }>,
+  ): Array<{ id: string; name: string; color: string | null; size: string | null; imageUrl: string | null }> {
+    return variants.map((v) => ({
+      id: v.id,
+      name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+      color: v.color,
+      size: v.size,
+      imageUrl: v.imageUrl ?? null,
+    }));
   }
 
   // ─── Short reply resolver ─────────────────────────────────────

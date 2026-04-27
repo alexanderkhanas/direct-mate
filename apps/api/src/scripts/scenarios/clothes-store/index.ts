@@ -754,6 +754,129 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
     ]
   }, 
 
+  clothing_correction_ask_size_for_color: {
+    name: 'Clothing — correction with color → ask_size_for_color',
+    description:
+      'User corrects mid-confirmation with new product + color (no size). Bot must ask only for size, with dedicated wording, listing only sizes available for that color.',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    turns: [
+      { message: 'хочу сукню' },
+      { message: 'Mango коктейльна' },
+      { message: 'так' },
+      {
+        message: 'ні давайте краще міді червону',
+        expect: {
+          scenario: 'ask_size_for_color',
+          replyContains: ['Mango Сукня міді', 'розмір'],
+          replyNotContains: ['Який вам подобається'],
+          state: {
+            selectionState: 'awaiting_variant',
+          },
+        },
+      },
+    ],
+  },
+
+  clothing_chart_attached_size_for_color: {
+    name: 'Clothing — ask_size_for_color attaches Mango size chart as second reply',
+    description:
+      'Single-product context (Mango Сукня міді) + size-asking scenario + Mango chart row exists → engine emits 2 replies: primary partial-variant question + chart bubble.',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    turns: [
+      { message: 'хочу сукню' },
+      { message: 'Mango коктейльна' },
+      { message: 'так' },
+      {
+        message: 'ні давайте краще міді червону',
+        expect: {
+          scenario: 'ask_size_for_color',
+          extraReplyCount: 1,
+          extraReplyImageContains: 'demo-chart-mango',
+        },
+      },
+    ],
+  },
+
+  clothing_chart_skipped_color_for_size: {
+    name: 'Clothing — ask_color_for_size does NOT attach chart (size already locked)',
+    description:
+      'When size is the known axis and color is being asked, the chart is not relevant. Verify silent skip.',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    turns: [
+      { message: 'хочу сукню' },
+      {
+        message: 'Mango Сукня міді розмір M',
+        expect: {
+          scenario: 'ask_color_for_size',
+          extraReplyCount: 0,
+        },
+      },
+    ],
+  },
+
+  clothing_chart_skipped_two_step_color_first: {
+    name: 'Clothing — ask_variant_choice on color step does NOT attach chart',
+    description:
+      'Both axes ambiguous → engine starts two-step flow with color (variantStep=color). Per the trigger gate, chart fires ONLY on the size step. The color-step turn must NOT include chart.',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    turns: [
+      { message: 'хочу сукню' },
+      {
+        message: 'Mango Сукня міді',
+        expect: {
+          scenario: 'ask_variant_choice',
+          extraReplyCount: 0,
+        },
+      },
+    ],
+  },
+
+  clothing_size_in_first_message_ask_color_for_size: {
+    name: 'Clothing — product + size on second turn → ask_color_for_size',
+    description:
+      'After multiple products shown, user names a specific product + size only ("Mango Сукня міді розмір M"). Color ambiguous (Red M and Black M both exist). Bot must ask only for color with dedicated wording.',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    turns: [
+      { message: 'хочу сукню' },
+      {
+        message: 'Mango Сукня міді розмір M',
+        expect: {
+          scenario: 'ask_color_for_size',
+          replyContains: ['Red', 'Black', 'M'],
+          replyNotContains: ['Який вам подобається'],
+          state: {
+            selectionState: 'awaiting_variant',
+          },
+        },
+      },
+    ],
+  },
+
+  clothing_two_products_recommend: {
+    name: 'Clothing — Two products + height/weight must keep both in scope',
+    description:
+      'After 2 products are shown and user provides height/weight, bot must NOT silently narrow to the first product. Either both products stay in consideration, or bot asks which one. Captures the regression where T1 unconditionally sets selectedProductId to the first product, locking T2 narrowing onto a single product.',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    turns: [
+      {
+        message: 'хочу сукню',
+        expect: {
+          replyContains: ['Mango Сукня міді', 'Mango Сукня коктейльна'],
+          state: {
+            selectionState: 'awaiting_product',
+            selectedProductId: null,
+          },
+        },
+      },
+      {
+        message: '170 60',
+        expect: {
+          replyContains: ['Mango Сукня коктейльна'],
+        },
+      },
+    ],
+  },
+
   clothing_suggestion_multiple_variants: {
     name: 'Clothing — Suggestion with multiple variants available',
     description:
