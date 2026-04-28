@@ -416,7 +416,7 @@ export function DemoWidget({
             </div>
           )}
           {messages.map((m) => (
-            <MessageBubble key={m.id} turn={m} />
+            <MessageBubble key={m.id} turn={m} brandName={brandName} />
           ))}
           {isTyping && <TypingIndicator />}
           {playbackDone && selectedKey && (

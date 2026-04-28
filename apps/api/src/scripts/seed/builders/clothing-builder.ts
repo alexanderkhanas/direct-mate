@@ -90,8 +90,15 @@ export async function buildClothingTenant(
   await seedProductMedia(ds, tenantId, CLOTHING_WOMEN_PRODUCTS, urlPrefix);
 
   // Size charts — copy chart PNGs (also from test-assets/ root) + insert rows
-  await copyChartImagesToUploads(CLOTHING_SIZE_CHARTS.map((c) => c.imageFile));
+  await copyTestAssetsToUploads(CLOTHING_SIZE_CHARTS.map((c) => c.imageFile), 'size_charts (images)');
   await seedSizeCharts(ds, tenantId);
+
+  // Demo widget static assets — story/post reply previews referenced by
+  // hardcoded scenario data in the admin frontend (apps/admin/src/components/
+  // demo/scenarios/clothing-scenarios.ts). Live in test-assets/ (tracked) so
+  // they ship with rsync; the seed copies them into uploads/ where the
+  // /uploads static route serves them.
+  await copyTestAssetsToUploads(DEMO_WIDGET_ASSETS, 'demo_widget (images)');
 
   const templates = getTemplatesForBusinessType('clothing');
   await seedResponseTemplates(ds, tenantId, templates);
@@ -100,7 +107,15 @@ export async function buildClothingTenant(
   return tenantId;
 }
 
-async function copyChartImagesToUploads(filenames: string[]): Promise<void> {
+const DEMO_WIDGET_ASSETS = [
+  'story-reply-demo.JPG',  // Mango Сукня міді 2x2 collage — clothing story scenario
+  'post-reply-demo.avif',  // standalone — kept available for future post variant
+];
+
+async function copyTestAssetsToUploads(
+  filenames: string[],
+  label: string,
+): Promise<void> {
   const uploadsDir = path.join(process.cwd(), 'uploads');
   if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
   // __dirname is apps/api/src/scripts/seed/builders/; test-assets is 4 levels up.
@@ -111,7 +126,7 @@ async function copyChartImagesToUploads(filenames: string[]): Promise<void> {
     const src = path.join(testAssetsDir, file);
     const dest = path.join(uploadsDir, file);
     if (!fs.existsSync(src)) {
-      console.warn(`  ! chart source missing: ${src}`);
+      console.warn(`  ! source missing: ${src}`);
       continue;
     }
     if (fs.existsSync(dest)) {
@@ -121,7 +136,7 @@ async function copyChartImagesToUploads(filenames: string[]): Promise<void> {
     fs.copyFileSync(src, dest);
     copied++;
   }
-  console.log(`  size_charts (images): ${copied} copied, ${skipped} existed`);
+  console.log(`  ${label}: ${copied} copied, ${skipped} existed`);
 }
 
 async function seedSizeCharts(ds: DataSource, tenantId: string): Promise<void> {

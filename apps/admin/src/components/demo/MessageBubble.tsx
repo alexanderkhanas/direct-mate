@@ -1,7 +1,26 @@
-import { ShieldAlert, BellRing } from 'lucide-react';
+import { ShieldAlert, BellRing, Send, Bookmark, Copy, User } from 'lucide-react';
 import { DisplayedTurn } from './types';
 
-export function MessageBubble({ turn }: { turn: DisplayedTurn }) {
+interface MessageBubbleProps {
+  turn: DisplayedTurn;
+  /** Brand display name (e.g., "StyleBoutique UA"). Used to derive the
+   * Instagram-style handle shown in the post-reply preview header. */
+  brandName?: string;
+}
+
+/** Derive an Instagram-style handle from a brand display name.
+ * "StyleBoutique UA" → "styleboutique.ua"; "Glow Cosmetics" → "glow.cosmetics" */
+function brandToHandle(brand: string | undefined): string {
+  if (!brand) return 'store';
+  return brand
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '')
+    .trim()
+    .split(/\s+/)
+    .join('.');
+}
+
+export function MessageBubble({ turn, brandName }: MessageBubbleProps) {
   // Handoff system card — two lines explaining both that the bot stopped
   // AND that the manager has been notified in Telegram. Demo-only marketing
   // affordance: prospective customer evaluating the bot wants to see how
@@ -27,10 +46,64 @@ export function MessageBubble({ turn }: { turn: DisplayedTurn }) {
 
   const isUser = turn.role === 'user';
   const images = turn.imageUrls ?? [];
+  const igContext = turn.instagramContext;
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} demo-msg-in`}>
       <div className={`max-w-[80%] ${isUser ? 'items-end' : 'items-start'} flex flex-col gap-1.5`}>
+        {/* Instagram STORY reply context — compact "You replied to their story"
+            label + small portrait preview with duration bar. Sized to match
+            real IG DM proportions (~140px wide, smaller than the post card). */}
+        {igContext && isUser && igContext.type === 'story' && (
+          <div className="flex flex-col items-end gap-1.5">
+            <span className="text-[11px] text-gray-400 px-1">
+              You replied to their story
+            </span>
+            <div className="overflow-hidden rounded-2xl bg-gray-100 border border-gray-100 w-[140px] aspect-[3/4]">
+              <img
+                src={igContext.mediaUrl}
+                alt=""
+                className="w-full h-full object-cover"
+                loading="lazy"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Instagram POST reply context — full IG post chrome:
+            dark header (avatar + handle), product image, carousel indicator
+            top-right, Send/Bookmark action icons floating to the left. */}
+        {igContext && isUser && igContext.type === 'post' && (
+          <div className="flex items-center gap-2.5">
+            <div className="flex flex-col gap-2">
+              <div className="w-9 h-9 rounded-full bg-gray-700/90 flex items-center justify-center">
+                <Send className="h-4 w-4 text-white" strokeWidth={2} />
+              </div>
+              <div className="w-9 h-9 rounded-full bg-gray-700/90 flex items-center justify-center">
+                <Bookmark className="h-4 w-4 text-white" strokeWidth={2} />
+              </div>
+            </div>
+            <div className="flex flex-col w-[200px] rounded-2xl overflow-hidden shadow-sm">
+              <div className="bg-gray-800 px-3 py-2 flex items-center gap-2">
+                <div className="w-7 h-7 rounded-full bg-gray-600 flex items-center justify-center shrink-0">
+                  <User className="h-4 w-4 text-gray-400" strokeWidth={2} />
+                </div>
+                <span className="text-white text-[13px] font-medium truncate">
+                  {brandToHandle(brandName)}
+                </span>
+              </div>
+              <div className="relative bg-white aspect-[3/4]">
+                <img
+                  src={igContext.mediaUrl}
+                  alt=""
+                  className="w-full h-full object-contain"
+                  loading="lazy"
+                />
+                <Copy className="absolute top-2 right-2 h-4 w-4 text-white drop-shadow-md" strokeWidth={2.5} />
+              </div>
+            </div>
+          </div>
+        )}
         {/* Images render first, in Instagram-DM stacked layout for 2+ */}
         {images.length === 1 && (
           <img
@@ -73,8 +146,8 @@ export function MessageBubble({ turn }: { turn: DisplayedTurn }) {
           <div
             className={
               isUser
-                ? 'bg-gray-900 text-white px-3.5 py-2 rounded-2xl rounded-br-sm text-sm leading-relaxed whitespace-pre-wrap'
-                : 'bg-gray-100 text-gray-900 px-3.5 py-2 rounded-2xl rounded-bl-sm text-sm leading-relaxed whitespace-pre-wrap'
+                ? 'bg-violet-600 text-white px-4 py-2 rounded-3xl text-sm leading-relaxed whitespace-pre-wrap'
+                : 'bg-gray-100 text-gray-900 px-4 py-2 rounded-3xl text-sm leading-relaxed whitespace-pre-wrap'
             }
           >
             {turn.text}

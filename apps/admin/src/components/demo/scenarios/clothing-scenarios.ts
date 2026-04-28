@@ -1,5 +1,5 @@
 import { createElement } from 'react';
-import { Zap, Ruler, Table, UserCircle } from 'lucide-react';
+import { Zap, Ruler, Table, UserCircle, Camera, Image as ImageIcon } from 'lucide-react';
 import { Scenario } from '../types';
 
 const iconClass = 'h-3.5 w-3.5';
@@ -7,6 +7,8 @@ const ICON_QUICK = createElement(Zap, { className: iconClass, strokeWidth: 2.5 }
 const ICON_RULER = createElement(Ruler, { className: iconClass });
 const ICON_CHART = createElement(Table, { className: iconClass });
 const ICON_HANDOFF = createElement(UserCircle, { className: iconClass });
+const ICON_STORY = createElement(Camera, { className: iconClass });
+const ICON_POST = createElement(ImageIcon, { className: iconClass });
 
 // Self-hosted product photos seeded by apps/api/src/scripts/seed-demo-women-clothes.ts
 // (Phase 4). Files live in apps/api/test-assets/ (committed) and are copied
@@ -71,6 +73,46 @@ export const CLOTHING_SCENARIOS: Scenario[] = [
     turns: [
       { role: 'user', text: 'у мене скарга на попереднє замовлення' },
       { role: 'bot', text: 'Розмову передано оператору', isHandoff: true, delayMs: 400 },
+    ],
+  },
+  {
+    key: 'instagram_story_dress',
+    title: 'Story → ціна',
+    icon: ICON_STORY,
+    turns: [
+      {
+        role: 'user',
+        text: 'Скільки коштує?',
+        instagramContext: {
+          type: 'story',
+          mediaUrl: '/uploads/story-reply-demo.JPG',
+        },
+      },
+      { role: 'bot', text: 'Mango Сукня міді — 1899 UAH 💛\nВідтінки: Red, Black\nРозміри: XS, S, M, L', imageUrls: ['/uploads/demo-p-16.avif'] },
+      { role: 'user', text: 'Так, чорну M' },
+      { role: 'bot', text: 'Mango Сукня міді (Black, M) — оформлюємо? 💛' },
+      { role: 'user', text: 'Так' },
+      { role: 'bot', text: 'Замовлення прийнято 💛 Mango Сукня міді (Black, M) — 1899 UAH. Очікуйте на дзвінок' },
+    ],
+  },
+  {
+    key: 'instagram_post_jacket',
+    title: 'Post → наявність',
+    icon: ICON_POST,
+    turns: [
+      {
+        role: 'user',
+        text: 'Ще є в наявності?',
+        instagramContext: {
+          type: 'post',
+          mediaUrl: '/uploads/demo-p-13.avif',
+        },
+      },
+      { role: 'bot', text: 'Mango Шкіряна куртка байкер (Black, M) — 2899 UAH 💛 в наявності', imageUrls: ['/uploads/demo-p-13.avif'] },
+      { role: 'user', text: 'Беру' },
+      { role: 'bot', text: 'Чудово 💛 Оформлюємо?' },
+      { role: 'user', text: 'Так' },
+      { role: 'bot', text: 'Замовлення прийнято 💛 Mango Шкіряна куртка байкер — 2899 UAH. Очікуйте на дзвінок' },
     ],
   },
 ];
