@@ -338,13 +338,39 @@ let AvailabilityService = class AvailabilityService {
         const productIds = results.map((r) => r.product.id);
         if (productIds.length === 0)
             return;
-        const images = await this.dataSource.query(`SELECT DISTINCT ON (product_id) product_id, url
-       FROM product_media
-       WHERE product_id = ANY($1)
-       ORDER BY product_id, sort_order ASC`, [productIds]);
-        const imageMap = new Map(images.map((i) => [i.product_id, i.url]));
+        const [productImages, variantImages] = await Promise.all([
+            this.dataSource.query(`SELECT DISTINCT ON (product_id) product_id, url
+         FROM product_media
+         WHERE product_id = ANY($1)
+         ORDER BY product_id, sort_order ASC`, [productIds]),
+            this.dataSource.query(`SELECT product_id, color, url, sort_order
+         FROM product_media
+         WHERE product_id = ANY($1) AND color IS NOT NULL
+         ORDER BY product_id, sort_order ASC`, [productIds]),
+        ]);
+        const productImageMap = new Map(productImages.map((i) => [i.product_id, i.url]));
+        const colorImageMap = new Map();
+        for (const row of variantImages) {
+            if (!colorImageMap.has(row.product_id)) {
+                colorImageMap.set(row.product_id, new Map());
+            }
+            const m = colorImageMap.get(row.product_id);
+            const key = row.color.toLowerCase();
+            if (!m.has(key))
+                m.set(key, row.url);
+        }
         for (const r of results) {
-            r.product.imageUrl = imageMap.get(r.product.id) ?? null;
+            r.product.imageUrl = productImageMap.get(r.product.id) ?? null;
+            const productColorMap = colorImageMap.get(r.product.id);
+            if (!productColorMap)
+                continue;
+            for (const v of r.variants) {
+                if (v.imageUrl)
+                    continue;
+                if (v.color && productColorMap.has(v.color.toLowerCase())) {
+                    v.imageUrl = productColorMap.get(v.color.toLowerCase());
+                }
+            }
         }
     }
 };

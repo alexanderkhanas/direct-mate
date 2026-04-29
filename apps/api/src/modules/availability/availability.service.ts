@@ -472,25 +472,65 @@ export class AvailabilityService {
     return Array.from(productMap.values());
   }
 
-  /** Load the first image (by sort_order) for each product in the results */
+  /**
+   * Load the first image (by sort_order) for each product, AND apply
+   * color-keyed variant images.
+   *
+   * Per-variant images for the demo seed live in `product_media` rows tagged
+   * `(product_id, color)` — the dedicated `product_variants.image_url` column
+   * is unused in the seed path. This method mirrors the resolution chain in
+   * `catalog.service.ts:107-141` so the reply engine receives the same
+   * per-variant URLs that the admin catalog listing does.
+   */
   private async loadProductImages(
-    results: Array<{ product: { id: string; imageUrl?: string | null } }>,
+    results: Array<{
+      product: { id: string; imageUrl?: string | null };
+      variants: Array<{ color: string | null; imageUrl: string | null }>;
+    }>,
   ): Promise<void> {
     const productIds = results.map((r) => r.product.id);
     if (productIds.length === 0) return;
 
-    // Single query: get the first image per product, ordered by sort_order
-    const images = await this.dataSource.query(
-      `SELECT DISTINCT ON (product_id) product_id, url
-       FROM product_media
-       WHERE product_id = ANY($1)
-       ORDER BY product_id, sort_order ASC`,
-      [productIds],
-    ) as Array<{ product_id: string; url: string }>;
+    const [productImages, variantImages] = await Promise.all([
+      this.dataSource.query(
+        `SELECT DISTINCT ON (product_id) product_id, url
+         FROM product_media
+         WHERE product_id = ANY($1)
+         ORDER BY product_id, sort_order ASC`,
+        [productIds],
+      ) as Promise<Array<{ product_id: string; url: string }>>,
+      this.dataSource.query(
+        `SELECT product_id, color, url, sort_order
+         FROM product_media
+         WHERE product_id = ANY($1) AND color IS NOT NULL
+         ORDER BY product_id, sort_order ASC`,
+        [productIds],
+      ) as Promise<Array<{ product_id: string; color: string; url: string }>>,
+    ]);
 
-    const imageMap = new Map(images.map((i) => [i.product_id, i.url]));
+    const productImageMap = new Map(productImages.map((i) => [i.product_id, i.url]));
+
+    // Per-product map: colorLowercase → first matching url (sort_order ASC).
+    const colorImageMap = new Map<string, Map<string, string>>();
+    for (const row of variantImages) {
+      if (!colorImageMap.has(row.product_id)) {
+        colorImageMap.set(row.product_id, new Map());
+      }
+      const m = colorImageMap.get(row.product_id)!;
+      const key = row.color.toLowerCase();
+      if (!m.has(key)) m.set(key, row.url);
+    }
+
     for (const r of results) {
-      r.product.imageUrl = imageMap.get(r.product.id) ?? null;
+      r.product.imageUrl = productImageMap.get(r.product.id) ?? null;
+      const productColorMap = colorImageMap.get(r.product.id);
+      if (!productColorMap) continue;
+      for (const v of r.variants) {
+        if (v.imageUrl) continue;
+        if (v.color && productColorMap.has(v.color.toLowerCase())) {
+          v.imageUrl = productColorMap.get(v.color.toLowerCase())!;
+        }
+      }
     }
   }
 }
