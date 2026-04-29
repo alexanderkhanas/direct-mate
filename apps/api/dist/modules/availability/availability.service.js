@@ -362,14 +362,11 @@ let AvailabilityService = class AvailabilityService {
         for (const r of results) {
             r.product.imageUrl = productImageMap.get(r.product.id) ?? null;
             const productColorMap = colorImageMap.get(r.product.id);
-            if (!productColorMap)
-                continue;
             for (const v of r.variants) {
                 if (v.imageUrl)
                     continue;
-                if (v.color && productColorMap.has(v.color.toLowerCase())) {
-                    v.imageUrl = productColorMap.get(v.color.toLowerCase());
-                }
+                const colorMatch = v.color ? productColorMap?.get(v.color.toLowerCase()) : undefined;
+                v.imageUrl = colorMatch ?? r.product.imageUrl ?? null;
             }
         }
     }

@@ -20,6 +20,9 @@ export interface SimulatorTurnExpect {
     selectionState?: 'awaiting_product' | 'awaiting_variant' | 'awaiting_confirmation' | 'cart_item_added' | 'confirmed' | null;
     selectedProductId?: string | null;
     selectedVariantName?: string | null;
+    selectedColor?: string;
+    selectedSize?: string;
+    variantStep?: 'color' | 'size' | null;
     cartLength?: number;
     cartHasVariant?: string;
     lastAction?: string;

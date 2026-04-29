@@ -1524,9 +1524,16 @@ export class ReplyEngineService {
       }
     }
 
-    // 5.5c Variant check for fills_missing_slot/correction: user picked a product, check if variant needed
+    // 5.5c Variant check for fills_missing_slot/correction: user picked a product, check if variant needed.
+    // Defensive gate: also accept slotAction='confirmation' when entities carry color/size — guards
+    // against classifier misclassifying "давайте/беру + specifics" replies as pure confirmations
+    // (the pendingOfferRule edge case). 5.5a/5.5b already short-circuit any case where this would
+    // double-fire (they set selectedVariantId or variantStep before 5.5c evaluates).
     if (
-      (classification.slotAction === 'fills_missing_slot' || classification.slotAction === 'correction') &&
+      (classification.slotAction === 'fills_missing_slot' ||
+        classification.slotAction === 'correction' ||
+        (classification.slotAction === 'confirmation' &&
+          (classification.entities.color || classification.entities.size))) &&
       memory.selectedProductId &&
       !memory.selectedVariantId &&
       !memory.variantStep && // Don't interfere with two-step variant selection

@@ -1123,7 +1123,10 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 }
             }
         }
-        if ((classification.slotAction === 'fills_missing_slot' || classification.slotAction === 'correction') &&
+        if ((classification.slotAction === 'fills_missing_slot' ||
+            classification.slotAction === 'correction' ||
+            (classification.slotAction === 'confirmation' &&
+                (classification.entities.color || classification.entities.size))) &&
             memory.selectedProductId &&
             !memory.selectedVariantId &&
             !memory.variantStep &&

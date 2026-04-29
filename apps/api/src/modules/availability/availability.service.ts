@@ -524,12 +524,15 @@ export class AvailabilityService {
     for (const r of results) {
       r.product.imageUrl = productImageMap.get(r.product.id) ?? null;
       const productColorMap = colorImageMap.get(r.product.id);
-      if (!productColorMap) continue;
+      // 3-tier fallback per variant, mirroring catalog.service.ts:134 exactly:
+      //   variant.imageUrl ?? colorImageMap[v.color] ?? product.imageUrl ?? null
+      // The product-level fallback ensures multi-color products with partial
+      // color-tagged seed coverage still emit one distinct image per variant
+      // (e.g., Zara midi: Brown has color tag, White shares product image).
       for (const v of r.variants) {
         if (v.imageUrl) continue;
-        if (v.color && productColorMap.has(v.color.toLowerCase())) {
-          v.imageUrl = productColorMap.get(v.color.toLowerCase())!;
-        }
+        const colorMatch = v.color ? productColorMap?.get(v.color.toLowerCase()) : undefined;
+        v.imageUrl = colorMatch ?? r.product.imageUrl ?? null;
       }
     }
   }

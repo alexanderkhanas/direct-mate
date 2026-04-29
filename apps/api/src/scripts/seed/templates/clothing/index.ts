@@ -44,8 +44,8 @@ export const CLOTHING_TEMPLATES: TemplateSpec[] = [
   {
     scenario: 'ask_variant_choice',
     stage: 'product_selection',
-    blocks: ['У {product_name} є такі {variant_type}:\n{variant_list}\nЯкий вам подобається? 💛'],
-    requiredVariables: ['product_name', 'variant_list', 'variant_type'],
+    blocks: ['{product_name} є в кольорах: {variant_list}. Який обираєте? 💛'],
+    requiredVariables: ['product_name', 'variant_list'],
     toneTags: ['warm'],
     priority: 90,
     active: true,
@@ -53,7 +53,7 @@ export const CLOTHING_TEMPLATES: TemplateSpec[] = [
   {
     scenario: 'ask_size_for_color',
     stage: 'product_selection',
-    blocks: ['{product_name} в {color} є у розмірах: {variant_list}. Який потрібний? 💛'],
+    blocks: ['{product_name} — {color}, розміри: {variant_list}. Який потрібний? 💛'],
     requiredVariables: ['product_name', 'color', 'variant_list'],
     toneTags: ['warm'],
     priority: 95,

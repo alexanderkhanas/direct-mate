@@ -168,6 +168,12 @@ function runAssertions(
       else push('state.selectedProductId', memory.selectedProductId === s.selectedProductId, s.selectedProductId, memory.selectedProductId);
     }
     if (s.selectedVariantName !== undefined) push('state.selectedVariantName', memory.selectedVariantName === s.selectedVariantName, s.selectedVariantName, memory.selectedVariantName);
+    if (s.selectedColor !== undefined) push('state.selectedColor', memory.selectedColor === s.selectedColor, s.selectedColor, memory.selectedColor);
+    if (s.selectedSize !== undefined) push('state.selectedSize', memory.selectedSize === s.selectedSize, s.selectedSize, memory.selectedSize);
+    if (s.variantStep !== undefined) {
+      if (s.variantStep === null) push('state.variantStep', !memory.variantStep, null, memory.variantStep);
+      else push('state.variantStep', memory.variantStep === s.variantStep, s.variantStep, memory.variantStep);
+    }
     if (s.cartLength !== undefined) {
       const actual = Array.isArray(memory.cartItems) ? memory.cartItems.length : 0;
       push('state.cartLength', actual === s.cartLength, s.cartLength, actual);
@@ -595,12 +601,13 @@ async function main(): Promise<void> {
 
   // --tenant + --message: ad-hoc one-turn scenario against a tenant by slug.
   // Requires DB lookup, so we resolve the slug against the running DataSource below.
+  // --tenant alone (no --message): filter the registry to scenarios pinned to that tenant slug/UUID.
   let adHocFromTenantMessage: { slug: string; message: string } | null = null;
-  if (args.tenant || args.message) {
-    if (!args.tenant || !args.message) {
-      console.error(`${c.red}--tenant and --message must be used together.${c.reset}`);
-      process.exit(1);
-    }
+  if (args.message && !args.tenant) {
+    console.error(`${c.red}--message requires --tenant.${c.reset}`);
+    process.exit(1);
+  }
+  if (args.tenant && args.message) {
     adHocFromTenantMessage = { slug: args.tenant, message: args.message };
   }
 
@@ -615,9 +622,24 @@ async function main(): Promise<void> {
     scenariosToRun = [[args.scenario, s]];
   } else if (adHocFromTenantMessage) {
     scenariosToRun = [];  // filled after DataSource boots
+  } else if (args.tenant) {
+    // --tenant alone: run all registry scenarios whose tenantId matches.
+    // Match against the literal tenantId string (slug or UUID) — scenarios authored
+    // with DEMO_WOMEN_CLOTHES_SLUG / DEMO_COSMETICS_SLUG resolve at boot time, but
+    // the registry stores the slug literal, so direct equality works for slug-form.
+    scenariosToRun = Object.entries(SCENARIOS).filter(
+      ([, s]) => s.tenantId === args.tenant,
+    );
+    if (scenariosToRun.length === 0) {
+      console.error(`${c.red}No scenarios found for tenant="${args.tenant}". Pass --message to run an ad-hoc message instead, or --list to see registered scenarios.${c.reset}`);
+      process.exit(1);
+    }
+    console.log(`${c.dim}Tenant filter: ${args.tenant} → ${scenariosToRun.length} scenario(s)${c.reset}`);
   } else {
     // No args — show usage + available scenarios and exit cleanly
-    console.log(`Usage: npm run simulate -- --scenario <name> | --all | --list | --tenant <slug> --message <text>\n`);
+    console.log(`Usage: npm run simulate -- --scenario <name> | --all | --list | --tenant <slug> [--message <text>]\n`);
+    console.log(`  --tenant <slug>           Run all scenarios pinned to that tenant`);
+    console.log(`  --tenant <slug> --message Run an ad-hoc one-turn message against that tenant\n`);
     console.log(`${c.bold}Available scenarios:${c.reset}\n`);
     for (const [key, s] of Object.entries(SCENARIOS)) {
       console.log(`  ${c.cyan}${key.padEnd(25)}${c.reset} ${s.name} ${c.dim}(${s.turns.length} turns)${c.reset}`);

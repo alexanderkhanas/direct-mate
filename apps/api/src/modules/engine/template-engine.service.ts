@@ -627,19 +627,34 @@ export class TemplateEngineService {
       if (first.variants.length > 1) {
         const inStockVars = first.variants.filter((v) => v.effectiveAvailable > 0);
 
-        if (suppressSizes || memory?.variantStep === 'color') {
-          // Show only unique colors (sizes suppressed by pre-qualify or two-step flow).
-          // If user already picked a size (ask_color_for_size flow), narrow colors
-          // to those that have that size in stock.
+        if (suppressSizes) {
+          // Pre-qualify recommended a size — show colors only since size is fixed.
+          const colors = [...new Set(inStockVars.map((v) => v.color).filter(Boolean))] as string[];
+          vars['variant_type'] = 'Відтінки';
+          vars['variant_list'] = colors.join(', ');
+        } else if (memory?.variantStep === 'color') {
+          // Two-step color step: group available sizes per color so the user
+          // sees what's in stock for each color before picking.
+          // If user already picked a size (ask_color_for_size flow), narrow
+          // colors to those that have that size in stock.
           let colorCandidates = inStockVars;
           if (memory?.selectedSize) {
             colorCandidates = colorCandidates.filter(
               (v) => v.size && v.size.toLowerCase() === memory!.selectedSize!.toLowerCase(),
             );
           }
-          const colors = [...new Set(colorCandidates.map((v) => v.color).filter(Boolean))] as string[];
+          const colorGroups = new Map<string, string[]>();
+          for (const v of colorCandidates) {
+            if (!v.color) continue;
+            if (!colorGroups.has(v.color)) colorGroups.set(v.color, []);
+            if (v.size && !colorGroups.get(v.color)!.includes(v.size)) {
+              colorGroups.get(v.color)!.push(v.size);
+            }
+          }
           vars['variant_type'] = 'Відтінки';
-          vars['variant_list'] = colors.join(', ');
+          vars['variant_list'] = Array.from(colorGroups.entries())
+            .map(([color, sizes]) => sizes.length ? `${color} (${sizes.join(', ')})` : color)
+            .join(', ');
         } else if (memory?.variantStep === 'size') {
           // Show only sizes filtered by selected color
           const selectedColor = memory?.selectedColor;
@@ -682,15 +697,28 @@ export class TemplateEngineService {
     // From memory: variant_list fallback (if not built from productData)
     const suppressSizesFromMemory = !!memory?.recommendedSize;
     if (!vars['variant_list'] && Array.isArray(memory?.availableVariants) && memory.availableVariants.length > 0) {
-      if (suppressSizesFromMemory || memory?.variantStep === 'color') {
+      if (suppressSizesFromMemory) {
+        const colors = [...new Set(memory.availableVariants.map((v: any) => v.color).filter(Boolean))];
+        vars['variant_list'] = colors.join(', ');
+        vars['variant_type'] = 'Відтінки';
+      } else if (memory?.variantStep === 'color') {
         let candidates = memory.availableVariants;
         if (memory?.selectedSize) {
           candidates = candidates.filter(
             (v: any) => v.size && v.size.toLowerCase() === memory!.selectedSize!.toLowerCase(),
           );
         }
-        const colors = [...new Set(candidates.map((v: any) => v.color).filter(Boolean))];
-        vars['variant_list'] = colors.join(', ');
+        const colorGroups = new Map<string, string[]>();
+        for (const v of candidates as any[]) {
+          if (!v.color) continue;
+          if (!colorGroups.has(v.color)) colorGroups.set(v.color, []);
+          if (v.size && !colorGroups.get(v.color)!.includes(v.size)) {
+            colorGroups.get(v.color)!.push(v.size);
+          }
+        }
+        vars['variant_list'] = Array.from(colorGroups.entries())
+          .map(([color, sizes]) => sizes.length ? `${color} (${sizes.join(', ')})` : color)
+          .join(', ');
         vars['variant_type'] = 'Відтінки';
       } else if (memory?.variantStep === 'size') {
         const selectedColor = memory?.selectedColor;

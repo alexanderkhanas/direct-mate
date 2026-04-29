@@ -826,6 +826,7 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
         expect: {
           scenario: 'ask_variant_choice',
           extraReplyCount: 0,
+          imageCount: 2,
         },
       },
     ],
@@ -842,7 +843,7 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
         message: 'Zara midi сукня розмір M',
         expect: {
           scenario: 'ask_color_for_size',
-          replyContains: ['White', 'Brown', 'M'],
+          replyContains: ['Білий', 'Коричневий', 'M'],
           replyNotContains: ['Який вам подобається'],
           state: {
             selectionState: 'awaiting_variant',
@@ -893,8 +894,9 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
         message: 'давайте Zara midi сукню',
         expect: {
           scenario: 'ask_variant_choice',
-          replyContains: ['White', 'Brown'],
+          replyContains: ['Білий', 'Коричневий'],
           replyNotContains: ['оформлюємо?'],
+          imageCount: 2,
           state: {
             selectionState: 'awaiting_variant',
             recommendedSize: 'L',
@@ -902,5 +904,33 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
         },
       }
     ]
+  },
+
+  clothing_offer_accept_with_product_specifics: {
+    name: 'Clothing — Offer accept with new product+size specifics (PRIMARY/gating)',
+    description:
+      'After bot offers size help ("Хочете, допоможу з розміром?"), user replies with NEW product + size in a single utterance ("давайте зара, розмір М"). Classifier may misclassify this as slot_action=confirmation (because the message starts with "давайте", a pure-accept marker). The engine must still route to ask_color_for_size — Fix B at reply-engine 5.5c gates on confirmation+entities, Fix A trains the classifier to prefer fills_missing_slot. Run multiple times to surface any residual non-determinism.',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    turns: [
+      {
+        message: 'хочу плаття',
+        expect: {
+          replyContains: ['Хочете', 'розміром'],
+        },
+      },
+      {
+        message: 'давайте зара, розмір М',
+        expect: {
+          scenario: 'ask_color_for_size',
+          replyContains: ['Білий', 'Коричневий', 'M'],
+          replyNotContains: ['Який вам подобається'],
+          state: {
+            selectionState: 'awaiting_variant',
+            selectedSize: 'M',
+            variantStep: 'color',
+          },
+        },
+      },
+    ],
   }
 }
