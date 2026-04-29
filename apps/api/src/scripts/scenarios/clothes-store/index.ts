@@ -757,17 +757,17 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
   clothing_correction_ask_size_for_color: {
     name: 'Clothing — correction with color → ask_size_for_color',
     description:
-      'User corrects mid-confirmation with new product + color (no size). Bot must ask only for size, with dedicated wording, listing only sizes available for that color.',
+      'User corrects mid-confirmation with new product + color (no size). Bot must ask only for size, with dedicated wording, listing only sizes available for that color. Uses Zara midi сукня (White/Brown × XS/S/M/L) since Mango Сукня міді is single-color.',
     tenantId: DEMO_WOMEN_CLOTHES_SLUG,
     turns: [
       { message: 'хочу сукню' },
       { message: 'Mango коктейльна' },
       { message: 'так' },
       {
-        message: 'ні давайте краще міді червону',
+        message: 'ні давайте краще Zara midi білу',
         expect: {
           scenario: 'ask_size_for_color',
-          replyContains: ['Mango Сукня міді', 'розмір'],
+          replyContains: ['Zara midi', 'розмір'],
           replyNotContains: ['Який вам подобається'],
           state: {
             selectionState: 'awaiting_variant',
@@ -778,20 +778,20 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
   },
 
   clothing_chart_attached_size_for_color: {
-    name: 'Clothing — ask_size_for_color attaches Mango size chart as second reply',
+    name: 'Clothing — ask_size_for_color attaches Zara size chart as second reply',
     description:
-      'Single-product context (Mango Сукня міді) + size-asking scenario + Mango chart row exists → engine emits 2 replies: primary partial-variant question + chart bubble.',
+      'Single-product context (Zara midi сукня) + size-asking scenario + Zara chart row exists (brand-only fallback since Zara chart categories don\'t include "сукні") → engine emits 2 replies: primary partial-variant question + chart bubble.',
     tenantId: DEMO_WOMEN_CLOTHES_SLUG,
     turns: [
       { message: 'хочу сукню' },
       { message: 'Mango коктейльна' },
       { message: 'так' },
       {
-        message: 'ні давайте краще міді червону',
+        message: 'ні давайте краще Zara midi білу',
         expect: {
           scenario: 'ask_size_for_color',
           extraReplyCount: 1,
-          extraReplyImageContains: 'demo-chart-mango',
+          extraReplyImageContains: 'demo-chart-zara',
         },
       },
     ],
@@ -805,7 +805,7 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
     turns: [
       { message: 'хочу сукню' },
       {
-        message: 'Mango Сукня міді розмір M',
+        message: 'Zara midi сукня розмір M',
         expect: {
           scenario: 'ask_color_for_size',
           extraReplyCount: 0,
@@ -822,7 +822,7 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
     turns: [
       { message: 'хочу сукню' },
       {
-        message: 'Mango Сукня міді',
+        message: 'Zara midi сукня',
         expect: {
           scenario: 'ask_variant_choice',
           extraReplyCount: 0,
@@ -834,15 +834,15 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
   clothing_size_in_first_message_ask_color_for_size: {
     name: 'Clothing — product + size on second turn → ask_color_for_size',
     description:
-      'After multiple products shown, user names a specific product + size only ("Mango Сукня міді розмір M"). Color ambiguous (Red M and Black M both exist). Bot must ask only for color with dedicated wording.',
+      'After multiple products shown, user names a specific product + size only ("Zara midi сукня розмір M"). Color ambiguous (White M and Brown M both exist). Bot must ask only for color with dedicated wording.',
     tenantId: DEMO_WOMEN_CLOTHES_SLUG,
     turns: [
       { message: 'хочу сукню' },
       {
-        message: 'Mango Сукня міді розмір M',
+        message: 'Zara midi сукня розмір M',
         expect: {
           scenario: 'ask_color_for_size',
-          replyContains: ['Red', 'Black', 'M'],
+          replyContains: ['White', 'Brown', 'M'],
           replyNotContains: ['Який вам подобається'],
           state: {
             selectionState: 'awaiting_variant',
@@ -880,7 +880,7 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
   clothing_suggestion_multiple_variants: {
     name: 'Clothing — Suggestion with multiple variants available',
     description:
-      'After recommendation narrows to size L, user accepts product but Red+L and Black+L both exist → bot must ask which color, not auto-pick.',
+      'After recommendation narrows to size L, user picks Zara midi сукня but White+L and Brown+L both exist → bot must ask which color, not auto-pick.',
     tenantId: DEMO_WOMEN_CLOTHES_SLUG,
     turns: [
       {
@@ -890,10 +890,10 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
         message: '170 см 70 кг',
       },
       {
-        message: 'давайте цю сукню',
+        message: 'давайте Zara midi сукню',
         expect: {
           scenario: 'ask_variant_choice',
-          replyContains: ['Red', 'Black'],
+          replyContains: ['White', 'Brown'],
           replyNotContains: ['оформлюємо?'],
           state: {
             selectionState: 'awaiting_variant',

@@ -202,14 +202,15 @@ export const CLOTHING_WOMEN_PRODUCTS: ProductSpec[] = [
     externalId: 'demo-p-16', title: 'Mango Сукня міді', brand: 'Mango',
     category: 'Сукні', description: 'Трикотажна сукня з розрізом.',
     imageFile: 'demo-p-16.avif',
+    // Single-color product (brown checkered pattern). The dress photo on the
+    // landing-page demo widget is one visual SKU; matching that, the seed
+    // tracks only sizes. Multi-color partial-variant flows are exercised by
+    // the Zara midi сукня product (demo-p-19) which has White + Brown axes.
     variants: [
-      { color: 'Red', size: 'XS', price: 1899, stock: 5 },
-      { color: 'Red', size: 'S', price: 1899, stock: 15 },
-      { color: 'Red', size: 'M', price: 1899, stock: 15 },
-      { color: 'Red', size: 'L', price: 1899, stock: 5 },
-      { color: 'Black', size: 'S', price: 1899, stock: 15 },
-      { color: 'Black', size: 'M', price: 1899, stock: 15 },
-      { color: 'Black', size: 'L', price: 1899, stock: 15 },
+      { color: null, size: 'XS', price: 1899, stock: 5 },
+      { color: null, size: 'S', price: 1899, stock: 30 },
+      { color: null, size: 'M', price: 1899, stock: 30 },
+      { color: null, size: 'L', price: 1899, stock: 20 },
     ],
   },
   {
@@ -230,6 +231,24 @@ export const CLOTHING_WOMEN_PRODUCTS: ProductSpec[] = [
       { color: 'Black', size: 'L', price: 1799, stock: 5 },
       { color: 'White', size: 'S', price: 1799, stock: 15 },
       { color: 'White', size: 'M', price: 1799, stock: 15 },
+    ],
+  },
+  {
+    externalId: 'demo-p-19', title: 'Zara midi сукня', brand: 'Zara',
+    category: 'Сукні', description: 'Класична сукня міді з натуральних тканин.',
+    imageFile: 'zara-midi-white.jpg',
+    // Two-color × four-size variants — used by simulator partial-variant
+    // scenarios (ask_size_for_color, ask_color_for_size, etc.) since
+    // Mango Сукня міді is single-color.
+    variants: [
+      { color: 'White', size: 'XS', price: 1500, stock: 5, imageFile: 'zara-midi-white.jpg' },
+      { color: 'White', size: 'S', price: 1500, stock: 12, imageFile: 'zara-midi-white.jpg' },
+      { color: 'White', size: 'M', price: 1500, stock: 12, imageFile: 'zara-midi-white.jpg' },
+      { color: 'White', size: 'L', price: 1500, stock: 8, imageFile: 'zara-midi-white.jpg' },
+      { color: 'Brown', size: 'XS', price: 1500, stock: 5, imageFile: 'zara-midi-brown.jpg' },
+      { color: 'Brown', size: 'S', price: 1500, stock: 12, imageFile: 'zara-midi-brown.jpg' },
+      { color: 'Brown', size: 'M', price: 1500, stock: 12, imageFile: 'zara-midi-brown.jpg' },
+      { color: 'Brown', size: 'L', price: 1500, stock: 8, imageFile: 'zara-midi-brown.jpg' },
     ],
   },
 ];

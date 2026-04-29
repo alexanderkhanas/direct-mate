@@ -1947,6 +1947,13 @@ export class ReplyEngineService {
         );
         stateUpdate.selectedVariantId =
           inStockVariant?.id ?? first.variants[0]?.id;
+      } else if (askingForProduct) {
+        // Multi-product show — variant must NOT be locked in, even if some
+        // upstream code (e.g., template-engine variable map auto-resolving
+        // a single-variant first product) populated memory.selectedVariantId.
+        // Force-clear so the next turn starts fresh from product selection.
+        stateUpdate.selectedVariantId = null;
+        memory.selectedVariantId = undefined;
       } else {
         stateUpdate.selectedVariantId = memory.selectedVariantId ?? null;
       }

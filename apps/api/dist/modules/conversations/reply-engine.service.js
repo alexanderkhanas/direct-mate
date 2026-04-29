@@ -1435,6 +1435,10 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 stateUpdate.selectedVariantId =
                     inStockVariant?.id ?? first.variants[0]?.id;
             }
+            else if (askingForProduct) {
+                stateUpdate.selectedVariantId = null;
+                memory.selectedVariantId = undefined;
+            }
             else {
                 stateUpdate.selectedVariantId = memory.selectedVariantId ?? null;
             }
