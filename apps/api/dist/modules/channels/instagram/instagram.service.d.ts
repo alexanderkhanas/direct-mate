@@ -76,6 +76,7 @@ export declare class InstagramService implements OnModuleInit, OnModuleDestroy {
     private flushReadyMessages;
     private autoResumeExpired;
     private sendMetaMessage;
+    private toPublicImageUrl;
     private sendMetaImages;
     verifySignature(rawBody: Buffer, signature: string): boolean;
     verifyWebhook(mode: string, token: string, challenge: string): string;

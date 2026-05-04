@@ -51,7 +51,7 @@ interface MetaWebhookPayload {
   entry: MetaMessagingEntry[];
 }
 
-const DEBOUNCE_MS = 10_000; // 10 seconds
+const DEBOUNCE_MS = 5_000; // 5 seconds
 
 
 @Injectable()
@@ -175,12 +175,41 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
     return mid;
   }
 
+  /**
+   * Convert a possibly-relative image path to a fully-qualified URL Meta can
+   * fetch. Already-absolute http(s) URLs pass through unchanged. Relative
+   * paths get the configured `app.baseUrl` prefix (ngrok tunnel in dev,
+   * public HTTPS domain in prod). Mirrors `SizeChartsService.publicUrl()` —
+   * the size-chart bubble path already does this; product images need it too.
+   */
+  private toPublicImageUrl(url: string): string {
+    if (/^https?:\/\//i.test(url)) return url;
+    const base = (this.config.get<string>('app.baseUrl') ?? '').replace(/\/$/, '');
+    const clean = url.replace(/^\//, '');
+    return base ? `${base}/${clean}` : url;
+  }
+
   private async sendMetaImages(
     recipientId: string,
     imageUrls: string[],
     pageAccessToken: string,
   ): Promise<void> {
     this.recentSendByRecipient.set(recipientId, Date.now());
+
+    // Pre-flight: Meta cannot fetch from localhost/unset hosts. Surface this
+    // before burning 3 retries × ~6s of confusing 400s.
+    const hasRelative = imageUrls.some((u) => !/^https?:\/\//i.test(u));
+    if (hasRelative) {
+      const base = this.config.get<string>('app.baseUrl') ?? '';
+      if (!base || /^https?:\/\/localhost/i.test(base)) {
+        this.logger.warn(
+          `app.baseUrl is "${base || '(unset)'}" — Meta cannot fetch attachments. ` +
+            `Set APP_BASE_URL to the public ngrok / prod URL.`,
+        );
+      }
+    }
+
+    const absoluteUrls = imageUrls.map((u) => this.toPublicImageUrl(u));
     const res = await fetch('https://graph.instagram.com/v21.0/me/messages', {
       method: 'POST',
       headers: {
@@ -190,7 +219,7 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
       body: JSON.stringify({
         recipient: { id: recipientId },
         message: {
-          attachments: imageUrls.map((url) => ({
+          attachments: absoluteUrls.map((url) => ({
             type: 'image',
             payload: { url },
           })),
@@ -693,7 +722,28 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
             () => this.sendMetaMessage(params.externalUserId, replyText, pageAccessToken),
             { label: `meta-msg-${params.externalUserId}`, maxAttempts: 3, baseDelayMs: 2000 },
           );
-          this.logger.log(`Message sent to ${params.externalUserId} via Meta Graph API`);
+
+          // Iterate any sibling bubbles (size-chart attachment, conversation-
+          // start greeting follow-up, future multi-bubble flows). Each extra is
+          // sent in the same image-then-text shape as the primary.
+          for (const extra of result.extraReplies ?? []) {
+            if (extra.imageUrls?.length) {
+              await withRetry(
+                () => this.sendMetaImages(params.externalUserId, extra.imageUrls!, pageAccessToken),
+                { label: `meta-images-extra-${params.externalUserId}`, maxAttempts: 3, baseDelayMs: 2000 },
+              );
+            }
+            if (extra.text) {
+              await withRetry(
+                () => this.sendMetaMessage(params.externalUserId, extra.text, pageAccessToken),
+                { label: `meta-msg-extra-${params.externalUserId}`, maxAttempts: 3, baseDelayMs: 2000 },
+              );
+            }
+          }
+
+          this.logger.log(
+            `Delivered ${1 + (result.extraReplies?.length ?? 0)} bubble(s) to ${params.externalUserId} via Meta Graph API`,
+          );
         } catch (err) {
           this.logger.error(`Failed to send to Meta API for conversation ${conversation.id}`, err);
           await this.conversationsService.escalate(conversation.id, 'send_failed');

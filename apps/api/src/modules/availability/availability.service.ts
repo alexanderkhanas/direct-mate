@@ -213,7 +213,7 @@ export class AvailabilityService {
     dto: CheckAvailabilityDto,
   ): Promise<
     Array<{
-      product: { id: string; title: string; imageUrl?: string | null };
+      product: { id: string; title: string; imageUrl?: string | null; category?: string | null };
       variants: Array<{
         id: string;
         size: string | null;
@@ -349,7 +349,7 @@ export class AvailabilityService {
     variantId?: string,
   ): Promise<
     Array<{
-      product: { id: string; title: string; imageUrl?: string | null };
+      product: { id: string; title: string; imageUrl?: string | null; category?: string | null };
       variants: Array<{
         id: string;
         size: string | null;
@@ -434,7 +434,7 @@ export class AvailabilityService {
     }>;
   }> {
     const productMap = new Map<string, {
-      product: { id: string; title: string; imageUrl?: string | null };
+      product: { id: string; title: string; imageUrl?: string | null; category?: string | null };
       variants: Array<{
         id: string;
         size: string | null;
@@ -450,7 +450,7 @@ export class AvailabilityService {
       const pid = v.product.id;
       if (!productMap.has(pid)) {
         productMap.set(pid, {
-          product: { id: pid, title: v.product.title, imageUrl: null },
+          product: { id: pid, title: v.product.title, imageUrl: null, category: v.product.category ?? null },
           variants: [],
         });
       }

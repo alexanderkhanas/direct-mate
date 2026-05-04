@@ -31,7 +31,7 @@ const store_config_entity_1 = require("../../engine/entities/store-config.entity
 const learning_observer_service_1 = require("../../screenshot-training/learning-observer.service");
 const shared_1 = require("@direct-mate/shared");
 const retry_1 = require("../../../common/retry");
-const DEBOUNCE_MS = 10_000;
+const DEBOUNCE_MS = 5_000;
 let InstagramService = InstagramService_1 = class InstagramService {
     constructor(config, conversationsService, replyEngineService, integrationsService, ordersService, cryptoService, telegramService, pendingMessageRepo, conversationRepo, storeConfigRepo, learningObserver, dataSource) {
         this.config = config;
@@ -131,8 +131,24 @@ let InstagramService = InstagramService_1 = class InstagramService {
         }
         return mid;
     }
+    toPublicImageUrl(url) {
+        if (/^https?:\/\//i.test(url))
+            return url;
+        const base = (this.config.get('app.baseUrl') ?? '').replace(/\/$/, '');
+        const clean = url.replace(/^\//, '');
+        return base ? `${base}/${clean}` : url;
+    }
     async sendMetaImages(recipientId, imageUrls, pageAccessToken) {
         this.recentSendByRecipient.set(recipientId, Date.now());
+        const hasRelative = imageUrls.some((u) => !/^https?:\/\//i.test(u));
+        if (hasRelative) {
+            const base = this.config.get('app.baseUrl') ?? '';
+            if (!base || /^https?:\/\/localhost/i.test(base)) {
+                this.logger.warn(`app.baseUrl is "${base || '(unset)'}" — Meta cannot fetch attachments. ` +
+                    `Set APP_BASE_URL to the public ngrok / prod URL.`);
+            }
+        }
+        const absoluteUrls = imageUrls.map((u) => this.toPublicImageUrl(u));
         const res = await fetch('https://graph.instagram.com/v21.0/me/messages', {
             method: 'POST',
             headers: {
@@ -142,7 +158,7 @@ let InstagramService = InstagramService_1 = class InstagramService {
             body: JSON.stringify({
                 recipient: { id: recipientId },
                 message: {
-                    attachments: imageUrls.map((url) => ({
+                    attachments: absoluteUrls.map((url) => ({
                         type: 'image',
                         payload: { url },
                     })),
@@ -450,7 +466,15 @@ let InstagramService = InstagramService_1 = class InstagramService {
                             this.logger.log(`Sent ${replyImages.length} product image(s) in one message to ${params.externalUserId}`);
                         }
                         await (0, retry_1.withRetry)(() => this.sendMetaMessage(params.externalUserId, replyText, pageAccessToken), { label: `meta-msg-${params.externalUserId}`, maxAttempts: 3, baseDelayMs: 2000 });
-                        this.logger.log(`Message sent to ${params.externalUserId} via Meta Graph API`);
+                        for (const extra of result.extraReplies ?? []) {
+                            if (extra.imageUrls?.length) {
+                                await (0, retry_1.withRetry)(() => this.sendMetaImages(params.externalUserId, extra.imageUrls, pageAccessToken), { label: `meta-images-extra-${params.externalUserId}`, maxAttempts: 3, baseDelayMs: 2000 });
+                            }
+                            if (extra.text) {
+                                await (0, retry_1.withRetry)(() => this.sendMetaMessage(params.externalUserId, extra.text, pageAccessToken), { label: `meta-msg-extra-${params.externalUserId}`, maxAttempts: 3, baseDelayMs: 2000 });
+                            }
+                        }
+                        this.logger.log(`Delivered ${1 + (result.extraReplies?.length ?? 0)} bubble(s) to ${params.externalUserId} via Meta Graph API`);
                     }
                     catch (err) {
                         this.logger.error(`Failed to send to Meta API for conversation ${conversation.id}`, err);

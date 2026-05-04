@@ -16,20 +16,43 @@ import { cn } from '../lib/cn';
 // --- Constants ---
 
 const SCENARIO_LABELS: Record<string, string> = {
+  // Greeting / conversation start
   greeting: 'Привітання',
+  conversation_start_greeting: 'Перше привітання в розмові',
+  // Product discovery
   show_products: 'Показ товарів',
   show_price: 'Показ ціни',
   recommend_product: 'Рекомендація товару',
   ask_recommendation_from_shown: 'Рекомендація зі списку',
+  // Variant selection
+  ask_variant_choice: 'Вибір варіанту',
+  ask_size_choice: 'Вибір розміру',
+  ask_size_for_color: 'Запит розміру (для обраного кольору)',
+  ask_color_for_size: 'Запит кольору (для обраного розміру)',
+  variant_not_available: 'Варіант недоступний',
+  // Confirmation
   confirm_selection: 'Підтвердження вибору',
   confirm_variant_available: 'Підтвердження розміру',
+  // Checkout
   collect_checkout_info: 'Збір даних для замовлення',
-  confirm_order: 'Підтвердження замовлення',
   order_confirmed_ask_delivery: 'Запит даних доставки',
+  confirm_order: 'Підтвердження замовлення',
+  ask_continue_or_checkout: 'Додати ще чи оформити?',
+  // FAQ
   answer_delivery: 'Відповідь про доставку',
   answer_payment: 'Відповідь про оплату',
+  // Out-of-stock / fallbacks
   out_of_stock: 'Немає в наявності',
-  ask_variant_choice: 'Вибір варіанту',
+  product_not_found: 'Товар не знайдено',
+  // Pre-qualify (clothing — height/weight; cosmetics — skin type)
+  pre_qualify: 'Запит зросту / ваги',
+  pre_qualify_with_price: 'Запит зросту / ваги з ціною',
+  ask_pre_qualify: 'Запит даних для підбору',
+  // Size chart
+  show_size_chart: 'Показ розмірної сітки',
+  // Cosmetics-specific (no-op for fashion tenants)
+  ask_skin_type: 'Запит типу шкіри',
+  recommend_for_skin_type: 'Рекомендація за типом шкіри',
 };
 
 const STAGE_OPTIONS = [
@@ -56,7 +79,7 @@ const PHRASE_TYPES = [
 ];
 
 const AVAILABLE_VARIABLES =
-  '{product_name}, {category}, {color}, {size}, {price}, {product_list}, {variants}, {variant_type}, {variant_list}, {customer_name}, {phone}, {city}, {delivery_branch}, {order_summary}, {reason}';
+  '{product_name}, {category}, {color}, {size}, {price}, {product_list}, {variants}, {variant_type}, {variant_list}, {customer_name}, {phone}, {city}, {delivery_branch}, {order_summary}, {reason}, {brand}, {name}, {skin_type}, {requested_variant}, {matched_variant_id}';
 
 const SCENARIO_COLORS: Record<string, string> = {
   greeting: 'bg-blue-100 text-blue-700',

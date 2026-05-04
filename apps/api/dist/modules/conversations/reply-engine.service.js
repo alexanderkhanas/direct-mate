@@ -30,10 +30,13 @@ const audit_service_1 = require("../audit/audit.service");
 const classifier_service_1 = require("../engine/classifier.service");
 const template_engine_service_1 = require("../engine/template-engine.service");
 const policy_engine_service_1 = require("../engine/policy-engine.service");
+const format_1 = require("../../common/format");
 const shared_1 = require("@direct-mate/shared");
 const instagram_content_service_1 = require("../channels/instagram/instagram-content.service");
 const size_charts_service_1 = require("../size-charts/size-charts.service");
 const LOG_FILE = path.join(process.cwd(), 'conversations.log');
+const RECOMMENDED_SIZE_PREFIX = (size) => `За вашими параметрами рекомендую розмір ${size}`;
+const ASK_FOR_MEASUREMENTS_HELP = 'Напишіть свій зріст та вагу і я допоможу підібрати розмір';
 let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
     logToFile(entry) {
         const line = JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n';
@@ -92,7 +95,31 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         if (searchResult)
             return withTrace(searchResult);
         this.resolveVariantSelection(input, ctx);
-        return withTrace(await this.buildResponse(input, ctx));
+        const result = await this.buildResponse(input, ctx);
+        if (!ctx.memory.welcomedAt &&
+            ctx.classification?.primaryIntent !== 'greeting' &&
+            result.reply?.text) {
+            const greeting = await this.templateEngine.renderCustomScenario(input.tenantId, 'conversation_start_greeting', {});
+            if (greeting) {
+                ctx.trace.push('first-turn welcome prepended');
+                ctx.memory.welcomedAt = new Date().toISOString();
+                result.stateUpdate = {
+                    ...result.stateUpdate,
+                    contextJson: { ...ctx.memory },
+                };
+                const contextualReply = result.reply;
+                result.reply = { text: greeting.text, sendNow: true };
+                result.extraReplies = [
+                    {
+                        text: contextualReply.text,
+                        sendNow: true,
+                        imageUrls: contextualReply.imageUrls,
+                    },
+                    ...(result.extraReplies ?? []),
+                ];
+            }
+        }
+        return withTrace(result);
     }
     async loadContext(input) {
         const [settings, storeConfig, examples, categories] = await Promise.all([
@@ -496,6 +523,9 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             memory.awaitingPreQualifyAnswer = false;
             memory.shouldOfferSizeHelp = false;
         }
+        const midFlow = await this.maybeMidFlowSizeHelp(input, ctx);
+        if (midFlow)
+            return midFlow;
         if (preQualifyFlowConfig?.preQualify?.enabled &&
             !memory.preQualifyCollected &&
             !memory.orderCreated &&
@@ -671,15 +701,13 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         if (mediaProductData && mediaProductData.length > 0) {
             productData = mediaProductData;
             isFirstProductPresentation = false;
-            if (!memory.lastPresentedProducts?.length) {
-                memory.lastPresentedProducts = mediaProductData.map((p) => ({
-                    title: p.product.title,
-                    variants: [...new Set(p.variants.map((v) => [...new Set([v.size, v.color].filter(Boolean))].join(', ') || 'standard'))],
-                    price: [
-                        ...new Set(p.variants.map((v) => `${v.price} ${v.currency}`)),
-                    ].join(' / '),
-                }));
-            }
+            memory.lastPresentedProducts = mediaProductData.map((p) => ({
+                title: p.product.title,
+                variants: [...new Set(p.variants.map((v) => [...new Set([v.size, v.color].filter(Boolean))].join(', ') || 'standard'))],
+                price: [
+                    ...new Set(p.variants.map((v) => `${v.price} ${(0, format_1.formatCurrency)(v.currency)}`)),
+                ].join(' / '),
+            }));
             const first = mediaProductData[0];
             const inStock = first.variants.filter((v) => v.effectiveAvailable > 0);
             memory.selectedProductId = first.product.id;
@@ -691,6 +719,11 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 size: v.size,
                 imageUrl: v.imageUrl ?? null,
             }));
+            if (classification.entities.productName &&
+                classification.entities.productName !== first.product.title) {
+                ctx.trace.push(`5.5m: overrode classifier productName="${classification.entities.productName}" → media-resolved "${first.product.title}"`);
+                classification.entities.productName = first.product.title;
+            }
             const isSelectionIntent = ['availability_check', 'product_inquiry', 'general_question'].includes(classification.primaryIntent) ||
                 classification.recommendedAction === 'show_products';
             if (isSelectionIntent) {
@@ -776,6 +809,27 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 keywords: searchKeywords,
                 found: productData ? productData.length : 0,
             });
+            if (memory.selectedCategory &&
+                productData &&
+                productData.length > 1) {
+                const cat = memory.selectedCategory.toLowerCase();
+                const inCategory = productData.filter((p) => p.product.category?.toLowerCase() === cat);
+                if (inCategory.length > 0) {
+                    ctx.trace.push(`search: narrowed by selectedCategory="${memory.selectedCategory}" (${productData.length} → ${inCategory.length})`);
+                    productData = inCategory;
+                }
+            }
+            if (Array.isArray(memory.lastPresentedProducts) &&
+                memory.lastPresentedProducts.length > 0 &&
+                productData &&
+                productData.length > 1) {
+                const shownTitles = new Set(memory.lastPresentedProducts.map((p) => p.title.toLowerCase()));
+                const inShown = productData.filter((p) => shownTitles.has(p.product.title.toLowerCase()));
+                if (inShown.length > 0) {
+                    ctx.trace.push(`search: narrowed to lastPresentedProducts (${productData.length} → ${inShown.length})`);
+                    productData = inShown;
+                }
+            }
             const isCorrection = classification.slotAction === 'correction';
             const userSpecifiedSize = !!classification.entities.size;
             if (productData && productData.length > 0 && memory.recommendedSize && !isCorrection && !userSpecifiedSize) {
@@ -862,7 +916,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                     title: p.product.title,
                     variants: [...new Set(p.variants.map((v) => [...new Set([v.size, v.color].filter(Boolean))].join(', ') || 'standard'))],
                     price: [
-                        ...new Set(p.variants.map((v) => `${v.price} ${v.currency}`)),
+                        ...new Set(p.variants.map((v) => `${v.price} ${(0, format_1.formatCurrency)(v.currency)}`)),
                     ].join(' / '),
                 }));
                 memory.selectedCategory =
@@ -1277,7 +1331,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             const buildResponseBusinessType = effectiveConfig?.flowConfig?.businessType ?? 'clothing';
             if (buildResponseBusinessType === 'clothing') {
                 if (memory.recommendedSize && memory.lastAction === 'recommended_size') {
-                    finalReply = `За вашими параметрами рекомендую розмір ${memory.recommendedSize} 💛\n\n${finalReply}`;
+                    finalReply = `${RECOMMENDED_SIZE_PREFIX(memory.recommendedSize)}\n\n${finalReply}`;
                 }
             }
             if (buildResponseBusinessType === 'cosmetics') {
@@ -1520,12 +1574,16 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
     async maybeAttachSizeChart(input, ctx, scenario) {
         if (!scenario)
             return undefined;
-        const isSizeForColor = scenario === 'ask_size_for_color';
-        const isVariantChoiceSizeStep = scenario === 'ask_variant_choice' && ctx.memory.variantStep === 'size';
-        if (!isSizeForColor && !isVariantChoiceSizeStep)
-            return undefined;
         if (!ctx.productData || ctx.productData.length !== 1)
             return undefined;
+        const isSizeForColor = scenario === 'ask_size_for_color';
+        const isVariantChoiceSizeStep = scenario === 'ask_variant_choice' && ctx.memory.variantStep === 'size';
+        const productHasColors = ctx.productData[0].variants.some((v) => v.color);
+        const productHasSizes = ctx.productData[0].variants.some((v) => v.size);
+        const isVariantChoiceSizeOnly = scenario === 'ask_variant_choice' && productHasSizes && !productHasColors;
+        if (!isSizeForColor && !isVariantChoiceSizeStep && !isVariantChoiceSizeOnly) {
+            return undefined;
+        }
         const productId = ctx.productData[0].product.id;
         const { brand, category } = await this.sizeChartsService.getBrandAndCategoryForProduct(input.tenantId, productId);
         const chart = await this.sizeChartsService.resolveForContext(input.tenantId, {
@@ -1687,6 +1745,95 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         if (wordMatches.length > 1 && wordMatches[0].overlap > wordMatches[1].overlap) {
             return wordMatches[0].option;
         }
+        return null;
+    }
+    async maybeMidFlowSizeHelp(input, ctx) {
+        const { memory, effectiveConfig, mediaProductData } = ctx;
+        const classification = ctx.classification;
+        const flowConfig = effectiveConfig?.flowConfig;
+        if (!flowConfig?.preQualify?.enabled)
+            return null;
+        const numericChart = flowConfig.sizeChart;
+        if (!numericChart || Object.keys(numericChart).length === 0)
+            return null;
+        if (memory.orderCreated)
+            return null;
+        if (memory.cartItems?.length)
+            return null;
+        if (mediaProductData)
+            return null;
+        if (classification.entities.size)
+            return null;
+        if (classification.slotAction === 'correction')
+            return null;
+        if (memory.selectionState === 'awaiting_confirmation' &&
+            classification.slotAction === 'confirmation') {
+            return null;
+        }
+        const fields = flowConfig.preQualify.fields ?? ['height', 'weight'];
+        const hasMeasurements = this.looksLikePreQualifyData(input.messageText, fields);
+        const isRecommendation = classification.primaryIntent === 'ask_recommendation';
+        const SIZE_KEYWORDS = ['розмір', 'зріст', 'вага'];
+        const lowerText = input.messageText.toLowerCase();
+        const hasSizeKeyword = SIZE_KEYWORDS.some((k) => lowerText.includes(k));
+        if (!hasMeasurements && !(isRecommendation && hasSizeKeyword))
+            return null;
+        ctx.trace.push('handlePreQualifyClothing: mid-flow size-help branch fired');
+        if (!hasMeasurements) {
+            memory.lastAction = 'asked_pre_qualify';
+            memory.awaitingField = 'pre_qualify_data';
+            return {
+                decision: shared_1.ReplyDecision.Reply,
+                reply: { text: ASK_FOR_MEASUREMENTS_HELP, sendNow: true },
+                handoff: { required: false, reason: null },
+                stateUpdate: { contextJson: memory },
+            };
+        }
+        const params = this.extractPreQualifyData(input.messageText, fields);
+        const recommended = this.recommendSize(params, numericChart);
+        if (!recommended)
+            return null;
+        memory.preQualifyData = params;
+        memory.preQualifyCollected = true;
+        memory.recommendedSize = recommended;
+        memory.lastAction = 'recommended_size';
+        if (memory.selectedProductId) {
+            const productData = await this.availabilityService.findAllByProductId(memory.selectedProductId);
+            if (productData.length > 0) {
+                const product = productData[0];
+                const matching = product.variants.filter((v) => v.effectiveAvailable > 0 && v.size && v.size.toLowerCase() === recommended.toLowerCase());
+                if (matching.length === 1) {
+                    const v = matching[0];
+                    memory.selectedVariantId = v.id;
+                    memory.selectedVariantName = [v.color, v.size].filter(Boolean).join(', ') || recommended;
+                    memory.selectedColor = v.color ?? undefined;
+                    memory.selectedSize = v.size ?? recommended;
+                    memory.selectionState = 'awaiting_confirmation';
+                    classification.primaryIntent = 'confirm_selection';
+                    classification.recommendedAction = 'confirm_selection';
+                    ctx.trace.push(`mid-flow: single variant matched (${memory.selectedVariantName}) → confirm_selection`);
+                    return null;
+                }
+                if (matching.length > 1) {
+                    memory.selectedSize = recommended;
+                    memory.selectedColor = undefined;
+                    memory.variantStep = 'color';
+                    memory.selectionState = 'awaiting_variant';
+                    memory.availableVariants = this.buildAvailableVariantsList(matching);
+                    classification.primaryIntent = 'ask_color_for_size';
+                    classification.recommendedAction = 'ask_color_for_size';
+                    ctx.trace.push(`mid-flow: ${matching.length} colors at size ${recommended} → ask_color_for_size`);
+                    return null;
+                }
+            }
+        }
+        if (!classification.entities.category && memory.selectedCategory) {
+            classification.entities.category = memory.selectedCategory;
+        }
+        classification.primaryIntent = 'category_browse';
+        classification.recommendedAction = 'show_products';
+        classification.dialogueAct = 'general_chat';
+        ctx.trace.push(`mid-flow: no product context → show_products filtered by ${recommended}`);
         return null;
     }
     looksLikePreQualifyData(text, fields) {
@@ -2048,7 +2195,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             const variantDescs = p.variants.map((v) => {
                 const details = [v.size, v.color].filter(Boolean).join(', ');
                 const stock = v.effectiveAvailable > 0 ? 'в наявності' : 'немає';
-                return `${details || 'standard'}: ${v.price} ${v.currency} (${stock})`;
+                return `${details || 'standard'}: ${v.price} ${(0, format_1.formatCurrency)(v.currency)} (${stock})`;
             });
             parts.push(`- ${p.product.title}: ${variantDescs.join('; ')}`);
         }
@@ -2096,6 +2243,40 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             brand,
             category,
         });
+        const flowConfig = ctx.effectiveConfig?.flowConfig;
+        const businessType = flowConfig?.businessType ?? 'clothing';
+        const numericChart = flowConfig?.sizeChart;
+        const askingForHelp = ctx.classification.dialogueAct === 'ask_recommendation';
+        if (askingForHelp &&
+            businessType === 'clothing' &&
+            flowConfig?.preQualify?.enabled &&
+            !memory.preQualifyCollected &&
+            numericChart &&
+            Object.keys(numericChart).length > 0) {
+            memory.lastAction = 'asked_pre_qualify';
+            memory.awaitingField = 'pre_qualify_data';
+            ctx.trace.push('size_chart_request: help-style → ask for measurements');
+            let extraReplies;
+            if (chart) {
+                const chartUrl = chart.imagePath.startsWith('/')
+                    ? chart.imagePath
+                    : `/${chart.imagePath}`;
+                extraReplies = [
+                    {
+                        text: 'Надсилаю вам розмірну сітку 💛',
+                        sendNow: true,
+                        imageUrls: [chartUrl],
+                    },
+                ];
+            }
+            return {
+                decision: shared_1.ReplyDecision.Reply,
+                reply: { text: ASK_FOR_MEASUREMENTS_HELP, sendNow: true },
+                extraReplies,
+                handoff: { required: false, reason: null },
+                stateUpdate: { contextJson: memory },
+            };
+        }
         if (!chart) {
             ctx.trace.push('size_chart_request: no chart matched → silent handoff');
             this.logToFile({

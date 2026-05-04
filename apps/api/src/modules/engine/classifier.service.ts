@@ -81,6 +81,11 @@ export interface AssistantMemory {
   variantStep?: 'color' | 'size' | null;
   selectedColor?: string;
   selectedSize?: string;
+  /** ISO timestamp of when conversation_start_greeting was first sent for
+   *  this conversation. Set on the first inbound turn (unless the classifier
+   *  resolves greeting intent, which renders the natural greeting reply on
+   *  its own). Once set, the welcome doesn't re-fire. */
+  welcomedAt?: string;
 }
 
 // ─── OpenAI tool definition ──────────────────────────────────────

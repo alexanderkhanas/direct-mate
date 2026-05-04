@@ -88,6 +88,7 @@ export declare class ReplyEngineService {
     private translateColor;
     private matchVariant;
     private matchColorOrSize;
+    private maybeMidFlowSizeHelp;
     private looksLikePreQualifyData;
     private extractPreQualifyData;
     private recommendSize;

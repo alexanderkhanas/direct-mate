@@ -314,7 +314,7 @@ let AvailabilityService = class AvailabilityService {
             const pid = v.product.id;
             if (!productMap.has(pid)) {
                 productMap.set(pid, {
-                    product: { id: pid, title: v.product.title, imageUrl: null },
+                    product: { id: pid, title: v.product.title, imageUrl: null, category: v.product.category ?? null },
                     variants: [],
                 });
             }

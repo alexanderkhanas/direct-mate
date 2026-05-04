@@ -43,6 +43,7 @@ export declare class AvailabilityService {
             id: string;
             title: string;
             imageUrl?: string | null;
+            category?: string | null;
         };
         variants: Array<{
             id: string;
@@ -63,6 +64,7 @@ export declare class AvailabilityService {
             id: string;
             title: string;
             imageUrl?: string | null;
+            category?: string | null;
         };
         variants: Array<{
             id: string;

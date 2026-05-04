@@ -49,6 +49,8 @@ export interface CreateTenantOpts {
   /** Loose `tenants.business_type` text column (separate from engine-routing flow_config.businessType). */
   businessType: 'fashion' | 'cosmetics' | 'general';
   timezone?: string;
+  /** Defaults to true. Set false for non-demo test tenants that need full engine behavior (orders, no rate limits). */
+  isDemo?: boolean;
 }
 
 export async function createTenant(
@@ -57,9 +59,9 @@ export async function createTenant(
 ): Promise<string> {
   const inserted: Array<{ id: string }> = await ds.query(
     `INSERT INTO tenants (name, slug, business_type, timezone, is_active, is_demo)
-     VALUES ($1, $2, $3, $4, true, true)
+     VALUES ($1, $2, $3, $4, true, $5)
      RETURNING id`,
-    [opts.name, opts.slug, opts.businessType, opts.timezone ?? 'Europe/Kyiv'],
+    [opts.name, opts.slug, opts.businessType, opts.timezone ?? 'Europe/Kyiv', opts.isDemo ?? true],
   );
   return inserted[0].id;
 }

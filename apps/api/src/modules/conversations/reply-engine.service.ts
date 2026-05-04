@@ -22,6 +22,7 @@ import {
   ProductSearchResult,
 } from '../engine/template-engine.service';
 import { PolicyEngineService, PolicyEvaluation } from '../engine/policy-engine.service';
+import { formatCurrency } from '../../common/format';
 import {
   AuditLogType,
   ConversationStateStatus,
@@ -83,6 +84,12 @@ interface ProcessingContext {
 const LOG_FILE = path.join(process.cwd(), 'conversations.log');
 
 // ─── Service ─────────────────────────────────────────────────────
+
+const RECOMMENDED_SIZE_PREFIX = (size: string) =>
+  `За вашими параметрами рекомендую розмір ${size}`;
+
+const ASK_FOR_MEASUREMENTS_HELP =
+  'Напишіть свій зріст та вагу і я допоможу підібрати розмір';
 
 @Injectable()
 export class ReplyEngineService {
@@ -162,7 +169,45 @@ export class ReplyEngineService {
 
     this.resolveVariantSelection(input, ctx);
 
-    return withTrace(await this.buildResponse(input, ctx));
+    const result = await this.buildResponse(input, ctx);
+
+    // Conversation-start greeting: fire ONCE per conversation, before the
+    // contextual reply. Skip if classifier resolved greeting intent (the
+    // existing `greeting` scenario covers that flow on its own — avoid
+    // double "Вітаю"). Template-driven opt-in: tenants without an active
+    // `conversation_start_greeting` template render null here and nothing
+    // happens.
+    if (
+      !ctx.memory.welcomedAt &&
+      ctx.classification?.primaryIntent !== 'greeting' &&
+      result.reply?.text
+    ) {
+      const greeting = await this.templateEngine.renderCustomScenario(
+        input.tenantId,
+        'conversation_start_greeting',
+        {},
+      );
+      if (greeting) {
+        ctx.trace.push('first-turn welcome prepended');
+        ctx.memory.welcomedAt = new Date().toISOString();
+        result.stateUpdate = {
+          ...result.stateUpdate,
+          contextJson: { ...ctx.memory },
+        };
+        const contextualReply = result.reply;
+        result.reply = { text: greeting.text, sendNow: true };
+        result.extraReplies = [
+          {
+            text: contextualReply.text!,
+            sendNow: true,
+            imageUrls: contextualReply.imageUrls,
+          },
+          ...(result.extraReplies ?? []),
+        ];
+      }
+    }
+
+    return withTrace(result);
   }
 
   // ─── Step 1: Load tenant context ───────────────────────────────
@@ -698,6 +743,14 @@ export class ReplyEngineService {
       memory.shouldOfferSizeHelp = false;
     }
 
+    // ─── Mid-flow size-help branch ────────────────────────────────────
+    // Catches "Я 180 см 80 кг, який розмір?" / "який розмір підібрати?"
+    // mid-conversation (after product selection), which the pre-qualify
+    // gate below blocks once selectionState=awaiting_variant or
+    // entities.productName is set.
+    const midFlow = await this.maybeMidFlowSizeHelp(input, ctx);
+    if (midFlow) return midFlow;
+
     // ─── Pre-qualify gate ──────────────────────────────────────────
     if (
       preQualifyFlowConfig?.preQualify?.enabled &&
@@ -945,20 +998,21 @@ export class ReplyEngineService {
     if (mediaProductData && mediaProductData.length > 0) {
       productData = mediaProductData;
       // Customer already saw the product in the story/post — not a "first presentation".
-      // Also populate lastPresentedProducts so downstream code (shouldSearchProducts, stage gates)
-      // knows products have been shown.
+      // Always overwrite lastPresentedProducts: media context for THIS turn is the
+      // authoritative product list. A stale list from a prior media-context turn
+      // (different product) would otherwise leak through variable-map fallbacks
+      // (template-engine.service.ts:555-556, 742-744) and surface the wrong product
+      // name in interpolations like {product_name}.
       isFirstProductPresentation = false;
-      if (!memory.lastPresentedProducts?.length) {
-        memory.lastPresentedProducts = mediaProductData.map((p) => ({
-          title: p.product.title,
-          variants: [...new Set(p.variants.map((v) =>
-            [...new Set([v.size, v.color].filter(Boolean))].join(', ') || 'standard',
-          ))],
-          price: [
-            ...new Set(p.variants.map((v) => `${v.price} ${v.currency}`)),
-          ].join(' / '),
-        }));
-      }
+      memory.lastPresentedProducts = mediaProductData.map((p) => ({
+        title: p.product.title,
+        variants: [...new Set(p.variants.map((v) =>
+          [...new Set([v.size, v.color].filter(Boolean))].join(', ') || 'standard',
+        ))],
+        price: [
+          ...new Set(p.variants.map((v) => `${v.price} ${formatCurrency(v.currency)}`)),
+        ].join(' / '),
+      }));
 
       // 5.5m: Pre-seed memory so variant matching works for story/post replies.
       // Without this, memory.selectedProductId is null → 5.5c/5.5d are skipped →
@@ -975,6 +1029,23 @@ export class ReplyEngineService {
         size: v.size,
         imageUrl: v.imageUrl ?? null,
       }));
+
+      // Reconcile classifier-extracted productName with media-resolved title.
+      // The classifier reads recent conversation history, so it can extract a
+      // product name from prior turns even when the customer has switched to a
+      // different story/post. Media context for THIS turn is ground truth —
+      // override the stale entity so template-engine's variable map (which
+      // checks classification.entities.productName FIRST at line 515-516)
+      // doesn't render the wrong product name.
+      if (
+        classification.entities.productName &&
+        classification.entities.productName !== first.product.title
+      ) {
+        ctx.trace.push(
+          `5.5m: overrode classifier productName="${classification.entities.productName}" → media-resolved "${first.product.title}"`,
+        );
+        classification.entities.productName = first.product.title;
+      }
 
       // Only override scenario for selection-type intents.
       // Price / delivery / FAQ intents already work correctly with productData in context.
@@ -1084,6 +1155,54 @@ export class ReplyEngineService {
         found: productData ? productData.length : 0,
       });
 
+      // Narrow by selectedCategory when set from a prior turn — prevents the
+      // search from drifting across categories when a customer browses a
+      // category-specific list ("куртка") then narrows by brand/product
+      // ("давайте зара"). The keyword search OR-matches title across all
+      // categories, so without this filter "Zara" would surface every Zara
+      // product (t-shirts, pants, etc.) and pick productData[0] arbitrarily.
+      // Defensive: skip filter if no in-category match (preserve broad result).
+      if (
+        memory.selectedCategory &&
+        productData &&
+        productData.length > 1
+      ) {
+        const cat = memory.selectedCategory.toLowerCase();
+        const inCategory = productData.filter(
+          (p) => p.product.category?.toLowerCase() === cat,
+        );
+        if (inCategory.length > 0) {
+          ctx.trace.push(
+            `search: narrowed by selectedCategory="${memory.selectedCategory}" (${productData.length} → ${inCategory.length})`,
+          );
+          productData = inCategory;
+        }
+      }
+
+      // Defensive secondary narrowing: if multiple search results still
+      // remain AND any of them was in the just-shown product list, prefer
+      // those. Handles "selecting from a shown list" without depending on
+      // selectedCategory being populated.
+      if (
+        Array.isArray(memory.lastPresentedProducts) &&
+        memory.lastPresentedProducts.length > 0 &&
+        productData &&
+        productData.length > 1
+      ) {
+        const shownTitles = new Set(
+          memory.lastPresentedProducts.map((p) => p.title.toLowerCase()),
+        );
+        const inShown = productData.filter((p) =>
+          shownTitles.has(p.product.title.toLowerCase()),
+        );
+        if (inShown.length > 0) {
+          ctx.trace.push(
+            `search: narrowed to lastPresentedProducts (${productData.length} → ${inShown.length})`,
+          );
+          productData = inShown;
+        }
+      }
+
       // Filter by recommended size if available (skip on correction or when user explicitly chose a size)
       const isCorrection = classification.slotAction === 'correction';
       const userSpecifiedSize = !!classification.entities.size;
@@ -1189,7 +1308,7 @@ export class ReplyEngineService {
             [...new Set([v.size, v.color].filter(Boolean))].join(', ') || 'standard',
           ))],
           price: [
-            ...new Set(p.variants.map((v) => `${v.price} ${v.currency}`)),
+            ...new Set(p.variants.map((v) => `${v.price} ${formatCurrency(v.currency)}`)),
           ].join(' / '),
         }));
         memory.selectedCategory =
@@ -1725,7 +1844,7 @@ export class ReplyEngineService {
 
       if (buildResponseBusinessType === 'clothing') {
         if (memory.recommendedSize && memory.lastAction === 'recommended_size') {
-          finalReply = `За вашими параметрами рекомендую розмір ${memory.recommendedSize} 💛\n\n${finalReply}`;
+          finalReply = `${RECOMMENDED_SIZE_PREFIX(memory.recommendedSize)}\n\n${finalReply}`;
         }
       }
 
@@ -2071,11 +2190,22 @@ export class ReplyEngineService {
     scenario: string | undefined,
   ): Promise<ReplyEngineOutput['extraReplies']> {
     if (!scenario) return undefined;
+    if (!ctx.productData || ctx.productData.length !== 1) return undefined;
+
     const isSizeForColor = scenario === 'ask_size_for_color';
     const isVariantChoiceSizeStep =
       scenario === 'ask_variant_choice' && ctx.memory.variantStep === 'size';
-    if (!isSizeForColor && !isVariantChoiceSizeStep) return undefined;
-    if (!ctx.productData || ctx.productData.length !== 1) return undefined;
+    // Third trigger: single-axis size-only product (no color variants) routed
+    // to ask_variant_choice. The bot is unambiguously asking for a size — same
+    // intent as the two-step variantStep='size' case, just without a prior
+    // color step.
+    const productHasColors = ctx.productData[0].variants.some((v) => v.color);
+    const productHasSizes = ctx.productData[0].variants.some((v) => v.size);
+    const isVariantChoiceSizeOnly =
+      scenario === 'ask_variant_choice' && productHasSizes && !productHasColors;
+    if (!isSizeForColor && !isVariantChoiceSizeStep && !isVariantChoiceSizeOnly) {
+      return undefined;
+    }
 
     const productId = ctx.productData[0].product.id;
     const { brand, category } =
@@ -2349,6 +2479,136 @@ export class ReplyEngineService {
   }
 
   // ─── Pre-qualification helpers ────────────────────────────────
+
+  /**
+   * Mid-flow size-help branch. Fires when the user asks for size advice
+   * AFTER product selection has already pinned context — the case the
+   * existing pre-qualify gate cannot reach because it requires
+   * selectionState ∉ {awaiting_variant, awaiting_confirmation} and no
+   * productName entity. Triggers on:
+   *   - raw measurements ("180 80", "170 см 60 кг"), OR
+   *   - intent='ask_recommendation' + a strict size-context keyword.
+   * Generic "що порадите?" without size words deliberately falls
+   * through so existing recommendation/AI-fallback path runs.
+   */
+  private async maybeMidFlowSizeHelp(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+  ): Promise<ReplyEngineOutput | null> {
+    const { memory, effectiveConfig, mediaProductData } = ctx;
+    const classification = ctx.classification;
+    const flowConfig = effectiveConfig?.flowConfig as any;
+
+    if (!flowConfig?.preQualify?.enabled) return null;
+
+    const numericChart = flowConfig.sizeChart as
+      | Record<string, { heightMin: number; heightMax: number; weightMin: number; weightMax: number }>
+      | undefined;
+    if (!numericChart || Object.keys(numericChart).length === 0) return null;
+
+    // Anti-triggers
+    if (memory.orderCreated) return null;
+    if (memory.cartItems?.length) return null;
+    if (mediaProductData) return null;
+    if (classification.entities.size) return null;
+    if (classification.slotAction === 'correction') return null;
+    if (
+      memory.selectionState === 'awaiting_confirmation' &&
+      classification.slotAction === 'confirmation'
+    ) {
+      return null;
+    }
+
+    // Trigger: raw measurements OR ask_recommendation + strict size keyword
+    const fields = (flowConfig.preQualify.fields as string[]) ?? ['height', 'weight'];
+    const hasMeasurements = this.looksLikePreQualifyData(input.messageText, fields);
+    const isRecommendation = classification.primaryIntent === 'ask_recommendation';
+    const SIZE_KEYWORDS = ['розмір', 'зріст', 'вага'];
+    const lowerText = input.messageText.toLowerCase();
+    const hasSizeKeyword = SIZE_KEYWORDS.some((k) => lowerText.includes(k));
+
+    if (!hasMeasurements && !(isRecommendation && hasSizeKeyword)) return null;
+
+    ctx.trace.push('handlePreQualifyClothing: mid-flow size-help branch fired');
+
+    // Keyword-only (no numbers): user asked for size help → confirm and
+    // ask for measurements.
+    if (!hasMeasurements) {
+      memory.lastAction = 'asked_pre_qualify';
+      memory.awaitingField = 'pre_qualify_data';
+      return {
+        decision: ReplyDecision.Reply,
+        reply: { text: ASK_FOR_MEASUREMENTS_HELP, sendNow: true },
+        handoff: { required: false, reason: null },
+        stateUpdate: { contextJson: memory as any },
+      };
+    }
+
+    const params = this.extractPreQualifyData(input.messageText, fields);
+    const recommended = this.recommendSize(params, numericChart);
+    if (!recommended) return null; // defensive — fall through
+
+    memory.preQualifyData = params;
+    memory.preQualifyCollected = true;
+    memory.recommendedSize = recommended;
+    memory.lastAction = 'recommended_size';
+
+    // Path A — product already selected: refine variant selection.
+    if (memory.selectedProductId) {
+      const productData = await this.availabilityService.findAllByProductId(
+        memory.selectedProductId,
+      );
+      if (productData.length > 0) {
+        const product = productData[0];
+        const matching = product.variants.filter(
+          (v) => v.effectiveAvailable > 0 && v.size && v.size.toLowerCase() === recommended.toLowerCase(),
+        );
+        if (matching.length === 1) {
+          // Single matched variant → confirm
+          const v = matching[0];
+          memory.selectedVariantId = v.id;
+          memory.selectedVariantName = [v.color, v.size].filter(Boolean).join(', ') || recommended;
+          memory.selectedColor = v.color ?? undefined;
+          memory.selectedSize = v.size ?? recommended;
+          memory.selectionState = 'awaiting_confirmation';
+          classification.primaryIntent = 'confirm_selection';
+          classification.recommendedAction = 'confirm_selection';
+          ctx.trace.push(
+            `mid-flow: single variant matched (${memory.selectedVariantName}) → confirm_selection`,
+          );
+          return null;
+        }
+        if (matching.length > 1) {
+          // Multiple colors at the recommended size → ask color
+          memory.selectedSize = recommended;
+          memory.selectedColor = undefined;
+          memory.variantStep = 'color';
+          memory.selectionState = 'awaiting_variant';
+          memory.availableVariants = this.buildAvailableVariantsList(matching);
+          classification.primaryIntent = 'ask_color_for_size';
+          classification.recommendedAction = 'ask_color_for_size';
+          ctx.trace.push(
+            `mid-flow: ${matching.length} colors at size ${recommended} → ask_color_for_size`,
+          );
+          return null;
+        }
+        // No matching variants at recommended size → fall through to
+        // show_products with size filter (Path B) for the broader catalog.
+      }
+    }
+
+    // Path B — no product selected (or selected product has no match at
+    // recommended size): route to show_products with size filter applied
+    // by the existing post-search filter.
+    if (!classification.entities.category && memory.selectedCategory) {
+      classification.entities.category = memory.selectedCategory;
+    }
+    classification.primaryIntent = 'category_browse';
+    classification.recommendedAction = 'show_products';
+    classification.dialogueAct = 'general_chat';
+    ctx.trace.push(`mid-flow: no product context → show_products filtered by ${recommended}`);
+    return null;
+  }
 
   /**
    * Check if text contains data that looks like pre-qualify info (numbers for height/weight).
@@ -2810,7 +3070,7 @@ export class ReplyEngineService {
         const details = [v.size, v.color].filter(Boolean).join(', ');
         const stock =
           v.effectiveAvailable > 0 ? 'в наявності' : 'немає';
-        return `${details || 'standard'}: ${v.price} ${v.currency} (${stock})`;
+        return `${details || 'standard'}: ${v.price} ${formatCurrency(v.currency)} (${stock})`;
       });
       parts.push(`- ${p.product.title}: ${variantDescs.join('; ')}`);
     }
@@ -2862,6 +3122,8 @@ export class ReplyEngineService {
     const memory = ctx.memory;
     const entities = ctx.classification.entities;
 
+    // Resolve the visual chart up-front — both the help-style diversion and
+    // the direct chart-ask flow attach it.
     let brand: string | null = null;
     let category: string | null = entities.category ?? memory.selectedCategory ?? null;
 
@@ -2880,6 +3142,53 @@ export class ReplyEngineService {
       brand,
       category,
     });
+
+    // Help-style requests ("Можете допомогти з розміром?") classify as
+    // size_chart_request + dialogueAct='ask_recommendation'. Direct chart
+    // asks ("розмірна сітка є?") classify as
+    // size_chart_request + dialogueAct='ask_about_shown_products'. For
+    // help-style requests in clothing with a structured numeric chart and
+    // no prior measurements, ask for measurements (and attach the visual
+    // chart as a secondary bubble so the user can also self-serve).
+    const flowConfig = ctx.effectiveConfig?.flowConfig as any;
+    const businessType = (flowConfig?.businessType as 'clothing' | 'cosmetics') ?? 'clothing';
+    const numericChart = flowConfig?.sizeChart as
+      | Record<string, { heightMin: number; heightMax: number; weightMin: number; weightMax: number }>
+      | undefined;
+    const askingForHelp = ctx.classification.dialogueAct === 'ask_recommendation';
+    if (
+      askingForHelp &&
+      businessType === 'clothing' &&
+      flowConfig?.preQualify?.enabled &&
+      !memory.preQualifyCollected &&
+      numericChart &&
+      Object.keys(numericChart).length > 0
+    ) {
+      memory.lastAction = 'asked_pre_qualify';
+      memory.awaitingField = 'pre_qualify_data';
+      ctx.trace.push('size_chart_request: help-style → ask for measurements');
+
+      let extraReplies: ReplyEngineOutput['extraReplies'];
+      if (chart) {
+        const chartUrl = chart.imagePath.startsWith('/')
+          ? chart.imagePath
+          : `/${chart.imagePath}`;
+        extraReplies = [
+          {
+            text: 'Надсилаю вам розмірну сітку 💛',
+            sendNow: true,
+            imageUrls: [chartUrl],
+          },
+        ];
+      }
+      return {
+        decision: ReplyDecision.Reply,
+        reply: { text: ASK_FOR_MEASUREMENTS_HELP, sendNow: true },
+        extraReplies,
+        handoff: { required: false, reason: null },
+        stateUpdate: { contextJson: memory as any },
+      };
+    }
 
     if (!chart) {
       ctx.trace.push('size_chart_request: no chart matched → silent handoff');

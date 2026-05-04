@@ -5,11 +5,12 @@ import { ResponseTemplate } from './entities/response-template.entity';
 import { PhraseBlock } from './entities/phrase-block.entity';
 import { FaqItem } from './entities/faq-item.entity';
 import { ClassificationResult, AssistantMemory } from './classifier.service';
+import { formatCurrency, sortSizes } from '../../common/format';
 
 // ─── Interfaces ──────────────────────────────────────────────────
 
 export interface ProductSearchResult {
-  product: { id: string; title: string; imageUrl?: string | null };
+  product: { id: string; title: string; imageUrl?: string | null; category?: string | null };
   variants: Array<{
     id: string;
     size: string | null;
@@ -156,6 +157,9 @@ export class TemplateEngineService {
     }
 
     const variables = this.buildVariableMap(classification, productData, memory, flowConfig);
+    if (scenario === 'ask_variant_choice' && variables['variant_type']) {
+      variables['variant_type'] = variables['variant_type'].toLowerCase();
+    }
     this.logger.debug(`renderScenario: ${templates.length} templates found, variables: ${Object.keys(variables).join(', ')}`);
 
     const viable = templates.filter((t) => this.hasRequiredVariables(t, variables));
@@ -194,8 +198,28 @@ export class TemplateEngineService {
     const imageUrls: string[] = [];
     if (productData) {
       if (allProductScenarios.includes(scenario)) {
+        // Send one image per distinct variant URL across all listed products,
+        // so multi-color products surface a swatch per color in the customer's
+        // chat. Falls back to the product-level image when a product has no
+        // per-variant URLs. Deduped by URL — identical images don't repeat.
+        // Note: rendering is capped downstream by MessageBubble (4 images max
+        // visible) — flagged as tech debt; relevant when many colors per
+        // product × many products land in one reply.
+        const seen = new Set<string>();
         for (const p of productData) {
-          if (p.product.imageUrl) imageUrls.push(p.product.imageUrl);
+          const inStock = p.variants.filter((v) => v.effectiveAvailable > 0);
+          const variantUrls = inStock
+            .map((v) => v.imageUrl)
+            .filter((u): u is string => !!u);
+          const productUrls = variantUrls.length > 0
+            ? variantUrls
+            : (p.product.imageUrl ? [p.product.imageUrl] : []);
+          for (const url of productUrls) {
+            if (!seen.has(url)) {
+              seen.add(url);
+              imageUrls.push(url);
+            }
+          }
         }
       } else if (singleProductScenarios.includes(scenario)) {
         // For single-product scenarios, prefer the selected variant's image if available.
@@ -382,10 +406,13 @@ export class TemplateEngineService {
       return 'confirm_order';
     }
 
-    // Special case: ask_recommendation when products were already shown
+    // Special case: ask_recommendation when 2+ products were shown.
+    // The template literally says "З цих варіантів раджу…" — grammatically
+    // wrong with a single product, so route 1-product case to
+    // recommend_product (the singular default for ask_recommendation).
     if (
       (intent === 'ask_recommendation' || act === 'ask_recommendation') &&
-      memory?.lastPresentedProducts?.length &&
+      (memory?.lastPresentedProducts?.length ?? 0) >= 2 &&
       memory?.selectionState !== 'awaiting_variant'
     ) {
       return 'ask_recommendation_from_shown';
@@ -571,7 +598,7 @@ export class TemplateEngineService {
       // Build price string
       const prices = [
         ...new Set(
-          first.variants.map((v) => `${v.price} ${v.currency}`),
+          first.variants.map((v) => `${v.price} ${formatCurrency(v.currency)}`),
         ),
       ];
       vars['price'] = prices.join(' / ');
@@ -653,7 +680,7 @@ export class TemplateEngineService {
           }
           vars['variant_type'] = 'Відтінки';
           vars['variant_list'] = Array.from(colorGroups.entries())
-            .map(([color, sizes]) => sizes.length ? `${color} (${sizes.join(', ')})` : color)
+            .map(([color, sizes]) => sizes.length ? `${color} (${sortSizes(sizes).join(', ')})` : color)
             .join(', ');
         } else if (memory?.variantStep === 'size') {
           // Show only sizes filtered by selected color
@@ -663,7 +690,7 @@ export class TemplateEngineService {
             : inStockVars;
           const sizes = [...new Set(filteredVars.map((v) => v.size).filter(Boolean))] as string[];
           vars['variant_type'] = 'Розміри';
-          vars['variant_list'] = sizes.join(', ');
+          vars['variant_list'] = sortSizes(sizes).join(', ');
         } else {
           const variantType = this.detectVariantType(first.variants);
           vars['variant_type'] = variantType;
@@ -682,7 +709,7 @@ export class TemplateEngineService {
               }
             }
             vars['variant_list'] = Array.from(colorGroups.entries())
-              .map(([color, sizes]) => sizes.length ? `${color}: ${sizes.join(', ')}` : color)
+              .map(([color, sizes]) => sizes.length ? `${color}: ${sortSizes(sizes).join(', ')}` : color)
               .join('\n');
           } else {
             const variantNames = inStockVars
@@ -717,7 +744,7 @@ export class TemplateEngineService {
           }
         }
         vars['variant_list'] = Array.from(colorGroups.entries())
-          .map(([color, sizes]) => sizes.length ? `${color} (${sizes.join(', ')})` : color)
+          .map(([color, sizes]) => sizes.length ? `${color} (${sortSizes(sizes).join(', ')})` : color)
           .join(', ');
         vars['variant_type'] = 'Відтінки';
       } else if (memory?.variantStep === 'size') {
@@ -725,8 +752,8 @@ export class TemplateEngineService {
         const filteredVars = selectedColor
           ? memory.availableVariants.filter((v: any) => v.color && v.color.toLowerCase() === selectedColor.toLowerCase())
           : memory.availableVariants;
-        const sizes = [...new Set(filteredVars.map((v: any) => v.size).filter(Boolean))];
-        vars['variant_list'] = sizes.join(', ');
+        const sizes = [...new Set(filteredVars.map((v: any) => v.size).filter(Boolean))] as string[];
+        vars['variant_list'] = sortSizes(sizes).join(', ');
         vars['variant_type'] = 'Розміри';
       } else {
         vars['variant_list'] = [...new Set(memory.availableVariants.map((v: any) => v.name))].join(', ');
@@ -759,13 +786,13 @@ export class TemplateEngineService {
     // Build order summary from cart items (multi-product) or single product
     if (memory?.cartItems?.length) {
       const lines = memory.cartItems.map((item, i) =>
-        `${memory!.cartItems!.length > 1 ? `${i + 1}. ` : ''}${item.title} (${item.variantName})\nЦіна: ${item.price} ${item.currency}`
+        `${memory!.cartItems!.length > 1 ? `${i + 1}. ` : ''}${item.title} (${item.variantName})\nЦіна: ${item.price} ${formatCurrency(item.currency)}`
       );
       const total = memory.cartItems.reduce((sum, item) => sum + item.price, 0);
 
       const summaryParts = [...lines];
       if (total > 0 && memory.cartItems.length > 1) {
-        summaryParts.push(`Всього: ${total} ${memory.cartItems[0].currency}`);
+        summaryParts.push(`Всього: ${total} ${formatCurrency(memory.cartItems[0].currency)}`);
       }
       if (classification.entities.customerName)
         summaryParts.push(`ПІБ: ${classification.entities.customerName}`);
@@ -851,7 +878,7 @@ export class TemplateEngineService {
           ? (v.color || '')
           : [...new Set([v.color, v.size].filter(Boolean))].join(', ');
         if (!samePriceForAll) {
-          productLine += detail ? ` (${detail}) — ${v.price} ${v.currency}` : ` — ${v.price} ${v.currency}`;
+          productLine += detail ? ` (${detail}) — ${v.price} ${formatCurrency(v.currency)}` : ` — ${v.price} ${formatCurrency(v.currency)}`;
         } else if (detail) {
           productLine += ` (${detail})`;
         }
@@ -871,7 +898,10 @@ export class TemplateEngineService {
           const hasSizes = displayVariants.some((v) => v.size);
 
           if (hasColors && hasSizes) {
-            // Group sizes per color: "Відтінки: White (S, M, L, XL), Black (S, M, L, XL)"
+            // Group sizes per color, then check whether every color shares
+            // the same size set. When uniform, emit two cleaner lines
+            // (colors / sizes). When not, fall back to per-color paren
+            // format so the customer sees which sizes are missing where.
             const colorGroups = new Map<string, string[]>();
             for (const v of displayVariants) {
               if (v.color) {
@@ -881,10 +911,20 @@ export class TemplateEngineService {
                 }
               }
             }
-            const grouped = Array.from(colorGroups.entries())
-              .map(([color, sizes]) => sizes.length ? `${color} (${sizes.join(', ')})` : color)
-              .join(', ');
-            lines.push(`Відтінки: ${grouped}`);
+            const sizeSignatures = new Set(
+              Array.from(colorGroups.values()).map((sizes) => [...sizes].sort().join('|')),
+            );
+            if (sizeSignatures.size === 1 && colorGroups.size > 1) {
+              const colors = Array.from(colorGroups.keys()).join(', ');
+              const sizes = sortSizes(Array.from(colorGroups.values())[0] ?? []).join(', ');
+              lines.push(`Відтінки: ${colors}`);
+              if (sizes) lines.push(`Розміри: ${sizes}`);
+            } else {
+              const grouped = Array.from(colorGroups.entries())
+                .map(([color, sizes]) => sizes.length ? `${color} (${sortSizes(sizes).join(', ')})` : color)
+                .join(', ');
+              lines.push(`Відтінки: ${grouped}`);
+            }
           } else {
             // Single dimension — use detected type label
             const variantNames = displayVariants
@@ -894,7 +934,10 @@ export class TemplateEngineService {
 
             if (uniqueVariantNames.length > 0) {
               const label = variantType;
-              lines.push(`${label}: ${uniqueVariantNames.join(', ')}`);
+              // If the single dimension is sizes (no colors), apply size sort.
+              const ordered =
+                label === 'Розміри' ? sortSizes(uniqueVariantNames) : uniqueVariantNames;
+              lines.push(`${label}: ${ordered.join(', ')}`);
             }
           }
         }
@@ -903,9 +946,9 @@ export class TemplateEngineService {
         if (!samePriceForAll) {
           const productPrices = [...new Set(displayVariants.map((v) => v.price))];
           if (productPrices.length === 1) {
-            lines.push(`Ціна: ${productPrices[0]} ${currency}`);
+            lines.push(`Ціна: ${productPrices[0]} ${formatCurrency(currency)}`);
           } else {
-            lines.push(`Ціна: від ${Math.min(...productPrices)} до ${Math.max(...productPrices)} ${currency}`);
+            lines.push(`Ціна: від ${Math.min(...productPrices)} до ${Math.max(...productPrices)} ${formatCurrency(currency)}`);
           }
         }
       }
@@ -923,7 +966,7 @@ export class TemplateEngineService {
     // Append shared price line if all same
     if (samePriceForAll && uniquePrices.length > 0) {
       lines.push('');
-      lines.push(`Усі по ${uniquePrices[0]} ${currency}.`);
+      lines.push(`Усі по ${uniquePrices[0]} ${formatCurrency(currency)}.`);
     }
 
     return lines.join('\n');
