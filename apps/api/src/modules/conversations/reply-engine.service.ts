@@ -406,6 +406,7 @@ export class ReplyEngineService {
       memory.selectedSize = undefined;
       memory.preQualifyCollected = undefined;
       memory.preQualifyData = undefined;
+      memory.recommendedSize = undefined;
       memory.skinTypeCollected = undefined;
       memory.recommendedSkinType = undefined;
       memory.shouldOfferSizeHelp = undefined;
@@ -453,6 +454,7 @@ export class ReplyEngineService {
         memory.selectedSize = undefined;
         memory.preQualifyCollected = undefined;
         memory.preQualifyData = undefined;
+        memory.recommendedSize = undefined;
         memory.skinTypeCollected = undefined;
         memory.recommendedSkinType = undefined;
         memory.shouldOfferSizeHelp = undefined;
@@ -1695,7 +1697,19 @@ export class ReplyEngineService {
             // selection from over-narrowing the variant list / image set.
             memory.selectionState = 'awaiting_variant';
             memory.availableVariants = this.buildAvailableVariantsList(variants);
-            if (userColor && !userSize) {
+            // Detect no-color-axis (color-in-title products): variants don't
+            // carry a color attribute. Color was a title match, not a real
+            // axis — don't enter two-step flow, route to single-axis
+            // ask_variant_choice for sizes.
+            const hasColorAxis = variants.some(v => v.color);
+            if (userColor && !userSize && !hasColorAxis) {
+              memory.variantStep = null;
+              memory.selectedColor = undefined;
+              memory.selectedSize = undefined;
+              classification.primaryIntent = 'ask_variant_choice';
+              classification.recommendedAction = 'ask_variant_choice';
+              ctx.trace.push('5.5c: color-in-title product (no color axis) → ask_variant_choice (sizes only)');
+            } else if (userColor && !userSize) {
               memory.selectedColor = userColor;
               memory.selectedSize = undefined;
               memory.variantStep = 'size';
@@ -2381,8 +2395,14 @@ export class ReplyEngineService {
 
     let candidates = variants;
 
-    // Step 1: Filter by color if provided
-    if (userColor && colorForms.length > 0) {
+    // Step 1: Filter by color if provided AND variants have a color axis.
+    // Color-in-title products (e.g. "JACK&JONES Темно-сині карго штани")
+    // have variants with `color: null` — the color is baked into the
+    // product title and was already used by upstream search to narrow to
+    // this product. The userColor here is then redundant; skip the
+    // color filter and let size match against all in-stock variants.
+    const hasColorAxis = variants.some(v => v.color);
+    if (userColor && colorForms.length > 0 && hasColorAxis) {
       const colorMatched = variants.filter(v => {
         if (!v.color) return false;
         const vc = v.color.toLowerCase().trim();

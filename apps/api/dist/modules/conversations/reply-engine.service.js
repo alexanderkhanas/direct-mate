@@ -35,8 +35,8 @@ const shared_1 = require("@direct-mate/shared");
 const instagram_content_service_1 = require("../channels/instagram/instagram-content.service");
 const size_charts_service_1 = require("../size-charts/size-charts.service");
 const LOG_FILE = path.join(process.cwd(), 'conversations.log');
-const RECOMMENDED_SIZE_PREFIX = (size) => `За вашими параметрами рекомендую розмір ${size}`;
-const ASK_FOR_MEASUREMENTS_HELP = 'Напишіть свій зріст та вагу і я допоможу підібрати розмір';
+const RECOMMENDED_SIZE_PREFIX = (size) => `За вашими параметрами рекомендую розмір ${size} 💛`;
+const ASK_FOR_MEASUREMENTS_HELP = 'Напишіть свій зріст та вагу і я допоможу підібрати розмір 💛';
 let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
     logToFile(entry) {
         const line = JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n';
@@ -276,6 +276,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             memory.selectedSize = undefined;
             memory.preQualifyCollected = undefined;
             memory.preQualifyData = undefined;
+            memory.recommendedSize = undefined;
             memory.skinTypeCollected = undefined;
             memory.recommendedSkinType = undefined;
             memory.shouldOfferSizeHelp = undefined;
@@ -315,6 +316,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 memory.selectedSize = undefined;
                 memory.preQualifyCollected = undefined;
                 memory.preQualifyData = undefined;
+                memory.recommendedSize = undefined;
                 memory.skinTypeCollected = undefined;
                 memory.recommendedSkinType = undefined;
                 memory.shouldOfferSizeHelp = undefined;
@@ -1211,7 +1213,16 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                     else {
                         memory.selectionState = 'awaiting_variant';
                         memory.availableVariants = this.buildAvailableVariantsList(variants);
-                        if (userColor && !userSize) {
+                        const hasColorAxis = variants.some(v => v.color);
+                        if (userColor && !userSize && !hasColorAxis) {
+                            memory.variantStep = null;
+                            memory.selectedColor = undefined;
+                            memory.selectedSize = undefined;
+                            classification.primaryIntent = 'ask_variant_choice';
+                            classification.recommendedAction = 'ask_variant_choice';
+                            ctx.trace.push('5.5c: color-in-title product (no color axis) → ask_variant_choice (sizes only)');
+                        }
+                        else if (userColor && !userSize) {
                             memory.selectedColor = userColor;
                             memory.selectedSize = undefined;
                             memory.variantStep = 'size';
@@ -1669,7 +1680,8 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         const colorForms = userColor ? this.translateColor(userColor) : [];
         const normalize = (s) => s.toLowerCase().replace(/[ʼ'ьіїєґ]/g, '').replace(/\s+/g, ' ').trim();
         let candidates = variants;
-        if (userColor && colorForms.length > 0) {
+        const hasColorAxis = variants.some(v => v.color);
+        if (userColor && colorForms.length > 0 && hasColorAxis) {
             const colorMatched = variants.filter(v => {
                 if (!v.color)
                     return false;

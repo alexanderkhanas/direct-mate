@@ -595,3 +595,82 @@ describe('TemplateEngineService.resolveScenario — secondary fix (ask_recommend
     expect(result).toBe('recommend_product');
   });
 });
+
+describe('ReplyEngineService.matchVariant — color-in-title (no color axis) products', () => {
+  // Reproduces the conv 22e5fdcc bug. JACK&JONES Темно-сині карго штани has
+  // color in TITLE, all variants have color=null. Pre-fix: matchVariant
+  // returned null when userColor was provided + variants had color=null.
+  // Post-fix: matchVariant skips color filter when no variant has color.
+
+  function callMatch(
+    variants: Array<{ id: string; name: string; color?: string | null; size?: string | null }>,
+    userColor?: string,
+    userSize?: string,
+  ) {
+    const service = makeService();
+    return (service as any).matchVariant(variants, userColor, userSize);
+  }
+
+  // No color axis + size match → returns the matched variant
+  it('matches size on no-color-axis product even when redundant color is provided', () => {
+    const variants = [
+      { id: 'v30', name: '30', color: null, size: '30' },
+      { id: 'v32', name: '32', color: null, size: '32' },
+      { id: 'v34', name: '34', color: null, size: '34' },
+    ];
+    const result = callMatch(variants, 'сині', '32');
+    expect(result).toMatchObject({ id: 'v32', name: '32' });
+  });
+
+  // No color axis + size only → matches by size
+  it('matches by size only on no-color-axis product without color provided', () => {
+    const variants = [
+      { id: 'v30', name: '30', color: null, size: '30' },
+      { id: 'v32', name: '32', color: null, size: '32' },
+    ];
+    const result = callMatch(variants, undefined, '32');
+    expect(result).toMatchObject({ id: 'v32', name: '32' });
+  });
+
+  // No color axis + only userColor (no size) + multiple variants → null (size still ambiguous)
+  it('returns null on no-color-axis product when only color is provided and multiple sizes exist', () => {
+    const variants = [
+      { id: 'v30', name: '30', color: null, size: '30' },
+      { id: 'v32', name: '32', color: null, size: '32' },
+    ];
+    const result = callMatch(variants, 'сині', undefined);
+    // Color filter skipped (no axis), only userColor provided so candidates
+    // narrow to all 2 variants, then no size to disambiguate → returns null.
+    expect(result).toBeNull();
+  });
+
+  // Regression — color axis exists + matching color → still strict-matches
+  it('still strict-matches color when product has a color axis', () => {
+    const variants = [
+      { id: 'r-m', name: 'Red, M', color: 'Red', size: 'M' },
+      { id: 'b-m', name: 'Black, M', color: 'Black', size: 'M' },
+    ];
+    const result = callMatch(variants, 'Red', 'M');
+    expect(result).toMatchObject({ id: 'r-m', name: 'Red, M' });
+  });
+
+  // Regression — color axis exists + non-matching color → still returns null
+  it('returns null when color axis exists but user color does not match any variant', () => {
+    const variants = [
+      { id: 'r-m', name: 'Red, M', color: 'Red', size: 'M' },
+      { id: 'b-m', name: 'Black, M', color: 'Black', size: 'M' },
+    ];
+    const result = callMatch(variants, 'Yellow', 'M');
+    expect(result).toBeNull();
+  });
+
+  // No color axis + size doesn't exist → null
+  it('returns null on no-color-axis product when size does not match any variant', () => {
+    const variants = [
+      { id: 'v30', name: '30', color: null, size: '30' },
+      { id: 'v32', name: '32', color: null, size: '32' },
+    ];
+    const result = callMatch(variants, 'сині', '99');
+    expect(result).toBeNull();
+  });
+});

@@ -935,9 +935,9 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
   },
 
   clothing_color_in_title_size_only_variant_repro: {
-    name: 'Clothing — color-in-title + size-only variant (BUG repro)',
+    name: 'Clothing — color-in-title + size-only variant (regression guard)',
     description:
-      'Reproduces the conv 22e5fdcc bug where state gets stuck. JACK&JONES Темно-сині карго штани has the color baked into the product title (no color variant axis — variants only have size). When the user picks the product by saying "давайте сині", the engine narrows to that product and sets variantStep=size. Next turn user says "давайте 32" — classifier returns entities={size:"32",color:"сині"} but variants are {color:null,size:"32"}, so the strict color+size match in 5.5c fails. selectedVariantId never gets set, conversation gets stuck in awaiting_variant. Subsequent "оформлюємо" + delivery info turns all fall to ai_fallback because checkout stage gate redirects to ask_variant_choice. Engine state never advances. Expected behavior: after "давайте 32" engine should match the size-32 variant (ignoring the redundant color since the product has no color axis), set selectionState=awaiting_confirmation, and the conversation should flow to confirm_order. This scenario is a regression guard once the fix lands.',
+      'Regression guard for the conv 22e5fdcc stuck-state bug. JACK&JONES Темно-сині карго штани has the color in the product title (no color variant axis). Pre-fix: when the user picked the product with "давайте сині", the engine entered two-step variant flow (variantStep=size). On "давайте 32", the variant matcher rejected all variants because classifier returned entities.color="сині" but variants have color=null — selectedVariantId never got set, conversation stuck in awaiting_variant, every subsequent turn fell to ai_fallback. Fix: matchVariant skips the color filter when no variant has a color axis (color is title-match only). 5.5c match-failure routes to single-axis ask_variant_choice for sizes when no color axis exists, NOT to two-step ask_size_for_color.',
     tenantId: CLOTHES_STORE,
     turns: [
       {
@@ -950,28 +950,40 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
       {
         message: 'давайте сині',
         expect: {
-          // After this turn: 1 product (JACK&JONES), color-in-title narrows
-          // by title match. Engine sets variantStep=size, awaits size pick.
+          // Color-in-title product → narrowed to JACK&JONES, single-axis
+          // (sizes only). Engine should NOT enter two-step flow. Routes to
+          // ask_variant_choice asking for size with all 4 sizes listed.
           state: {
             selectionState: 'awaiting_variant',
-            variantStep: 'size',
-            selectedColor: 'сині',
+            variantStep: null,
           },
-          note: 'JACK&JONES product has color in TITLE not on variants. Engine should narrow to it and ask for size.',
+          note: 'No color axis on variants → engine stays single-axis, asks for size via ask_variant_choice. variantStep stays null.',
         },
       },
       {
         message: 'давайте 32',
         expect: {
-          // Bug: classifier returns entities={size:"32",color:"сині"};
-          // variant matcher fails because variants have color=null.
-          // Expected (after fix): selectedVariantId set, state=awaiting_confirmation.
-          scenario: 'confirm_selection',
+          // matchVariant now bypasses color filter (no color axis), matches
+          // size 32 against the 4 variants → 1 unique match → resolves to
+          // confirm_variant_available (since user provided a size).
+          scenario: 'confirm_variant_available',
           state: {
             selectionState: 'awaiting_confirmation',
             selectedVariantName: '32',
           },
-          note: 'EXPECTED-AFTER-FIX. Currently produces ai_fallback because variant matcher rejects all variants when classifier returns redundant color="сині" but variant.color=null.',
+          note: 'Variant matcher resolves size 32 despite redundant color="сині" entity.',
+        },
+      },
+      {
+        message: 'оформлюємо',
+        expect: {
+          // Standard flow: confirmation in awaiting_confirmation triggers
+          // 5.5a cart-add, then ask_continue_or_checkout fires.
+          scenario: 'ask_continue_or_checkout',
+          state: {
+            selectionState: 'cart_item_added',
+            cartLength: 1,
+          },
         },
       },
       {
@@ -979,16 +991,14 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
         expect: {
           scenario: 'collect_checkout_info',
           replyContains: ['ПІБ'],
-          note: 'EXPECTED-AFTER-FIX. Currently ai_fallback because previous turn left state stuck in awaiting_variant.',
         },
       },
       {
         message: 'ханас олександр\n0991345713\nтернопіль нп 2',
         expect: {
           decision: 'create_draft_order',
-          scenario: 'confirm_order',
           state: { orderCreated: true },
-          note: 'EXPECTED-AFTER-FIX. Currently ai_fallback because checkout stage gate keeps redirecting to ask_variant_choice while selectedVariantId remains null.',
+          replyContains: ['JACK&JONES', '1999 грн'],
         },
       },
     ],
