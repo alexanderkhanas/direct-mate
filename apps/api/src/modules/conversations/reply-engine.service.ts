@@ -86,10 +86,10 @@ const LOG_FILE = path.join(process.cwd(), 'conversations.log');
 // ─── Service ─────────────────────────────────────────────────────
 
 const RECOMMENDED_SIZE_PREFIX = (size: string) =>
-  `За вашими параметрами рекомендую розмір ${size}`;
+  `За вашими параметрами рекомендую розмір ${size} 💛`;
 
 const ASK_FOR_MEASUREMENTS_HELP =
-  'Напишіть свій зріст та вагу і я допоможу підібрати розмір';
+  'Напишіть свій зріст та вагу і я допоможу підібрати розмір 💛';
 
 @Injectable()
 export class ReplyEngineService {
