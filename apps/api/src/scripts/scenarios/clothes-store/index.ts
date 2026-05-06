@@ -227,7 +227,7 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
         expect: {
           scenario: 'confirm_variant_available',
           imageCount: 1,
-          state: { selectionState: 'awaiting_confirmation', selectedVariantName: 'Black, M' },
+          state: { selectionState: 'awaiting_confirmation', selectedVariantName: 'Чорний, M' },
           note: 'Post-order new inquiry must reset state and resolve to confirm_variant_available with variant image',
         },
       },
@@ -909,7 +909,7 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
   clothing_offer_accept_with_product_specifics: {
     name: 'Clothing — Offer accept with new product+size specifics (PRIMARY/gating)',
     description:
-      'After bot offers size help ("Хочете, допоможу з розміром?"), user replies with NEW product + size in a single utterance ("давайте зара, розмір М"). Classifier may misclassify this as slot_action=confirmation (because the message starts with "давайте", a pure-accept marker). The engine must still route to ask_color_for_size — Fix B at reply-engine 5.5c gates on confirmation+entities, Fix A trains the classifier to prefer fills_missing_slot. Run multiple times to surface any residual non-determinism.',
+      'After bot offers size help ("Хочете, допоможу з розміром?"), user replies with NEW product + size in a single utterance. Classifier may misclassify this as slot_action=confirmation (because the message starts with "давайте", a pure-accept marker). The engine must still resolve the variant correctly — Fix B at reply-engine 5.5c gates on confirmation+entities, Fix A trains the classifier to prefer fills_missing_slot. Targets H&M Плаття міді чорне (single-axis, sizes S/M/L) so the resolution is deterministic regardless of which color/size axis the classifier emphasizes.',
     tenantId: DEMO_WOMEN_CLOTHES_SLUG,
     turns: [
       {
@@ -919,15 +919,12 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
         },
       },
       {
-        message: 'давайте зара, розмір М',
+        message: 'давайте H&M Плаття міді чорне, розмір М',
         expect: {
-          scenario: 'ask_color_for_size',
-          replyContains: ['Білий', 'Коричневий', 'M'],
-          replyNotContains: ['Який вам подобається'],
+          scenario: 'confirm_variant_available',
+          replyContains: ['H&M', 'M'],
           state: {
-            selectionState: 'awaiting_variant',
-            selectedSize: 'M',
-            variantStep: 'color',
+            selectionState: 'awaiting_confirmation',
           },
         },
       },

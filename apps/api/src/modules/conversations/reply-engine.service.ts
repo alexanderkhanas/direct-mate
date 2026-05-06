@@ -1223,6 +1223,24 @@ export class ReplyEngineService {
         }
       }
 
+      // Narrow by productName when classifier extracted a specific brand/model.
+      // searchProducts uses an OR-of-keywords strategy that stops at the first
+      // non-empty match — productName specificity gets lost when the first
+      // matched keyword (often a generic "куртка" / "Футболки") returns many
+      // products. This step pulls that specificity back at engine layer.
+      // No cross-script translit yet — Cyrillic terms like "джек" won't match
+      // Latin "JACK"; over-narrowing is guarded inside the helper.
+      const userProductName = classification.entities.productName;
+      if (userProductName && productData && productData.length > 1) {
+        const narrowed = this.narrowByProductName(productData, userProductName);
+        if (narrowed && narrowed.length < productData.length) {
+          ctx.trace.push(
+            `search: narrowed by productName="${userProductName}" (${productData.length} → ${narrowed.length})`,
+          );
+          productData = narrowed;
+        }
+      }
+
       // Filter products/variants by user's explicit color or size (narrows results to what they asked for)
       const userColor = classification.entities.color;
       const userSize = classification.entities.size;
@@ -1248,8 +1266,19 @@ export class ReplyEngineService {
               variants: p.variants.filter(v => {
                 if (userColor && productHasColorDim) {
                   if (!v.color) return false;
-                  const vc = v.color.toLowerCase().trim();
-                  if (!userColorForms.some(f => vc === f || vc.includes(f) || f.includes(vc))) return false;
+                  // Canonicalize BOTH sides via translateColor so Ukrainian
+                  // gender forms ("чорна" feminine vs "Чорний" masculine
+                  // variant) match through their shared "black" canonical
+                  // translation. Without this both sides stay raw and
+                  // gender mismatch causes the filter to silently drop
+                  // legitimate variants.
+                  const variantColorForms = this.translateColor(v.color);
+                  const overlap = userColorForms.some(uf =>
+                    variantColorForms.some(vf =>
+                      vf === uf || vf.includes(uf) || uf.includes(vf),
+                    ),
+                  );
+                  if (!overlap) return false;
                 }
                 if (userSizeLower) {
                   if (!v.size) return false;
@@ -2407,7 +2436,17 @@ export class ReplyEngineService {
         if (!v.color) return false;
         const vc = v.color.toLowerCase().trim();
         const vcNorm = normalize(vc);
-        return colorForms.some(f => vc === f || vcNorm === normalize(f) || vc.includes(f) || f.includes(vc));
+        // Canonicalize variant.color too (e.g. "Чорний" → ["чорний","black"])
+        // so Ukrainian gender variants ("чорна" feminine ≠ "Чорний" masculine)
+        // still match through their shared "black" canonical translation.
+        const variantColorForms = this.translateColor(v.color);
+        return colorForms.some(f =>
+          vc === f ||
+          vcNorm === normalize(f) ||
+          vc.includes(f) ||
+          f.includes(vc) ||
+          variantColorForms.some(vf => vf === f),
+        );
       });
       if (colorMatched.length > 0) {
         candidates = colorMatched;
@@ -2767,6 +2806,42 @@ export class ReplyEngineService {
     if (classification.entities.color)
       keywords.push(classification.entities.color);
     return keywords.length > 0 ? keywords : [''];
+  }
+
+  /**
+   * Narrow a candidate productData list to those whose title contains EVERY
+   * non-stopword term from `productName`. Returns the original list unchanged
+   * when:
+   *   - productName has no meaningful terms (all short/stopwords),
+   *   - no product survives the narrowing (avoid over-pruning),
+   *   - narrowing is a no-op (every product still matches).
+   * Used by `searchAndFilterProducts` to recover productName specificity that
+   * the OR-of-keywords search strategy in `searchProducts` discards.
+   *
+   * Cross-script note: matching is plain `String.includes`, no Cyrillic↔Latin
+   * transliteration. Brand names like "JACK&JONES" won't match Cyrillic
+   * "джек/джонс" — handled by the over-narrow guard returning the original
+   * list. Translit support is a follow-up.
+   */
+  private narrowByProductName(
+    productData: ProductSearchResult[],
+    productName: string,
+  ): ProductSearchResult[] {
+    const PRODUCT_NAME_STOP_WORDS = new Set([
+      'енд', 'and', '&', 'і', 'та', 'the', 'of', 'для',
+    ]);
+    const nameTerms = productName
+      .toLowerCase()
+      .split(/\s+/)
+      .map(t => t.trim())
+      .filter(t => t.length > 2 && !PRODUCT_NAME_STOP_WORDS.has(t));
+    if (nameTerms.length === 0) return productData;
+    const narrowed = productData.filter(p => {
+      const titleLower = p.product.title.toLowerCase();
+      return nameTerms.every(t => titleLower.includes(t));
+    });
+    if (narrowed.length === 0) return productData;
+    return narrowed;
   }
 
   private async searchProducts(

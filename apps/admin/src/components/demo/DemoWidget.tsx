@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { RotateCcw, Lightbulb } from 'lucide-react';
+import { RotateCcw, Lightbulb, ShoppingBag } from 'lucide-react';
 import type { AxiosError } from 'axios';
 import { ScenarioChooser } from './ScenarioChooser';
 import { MessageBubble } from './MessageBubble';
 import { TypingIndicator } from './TypingIndicator';
 import { ChatInput } from './ChatInput';
+import { CatalogPanel } from './CatalogPanel';
 import { DisplayedTurn, Scenario } from './types';
 import { publicApi } from '../../lib/publicApi';
 import { analytics } from '../../lib/analytics';
@@ -64,6 +65,7 @@ export function DemoWidget({
   const [messages, setMessages] = useState<DisplayedTurn[]>([]);
   const [isTyping, setIsTyping] = useState(false);
   const [input, setInput] = useState('');
+  const [catalogOpen, setCatalogOpen] = useState(false);
   // Re-render trigger for the "reset" link: increment when playback completes.
   const [playbackDone, setPlaybackDone] = useState(false);
 
@@ -397,6 +399,15 @@ export function DemoWidget({
             <p className="text-sm font-semibold text-gray-900 truncate">{brandName}</p>
             <p className="text-[11px] text-gray-400">Відповідає через DirectMate</p>
           </div>
+          <button
+            type="button"
+            onClick={() => setCatalogOpen((v) => !v)}
+            aria-pressed={catalogOpen}
+            className="inline-flex items-center gap-1 text-[11px] text-gray-600 hover:text-gray-900 border border-gray-200 hover:border-gray-300 rounded-full px-2.5 py-1 transition-colors shrink-0"
+          >
+            <ShoppingBag className="h-3 w-3" />
+            <span>Каталог</span>
+          </button>
         </div>
 
         {/* Messages */}
@@ -458,6 +469,9 @@ export function DemoWidget({
           onSend={handleLiveSend}
           disabled={selectedKey !== null}
         />
+        {catalogOpen && (
+          <CatalogPanel tenantSlug={tenantSlug} onClose={() => setCatalogOpen(false)} />
+        )}
       </div>
     </div>
   );

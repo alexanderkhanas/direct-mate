@@ -94,6 +94,7 @@ export declare class ReplyEngineService {
     private recommendSize;
     private shouldSearchProducts;
     private extractSearchKeywords;
+    private narrowByProductName;
     private searchProducts;
     private updateMemoryFromAction;
     private buildOrderPayload;

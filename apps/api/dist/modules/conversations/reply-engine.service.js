@@ -847,6 +847,14 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                     this.logger.log(`Filtered products by recommended size ${recSize}: ${filtered.length} products`);
                 }
             }
+            const userProductName = classification.entities.productName;
+            if (userProductName && productData && productData.length > 1) {
+                const narrowed = this.narrowByProductName(productData, userProductName);
+                if (narrowed && narrowed.length < productData.length) {
+                    ctx.trace.push(`search: narrowed by productName="${userProductName}" (${productData.length} → ${narrowed.length})`);
+                    productData = narrowed;
+                }
+            }
             const userColor = classification.entities.color;
             const userSize = classification.entities.size;
             if (productData && productData.length > 0 && (userColor || userSize)) {
@@ -868,8 +876,9 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                             if (userColor && productHasColorDim) {
                                 if (!v.color)
                                     return false;
-                                const vc = v.color.toLowerCase().trim();
-                                if (!userColorForms.some(f => vc === f || vc.includes(f) || f.includes(vc)))
+                                const variantColorForms = this.translateColor(v.color);
+                                const overlap = userColorForms.some(uf => variantColorForms.some(vf => vf === uf || vf.includes(uf) || uf.includes(vf)));
+                                if (!overlap)
                                     return false;
                             }
                             if (userSizeLower) {
@@ -1687,7 +1696,12 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                     return false;
                 const vc = v.color.toLowerCase().trim();
                 const vcNorm = normalize(vc);
-                return colorForms.some(f => vc === f || vcNorm === normalize(f) || vc.includes(f) || f.includes(vc));
+                const variantColorForms = this.translateColor(v.color);
+                return colorForms.some(f => vc === f ||
+                    vcNorm === normalize(f) ||
+                    vc.includes(f) ||
+                    f.includes(vc) ||
+                    variantColorForms.some(vf => vf === f));
             });
             if (colorMatched.length > 0) {
                 candidates = colorMatched;
@@ -1954,6 +1968,25 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         if (classification.entities.color)
             keywords.push(classification.entities.color);
         return keywords.length > 0 ? keywords : [''];
+    }
+    narrowByProductName(productData, productName) {
+        const PRODUCT_NAME_STOP_WORDS = new Set([
+            'енд', 'and', '&', 'і', 'та', 'the', 'of', 'для',
+        ]);
+        const nameTerms = productName
+            .toLowerCase()
+            .split(/\s+/)
+            .map(t => t.trim())
+            .filter(t => t.length > 2 && !PRODUCT_NAME_STOP_WORDS.has(t));
+        if (nameTerms.length === 0)
+            return productData;
+        const narrowed = productData.filter(p => {
+            const titleLower = p.product.title.toLowerCase();
+            return nameTerms.every(t => titleLower.includes(t));
+        });
+        if (narrowed.length === 0)
+            return productData;
+        return narrowed;
     }
     async searchProducts(tenantId, conversationId, keywords) {
         for (const keyword of keywords) {

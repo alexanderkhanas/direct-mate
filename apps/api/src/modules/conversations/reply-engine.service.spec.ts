@@ -673,4 +673,120 @@ describe('ReplyEngineService.matchVariant — color-in-title (no color axis) pro
     const result = callMatch(variants, 'сині', '99');
     expect(result).toBeNull();
   });
+
+  // Ukrainian gender forms — feminine userColor should match masculine variant.color
+  it('matches Ukrainian feminine color "чорна" against masculine variant "Чорний"', () => {
+    const variants = [
+      { id: 'r-m', name: 'Чорний, M', color: 'Чорний', size: 'M' },
+      { id: 'b-m', name: 'Білий, M', color: 'Білий', size: 'M' },
+    ];
+    const result = callMatch(variants, 'чорна', 'M');
+    expect(result).toMatchObject({ id: 'r-m', name: 'Чорний, M' });
+  });
+
+  // Ukrainian gender — neuter form "чорне" matches masculine "Чорний"
+  it('matches Ukrainian neuter color "чорне" against masculine variant "Чорний"', () => {
+    const variants = [
+      { id: 'r-m', name: 'Чорний, M', color: 'Чорний', size: 'M' },
+    ];
+    const result = callMatch(variants, 'чорне', 'M');
+    expect(result).toMatchObject({ id: 'r-m', name: 'Чорний, M' });
+  });
+
+  // Ukrainian feminine "синя" matches masculine variant "Синій"
+  it('matches feminine "синя" against masculine variant "Синій"', () => {
+    const variants = [
+      { id: 'b-l', name: 'Синій, L', color: 'Синій', size: 'L' },
+      { id: 'w-l', name: 'Білий, L', color: 'Білий', size: 'L' },
+    ];
+    const result = callMatch(variants, 'синя', 'L');
+    expect(result).toMatchObject({ id: 'b-l', name: 'Синій, L' });
+  });
+});
+
+describe('ReplyEngineService.narrowByProductName — productName-aware search narrowing', () => {
+  function pd(...products: Array<{ id?: string; title: string }>): any[] {
+    return products.map(p => ({
+      product: { id: p.id ?? p.title, title: p.title, imageUrl: null, category: null },
+      variants: [],
+    }));
+  }
+
+  function callNarrow(productData: any[], productName: string): any[] {
+    const service = makeService();
+    return (service as any).narrowByProductName(productData, productName);
+  }
+
+  // Narrows to subset when terms match a strict subset of titles
+  it('narrows to subset when productName terms match a strict subset', () => {
+    const data = pd(
+      { title: 'Zara Чорна стьобана куртка-бомбер' },
+      { title: 'JACK&JONES Чорна стьобана куртка' },
+      { title: 'Massimo Dutti Куртка бомбер' },
+    );
+    const result = callNarrow(data, 'Massimo Dutti куртка');
+    expect(result).toHaveLength(1);
+    expect(result[0].product.title).toBe('Massimo Dutti Куртка бомбер');
+  });
+
+  // Falls through to original when narrowing yields zero matches
+  it('falls through to original when productName matches zero products', () => {
+    const data = pd(
+      { title: 'Zara Чорна стьобана куртка-бомбер' },
+      { title: 'JACK&JONES Чорна стьобана куртка' },
+    );
+    // Cyrillic "джек" does not match Latin "JACK" (no translit yet) → 0 narrow → fall through
+    const result = callNarrow(data, 'куртка джек');
+    expect(result).toHaveLength(2);
+    expect(result).toEqual(data);
+  });
+
+  // ALL terms must match (every, not some) — partial-match products excluded
+  it('requires ALL terms to match (every, not some)', () => {
+    const data = pd(
+      { title: 'Zara базова футболка' },             // matches "zara" + "футболка" — all terms
+      { title: 'Zara Чорна базова футболка' },       // matches "zara" + "футболка" — all terms
+      { title: 'Mango базова футболка' },            // matches "футболка" only — missing "zara"
+    );
+    const result = callNarrow(data, 'Zara футболка');
+    expect(result).toHaveLength(2);
+    expect(result.map((r: any) => r.product.title)).toEqual([
+      'Zara базова футболка',
+      'Zara Чорна базова футболка',
+    ]);
+  });
+
+  // Empty productName (all terms < 3 chars or stopwords) → no-op
+  it('no-op when all terms are too short or stopwords', () => {
+    const data = pd(
+      { title: 'Zara базова футболка' },
+      { title: 'Mango Сукня' },
+    );
+    // 'і' (1 char), 'та' (2 chars), 'для' (stopword), 'of' (stopword)
+    const result = callNarrow(data, 'і та для of');
+    expect(result).toEqual(data);
+  });
+
+  // Stop-word filter drops "енд"/"and"/"&" so brand-with-conjunction works
+  it('filters stop-words including енд/and/&', () => {
+    const data = pd(
+      { title: 'Jack & Jones Футболка oversize з принтом' },
+      { title: 'Zara базова футболка' },
+    );
+    // After stripping "&", terms are "jack","jones","футболка" → matches first only
+    const result = callNarrow(data, 'jack & jones футболка');
+    expect(result).toHaveLength(1);
+    expect(result[0].product.title).toBe('Jack & Jones Футболка oversize з принтом');
+  });
+
+  // Returns original when narrowing kept everything (no productName specificity)
+  it('returns original when every product matches all terms', () => {
+    const data = pd(
+      { title: 'Zara базова футболка' },
+      { title: 'Zara Чорна базова футболка' },
+    );
+    // "zara" matches both → narrowed.length === productData.length (no actual narrowing)
+    const result = callNarrow(data, 'Zara');
+    expect(result).toHaveLength(2);
+  });
 });

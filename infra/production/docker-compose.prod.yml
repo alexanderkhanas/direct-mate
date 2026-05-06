@@ -97,6 +97,29 @@ services:
       - certbot_www:/var/www/certbot
     entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
 
+  ftp:
+    image: fauria/vsftpd
+    restart: unless-stopped
+    ports:
+      - "21:21"
+      - "21100-21110:21100-21110"
+    environment:
+      FTP_USER: luxespace_trs
+      FTP_PASS: ${FTP_LUXESPACE_PASS}
+      PASV_ADDRESS: ${FTP_PASV_ADDRESS}
+      PASV_MIN_PORT: 21100
+      PASV_MAX_PORT: 21110
+      LOG_STDOUT: "1"
+    volumes:
+      - /srv/directmate-ftp/luxespace:/home/vsftpd/luxespace_trs
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep vsftpd > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - internal
+
   n8n:
     image: n8nio/n8n:latest
     restart: unless-stopped
