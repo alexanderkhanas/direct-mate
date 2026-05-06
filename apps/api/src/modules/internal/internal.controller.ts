@@ -57,7 +57,23 @@ export class InternalController {
 
   /**
    * n8n sends normalized catalog data here.
-   * Creates a sync job, imports products/variants/stock, marks job done.
+   *
+   * Response shape (success):
+   * ```
+   * {
+   *   success: true,
+   *   jobId: string,
+   *   productsCreated, productsUpdated, productsArchived,
+   *   variantsCreated, variantsUpdated, categoriesCreated,
+   *   errors: string[]
+   * }
+   * ```
+   *
+   * Idempotent: re-sending the same payload returns zeros for all
+   * counters (no DB writes when nothing changed).
+   *
+   * 400 bubbles up from class-validator on the DTO; 500 paths fall
+   * through with the original error message and the job marked failed.
    */
   @Post('sync/catalog-import')
   async catalogImport(@Body() dto: CatalogImportDto) {

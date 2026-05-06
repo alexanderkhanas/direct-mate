@@ -60,6 +60,7 @@ pids
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 apps/api/dist
+apps/api/dist-test
 
 # Uploaded files
 uploads/

@@ -22,11 +22,23 @@ export class ProductVariant {
   @Column({ type: 'uuid' })
   productId!: string;
 
+  /**
+   * Denormalized from products.tenant_id so we can express a
+   * tenant-scoped UNIQUE(barcode) partial index. Postgres rejects
+   * subqueries in index expressions, so a real column is required.
+   * Sync code populates this from the parent product.
+   */
+  @Column({ type: 'uuid' })
+  tenantId!: string;
+
   @Column({ type: 'text', nullable: true })
   externalVariantId!: string | null;
 
   @Column({ type: 'text', nullable: true })
   sku!: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  barcode!: string | null;
 
   @Column({ type: 'text', nullable: true })
   color!: string | null;
@@ -36,6 +48,9 @@ export class ProductVariant {
 
   @Column({ type: 'numeric', precision: 10, scale: 2 })
   price!: number;
+
+  @Column({ type: 'numeric', precision: 10, scale: 2, nullable: true })
+  salePrice!: number | null;
 
   @Column({ type: 'text', default: 'UAH' })
   currency!: string;
