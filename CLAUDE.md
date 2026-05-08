@@ -179,6 +179,7 @@ show_price                    — Показ ціни
 recommend_product             — Рекомендація товару
 ask_recommendation_from_shown — Рекомендація зі списку
 confirm_selection             — Підтвердження вибору
+confirm_last_in_stock         — Останній доступний варіант (опц., fallback → confirm_selection)
 ask_variant_choice            — Вибір варіанту
 collect_checkout_info         — Збір даних для замовлення
 confirm_order                 — Підтвердження замовлення
@@ -237,8 +238,11 @@ Templates, phrase blocks, and FAQ items are separate tables per tenant.
 ### Critical — Next Steps
 - **Test selection flow end-to-end** — variant matching, corrections, checkout gate
 - **Order persistence** — save orders to DB, create draft order in Shopify
-- **Telegram handoff notifications** — notify manager when bot escalates
 - **Manager reply detection** — detect is_echo from manager, pause bot
+
+### Shipped
+- **Telegram handoff notifications** — wired and live. Manager gets a Telegram message when the bot escalates a conversation. Channel + behavior configured per-tenant via `flow_config.handoff` (notification channel, pause-on-handoff, summary template).
+- **Customer photo matching via pHash** — when a customer attaches an image in DM, [`InstagramContentService.matchCustomerPhoto`](apps/api/src/modules/channels/instagram/instagram-content.service.ts) first tries a 64-bit dHash lookup against `product_media.phash`. Hamming distance ≤ 5 → resolve product (deterministic, no LLM cost, no false positives on visually similar items). Tied minimums or above-threshold → fall through to the existing GPT-4o-mini vision flow against linked instagram_media_mappings, then to handoff. Hashes are computed at sync time in [`catalog.service.ts`](apps/api/src/modules/catalog/catalog.service.ts) when product_media rows are inserted.
 
 ### Important
 - Long-lived Instagram token exchange (current tokens expire in ~1 hour)

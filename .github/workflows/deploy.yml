@@ -65,6 +65,16 @@ jobs:
             -e "ssh -i ~/.ssh/deploy_key" \
             ./ $SERVER_USER@$SERVER_HOST:$DEPLOY_PATH/
 
+      - name: Restore vsftpd config ownership
+        # vsftpd refuses to start unless its config file is owned by root
+        # ("500 OOPS: config file not owned by correct user"). rsync runs
+        # as the deploy user (uid 1001) and stamps that ownership on every
+        # file it ships, including the bind-mounted vsftpd.conf. Without
+        # this chown the ftp container crash-loops after every deploy.
+        run: |
+          ssh -i ~/.ssh/deploy_key $SERVER_USER@$SERVER_HOST \
+            "chown root:root $DEPLOY_PATH/infra/production/vsftpd/vsftpd.conf $DEPLOY_PATH/infra/production/vsftpd/entrypoint.sh"
+
       - name: Render nginx config (substitute DOMAIN placeholder)
         # rsync ships nginx/conf.d/default.conf with ${DOMAIN} placeholders.
         # Substitute them on the server using DOMAIN from .env so nginx can

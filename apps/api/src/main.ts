@@ -11,6 +11,15 @@ import { createDemoCorsMiddleware } from './modules/demo/demo-cors.middleware';
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { rawBody: true });
 
+  // Bump body-parser limits past express's 100 KB default. The internal
+  // catalog-import endpoint accepts the full Torgsoft catalog in one POST
+  // (886+ products × ~50 fields × variants + categories ~ 1–5 MB today,
+  // headroom for larger tenants). 50 MB caps abuse without forcing future
+  // customers to chunk their syncs. All write endpoints are auth-gated
+  // (JwtAuthGuard / InternalApiKeyGuard), so this isn't an open DoS surface.
+  app.useBodyParser('json', { limit: '50mb' });
+  app.useBodyParser('urlencoded', { limit: '50mb', extended: true });
+
   // Honor X-Forwarded-For from the upstream proxy (nginx / Cloudflare) so
   // req.ip and the @Ip() decorator see the real client IP. Required for the
   // /demo endpoint's per-IP rate limiter. Permissive for now; tighten to a

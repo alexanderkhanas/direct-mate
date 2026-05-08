@@ -489,6 +489,11 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         const strategy = preQualifyFlowConfig?.preQualifyStrategy ?? 'after_search_offered';
         const awaitingPreQualify = memory.lastAction === 'asked_pre_qualify' &&
             memory.awaitingField === 'pre_qualify_data';
+        if (memory.awaitingPreQualifyAnswer && !preQualifyFlowConfig?.preQualify?.enabled) {
+            ctx.trace.push('preQualify: disabled mid-conversation → dropping pending offer answer');
+            memory.awaitingPreQualifyAnswer = false;
+            memory.shouldOfferSizeHelp = false;
+        }
         if (memory.awaitingPreQualifyAnswer) {
             const yesNo = this.classifyOfferAnswer(classification);
             if (yesNo === 'yes') {
@@ -626,6 +631,11 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             }
             return null;
         }
+        if (memory.awaitingPreQualifyAnswer && !preQualifyFlowConfig?.preQualify?.enabled) {
+            ctx.trace.push('preQualifyCosmetics: disabled mid-conversation → dropping pending offer answer');
+            memory.awaitingPreQualifyAnswer = false;
+            memory.shouldOfferSizeHelp = false;
+        }
         if (memory.awaitingPreQualifyAnswer) {
             const yesNo = this.classifyOfferAnswer(classification);
             if (yesNo === 'yes') {
@@ -721,6 +731,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 size: v.size,
                 imageUrl: v.imageUrl ?? null,
             }));
+            memory.totalVariantsForSelectedProduct = first.variants.length;
             if (classification.entities.productName &&
                 classification.entities.productName !== first.product.title) {
                 ctx.trace.push(`5.5m: overrode classifier productName="${classification.entities.productName}" → media-resolved "${first.product.title}"`);
@@ -804,7 +815,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 ctx.trace.push('search: correction — cleared selectedVariantId for re-matching');
             }
             const searchKeywords = this.extractSearchKeywords(classification);
-            productData = await this.searchProducts(input.tenantId, input.conversationId, searchKeywords);
+            productData = await this.searchProducts(input.tenantId, input.conversationId, searchKeywords, classification.entities.category);
             this.logToFile({
                 event: 'product_search',
                 conversationId: input.conversationId,
@@ -1288,6 +1299,14 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 memory.selectedVariantName = effectiveVariants[0].name;
                 memory.selectionState = 'awaiting_confirmation';
                 this.setConfirmIntent(classification, userColor, userSize);
+                const isVariantQuery = !!(userColor || userSize);
+                const isLastInStock = !isVariantQuery &&
+                    (memory.totalVariantsForSelectedProduct ?? 0) > 1;
+                if (isLastInStock) {
+                    classification.primaryIntent = 'confirm_last_in_stock';
+                    classification.recommendedAction = 'confirm_last_in_stock';
+                    ctx.trace.push(`5.5d: last-in-stock (1 of ${memory.totalVariantsForSelectedProduct}) → confirm_last_in_stock`);
+                }
                 ctx.trace.push(`5.5d: matched ${effectiveVariants[0].name} → awaiting_confirmation (intent=${classification.primaryIntent})`);
                 this.logger.log(`5.5d: Single variant after filter → auto-selected: ${effectiveVariants[0].name}`);
             }
@@ -1368,14 +1387,17 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                     finalReply = `Для ${skinTypeGenitive} шкіри підбираю варіанти 💛\n\n${finalReply}`;
                 }
             }
-            const buildResponseStrategy = effectiveConfig?.flowConfig?.preQualifyStrategy ??
+            const buildResponseFlowConfig = effectiveConfig?.flowConfig;
+            const buildResponsePreQualifyEnabled = !!buildResponseFlowConfig?.preQualify?.enabled;
+            const buildResponseStrategy = buildResponseFlowConfig?.preQualifyStrategy ??
                 'after_search_offered';
             const justAnsweredPreQualify = memory.lastAction === 'recommended_size' ||
                 memory.lastAction === 'recommended_skin_type' ||
                 memory.lastAction === 'asked_pre_qualify';
             const userAlreadyGavePreQualifyInfo = (buildResponseBusinessType === 'clothing' && !!classification.entities.size) ||
                 (buildResponseBusinessType === 'cosmetics' && !!classification.entities.skinType);
-            if (buildResponseStrategy === 'after_search_offered' &&
+            if (buildResponsePreQualifyEnabled &&
+                buildResponseStrategy === 'after_search_offered' &&
                 templateResult.scenario === 'show_products' &&
                 !memory.shouldOfferSizeHelp &&
                 !justAnsweredPreQualify &&
@@ -1634,6 +1656,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             recommend_product: 'recommend',
             ask_recommendation_from_shown: 'recommend',
             confirm_selection: 'confirm_selection',
+            confirm_last_in_stock: 'confirm_selection',
             collect_checkout_info: 'start_checkout',
             order_confirmed_ask_delivery: 'ask_delivery',
             confirm_order: 'confirm_order',
@@ -1963,11 +1986,9 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         const keywords = [];
         if (classification.entities.productName)
             keywords.push(classification.entities.productName);
-        if (classification.entities.category)
-            keywords.push(classification.entities.category);
         if (classification.entities.color)
             keywords.push(classification.entities.color);
-        return keywords.length > 0 ? keywords : [''];
+        return keywords;
     }
     narrowByProductName(productData, productName) {
         const PRODUCT_NAME_STOP_WORDS = new Set([
@@ -1988,18 +2009,38 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             return productData;
         return narrowed;
     }
-    async searchProducts(tenantId, conversationId, keywords) {
-        for (const keyword of keywords) {
-            if (!keyword)
-                continue;
+    async searchProducts(tenantId, conversationId, keywords, category) {
+        if (category && keywords.length === 0) {
             const results = await this.availabilityService.checkAll(tenantId, {
-                query: keyword,
+                query: '',
+                category,
             });
             await this.auditService.log({
                 tenantId,
                 conversationId,
                 type: shared_1.AuditLogType.AvailabilityCheck,
-                details: { keyword, productsFound: results.length },
+                details: { keyword: '', category, productsFound: results.length },
+            });
+            if (results.length > 0) {
+                return results.map((r) => ({
+                    product: r.product,
+                    variants: r.variants,
+                }));
+            }
+            return undefined;
+        }
+        for (const keyword of keywords) {
+            if (!keyword)
+                continue;
+            const results = await this.availabilityService.checkAll(tenantId, {
+                query: keyword,
+                category,
+            });
+            await this.auditService.log({
+                tenantId,
+                conversationId,
+                type: shared_1.AuditLogType.AvailabilityCheck,
+                details: { keyword, category, productsFound: results.length },
             });
             if (results.length > 0) {
                 return results.map((r) => ({

@@ -18,9 +18,12 @@ export declare class InternalController {
         accepted: boolean;
     }>;
     catalogImport(dto: CatalogImportDto): Promise<{
-        created: number;
-        updated: number;
-        skipped: number;
+        productsCreated: number;
+        productsUpdated: number;
+        productsArchived: number;
+        variantsCreated: number;
+        variantsUpdated: number;
+        categoriesCreated: number;
         errors: string[];
         success: boolean;
         jobId: string;
@@ -28,7 +31,7 @@ export declare class InternalController {
     } | {
         success: boolean;
         jobId: string;
-        error: any;
+        error: string;
     }>;
     stockImport(dto: StockImportDto): Promise<{
         processed: number;

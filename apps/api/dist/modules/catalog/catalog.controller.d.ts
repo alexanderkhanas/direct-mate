@@ -12,6 +12,7 @@ export declare class CatalogController {
         imageUrl: string;
         variantCount: number;
         updatedAt: Date;
+        lastSyncedAt: Date;
         variants: {
             id: string;
             sku: string | null;

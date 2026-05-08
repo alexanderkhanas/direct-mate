@@ -56,8 +56,7 @@ export declare class AvailabilityService {
         }>;
     }>>;
     private searchAllByTitle;
-    private searchAllByCategory;
-    private searchAllByCategoryTrigram;
+    private searchAllByCategoryName;
     private searchAllByDescription;
     findAllByProductId(productId: string, variantId?: string): Promise<Array<{
         product: {

@@ -10,6 +10,8 @@ const http_exception_filter_1 = require("./common/filters/http-exception.filter"
 const demo_cors_middleware_1 = require("./modules/demo/demo-cors.middleware");
 async function bootstrap() {
     const app = await core_1.NestFactory.create(app_module_1.AppModule, { rawBody: true });
+    app.useBodyParser('json', { limit: '50mb' });
+    app.useBodyParser('urlencoded', { limit: '50mb', extended: true });
     app.set('trust proxy', true);
     app.useGlobalPipes(new common_1.ValidationPipe({
         whitelist: true,

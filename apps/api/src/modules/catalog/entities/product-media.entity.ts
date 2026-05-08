@@ -24,6 +24,13 @@ export class ProductMedia {
   @Column({ type: 'integer', default: 0 })
   sortOrder!: number;
 
+  // 16-char hex dHash (64 bits) for Hamming-distance matching against
+  // customer-attached photos in DMs. NULL when hashing failed at sync
+  // time (download / decode error) — those rows can't be matched but
+  // still serve as catalog images.
+  @Column({ type: 'char', length: 16, nullable: true })
+  phash!: string | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt!: Date;
 

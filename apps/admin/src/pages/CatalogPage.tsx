@@ -71,7 +71,8 @@ function ProductRow({ product }: { product: ProductRow }) {
           </div>
         </div>
         <p className="text-xs text-gray-400">
-          {t('catalog_ext.updated_date')} {new Date(product.updatedAt).toLocaleDateString()}
+          {t('catalog_ext.updated_date')}{' '}
+          {new Date(product.lastSyncedAt ?? product.updatedAt).toLocaleDateString()}
         </p>
       </button>
 

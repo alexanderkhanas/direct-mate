@@ -5,6 +5,7 @@ export declare class ProductMedia {
     url: string;
     color: string | null;
     sortOrder: number;
+    phash: string | null;
     createdAt: Date;
     product: Product;
 }

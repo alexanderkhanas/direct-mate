@@ -58,17 +58,28 @@ export class AvailabilityService {
 
   /**
    * Get distinct product categories for a tenant (used as AI context).
+   *
+   * Sources from BOTH the new `categories` M2M table (populated by
+   * Torgsoft import) AND the legacy denormalized `products.category`
+   * column (used by demo seed builders), deduped.
+   *
+   * TODO: Remove UNION fallback once demo seed builders populate
+   * the categories M2M table.
    */
   async getCategories(tenantId: string): Promise<string[]> {
-    const rows = await this.variantRepo
-      .createQueryBuilder('v')
-      .innerJoin('v.product', 'p')
-      .select('DISTINCT p.category', 'category')
-      .where('p.tenant_id = :tenantId', { tenantId })
-      .andWhere('p.status = :status', { status: 'active' })
-      .andWhere('p.category IS NOT NULL')
-      .getRawMany();
-    return rows.map((r: any) => r.category).filter(Boolean);
+    const rows = await this.dataSource.query(
+      `SELECT DISTINCT name FROM (
+         SELECT name FROM categories WHERE tenant_id = $1
+         UNION
+         SELECT category AS name FROM products
+          WHERE tenant_id = $1
+            AND category IS NOT NULL
+            AND status = 'active'
+       ) c
+       ORDER BY name`,
+      [tenantId],
+    );
+    return rows.map((r: { name: string }) => r.name).filter(Boolean);
   }
 
   async check(tenantId: string, dto: CheckAvailabilityDto): Promise<AvailabilityResult> {
@@ -226,23 +237,43 @@ export class AvailabilityService {
     }>
   > {
     const searchTerms = this.extractSearchTerms(dto.query);
-    if (searchTerms.length === 0) return [];
-
     const fullPhrase = searchTerms.join(' ');
 
-    // Try all search strategies in priority order, stop at first match
     let variants: ProductVariant[] = [];
 
-    // Priority 1: ILIKE on title (most precise)
-    variants = await this.searchAllByTitle(tenantId, fullPhrase);
-    if (!variants.length) {
-      for (const t of searchTerms) {
-        variants = await this.searchAllByTitle(tenantId, t);
-        if (variants.length) break;
+    // Priority 0: classifier-extracted category routes through the
+    // M2M (categories + product_categories) for an exact match. When
+    // both `category` and keywords are present, narrow the M2M result
+    // set in-memory by case-insensitive title `includes` on each
+    // keyword. When category is the only signal (no keywords), return
+    // the M2M results directly.
+    if (dto.category) {
+      variants = await this.searchAllByCategoryName(tenantId, dto.category);
+      if (variants.length && searchTerms.length > 0) {
+        const lowerTerms = searchTerms.map((t) => t.toLowerCase());
+        const narrowed = variants.filter((v) => {
+          const title = (v.product?.title ?? '').toLowerCase();
+          return lowerTerms.some((t) => title.includes(t));
+        });
+        if (narrowed.length > 0) variants = narrowed;
       }
     }
 
-    // Priority 2: ILIKE on description
+    // Without category and without keywords there's nothing to search.
+    if (!variants.length && searchTerms.length === 0) return [];
+
+    // Priority 1: ILIKE on title (most precise) — only when M2M didn't fire.
+    if (!variants.length) {
+      variants = await this.searchAllByTitle(tenantId, fullPhrase);
+      if (!variants.length) {
+        for (const t of searchTerms) {
+          variants = await this.searchAllByTitle(tenantId, t);
+          if (variants.length) break;
+        }
+      }
+    }
+
+    // Priority 2: ILIKE on description.
     if (!variants.length) {
       variants = await this.searchAllByDescription(tenantId, fullPhrase);
       if (!variants.length) {
@@ -250,27 +281,6 @@ export class AvailabilityService {
           variants = await this.searchAllByDescription(tenantId, t);
           if (variants.length) break;
         }
-      }
-    }
-
-    // Priority 3: ILIKE on category
-    if (!variants.length) {
-      variants = await this.searchAllByCategory(tenantId, fullPhrase);
-      if (!variants.length) {
-        for (const t of searchTerms) {
-          variants = await this.searchAllByCategory(tenantId, t);
-          if (variants.length) break;
-        }
-      }
-    }
-
-    // Priority 4: Trigram on category only (NOT title — title trigram is too noisy)
-    // with a higher threshold (0.3)
-    if (!variants.length) {
-      for (const t of searchTerms) {
-        if (t.length < 4) continue; // skip short words for trigram
-        variants = await this.searchAllByCategoryTrigram(tenantId, t);
-        if (variants.length) break;
       }
     }
 
@@ -286,57 +296,92 @@ export class AvailabilityService {
   }
 
   private async searchAllByTitle(tenantId: string, term: string): Promise<ProductVariant[]> {
+    // Two-step: first cap the PRODUCT set (so each surfaced product
+    // carries its full variant matrix), then load all active variants
+    // for those products. The naive `.take(N)` on the variant query
+    // truncates mid-matrix and the engine then renders incomplete
+    // size/color info (e.g., a 5-size product appears with one size).
     return this.variantRepo
       .createQueryBuilder('v')
       .innerJoinAndSelect('v.product', 'p')
       .leftJoinAndSelect('v.stockBalance', 's')
-      .where('p.tenant_id = :tenantId', { tenantId })
-      .andWhere('p.status = :status', { status: 'active' })
-      .andWhere('v.active = true')
-      .andWhere('p.title ILIKE :q', { q: `%${term}%` })
-      .take(20)
+      .where('v.active = true')
+      .andWhere(
+        `v.product_id IN (
+           SELECT pp.id FROM products pp
+            WHERE pp.tenant_id = :tenantId
+              AND pp.status = 'active'
+              AND pp.title ILIKE :q
+            ORDER BY pp.last_synced_at DESC NULLS LAST
+            LIMIT 10
+         )`,
+        { tenantId, q: `%${term}%` },
+      )
       .getMany();
   }
 
-  private async searchAllByCategory(tenantId: string, term: string): Promise<ProductVariant[]> {
+  /**
+   * Match products by exact (case-insensitive) category name through
+   * the `categories` + `product_categories` M2M, with a fallback to
+   * the legacy denormalized `products.category` column for tenants
+   * that don't populate the M2M (demo seed builders).
+   *
+   * Replaces the prior `searchAllByCategory` / `searchAllByCategoryTrigram`
+   * pair, both of which substring-matched on `products.category` and
+   * produced false positives like "Верхній одяг" matching
+   * "комплект домашнього одягу" because "одяг" is a substring of
+   * "одягу".
+   */
+  private async searchAllByCategoryName(
+    tenantId: string,
+    categoryName: string,
+  ): Promise<ProductVariant[]> {
+    // Two-step: cap PRODUCTS, then load full variant matrix. See note
+    // on searchAllByTitle.
     return this.variantRepo
       .createQueryBuilder('v')
       .innerJoinAndSelect('v.product', 'p')
       .leftJoinAndSelect('v.stockBalance', 's')
-      .where('p.tenant_id = :tenantId', { tenantId })
-      .andWhere('p.status = :status', { status: 'active' })
-      .andWhere('v.active = true')
-      .andWhere('p.category ILIKE :q', { q: `%${term}%` })
-      .take(20)
-      .getMany();
-  }
-
-  private async searchAllByCategoryTrigram(tenantId: string, term: string): Promise<ProductVariant[]> {
-    return this.variantRepo
-      .createQueryBuilder('v')
-      .innerJoinAndSelect('v.product', 'p')
-      .leftJoinAndSelect('v.stockBalance', 's')
-      .addSelect('similarity(p.category, :q)', 'sim')
-      .where('p.tenant_id = :tenantId', { tenantId })
-      .andWhere('p.status = :status', { status: 'active' })
-      .andWhere('v.active = true')
-      .andWhere('similarity(p.category, :q) > 0.3', { q: term })
-      .orderBy('sim', 'DESC')
-      .setParameter('q', term)
-      .take(20)
+      .where('v.active = true')
+      .andWhere(
+        `v.product_id IN (
+           SELECT pp.id FROM products pp
+            WHERE pp.tenant_id = :tenantId
+              AND pp.status = 'active'
+              AND (
+                EXISTS (
+                  SELECT 1 FROM product_categories pc
+                   INNER JOIN categories c ON c.id = pc.category_id
+                   WHERE pc.product_id = pp.id AND lower(c.name) = lower(:cat)
+                ) OR lower(pp.category) = lower(:cat)
+              )
+            ORDER BY pp.last_synced_at DESC NULLS LAST
+            LIMIT 10
+         )`,
+        { tenantId, cat: categoryName },
+      )
       .getMany();
   }
 
   private async searchAllByDescription(tenantId: string, term: string): Promise<ProductVariant[]> {
+    // Two-step: cap PRODUCTS, then load full variant matrix. See note
+    // on searchAllByTitle.
     return this.variantRepo
       .createQueryBuilder('v')
       .innerJoinAndSelect('v.product', 'p')
       .leftJoinAndSelect('v.stockBalance', 's')
-      .where('p.tenant_id = :tenantId', { tenantId })
-      .andWhere('p.status = :status', { status: 'active' })
-      .andWhere('v.active = true')
-      .andWhere('p.description ILIKE :q', { q: `%${term}%` })
-      .take(20)
+      .where('v.active = true')
+      .andWhere(
+        `v.product_id IN (
+           SELECT pp.id FROM products pp
+            WHERE pp.tenant_id = :tenantId
+              AND pp.status = 'active'
+              AND pp.description ILIKE :q
+            ORDER BY pp.last_synced_at DESC NULLS LAST
+            LIMIT 10
+         )`,
+        { tenantId, q: `%${term}%` },
+      )
       .getMany();
   }
 

@@ -81,6 +81,12 @@ export interface AssistantMemory {
   variantStep?: 'color' | 'size' | null;
   selectedColor?: string;
   selectedSize?: string;
+  /** Total active variants on the selected product BEFORE in-stock filter.
+   *  Set when memory.availableVariants is populated; used by 5.5d to detect
+   *  "last in stock" cases (catalog has multiple variants but only one is
+   *  available right now → route to confirm_last_in_stock template instead
+   *  of plain confirm_selection so the copy can call out the scarcity). */
+  totalVariantsForSelectedProduct?: number;
   /** ISO timestamp of when conversation_start_greeting was first sent for
    *  this conversation. Set on the first inbound turn (unless the classifier
    *  resolves greeting intent, which renders the natural greeting reply on
@@ -90,133 +96,175 @@ export interface AssistantMemory {
 
 // ─── OpenAI tool definition ──────────────────────────────────────
 
-const CLASSIFY_MESSAGE_TOOL: OpenAI.Chat.ChatCompletionTool = {
-  type: 'function',
-  function: {
-    name: 'classify_message',
-    description:
-      'Classify the customer message: detect intent, extract entities, determine conversation stage. Do NOT generate reply text.',
-    parameters: {
-      type: 'object',
-      properties: {
-        primary_intent: {
-          type: 'string',
-          enum: [
-            'greeting',
-            'product_inquiry',
-            'ask_price',
-            'ask_recommendation',
-            'ready_to_order',
-            'provide_details',
-            'complaint',
-            'request_human',
-            'delivery_question',
-            'payment_question',
-            'general_question',
-            'thanks',
-            'confirm_choice',
-            'category_browse',
-            'availability_check',
-            'size_chart_request',
-            'unknown',
-          ],
-        },
-        entities: {
-          type: 'object',
-          properties: {
-            product_name: { type: 'string' },
-            category: { type: 'string' },
-            color: { type: 'string' },
-            size: { type: 'string' },
-            skin_type: { type: 'string' },
-            quantity: { type: 'number' },
-            customer_name: { type: 'string' },
-            phone: { type: 'string' },
-            city: { type: 'string' },
-            delivery_branch: { type: 'string' },
+/**
+ * Build the classify_message function tool, scoped to this tenant.
+ *
+ * The `categories` argument constrains `entities.category` to the
+ * tenant's actual list (Torgsoft + denormalized fallback, see
+ * `AvailabilityService.getCategories`). With `strict: true` set on
+ * the function tool, OpenAI enforces the enum at decode time — the
+ * model emits a value from the list or returns null. No more
+ * hallucinated categories from the model's training distribution.
+ *
+ * `strict: true` requires:
+ *   - All properties listed in `required`
+ *   - `additionalProperties: false` on every object
+ *   - Optional fields modeled as nullable type unions
+ * Hence every entity property is `["string"|"number", "null"]` and
+ * appears in the `required` array; the model returns null for
+ * fields it cannot fill.
+ */
+function buildClassifyTool(
+  categories: string[],
+): OpenAI.Chat.ChatCompletionTool {
+  const categoryField =
+    categories.length > 0
+      ? { type: ['string', 'null'], enum: [...categories, null] }
+      : { type: ['string', 'null'] };
+
+  return {
+    type: 'function',
+    function: {
+      name: 'classify_message',
+      description:
+        'Classify the customer message: detect intent, extract entities, determine conversation stage. Do NOT generate reply text.',
+      strict: true,
+      parameters: {
+        type: 'object',
+        properties: {
+          primary_intent: {
+            type: 'string',
+            enum: [
+              'greeting',
+              'product_inquiry',
+              'ask_price',
+              'ask_recommendation',
+              'ready_to_order',
+              'provide_details',
+              'complaint',
+              'request_human',
+              'delivery_question',
+              'payment_question',
+              'general_question',
+              'thanks',
+              'confirm_choice',
+              'category_browse',
+              'availability_check',
+              'size_chart_request',
+              'unknown',
+            ],
+          },
+          entities: {
+            type: 'object',
+            properties: {
+              product_name: { type: ['string', 'null'] },
+              category: categoryField,
+              color: { type: ['string', 'null'] },
+              size: { type: ['string', 'null'] },
+              skin_type: { type: ['string', 'null'] },
+              quantity: { type: ['number', 'null'] },
+              customer_name: { type: ['string', 'null'] },
+              phone: { type: ['string', 'null'] },
+              city: { type: ['string', 'null'] },
+              delivery_branch: { type: ['string', 'null'] },
+            },
+            required: [
+              'product_name',
+              'category',
+              'color',
+              'size',
+              'skin_type',
+              'quantity',
+              'customer_name',
+              'phone',
+              'city',
+              'delivery_branch',
+            ],
+            additionalProperties: false,
+          },
+          conversation_stage: {
+            type: 'string',
+            enum: [
+              'greeting',
+              'need_discovery',
+              'product_discovery',
+              'showing_options',
+              'selection_help',
+              'product_selected',
+              'checkout_started',
+              'collecting_customer_info',
+              'order_confirmation',
+              'post_order_support',
+              'handoff_to_manager',
+            ],
+          },
+          sentiment: {
+            type: 'string',
+            enum: ['positive', 'neutral', 'negative'],
+          },
+          confidence: {
+            type: 'number',
+            description: 'Confidence score between 0 and 1',
+          },
+          dialogue_act: {
+            type: 'string',
+            enum: [
+              'new_inquiry',
+              'short_contextual_reply',
+              'confirm_choice',
+              'ask_recommendation',
+              'provide_details',
+              'ask_about_shown_products',
+              'clarification',
+              'general_chat',
+            ],
+          },
+          recommended_action: {
+            type: 'string',
+            enum: [
+              'show_products',
+              'recommend',
+              'start_checkout',
+              'ask_delivery',
+              'answer_question',
+              'escalate',
+              'greet',
+              'clarify',
+              'confirm_selection',
+              'show_price',
+              'answer_faq',
+            ],
+          },
+          slot_action: {
+            type: 'string',
+            enum: [
+              'new_inquiry',
+              'fills_missing_slot',
+              'correction',
+              'confirmation',
+              'rejection',
+              'adds_to_cart',
+              'asks_question',
+            ],
+            description:
+              'What the user is doing in terms of slot-filling flow',
           },
         },
-        conversation_stage: {
-          type: 'string',
-          enum: [
-            'greeting',
-            'need_discovery',
-            'product_discovery',
-            'showing_options',
-            'selection_help',
-            'product_selected',
-            'checkout_started',
-            'collecting_customer_info',
-            'order_confirmation',
-            'post_order_support',
-            'handoff_to_manager',
-          ],
-        },
-        sentiment: {
-          type: 'string',
-          enum: ['positive', 'neutral', 'negative'],
-        },
-        confidence: {
-          type: 'number',
-          description: 'Confidence score between 0 and 1',
-        },
-        dialogue_act: {
-          type: 'string',
-          enum: [
-            'new_inquiry',
-            'short_contextual_reply',
-            'confirm_choice',
-            'ask_recommendation',
-            'provide_details',
-            'ask_about_shown_products',
-            'clarification',
-            'general_chat',
-          ],
-        },
-        recommended_action: {
-          type: 'string',
-          enum: [
-            'show_products',
-            'recommend',
-            'start_checkout',
-            'ask_delivery',
-            'answer_question',
-            'escalate',
-            'greet',
-            'clarify',
-            'confirm_selection',
-            'show_price',
-            'answer_faq',
-          ],
-        },
-        slot_action: {
-          type: 'string',
-          enum: [
-            'new_inquiry',
-            'fills_missing_slot',
-            'correction',
-            'confirmation',
-            'rejection',
-            'adds_to_cart',
-            'asks_question',
-          ],
-          description:
-            'What the user is doing in terms of slot-filling flow',
-        },
+        required: [
+          'primary_intent',
+          'entities',
+          'conversation_stage',
+          'sentiment',
+          'confidence',
+          'dialogue_act',
+          'recommended_action',
+          'slot_action',
+        ],
+        additionalProperties: false,
       },
-      required: [
-        'primary_intent',
-        'entities',
-        'conversation_stage',
-        'sentiment',
-        'confidence',
-        'dialogue_act',
-        'recommended_action',
-        'slot_action',
-      ],
     },
-  },
-};
+  } as OpenAI.Chat.ChatCompletionTool;
+}
 
 // ─── Service ─────────────────────────────────────────────────────
 
@@ -372,7 +420,7 @@ export class ClassifierService {
     const completion = await (this.openai.chat.completions.create as any)({
       model: this.model,
       messages,
-      tools: [CLASSIFY_MESSAGE_TOOL],
+      tools: [buildClassifyTool(params.categories)],
       tool_choice: {
         type: 'function',
         function: { name: 'classify_message' },
@@ -395,19 +443,24 @@ export class ClassifierService {
       return this.defaultClassification();
     }
 
+    // Strict mode forces every entity field to appear in the response
+    // (null for unset). Normalize null → undefined so downstream
+    // truthiness checks (`if (entities.category)`) keep their
+    // pre-strict-mode semantics.
+    const e = raw.entities ?? {};
     return {
       primaryIntent: raw.primary_intent ?? 'unknown',
       entities: {
-        productName: raw.entities?.product_name,
-        category: raw.entities?.category,
-        color: raw.entities?.color,
-        size: raw.entities?.size,
-        skinType: raw.entities?.skin_type,
-        quantity: raw.entities?.quantity,
-        customerName: raw.entities?.customer_name,
-        phone: raw.entities?.phone,
-        city: raw.entities?.city,
-        deliveryBranch: raw.entities?.delivery_branch,
+        productName: e.product_name ?? undefined,
+        category: e.category ?? undefined,
+        color: e.color ?? undefined,
+        size: e.size ?? undefined,
+        skinType: e.skin_type ?? undefined,
+        quantity: e.quantity ?? undefined,
+        customerName: e.customer_name ?? undefined,
+        phone: e.phone ?? undefined,
+        city: e.city ?? undefined,
+        deliveryBranch: e.delivery_branch ?? undefined,
       },
       conversationStage: raw.conversation_stage ?? 'greeting',
       sentiment: raw.sentiment ?? 'neutral',

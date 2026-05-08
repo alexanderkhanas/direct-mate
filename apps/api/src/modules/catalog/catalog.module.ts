@@ -7,6 +7,7 @@ import { ProductMedia } from './entities/product-media.entity';
 import { Category } from './entities/category.entity';
 import { CatalogService } from './catalog.service';
 import { CatalogController } from './catalog.controller';
+import { ImageHashService } from './image-hash.service';
 
 @Module({
   imports: [
@@ -19,7 +20,7 @@ import { CatalogController } from './catalog.controller';
     ]),
   ],
   controllers: [CatalogController],
-  providers: [CatalogService],
-  exports: [CatalogService, TypeOrmModule],
+  providers: [CatalogService, ImageHashService],
+  exports: [CatalogService, ImageHashService, TypeOrmModule],
 })
 export class CatalogModule {}

@@ -7,6 +7,7 @@ import { ProductMedia } from './entities/product-media.entity';
 import { StockBalance } from './entities/stock-balance.entity';
 import { Category } from './entities/category.entity';
 import { SearchProductsDto } from './dto/search-products.dto';
+import { ImageHashService } from './image-hash.service';
 import { ProductStatus } from '@direct-mate/shared';
 
 /**
@@ -99,6 +100,7 @@ export class CatalogService {
     @InjectRepository(Category)
     private readonly categoryRepo: Repository<Category>,
     private readonly dataSource: DataSource,
+    private readonly imageHashService: ImageHashService,
   ) {}
 
   async searchProducts(tenantId: string, dto: SearchProductsDto) {
@@ -200,7 +202,10 @@ export class CatalogService {
         category: p.category,
         imageUrl: productImageUrl,
         variantCount: p.variants?.length ?? 0,
+        // updatedAt = "last column changed"; lastSyncedAt = "last seen
+        // in connector feed". UI shows the latter (freshness signal).
         updatedAt: p.updatedAt,
+        lastSyncedAt: p.lastSyncedAt ?? p.updatedAt,
         variants: (p.variants ?? []).map((v) => ({
           id: v.id,
           sku: v.sku,
@@ -214,7 +219,9 @@ export class CatalogService {
             (v.stockBalance?.availableQty ?? 0) -
             (v.stockBalance?.reservedQty ?? 0) -
             (v.stockBalance?.pendingCheckoutQty ?? 0),
-          lastSyncedAt: v.stockBalance?.lastSyncedAt ?? null,
+          // Per-variant freshness from the variant row itself, not from
+          // stock_balances (which only ticks on qty changes).
+          lastSyncedAt: v.lastSyncedAt ?? v.stockBalance?.lastSyncedAt ?? null,
         })),
       };
     });
@@ -315,7 +322,13 @@ export class CatalogService {
     }
 
     // ── 3. Per-product upsert + dependent rows ─────────────────────────
+    // SAVEPOINT per product: a failed row only rolls its own statements
+    // back, so the outer txn stays healthy and Postgres does not poison
+    // every subsequent command with "current transaction is aborted".
+    let savepointSeq = 0;
     for (const p of products) {
+      const sp = `sp_p_${savepointSeq++}`;
+      await mgr.query(`SAVEPOINT ${sp}`);
       try {
         const existing = existingByExternal.get(p.externalProductId);
         const desired = this.toProductRow(tenantId, p);
@@ -342,10 +355,14 @@ export class CatalogService {
         variantsUpdated += vCounts.updated;
         for (const e of vCounts.errors) errors.push(`product ${p.externalProductId}: ${e}`);
 
-        // 3b. Stock (per variant, only when inventoryQty set)
+        // 3b. Stock (per variant, only when inventoryQty set).
+        // Negative qty (Torgsoft oversold/backorder convention) → 0 so
+        // downstream availability queries see a clean "out of stock"
+        // signal rather than negative numbers.
         for (const v of p.variants ?? []) {
           if (v.inventoryQty === undefined || v.inventoryQty === null) continue;
-          await this.upsertStockBalanceTx(mgr, productId, v.externalVariantId, v.inventoryQty);
+          const qty = Math.max(0, v.inventoryQty);
+          await this.upsertStockBalanceTx(mgr, productId, v.externalVariantId, qty);
         }
 
         // 3c. product_categories junction — replace to match input
@@ -357,16 +374,52 @@ export class CatalogService {
             .filter((c): c is Category => !!c),
         );
 
-        // 3d. product_media — only replace when input provides images
-        const imageRows = this.collectImageRows(p);
-        if (imageRows.length > 0) {
+        // 3d. product_media — replace whenever the connector explicitly
+        // sends an `images` field, even if it's an empty array. n8n's
+        // FTP-existence filter is authoritative: an empty list means
+        // "we checked the source and there are no real photos for this
+        // product, drop any stale rows". Treat the absence of the
+        // `images` field (`undefined`) as "no signal" so legacy
+        // connectors that don't pipe images through don't get wiped.
+        //
+        // Each new row gets a 64-bit dHash computed inline so customer
+        // photo lookup can resolve products by image fingerprint. A
+        // failed download / decode stores NULL — the row still works
+        // as a catalog image, it just can't be matched against an
+        // inbound DM photo.
+        if (p.images !== undefined) {
           await mgr.delete(ProductMedia, { productId });
-          for (const img of imageRows) {
-            await mgr.save(ProductMedia, mgr.create(ProductMedia, { productId, ...img }));
+          const rows = this.collectImageRows(p);
+          const phashes = await Promise.all(
+            rows.map((img) => this.imageHashService.hashFromUrl(img.url)),
+          );
+          for (let i = 0; i < rows.length; i++) {
+            await mgr.save(
+              ProductMedia,
+              mgr.create(ProductMedia, {
+                productId,
+                ...rows[i],
+                phash: phashes[i],
+              }),
+            );
           }
         }
+
+        // 3e. last_synced_at — bumped unconditionally on every successful
+        // touch, independent of `updated_at`. The diff-skip optimization
+        // above means `updated_at` only ticks when a real field changed;
+        // this column tracks "last seen in feed" for the UI.
+        await mgr.query(
+          `UPDATE products SET last_synced_at = NOW() WHERE id = $1`,
+          [productId],
+        );
+        await mgr.query(`RELEASE SAVEPOINT ${sp}`);
       } catch (err: any) {
-        errors.push(`product ${p.externalProductId}: ${err.message}`);
+        await mgr.query(`ROLLBACK TO SAVEPOINT ${sp}`);
+        const detail = (err as any)?.driverError?.detail ?? (err as any)?.detail;
+        const code = (err as any)?.driverError?.code ?? (err as any)?.code;
+        const parts = [err.message, detail, code ? `[${code}]` : null].filter(Boolean);
+        errors.push(`product ${p.externalProductId}: ${parts.join(' — ')}`);
       }
     }
 
@@ -521,13 +574,34 @@ export class CatalogService {
     let created = 0;
     let updated = 0;
 
-    const existing = await mgr.find(ProductVariant, { where: { productId } });
+    // Look up existing variants tenant-wide by external_variant_id, NOT by
+    // product_id. Source-of-truth identifier (Torgsoft GoodID, Shopify
+    // variant id) is unique per tenant and can legitimately move between
+    // products when the upstream catalog reshapes — e.g. n8n's merge step
+    // collapses three same-name+same-price Articuls into one canonical
+    // product, and the variants of the two non-canonical siblings need to
+    // re-attach to the canonical product_id rather than collide on the
+    // (tenant_id, barcode) unique index.
+    const externalIds = incoming
+      .map((v) => v.externalVariantId)
+      .filter((x): x is string => !!x);
+    const existing = externalIds.length
+      ? await mgr.find(ProductVariant, {
+          where: { tenantId, externalVariantId: In(externalIds) },
+        })
+      : [];
     const existingByExternal = new Map<string, ProductVariant>();
     for (const ev of existing) {
       if (ev.externalVariantId) existingByExternal.set(ev.externalVariantId, ev);
     }
 
+    // SAVEPOINT per variant: see note on the per-product loop. A bad
+    // row otherwise poisons the outer txn and turns the real error into
+    // the generic "transaction is aborted" message at commit time.
+    let variantSpSeq = 0;
     for (const v of incoming) {
+      const sp = `sp_v_${productId.replace(/-/g, '')}_${variantSpSeq++}`;
+      await mgr.query(`SAVEPOINT ${sp}`);
       try {
         const desired: Partial<ProductVariant> = {
           tenantId,
@@ -547,17 +621,38 @@ export class CatalogService {
 
         const ex = existingByExternal.get(v.externalVariantId);
         if (!ex) {
-          await mgr.save(ProductVariant, mgr.create(ProductVariant, desired));
+          await mgr.save(
+            ProductVariant,
+            mgr.create(ProductVariant, { ...desired, lastSyncedAt: new Date() }),
+          );
           created++;
         } else {
-          if (this.diffVariant(ex, desired)) {
+          // productId is not in VARIANT_DIFF_FIELDS but a variant may
+          // legitimately move products on a re-shaping sync — diff it
+          // explicitly so the UPDATE fires and the variant re-attaches
+          // to the canonical product, freeing the (tenant_id, barcode)
+          // slot that's otherwise locked on the old product row.
+          const productMoved = ex.productId !== productId;
+          if (productMoved || this.diffVariant(ex, desired)) {
             // See note on Product update above re: `as any`.
             await mgr.update(ProductVariant, ex.id, desired as any);
             updated++;
           }
+          // Bump last_synced_at unconditionally on every successful
+          // touch so per-variant freshness reflects the latest sync,
+          // not the latest field-change.
+          await mgr.query(
+            `UPDATE product_variants SET last_synced_at = NOW() WHERE id = $1`,
+            [ex.id],
+          );
         }
+        await mgr.query(`RELEASE SAVEPOINT ${sp}`);
       } catch (err: any) {
-        errors.push(`variant ${v.externalVariantId}: ${err.message}`);
+        await mgr.query(`ROLLBACK TO SAVEPOINT ${sp}`);
+        const detail = (err as any)?.driverError?.detail ?? (err as any)?.detail;
+        const code = (err as any)?.driverError?.code ?? (err as any)?.code;
+        const parts = [err.message, detail, code ? `[${code}]` : null].filter(Boolean);
+        errors.push(`variant ${v.externalVariantId}: ${parts.join(' — ')}`);
       }
     }
 

@@ -25,6 +25,10 @@ __decorate([
     __metadata("design:type", String)
 ], ProductVariant.prototype, "productId", void 0);
 __decorate([
+    (0, typeorm_1.Column)({ type: 'uuid' }),
+    __metadata("design:type", String)
+], ProductVariant.prototype, "tenantId", void 0);
+__decorate([
     (0, typeorm_1.Column)({ type: 'text', nullable: true }),
     __metadata("design:type", Object)
 ], ProductVariant.prototype, "externalVariantId", void 0);
@@ -32,6 +36,10 @@ __decorate([
     (0, typeorm_1.Column)({ type: 'text', nullable: true }),
     __metadata("design:type", Object)
 ], ProductVariant.prototype, "sku", void 0);
+__decorate([
+    (0, typeorm_1.Column)({ type: 'text', nullable: true }),
+    __metadata("design:type", Object)
+], ProductVariant.prototype, "barcode", void 0);
 __decorate([
     (0, typeorm_1.Column)({ type: 'text', nullable: true }),
     __metadata("design:type", Object)
@@ -44,6 +52,10 @@ __decorate([
     (0, typeorm_1.Column)({ type: 'numeric', precision: 10, scale: 2 }),
     __metadata("design:type", Number)
 ], ProductVariant.prototype, "price", void 0);
+__decorate([
+    (0, typeorm_1.Column)({ type: 'numeric', precision: 10, scale: 2, nullable: true }),
+    __metadata("design:type", Object)
+], ProductVariant.prototype, "salePrice", void 0);
 __decorate([
     (0, typeorm_1.Column)({ type: 'text', default: 'UAH' }),
     __metadata("design:type", String)
@@ -68,6 +80,10 @@ __decorate([
     (0, typeorm_1.UpdateDateColumn)({ type: 'timestamptz' }),
     __metadata("design:type", Date)
 ], ProductVariant.prototype, "updatedAt", void 0);
+__decorate([
+    (0, typeorm_1.Column)({ name: 'last_synced_at', type: 'timestamptz', nullable: true }),
+    __metadata("design:type", Object)
+], ProductVariant.prototype, "lastSyncedAt", void 0);
 __decorate([
     (0, typeorm_1.ManyToOne)(() => product_entity_1.Product, (p) => p.variants, { onDelete: 'CASCADE' }),
     __metadata("design:type", product_entity_1.Product)

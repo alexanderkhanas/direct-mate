@@ -95,10 +95,14 @@ export class ImportVariantDto {
   @IsOptional()
   currency?: string;
 
+  // Negative values do appear in Torgsoft data (oversold / backorder /
+  // legacy quirks). For DirectMate's purposes any non-positive qty means
+  // "out of stock", and the catalog service clamps to 0 when writing to
+  // stock_balances. So we accept any number here rather than reject the
+  // batch.
   @ApiPropertyOptional({ example: 18 })
   @IsNumber()
   @IsOptional()
-  @Min(0)
   inventoryQty?: number;
 
   @ApiPropertyOptional({ example: 'https://cdn.shopify.com/s/files/variant-black.jpg' })

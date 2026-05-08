@@ -122,6 +122,7 @@ function FlowConfigSection() {
   const [preQualifyEnabled, setPreQualifyEnabled] = useState(false);
   const [preQualifyPrompt, setPreQualifyPrompt] = useState('');
   const [preQualifyFields, setPreQualifyFields] = useState<string[]>([]);
+  const [preQualifyStrategy, setPreQualifyStrategy] = useState<'before_search' | 'after_search_offered'>('after_search_offered');
   const [variantMode, setVariantMode] = useState('single');
 
   useEffect(() => {
@@ -130,6 +131,7 @@ function FlowConfigSection() {
       setPreQualifyEnabled(fc.preQualify?.enabled ?? false);
       setPreQualifyPrompt(fc.preQualify?.prompt ?? '');
       setPreQualifyFields(fc.preQualify?.fields ?? []);
+      setPreQualifyStrategy(fc.preQualifyStrategy ?? 'after_search_offered');
       setVariantMode(fc.variants?.askSequence?.length > 1 ? 'two_step' : 'single');
     }
   }, [config]);
@@ -142,6 +144,7 @@ function FlowConfigSection() {
           prompt: preQualifyPrompt || undefined,
           fields: preQualifyFields.length > 0 ? preQualifyFields : undefined,
         },
+        preQualifyStrategy,
         variants: variantMode === 'two_step' ? {
           primaryOption: 'color',
           secondaryOption: 'size',
@@ -177,6 +180,18 @@ function FlowConfigSection() {
 
           {preQualifyEnabled && (
             <div className="mt-3 ml-6 space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1.5">{t('settings_ext.pre_qualify_strategy')}</label>
+                <select
+                  value={preQualifyStrategy}
+                  onChange={e => setPreQualifyStrategy(e.target.value as 'before_search' | 'after_search_offered')}
+                  className="px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 max-w-xs"
+                >
+                  <option value="after_search_offered">{t('settings_ext.strategy_after_search_offered')}</option>
+                  <option value="before_search">{t('settings_ext.strategy_before_search')}</option>
+                </select>
+                <p className="text-xs text-gray-400 mt-1">{t('settings_ext.pre_qualify_strategy_desc')}</p>
+              </div>
               <Input
                 label={t('settings_ext.pre_qualify_prompt')}
                 value={preQualifyPrompt}

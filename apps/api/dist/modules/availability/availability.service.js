@@ -41,15 +41,16 @@ let AvailabilityService = class AvailabilityService {
             .filter((w) => w.length > 2 && !stopWords.has(w));
     }
     async getCategories(tenantId) {
-        const rows = await this.variantRepo
-            .createQueryBuilder('v')
-            .innerJoin('v.product', 'p')
-            .select('DISTINCT p.category', 'category')
-            .where('p.tenant_id = :tenantId', { tenantId })
-            .andWhere('p.status = :status', { status: 'active' })
-            .andWhere('p.category IS NOT NULL')
-            .getRawMany();
-        return rows.map((r) => r.category).filter(Boolean);
+        const rows = await this.dataSource.query(`SELECT DISTINCT name FROM (
+         SELECT name FROM categories WHERE tenant_id = $1
+         UNION
+         SELECT category AS name FROM products
+          WHERE tenant_id = $1
+            AND category IS NOT NULL
+            AND status = 'active'
+       ) c
+       ORDER BY name`, [tenantId]);
+        return rows.map((r) => r.name).filter(Boolean);
     }
     async check(tenantId, dto) {
         const searchTerms = this.extractSearchTerms(dto.query);
@@ -165,16 +166,30 @@ let AvailabilityService = class AvailabilityService {
     }
     async checkAll(tenantId, dto) {
         const searchTerms = this.extractSearchTerms(dto.query);
-        if (searchTerms.length === 0)
-            return [];
         const fullPhrase = searchTerms.join(' ');
         let variants = [];
-        variants = await this.searchAllByTitle(tenantId, fullPhrase);
+        if (dto.category) {
+            variants = await this.searchAllByCategoryName(tenantId, dto.category);
+            if (variants.length && searchTerms.length > 0) {
+                const lowerTerms = searchTerms.map((t) => t.toLowerCase());
+                const narrowed = variants.filter((v) => {
+                    const title = (v.product?.title ?? '').toLowerCase();
+                    return lowerTerms.some((t) => title.includes(t));
+                });
+                if (narrowed.length > 0)
+                    variants = narrowed;
+            }
+        }
+        if (!variants.length && searchTerms.length === 0)
+            return [];
         if (!variants.length) {
-            for (const t of searchTerms) {
-                variants = await this.searchAllByTitle(tenantId, t);
-                if (variants.length)
-                    break;
+            variants = await this.searchAllByTitle(tenantId, fullPhrase);
+            if (!variants.length) {
+                for (const t of searchTerms) {
+                    variants = await this.searchAllByTitle(tenantId, t);
+                    if (variants.length)
+                        break;
+                }
             }
         }
         if (!variants.length) {
@@ -185,25 +200,6 @@ let AvailabilityService = class AvailabilityService {
                     if (variants.length)
                         break;
                 }
-            }
-        }
-        if (!variants.length) {
-            variants = await this.searchAllByCategory(tenantId, fullPhrase);
-            if (!variants.length) {
-                for (const t of searchTerms) {
-                    variants = await this.searchAllByCategory(tenantId, t);
-                    if (variants.length)
-                        break;
-                }
-            }
-        }
-        if (!variants.length) {
-            for (const t of searchTerms) {
-                if (t.length < 4)
-                    continue;
-                variants = await this.searchAllByCategoryTrigram(tenantId, t);
-                if (variants.length)
-                    break;
             }
         }
         if (variants.length === 0)
@@ -217,38 +213,37 @@ let AvailabilityService = class AvailabilityService {
             .createQueryBuilder('v')
             .innerJoinAndSelect('v.product', 'p')
             .leftJoinAndSelect('v.stockBalance', 's')
-            .where('p.tenant_id = :tenantId', { tenantId })
-            .andWhere('p.status = :status', { status: 'active' })
-            .andWhere('v.active = true')
-            .andWhere('p.title ILIKE :q', { q: `%${term}%` })
-            .take(20)
+            .where('v.active = true')
+            .andWhere(`v.product_id IN (
+           SELECT pp.id FROM products pp
+            WHERE pp.tenant_id = :tenantId
+              AND pp.status = 'active'
+              AND pp.title ILIKE :q
+            ORDER BY pp.last_synced_at DESC NULLS LAST
+            LIMIT 10
+         )`, { tenantId, q: `%${term}%` })
             .getMany();
     }
-    async searchAllByCategory(tenantId, term) {
+    async searchAllByCategoryName(tenantId, categoryName) {
         return this.variantRepo
             .createQueryBuilder('v')
             .innerJoinAndSelect('v.product', 'p')
             .leftJoinAndSelect('v.stockBalance', 's')
-            .where('p.tenant_id = :tenantId', { tenantId })
-            .andWhere('p.status = :status', { status: 'active' })
-            .andWhere('v.active = true')
-            .andWhere('p.category ILIKE :q', { q: `%${term}%` })
-            .take(20)
-            .getMany();
-    }
-    async searchAllByCategoryTrigram(tenantId, term) {
-        return this.variantRepo
-            .createQueryBuilder('v')
-            .innerJoinAndSelect('v.product', 'p')
-            .leftJoinAndSelect('v.stockBalance', 's')
-            .addSelect('similarity(p.category, :q)', 'sim')
-            .where('p.tenant_id = :tenantId', { tenantId })
-            .andWhere('p.status = :status', { status: 'active' })
-            .andWhere('v.active = true')
-            .andWhere('similarity(p.category, :q) > 0.3', { q: term })
-            .orderBy('sim', 'DESC')
-            .setParameter('q', term)
-            .take(20)
+            .where('v.active = true')
+            .andWhere(`v.product_id IN (
+           SELECT pp.id FROM products pp
+            WHERE pp.tenant_id = :tenantId
+              AND pp.status = 'active'
+              AND (
+                EXISTS (
+                  SELECT 1 FROM product_categories pc
+                   INNER JOIN categories c ON c.id = pc.category_id
+                   WHERE pc.product_id = pp.id AND lower(c.name) = lower(:cat)
+                ) OR lower(pp.category) = lower(:cat)
+              )
+            ORDER BY pp.last_synced_at DESC NULLS LAST
+            LIMIT 10
+         )`, { tenantId, cat: categoryName })
             .getMany();
     }
     async searchAllByDescription(tenantId, term) {
@@ -256,11 +251,15 @@ let AvailabilityService = class AvailabilityService {
             .createQueryBuilder('v')
             .innerJoinAndSelect('v.product', 'p')
             .leftJoinAndSelect('v.stockBalance', 's')
-            .where('p.tenant_id = :tenantId', { tenantId })
-            .andWhere('p.status = :status', { status: 'active' })
-            .andWhere('v.active = true')
-            .andWhere('p.description ILIKE :q', { q: `%${term}%` })
-            .take(20)
+            .where('v.active = true')
+            .andWhere(`v.product_id IN (
+           SELECT pp.id FROM products pp
+            WHERE pp.tenant_id = :tenantId
+              AND pp.status = 'active'
+              AND pp.description ILIKE :q
+            ORDER BY pp.last_synced_at DESC NULLS LAST
+            LIMIT 10
+         )`, { tenantId, q: `%${term}%` })
             .getMany();
     }
     async findAllByProductId(productId, variantId) {

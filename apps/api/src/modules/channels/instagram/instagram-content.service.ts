@@ -9,6 +9,8 @@ import { Product } from '../../catalog/entities/product.entity';
 import { ProductVariant } from '../../catalog/entities/product-variant.entity';
 import { StoreConfig } from '../../engine/entities/store-config.entity';
 import { CryptoService } from '../../../common/crypto.service';
+import { ImageHashService } from '../../catalog/image-hash.service';
+import { DataSource } from 'typeorm';
 import { ConnectionType, ConnectionStatus } from '@direct-mate/shared';
 
 const DEFAULT_SKU_PATTERNS = [
@@ -37,6 +39,8 @@ export class InstagramContentService {
     private readonly storeConfigRepo: Repository<StoreConfig>,
     private readonly crypto: CryptoService,
     private readonly config: ConfigService,
+    private readonly imageHashService: ImageHashService,
+    private readonly dataSource: DataSource,
   ) {
     this.openai = new OpenAI({ apiKey: this.config.get<string>('openai.apiKey') });
   }
@@ -536,7 +540,51 @@ export class InstagramContentService {
     tenantId: string,
     customerImageUrl: string,
   ): Promise<{ productId: string; variantId: string | null; confidence: number } | null> {
-    // Load linked media with images
+    // Two-stage match flow:
+    //   Stage 1 — pHash on `product_media`. Direct resolve when the
+    //             closest hash is within MATCH_THRESHOLD AND not tied
+    //             with the second-closest. Catches "customer saved /
+    //             screenshotted the catalog photo" deterministically.
+    //   Stage 2 — Vision narrowing. When pHash has no exact-enough
+    //             match, take the top-K closest catalog images by
+    //             Hamming distance + the linked instagram media as
+    //             candidates, send them to GPT-4o-mini Vision with
+    //             the customer image, accept on confidence ≥ 0.7.
+    //   Stage 3 — Hand-off. If neither stage resolves, return null
+    //             and let the engine route the conversation to a
+    //             human.
+    const phashCandidates = await this.findCatalogCandidatesByPhash(
+      tenantId,
+      customerImageUrl,
+    );
+
+    if (phashCandidates && phashCandidates.candidates.length > 0) {
+      const closest = phashCandidates.candidates[0];
+      const second = phashCandidates.candidates[1];
+      const directMatch =
+        closest.distance <= ImageHashService.MATCH_THRESHOLD &&
+        (!second || second.distance > closest.distance);
+      if (directMatch) {
+        this.logger.log(
+          `Customer photo: pHash direct match (distance=${closest.distance}) → product ${closest.product_id}`,
+        );
+        const variantId = closest.color
+          ? await this.resolveVariantByColor(closest.product_id, closest.color)
+          : null;
+        const confidence = Math.max(
+          0.7,
+          1 - closest.distance / (ImageHashService.MATCH_THRESHOLD * 2),
+        );
+        return {
+          productId: closest.product_id,
+          variantId,
+          confidence,
+        };
+      }
+    }
+
+    // Load linked media with images (existing pool, used as extra
+    // candidates in the vision call)
     const linkedMedia = await this.mappingRepo
       .createQueryBuilder('m')
       .where('m.tenant_id = :tenantId', { tenantId })
@@ -545,8 +593,6 @@ export class InstagramContentService {
       .orderBy('m.created_at', 'DESC')
       .limit(10)
       .getMany();
-
-    if (linkedMedia.length === 0) return null;
 
     // Short-circuit: if the customer URL is exactly one of the linked media_urls,
     // we already know the match. Skips a vision call entirely. Useful when a
@@ -563,6 +609,58 @@ export class InstagramContentService {
       };
     }
 
+    // Build the unified candidate set for vision: top-K catalog images
+    // ranked by pHash distance + the linked media pool. pHash narrowing
+    // keeps the vision call cheap by sending only ~5 catalog candidates
+    // instead of 200+. Linked media is unhashed (different table); we
+    // pass them through as-is.
+    type VisionCandidate = {
+      productId: string;
+      variantId: string | null;
+      color: string | null;
+      url: string;
+      // For diagnostics in logs.
+      source: 'phash' | 'linked';
+      phashDistance?: number;
+    };
+
+    // Top-K: empirically the matching catalog photo can sit at rank
+    // 25–30 when a customer sends a story screenshot (Instagram chrome
+    // + framing differences move the dHash significantly). 25 entries
+    // is a safe ceiling — vision still distinguishes them reliably and
+    // the cost stays well under a cent per call.
+    const TOP_K = 25;
+    const catalogTopK: VisionCandidate[] = [];
+    if (phashCandidates) {
+      const top = phashCandidates.candidates.slice(0, TOP_K);
+      this.logger.log(
+        `pHash narrowing: top distances=[${top.map((c) => c.distance).join(', ')}]`,
+      );
+      for (const c of top) {
+        catalogTopK.push({
+          productId: c.product_id,
+          variantId: null, // resolved later if vision picks this candidate
+          color: c.color,
+          url: c.url,
+          source: 'phash',
+          phashDistance: c.distance,
+        });
+      }
+    }
+    const linkedCandidates: VisionCandidate[] = linkedMedia.map((m) => ({
+      productId: m.productId!,
+      variantId: m.variantId,
+      color: null,
+      url: m.mediaUrl!,
+      source: 'linked',
+    }));
+    const allCandidates = [...catalogTopK, ...linkedCandidates];
+
+    if (allCandidates.length === 0) {
+      this.logger.log('Customer photo: no catalog or linked candidates → handoff');
+      return null;
+    }
+
     // Download customer image
     const customerDataUrl = await this.toBase64DataUrl(customerImageUrl);
     if (!customerDataUrl) {
@@ -572,12 +670,19 @@ export class InstagramContentService {
 
     // Download candidate product images
     const candidateDataUrls = await Promise.all(
-      linkedMedia.map((m) => this.toBase64DataUrl(m.mediaUrl!)),
+      allCandidates.map((c) => this.toBase64DataUrl(c.url)),
     );
-    const validMedia = linkedMedia.filter((_, i) => candidateDataUrls[i] !== null);
-    const validUrls = candidateDataUrls.filter((u): u is string => u !== null);
+    const validIdx: number[] = [];
+    const validUrls: string[] = [];
+    for (let i = 0; i < allCandidates.length; i++) {
+      const dataUrl = candidateDataUrls[i];
+      if (dataUrl) {
+        validIdx.push(i);
+        validUrls.push(dataUrl);
+      }
+    }
 
-    if (validMedia.length === 0) return null;
+    if (validIdx.length === 0) return null;
 
     try {
       const imageContent: OpenAI.Chat.ChatCompletionContentPart[] = [
@@ -591,7 +696,7 @@ export class InstagramContentService {
         })),
         {
           type: 'text',
-          text: `The first image is a screenshot sent by a customer. The next ${validMedia.length} images are product posts from the store (index 0 to ${validMedia.length - 1}). Does the customer's screenshot show the same product as any of the posts? Reply with JSON only: {"match": <index or -1 if no match>, "confidence": <0.0 to 1.0>}`,
+          text: `The first image is a screenshot sent by a customer. The next ${validUrls.length} images are products from the store (index 0 to ${validUrls.length - 1}). Does the customer's screenshot show the same product as any of the indexed images? Reply with JSON only: {"match": <index or -1 if no match>, "confidence": <0.0 to 1.0>}`,
         },
       ];
 
@@ -608,24 +713,120 @@ export class InstagramContentService {
 
       const result = JSON.parse(jsonMatch[0]) as { match: number; confidence: number };
 
-      if (result.match >= 0 && result.match < validMedia.length && result.confidence >= 0.7) {
-        const matched = validMedia[result.match];
+      if (result.match >= 0 && result.match < validIdx.length && result.confidence >= 0.7) {
+        const candidate = allCandidates[validIdx[result.match]];
+        const variantId =
+          candidate.variantId ??
+          (candidate.color
+            ? await this.resolveVariantByColor(candidate.productId, candidate.color)
+            : null);
         this.logger.log(
-          `Customer photo matched to media ${matched.instagramMediaId} → product ${matched.productId} (confidence: ${result.confidence})`,
+          `Customer photo: vision matched (source=${candidate.source}` +
+            (candidate.phashDistance !== undefined ? `, pHashDist=${candidate.phashDistance}` : '') +
+            `, confidence=${result.confidence}) → product ${candidate.productId}`,
         );
         return {
-          productId: matched.productId!,
-          variantId: matched.variantId,
+          productId: candidate.productId,
+          variantId,
           confidence: result.confidence,
         };
       }
 
-      this.logger.log(`Customer photo: no match (best: match=${result.match}, confidence=${result.confidence})`);
+      this.logger.log(
+        `Customer photo: vision no match (best: match=${result.match}, confidence=${result.confidence})`,
+      );
       return null;
     } catch (err) {
       this.logger.error(`matchCustomerPhoto vision call failed: ${err}`);
       return null;
     }
+  }
+
+  // ─── pHash matching ────────────────────────────────────────────
+
+  /**
+   * Hash the customer photo and rank the tenant's `product_media`
+   * rows by Hamming distance ascending. Returns null when the image
+   * can't be hashed or the tenant has no hashed rows.
+   *
+   * The caller decides whether the closest row is good enough for a
+   * direct resolve or whether the top-K should be handed off to the
+   * vision narrowing step.
+   */
+  private async findCatalogCandidatesByPhash(
+    tenantId: string,
+    customerImageUrl: string,
+  ): Promise<{
+    customerHash: string;
+    candidates: Array<{
+      product_id: string;
+      color: string | null;
+      url: string;
+      phash: string;
+      distance: number;
+    }>;
+  } | null> {
+    let buf: Buffer;
+    try {
+      const res = await fetch(customerImageUrl);
+      if (!res.ok) {
+        this.logger.warn(`pHash: customer image fetch HTTP ${res.status}`);
+        return null;
+      }
+      buf = Buffer.from(await res.arrayBuffer());
+    } catch (err: any) {
+      this.logger.warn(`pHash: customer image fetch failed: ${err.message ?? err}`);
+      return null;
+    }
+    const customerHash = await this.imageHashService.hashFromBuffer(buf);
+    if (!customerHash) {
+      this.logger.warn('pHash: customer image hashFromBuffer returned null');
+      return null;
+    }
+
+    type Row = { product_id: string; color: string | null; url: string; phash: string };
+    const rows: Row[] = await this.dataSource.query(
+      `SELECT pm.product_id, pm.color, pm.url, pm.phash
+         FROM product_media pm
+         JOIN products p ON p.id = pm.product_id
+        WHERE p.tenant_id = $1 AND pm.phash IS NOT NULL`,
+      [tenantId],
+    );
+    if (rows.length === 0) {
+      this.logger.log('pHash: no product_media rows with phash for tenant');
+      return null;
+    }
+
+    const ranked = rows
+      .map((r) => ({
+        ...r,
+        distance: this.imageHashService.hammingDistance(customerHash, r.phash),
+      }))
+      .sort((a, b) => a.distance - b.distance);
+
+    this.logger.log(
+      `pHash: customer=${customerHash} closest=${ranked[0].distance} second=${ranked[1]?.distance ?? 'none'} (threshold=${ImageHashService.MATCH_THRESHOLD}, candidates=${rows.length})`,
+    );
+
+    return { customerHash, candidates: ranked };
+  }
+
+  private async resolveVariantByColor(
+    productId: string,
+    color: string,
+  ): Promise<string | null> {
+    const variant = await this.variantRepo
+      .createQueryBuilder('v')
+      .leftJoinAndSelect('v.stockBalance', 's')
+      .where('v.product_id = :pid', { pid: productId })
+      .andWhere('LOWER(v.color) = LOWER(:c)', { c: color })
+      .andWhere('v.active = true')
+      .orderBy(
+        'COALESCE(s.available_qty, 0) - COALESCE(s.reserved_qty, 0) - COALESCE(s.pending_checkout_qty, 0)',
+        'DESC',
+      )
+      .getOne();
+    return variant?.id ?? null;
   }
 
   // ─── SKU matching ──────────────────────────────────────────────

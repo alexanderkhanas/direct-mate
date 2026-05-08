@@ -705,6 +705,15 @@ export class ReplyEngineService {
     // ─── Yes/no answer to a previous offer (after_search_offered T2) ───
     // Must run BEFORE the gate, because the user's "так" doesn't carry
     // product intent — the outer gate's shouldSearchProducts would say no.
+    //
+    // Defense-in-depth: if the operator just toggled preQualify.enabled
+    // off while a conversation has memory.awaitingPreQualifyAnswer set
+    // from a prior turn, drop that flag instead of asking height/weight.
+    if (memory.awaitingPreQualifyAnswer && !preQualifyFlowConfig?.preQualify?.enabled) {
+      ctx.trace.push('preQualify: disabled mid-conversation → dropping pending offer answer');
+      memory.awaitingPreQualifyAnswer = false;
+      memory.shouldOfferSizeHelp = false;
+    }
     if (memory.awaitingPreQualifyAnswer) {
       const yesNo = this.classifyOfferAnswer(classification);
       if (yesNo === 'yes') {
@@ -905,6 +914,12 @@ export class ReplyEngineService {
     }
 
     // Yes/no answer to a previous offer — runs BEFORE the gate (mirror of clothing).
+    // Defense-in-depth: if preQualify.enabled was just toggled off, drop the pending flag.
+    if (memory.awaitingPreQualifyAnswer && !preQualifyFlowConfig?.preQualify?.enabled) {
+      ctx.trace.push('preQualifyCosmetics: disabled mid-conversation → dropping pending offer answer');
+      memory.awaitingPreQualifyAnswer = false;
+      memory.shouldOfferSizeHelp = false;
+    }
     if (memory.awaitingPreQualifyAnswer) {
       const yesNo = this.classifyOfferAnswer(classification);
       if (yesNo === 'yes') {
@@ -1031,6 +1046,8 @@ export class ReplyEngineService {
         size: v.size,
         imageUrl: v.imageUrl ?? null,
       }));
+      // Record full catalog variant count for "last in stock" detection in 5.5d.
+      memory.totalVariantsForSelectedProduct = first.variants.length;
 
       // Reconcile classifier-extracted productName with media-resolved title.
       // The classifier reads recent conversation history, so it can extract a
@@ -1148,6 +1165,7 @@ export class ReplyEngineService {
         input.tenantId,
         input.conversationId,
         searchKeywords,
+        classification.entities.category,
       );
 
       this.logToFile({
@@ -1804,6 +1822,22 @@ export class ReplyEngineService {
         memory.selectedVariantName = effectiveVariants[0].name;
         memory.selectionState = 'awaiting_confirmation';
         this.setConfirmIntent(classification, userColor, userSize);
+        // "Last in stock" routing: catalog has multiple variants but
+        // only one is currently available. Skip when the customer
+        // explicitly named a variant (size/color) — they're not asking
+        // a generic "what's available", so the standard confirm copy
+        // is the right fit.
+        const isVariantQuery = !!(userColor || userSize);
+        const isLastInStock =
+          !isVariantQuery &&
+          (memory.totalVariantsForSelectedProduct ?? 0) > 1;
+        if (isLastInStock) {
+          classification.primaryIntent = 'confirm_last_in_stock';
+          classification.recommendedAction = 'confirm_last_in_stock';
+          ctx.trace.push(
+            `5.5d: last-in-stock (1 of ${memory.totalVariantsForSelectedProduct}) → confirm_last_in_stock`,
+          );
+        }
         ctx.trace.push(`5.5d: matched ${effectiveVariants[0].name} → awaiting_confirmation (intent=${classification.primaryIntent})`);
         this.logger.log(`5.5d: Single variant after filter → auto-selected: ${effectiveVariants[0].name}`);
       } else if (userColor || userSize) {
@@ -1913,14 +1947,17 @@ export class ReplyEngineService {
 
       // ─── after_search_offered: append size-help offer suffix ───────
       // Conditions (all must be true):
+      //   0. flow_config.preQualify.enabled is true (master kill switch)
       //   1. Strategy is 'after_search_offered'
       //   2. We just rendered show_products (i.e. presented options to user)
       //   3. User has NOT yet provided pre-qualify data
       //      (recommendedSize/recommendedSkinType unset)
       //   4. We haven't already offered (shouldOfferSizeHelp not set)
       //   5. User isn't in mid-pre-qualify-Q-A
+      const buildResponseFlowConfig = effectiveConfig?.flowConfig as any;
+      const buildResponsePreQualifyEnabled = !!buildResponseFlowConfig?.preQualify?.enabled;
       const buildResponseStrategy: 'before_search' | 'after_search_offered' =
-        ((effectiveConfig?.flowConfig as any)?.preQualifyStrategy as 'before_search' | 'after_search_offered') ??
+        (buildResponseFlowConfig?.preQualifyStrategy as 'before_search' | 'after_search_offered') ??
         'after_search_offered';
       const justAnsweredPreQualify =
         memory.lastAction === 'recommended_size' ||
@@ -1933,6 +1970,7 @@ export class ReplyEngineService {
         (buildResponseBusinessType === 'clothing' && !!classification.entities.size) ||
         (buildResponseBusinessType === 'cosmetics' && !!classification.entities.skinType);
       if (
+        buildResponsePreQualifyEnabled &&
         buildResponseStrategy === 'after_search_offered' &&
         templateResult.scenario === 'show_products' &&
         !memory.shouldOfferSizeHelp &&
@@ -2294,6 +2332,7 @@ export class ReplyEngineService {
       recommend_product: 'recommend',
       ask_recommendation_from_shown: 'recommend',
       confirm_selection: 'confirm_selection',
+      confirm_last_in_stock: 'confirm_selection',
       collect_checkout_info: 'start_checkout',
       order_confirmed_ask_delivery: 'ask_delivery',
       confirm_order: 'confirm_order',
@@ -2795,17 +2834,28 @@ export class ReplyEngineService {
     );
   }
 
+  /**
+   * Build the keyword list for product title/description ILIKE search.
+   *
+   * `entities.category` is intentionally NOT included here — category
+   * routes through a dedicated `category` param on `searchProducts`,
+   * which prefilters by the M2M (`product_categories` + `categories`)
+   * with exact case-insensitive name match. Stuffing the category into
+   * the keyword stream would re-introduce the substring-ILIKE false
+   * positives the M2M routing was added to fix.
+   *
+   * Returns `[]` (empty) when no keywords are extracted; the caller
+   * routes a category-only search via the `category` param.
+   */
   private extractSearchKeywords(
     classification: ClassificationResult,
   ): string[] {
     const keywords: string[] = [];
     if (classification.entities.productName)
       keywords.push(classification.entities.productName);
-    if (classification.entities.category)
-      keywords.push(classification.entities.category);
     if (classification.entities.color)
       keywords.push(classification.entities.color);
-    return keywords.length > 0 ? keywords : [''];
+    return keywords;
   }
 
   /**
@@ -2848,18 +2898,44 @@ export class ReplyEngineService {
     tenantId: string,
     conversationId: string,
     keywords: string[],
+    category?: string,
   ): Promise<ProductSearchResult[] | undefined> {
-    for (const keyword of keywords) {
-      if (!keyword) continue;
+    // Category-only path: classifier extracted a tenant category but
+    // no productName/color. Fire one search keyed only by category.
+    if (category && keywords.length === 0) {
       const results = await this.availabilityService.checkAll(tenantId, {
-        query: keyword,
+        query: '',
+        category,
       });
 
       await this.auditService.log({
         tenantId,
         conversationId,
         type: AuditLogType.AvailabilityCheck,
-        details: { keyword, productsFound: results.length },
+        details: { keyword: '', category, productsFound: results.length },
+      });
+
+      if (results.length > 0) {
+        return results.map((r) => ({
+          product: r.product,
+          variants: r.variants,
+        }));
+      }
+      return undefined;
+    }
+
+    for (const keyword of keywords) {
+      if (!keyword) continue;
+      const results = await this.availabilityService.checkAll(tenantId, {
+        query: keyword,
+        category,
+      });
+
+      await this.auditService.log({
+        tenantId,
+        conversationId,
+        type: AuditLogType.AvailabilityCheck,
+        details: { keyword, category, productsFound: results.length },
       });
 
       if (results.length > 0) {

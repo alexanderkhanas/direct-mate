@@ -40,6 +40,7 @@ const INTENT_TO_SCENARIO: Record<string, string> = {
   ask_recommendation: 'recommend_product',
   ready_to_order: 'collect_checkout_info',
   confirm_choice: 'confirm_selection',
+  confirm_last_in_stock: 'confirm_last_in_stock',
   confirm_variant_available: 'confirm_variant_available',
   provide_details: 'collect_checkout_info',
   delivery_question: 'answer_delivery',
@@ -152,6 +153,23 @@ export class TemplateEngineService {
     });
 
     if (templates.length === 0) {
+      // confirm_last_in_stock is an optional scenario — tenants opt in
+      // by authoring a template. Without one, fall back to the standard
+      // confirm_selection so the engine still resolves the conversation.
+      if (scenario === 'confirm_last_in_stock') {
+        this.logger.log(
+          'confirm_last_in_stock: no template authored — falling back to confirm_selection',
+        );
+        return this.renderScenario(
+          tenantId,
+          'confirm_selection',
+          classification,
+          productData,
+          memory,
+          recentTemplateIds,
+          flowConfig,
+        );
+      }
       this.logger.warn(`No active templates for scenario=${scenario}`);
       return null;
     }
@@ -198,27 +216,25 @@ export class TemplateEngineService {
     const imageUrls: string[] = [];
     if (productData) {
       if (allProductScenarios.includes(scenario)) {
-        // Send one image per distinct variant URL across all listed products,
-        // so multi-color products surface a swatch per color in the customer's
-        // chat. Falls back to the product-level image when a product has no
-        // per-variant URLs. Deduped by URL — identical images don't repeat.
-        // Note: rendering is capped downstream by MessageBubble (4 images max
-        // visible) — flagged as tech debt; relevant when many colors per
-        // product × many products land in one reply.
+        // One image per product. With N products in a show_products turn
+        // we send N images — predictable, matches the text (one row per
+        // product), no per-color swatch noise. Per-color exploration
+        // belongs in ask_variant_choice, where the customer has picked a
+        // product and the per-color image set is meaningful.
+        //
+        // Picking which variant's image: prefer first in-stock variant,
+        // then product-level image. The in-stock preference avoids URLs
+        // pointing at unphotographed OOS SKUs.
         const seen = new Set<string>();
         for (const p of productData) {
           const inStock = p.variants.filter((v) => v.effectiveAvailable > 0);
-          const variantUrls = inStock
-            .map((v) => v.imageUrl)
-            .filter((u): u is string => !!u);
-          const productUrls = variantUrls.length > 0
-            ? variantUrls
-            : (p.product.imageUrl ? [p.product.imageUrl] : []);
-          for (const url of productUrls) {
-            if (!seen.has(url)) {
-              seen.add(url);
-              imageUrls.push(url);
-            }
+          const url =
+            inStock.find((v) => v.imageUrl)?.imageUrl ??
+            p.product.imageUrl ??
+            null;
+          if (url && !seen.has(url)) {
+            seen.add(url);
+            imageUrls.push(url);
           }
         }
       } else if (singleProductScenarios.includes(scenario)) {
@@ -859,6 +875,13 @@ export class TemplateEngineService {
     const lines: string[] = [];
     let idx = 1;
 
+    // When the list shows multiple products, every entry renders in
+    // the multi-line block (title / Відтінки / Розміри / Ціна) so the
+    // reply scans uniformly. The inline shortcut stays only for the
+    // single-product case (rare in show_products; usually those route
+    // to confirm_selection or ask_variant_choice).
+    const multiProduct = productData.length > 1;
+
     for (const p of productData) {
       const inStock = p.variants.filter((v) => v.effectiveAvailable > 0);
       if (inStock.length === 0) continue;
@@ -871,8 +894,8 @@ export class TemplateEngineService {
         ? this.deduplicateByColor(inStock)
         : inStock;
 
-      // If only 1 display variant and no distinguishing attributes, just show price
-      if (displayVariants.length === 1) {
+      // Inline shortcut: single product overall AND single in-stock variant.
+      if (!multiProduct && displayVariants.length === 1) {
         const v = displayVariants[0];
         const detail = suppressSizes
           ? (v.color || '')
@@ -898,10 +921,11 @@ export class TemplateEngineService {
           const hasSizes = displayVariants.some((v) => v.size);
 
           if (hasColors && hasSizes) {
-            // Group sizes per color, then check whether every color shares
-            // the same size set. When uniform, emit two cleaner lines
-            // (colors / sizes). When not, fall back to per-color paren
-            // format so the customer sees which sizes are missing where.
+            // Group sizes per color. When every color shares the same
+            // size set (uniform matrix — including single-color), emit
+            // two clean lines (Відтінки / Розміри). When sizes vary
+            // across colors, fall back to per-color paren so the
+            // customer sees which sizes are missing where.
             const colorGroups = new Map<string, string[]>();
             for (const v of displayVariants) {
               if (v.color) {
@@ -914,7 +938,7 @@ export class TemplateEngineService {
             const sizeSignatures = new Set(
               Array.from(colorGroups.values()).map((sizes) => [...sizes].sort().join('|')),
             );
-            if (sizeSignatures.size === 1 && colorGroups.size > 1) {
+            if (sizeSignatures.size === 1) {
               const colors = Array.from(colorGroups.keys()).join(', ');
               const sizes = sortSizes(Array.from(colorGroups.values())[0] ?? []).join(', ');
               lines.push(`Відтінки: ${colors}`);

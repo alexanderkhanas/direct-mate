@@ -60,8 +60,13 @@ let InternalController = class InternalController {
             return { success: true, jobId: job.id, ...result };
         }
         catch (err) {
-            await this.integrationsService.markJobFailed(job.id, err.message);
-            return { success: false, jobId: job.id, error: err.message };
+            const detail = err?.driverError?.detail ?? err?.detail;
+            const code = err?.driverError?.code ?? err?.code;
+            const fullMessage = [err.message, detail, code ? `[${code}]` : null]
+                .filter(Boolean)
+                .join(' — ');
+            await this.integrationsService.markJobFailed(job.id, fullMessage);
+            return { success: false, jobId: job.id, error: fullMessage };
         }
     }
     async stockImport(dto) {

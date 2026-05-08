@@ -76,6 +76,12 @@ export class Product {
   @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt!: Date;
 
+  // Bumped on every successful per-product sync touch, even when the
+  // diff-skip optimization avoided a row UPDATE. Use this for "last
+  // seen in feed" UI; use `updatedAt` for "last column changed".
+  @Column({ name: 'last_synced_at', type: 'timestamptz', nullable: true })
+  lastSyncedAt!: Date | null;
+
   @OneToMany(() => ProductVariant, (v) => v.product)
   variants!: ProductVariant[];
 

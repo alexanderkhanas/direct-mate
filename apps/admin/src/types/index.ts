@@ -82,6 +82,7 @@ export interface ProductRow {
   imageUrl: string | null;
   variantCount: number;
   updatedAt: string;
+  lastSyncedAt: string | null;
   variants: ProductVariantRow[];
 }
 

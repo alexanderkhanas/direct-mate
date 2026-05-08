@@ -70,6 +70,12 @@ export class ProductVariant {
   @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt!: Date;
 
+  // See products.lastSyncedAt: bumped on every sync touch, separate
+  // from updated_at (real field changes) and stock.lastSyncedAt (qty
+  // changes).
+  @Column({ name: 'last_synced_at', type: 'timestamptz', nullable: true })
+  lastSyncedAt!: Date | null;
+
   @ManyToOne(() => Product, (p) => p.variants, { onDelete: 'CASCADE' })
   product!: Product;
 
