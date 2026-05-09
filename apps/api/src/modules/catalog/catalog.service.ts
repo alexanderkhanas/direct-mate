@@ -8,6 +8,7 @@ import { StockBalance } from './entities/stock-balance.entity';
 import { Category } from './entities/category.entity';
 import { SearchProductsDto } from './dto/search-products.dto';
 import { ImageHashService } from './image-hash.service';
+import { ImageEmbeddingService } from './image-embedding.service';
 import { ProductStatus } from '@direct-mate/shared';
 
 /**
@@ -101,6 +102,7 @@ export class CatalogService {
     private readonly categoryRepo: Repository<Category>,
     private readonly dataSource: DataSource,
     private readonly imageHashService: ImageHashService,
+    private readonly imageEmbeddingService: ImageEmbeddingService,
   ) {}
 
   async searchProducts(tenantId: string, dto: SearchProductsDto) {
@@ -382,24 +384,38 @@ export class CatalogService {
         // `images` field (`undefined`) as "no signal" so legacy
         // connectors that don't pipe images through don't get wiped.
         //
-        // Each new row gets a 64-bit dHash computed inline so customer
-        // photo lookup can resolve products by image fingerprint. A
-        // failed download / decode stores NULL — the row still works
-        // as a catalog image, it just can't be matched against an
-        // inbound DM photo.
+        // Each new row gets a 64-bit dHash + a 512-dim CLIP embedding
+        // computed inline. pHash powers the deterministic exact-match
+        // shortcut (Stage 1 of customer-photo lookup); CLIP embedding
+        // powers semantic candidate retrieval (Stage 2). A failed
+        // download / decode for either path stores NULL on that column —
+        // the row still works as a catalog image, just isn't matchable
+        // along the failed dimension. We compute both in parallel so
+        // a slow CLIP pass doesn't compound a slow pHash pass.
         if (p.images !== undefined) {
           await mgr.delete(ProductMedia, { productId });
           const rows = this.collectImageRows(p);
-          const phashes = await Promise.all(
-            rows.map((img) => this.imageHashService.hashFromUrl(img.url)),
-          );
+          const [phashes, embeddings] = await Promise.all([
+            Promise.all(
+              rows.map((img) => this.imageHashService.hashFromUrl(img.url)),
+            ),
+            Promise.all(
+              rows.map((img) =>
+                this.imageEmbeddingService.embedFromUrl(img.url),
+              ),
+            ),
+          ]);
           for (let i = 0; i < rows.length; i++) {
+            const emb = embeddings[i];
             await mgr.save(
               ProductMedia,
               mgr.create(ProductMedia, {
                 productId,
                 ...rows[i],
                 phash: phashes[i],
+                clipEmbedding: emb
+                  ? this.imageEmbeddingService.serializeEmbedding(emb)
+                  : null,
               }),
             );
           }

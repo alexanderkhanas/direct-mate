@@ -93,6 +93,22 @@ const ASK_FOR_MEASUREMENTS_HELP =
 
 @Injectable()
 export class ReplyEngineService {
+  // Stop-words used by `titlesOverlap` to ignore conjunctions /
+  // prepositions / brand-glue words when comparing a classifier-
+  // extracted product name to a memory-locked product title.
+  private static readonly TITLE_STOP_WORDS = new Set<string>([
+    'енд', 'and', '&', 'і', 'та', 'для', 'від', 'з', 'на',
+  ]);
+
+  // Generic garment nouns the classifier sometimes echoes back as
+  // `entities.productName` when only the category was implied. A
+  // single generic-noun overlap is NOT enough to confirm same-product
+  // — drop them before comparison.
+  private static readonly TITLE_GENERIC_NOUNS = new Set<string>([
+    'топ', 'сукня', 'штани', 'светр', 'сорочка', 'футболка',
+    'куртка', 'юбка', 'блуза', 'спідниця', 'жакет',
+  ]);
+
   private readonly logger = new Logger(ReplyEngineService.name);
   private readonly openai: OpenAI;
   private readonly model: string;
@@ -1402,8 +1418,55 @@ export class ReplyEngineService {
         isFirstProductPresentation = !memory.lastPresentedProducts?.length;
         ctx.trace.push(`search: isFirstPres=${isFirstProductPresentation} selState=${memory.selectionState}`);
 
-        // Update memory with presented products BEFORE template selection
-        memory.lastPresentedProducts = productData.map((p) => ({
+        // Resolve the candidate target before deciding what to write
+        // to memory. Held-lock turns must keep memory scoped to the
+        // locked product even though search returned other items.
+        const lockedProductInResults: ProductSearchResult | null =
+          memory.selectedProductId
+            ? productData.find((p) => p.product.id === memory.selectedProductId) ?? null
+            : null;
+        // Candidate that the search WOULD pick if we let it choose
+        // freely. Used only when the lock is absent, weak, or the
+        // user explicitly signaled a product change.
+        const searchCandidate: ProductSearchResult | null =
+          lockedProductInResults ??
+          (productData.length === 1 ? productData[0] : null);
+        let lockDecision: { adopt: boolean; reason: string };
+        if (!memory.selectedProductId) {
+          lockDecision = searchCandidate
+            ? { adopt: true, reason: 'no prior lock' }
+            : { adopt: false, reason: 'no candidate' };
+        } else if (lockedProductInResults) {
+          lockDecision = { adopt: true, reason: 'same product' };
+        } else if (searchCandidate) {
+          // Locked product NOT in search results, but search has a
+          // single candidate — decide on user signal.
+          lockDecision = this.shouldAdoptSearchLock(
+            searchCandidate,
+            memory,
+            classification,
+          );
+        } else {
+          // Locked product NOT in search results AND no fallback
+          // candidate — keep the lock untouched.
+          lockDecision = { adopt: false, reason: 'lock held (no candidate)' };
+        }
+        // The lock holds whenever there was a prior selectedProductId
+        // and we decided NOT to adopt a different candidate. Crucially,
+        // this is independent of whether the locked product appears in
+        // the search results — a noisy title-keyword search that
+        // dropped the locked product must not be allowed to overwrite
+        // memory.lastPresentedProducts with unrelated results.
+        const lockHolds =
+          !!memory.selectedProductId && !lockDecision.adopt;
+
+        // Update memory with presented products BEFORE template selection.
+        // When a lock holds, scope `lastPresentedProducts` to the locked
+        // product (or keep the prior list when the locked product isn't
+        // even in the search results) so downstream rendering doesn't
+        // accidentally surface unrelated search results next to the
+        // locked product's title.
+        const toPresented = (p: ProductSearchResult) => ({
           title: p.product.title,
           variants: [...new Set(p.variants.map((v) =>
             [...new Set([v.size, v.color].filter(Boolean))].join(', ') || 'standard',
@@ -1411,19 +1474,25 @@ export class ReplyEngineService {
           price: [
             ...new Set(p.variants.map((v) => `${v.price} ${formatCurrency(v.currency)}`)),
           ].join(' / '),
-        }));
+        });
+        if (lockHolds) {
+          if (lockedProductInResults) {
+            memory.lastPresentedProducts = [toPresented(lockedProductInResults)];
+          }
+          // else: leave the prior lastPresentedProducts intact (set
+          // when the photo matched / lock was originally established).
+        } else {
+          memory.lastPresentedProducts = productData.map(toPresented);
+        }
         memory.selectedCategory =
           classification.entities.category ?? searchKeywords[0];
 
-        // Store available variant names for the selected/target product
-        const targetProduct = memory.selectedProductId
-          ? productData.find(p => p.product.id === memory.selectedProductId) ?? (productData.length === 1 ? productData[0] : null)
-          : productData.length === 1 ? productData[0] : null;
+        ctx.trace.push(`search: searchCandidate=${searchCandidate?.product?.title ?? 'none'}, availableVariants=${memory.availableVariants ? (memory.availableVariants as any[]).length : 0}, lockDecision=${lockDecision.reason}, lockHolds=${lockHolds}`);
 
-        ctx.trace.push(`search: targetProduct=${targetProduct?.product?.title ?? 'none'}, availableVariants=${memory.availableVariants ? (memory.availableVariants as any[]).length : 0}`);
-
-        if (targetProduct) {
-          memory.availableVariants = targetProduct.variants
+        if (searchCandidate && lockDecision.adopt) {
+          // Adopting the search target as the (new) lock — refresh
+          // available variants and product identity from the candidate.
+          memory.availableVariants = searchCandidate.variants
             .filter((v) => v.effectiveAvailable > 0)
             .map((v) => ({
               id: v.id,
@@ -1432,9 +1501,94 @@ export class ReplyEngineService {
               size: v.size ?? null,
               imageUrl: v.imageUrl ?? null,
             }));
+          memory.selectedProductId = searchCandidate.product.id;
+          memory.selectedProductTitle = searchCandidate.product.title;
+        } else if (lockHolds) {
+          const candidateNote = searchCandidate
+            ? `search candidate was ${searchCandidate.product.id.slice(0, 8)}`
+            : 'no candidate';
+          ctx.trace.push(
+            `search: kept locked product ${memory.selectedProductId!.slice(0, 8)} ` +
+              `(${candidateNote} — ${lockDecision.reason})`,
+          );
+          // Variants must STILL come from the locked product.
+          if (lockedProductInResults) {
+            memory.availableVariants = lockedProductInResults.variants
+              .filter((v) => v.effectiveAvailable > 0)
+              .map((v) => ({
+                id: v.id,
+                name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+                color: v.color ?? null,
+                size: v.size ?? null,
+                imageUrl: v.imageUrl ?? null,
+              }));
+          } else {
+            // Locked product isn't in the search results at all. Zero
+            // out productData locally so downstream rendering can't
+            // surface unrelated items. memory.availableVariants stays
+            // as-is — the photo-match values remain authoritative.
+            productData = [];
+          }
 
-          memory.selectedProductId = targetProduct.product.id;
-          memory.selectedProductTitle = targetProduct.product.title;
+          // Bind the variant directly from memory.availableVariants when
+          // the customer provided a size/color. The downstream 5.5b/c
+          // variant-matchers rely on `productData` (which we just zeroed
+          // OR scoped to a single product), so without this we'd render
+          // ask_variant_choice forever even though the lock + size
+          // unambiguously identify a variant.
+          const userColor = classification.entities.color;
+          const userSize = classification.entities.size;
+          if (
+            (userColor || userSize) &&
+            Array.isArray(memory.availableVariants) &&
+            memory.availableVariants.length > 0 &&
+            !memory.selectedVariantId
+          ) {
+            const variantsForMatch = (memory.availableVariants as Array<{
+              id: string;
+              name: string;
+              color: string | null;
+              size: string | null;
+            }>).map((v) => ({
+              id: v.id,
+              name: v.name,
+              color: v.color ?? null,
+              size: v.size ?? null,
+            }));
+            const matched = this.matchVariant(
+              variantsForMatch,
+              userColor,
+              userSize,
+            );
+            if (matched) {
+              memory.selectedVariantId = matched.id;
+              memory.selectedVariantName = matched.name;
+              memory.selectionState = 'awaiting_confirmation';
+              this.setConfirmIntent(classification, userColor, userSize);
+              ctx.trace.push(
+                `lock-held: matched variant ${matched.name} from memory.availableVariants`,
+              );
+            } else {
+              ctx.trace.push(
+                `lock-held: no variant matched for color="${userColor ?? ''}" size="${userSize ?? ''}"`,
+              );
+            }
+          }
+        }
+
+        // Surface lock drops triggered by `new_inquiry` so a future
+        // regression where the classifier mis-fires `new_inquiry` on
+        // what's actually a slot-fill is visible in traces.
+        if (
+          classification.slotAction === 'new_inquiry' &&
+          memory.selectedProductId &&
+          searchCandidate &&
+          memory.selectedProductId !== searchCandidate.product.id &&
+          lockDecision.adopt
+        ) {
+          ctx.trace.push(
+            `lock dropped due to new_inquiry: ${searchCandidate!.product.id.slice(0, 8)}`,
+          );
         }
 
         // Selection state management
@@ -2260,9 +2414,24 @@ export class ReplyEngineService {
       const askingForProduct =
         memory.selectionState === 'awaiting_product' && productData.length > 1;
       if (!askingForProduct) {
-        stateUpdate.selectedProductId = first.product.id;
-        memory.selectedProductId = first.product.id;
-        memory.selectedProductTitle = memory.selectedProductTitle || first.product.title;
+        // Same lock-overwrite guard as in `searchAndFilterProducts` —
+        // do NOT silently replace a photo-matched / prior-confirmed
+        // lock with `productData[0]` just because it happens to be
+        // first in the search results. The previous unconditional
+        // overwrite caused a JOSA → Silvine confusion when the locked
+        // product wasn't in the (noisy title-keyword) search result.
+        const lockDecision = this.shouldAdoptSearchLock(first, memory, classification);
+        if (lockDecision.adopt) {
+          stateUpdate.selectedProductId = first.product.id;
+          memory.selectedProductId = first.product.id;
+          memory.selectedProductTitle = memory.selectedProductTitle || first.product.title;
+        } else {
+          ctx.trace.push(
+            `buildResponse: kept locked product ${memory.selectedProductId!.slice(0, 8)} ` +
+              `(productData[0] was ${first.product.id.slice(0, 8)} — ${lockDecision.reason})`,
+          );
+          stateUpdate.selectedProductId = memory.selectedProductId ?? null;
+        }
       } else {
         stateUpdate.selectedProductId = memory.selectedProductId ?? null;
       }
@@ -3004,6 +3173,12 @@ export class ReplyEngineService {
    * "джек/джонс" — handled by the over-narrow guard returning the original
    * list. Translit support is a follow-up.
    */
+  // TODO: 2026-05-09 JOSA → Silvine incident — narrowByProductName
+  // (with `every`-substring) interacted with the recently color-stripped
+  // catalog and dropped JOSA itself from the narrowed list, leading to
+  // a wrong lock. The lock-overwrite guard in `searchAndFilterProducts`
+  // and `buildResponse` neutralizes the symptom, but if a similar
+  // narrow-then-pick footgun surfaces in another context, look here.
   private narrowByProductName(
     productData: ProductSearchResult[],
     productName: string,
@@ -3023,6 +3198,96 @@ export class ReplyEngineService {
     });
     if (narrowed.length === 0) return productData;
     return narrowed;
+  }
+
+  /**
+   * Token-overlap test between two product titles after stripping
+   * stop-words and generic garment nouns. Used by the lock-overwrite
+   * guard to decide whether a classifier-extracted `entities.productName`
+   * materially diverges from the currently-locked `selectedProductTitle`.
+   *
+   * Returns `true` when at least one non-stop / non-generic token
+   * appears on both sides — i.e., probable same product.
+   * Returns `true` when either side has zero usable tokens after
+   * stripping (no signal — don't claim divergence).
+   * Returns `false` only when both sides have usable tokens and they
+   * don't overlap at all.
+   */
+  private titlesOverlap(a: string, b: string): boolean {
+    const tokenize = (s: string): string[] =>
+      s
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+        .split(/\s+/)
+        .filter(
+          (t) =>
+            t.length >= 2 &&
+            !ReplyEngineService.TITLE_STOP_WORDS.has(t) &&
+            !ReplyEngineService.TITLE_GENERIC_NOUNS.has(t),
+        );
+    const ta = new Set(tokenize(a));
+    const tb = new Set(tokenize(b));
+    if (ta.size === 0 || tb.size === 0) {
+      // Either side became empty after stripping — no usable signal.
+      // Treat as overlap so the lock is preserved (customer typing
+      // only generic nouns is not a product-change signal).
+      return true;
+    }
+    for (const t of ta) if (tb.has(t)) return true;
+    return false;
+  }
+
+  /**
+   * Decide whether to adopt a search-derived candidate as the new
+   * `selectedProductId` lock. Returns true when the caller should
+   * write the new lock; false to preserve a strong prior lock (photo
+   * match, prior confirm_selection).
+   *
+   * Rules:
+   *   - No prior lock → adopt.
+   *   - Same product as prior lock → adopt (idempotent refresh).
+   *   - Different product:
+   *       - slotAction='correction' or 'new_inquiry' → adopt
+   *         (customer explicitly signaled change).
+   *       - classifier `entities.productName` doesn't share tokens
+   *         with current `selectedProductTitle` → adopt (different
+   *         product mentioned).
+   *       - otherwise → DON'T adopt; lock holds.
+   *
+   * The guard prevents title-keyword search noise from silently
+   * replacing a photo-matched / confirmed product with an unrelated
+   * search result that happens to match a generic garment noun.
+   */
+  private shouldAdoptSearchLock(
+    candidate: ProductSearchResult,
+    memory: AssistantMemory,
+    classification: ClassificationResult,
+  ): { adopt: boolean; reason: string } {
+    if (!memory.selectedProductId) {
+      return { adopt: true, reason: 'no prior lock' };
+    }
+    if (memory.selectedProductId === candidate.product.id) {
+      return { adopt: true, reason: 'same product' };
+    }
+    const productNameMismatch =
+      !!classification.entities.productName &&
+      !!memory.selectedProductTitle &&
+      !this.titlesOverlap(
+        classification.entities.productName,
+        memory.selectedProductTitle,
+      );
+    const userChangedProduct =
+      classification.slotAction === 'correction' ||
+      classification.slotAction === 'new_inquiry' ||
+      productNameMismatch;
+    if (userChangedProduct) {
+      const why =
+        productNameMismatch
+          ? `productName mismatch (${classification.entities.productName} vs ${memory.selectedProductTitle})`
+          : `slotAction=${classification.slotAction}`;
+      return { adopt: true, reason: `user changed: ${why}` };
+    }
+    return { adopt: false, reason: 'lock held' };
   }
 
   private async searchProducts(

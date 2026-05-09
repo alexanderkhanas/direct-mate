@@ -954,21 +954,47 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 }
                 isFirstProductPresentation = !memory.lastPresentedProducts?.length;
                 ctx.trace.push(`search: isFirstPres=${isFirstProductPresentation} selState=${memory.selectionState}`);
-                memory.lastPresentedProducts = productData.map((p) => ({
+                const lockedProductInResults = memory.selectedProductId
+                    ? productData.find((p) => p.product.id === memory.selectedProductId) ?? null
+                    : null;
+                const searchCandidate = lockedProductInResults ??
+                    (productData.length === 1 ? productData[0] : null);
+                let lockDecision;
+                if (!memory.selectedProductId) {
+                    lockDecision = searchCandidate
+                        ? { adopt: true, reason: 'no prior lock' }
+                        : { adopt: false, reason: 'no candidate' };
+                }
+                else if (lockedProductInResults) {
+                    lockDecision = { adopt: true, reason: 'same product' };
+                }
+                else if (searchCandidate) {
+                    lockDecision = this.shouldAdoptSearchLock(searchCandidate, memory, classification);
+                }
+                else {
+                    lockDecision = { adopt: false, reason: 'lock held (no candidate)' };
+                }
+                const lockHolds = !!memory.selectedProductId && !lockDecision.adopt;
+                const toPresented = (p) => ({
                     title: p.product.title,
                     variants: [...new Set(p.variants.map((v) => [...new Set([v.size, v.color].filter(Boolean))].join(', ') || 'standard'))],
                     price: [
                         ...new Set(p.variants.map((v) => `${v.price} ${(0, format_1.formatCurrency)(v.currency)}`)),
                     ].join(' / '),
-                }));
+                });
+                if (lockHolds) {
+                    if (lockedProductInResults) {
+                        memory.lastPresentedProducts = [toPresented(lockedProductInResults)];
+                    }
+                }
+                else {
+                    memory.lastPresentedProducts = productData.map(toPresented);
+                }
                 memory.selectedCategory =
                     classification.entities.category ?? searchKeywords[0];
-                const targetProduct = memory.selectedProductId
-                    ? productData.find(p => p.product.id === memory.selectedProductId) ?? (productData.length === 1 ? productData[0] : null)
-                    : productData.length === 1 ? productData[0] : null;
-                ctx.trace.push(`search: targetProduct=${targetProduct?.product?.title ?? 'none'}, availableVariants=${memory.availableVariants ? memory.availableVariants.length : 0}`);
-                if (targetProduct) {
-                    memory.availableVariants = targetProduct.variants
+                ctx.trace.push(`search: searchCandidate=${searchCandidate?.product?.title ?? 'none'}, availableVariants=${memory.availableVariants ? memory.availableVariants.length : 0}, lockDecision=${lockDecision.reason}, lockHolds=${lockHolds}`);
+                if (searchCandidate && lockDecision.adopt) {
+                    memory.availableVariants = searchCandidate.variants
                         .filter((v) => v.effectiveAvailable > 0)
                         .map((v) => ({
                         id: v.id,
@@ -977,8 +1003,60 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                         size: v.size ?? null,
                         imageUrl: v.imageUrl ?? null,
                     }));
-                    memory.selectedProductId = targetProduct.product.id;
-                    memory.selectedProductTitle = targetProduct.product.title;
+                    memory.selectedProductId = searchCandidate.product.id;
+                    memory.selectedProductTitle = searchCandidate.product.title;
+                }
+                else if (lockHolds) {
+                    const candidateNote = searchCandidate
+                        ? `search candidate was ${searchCandidate.product.id.slice(0, 8)}`
+                        : 'no candidate';
+                    ctx.trace.push(`search: kept locked product ${memory.selectedProductId.slice(0, 8)} ` +
+                        `(${candidateNote} — ${lockDecision.reason})`);
+                    if (lockedProductInResults) {
+                        memory.availableVariants = lockedProductInResults.variants
+                            .filter((v) => v.effectiveAvailable > 0)
+                            .map((v) => ({
+                            id: v.id,
+                            name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+                            color: v.color ?? null,
+                            size: v.size ?? null,
+                            imageUrl: v.imageUrl ?? null,
+                        }));
+                    }
+                    else {
+                        productData = [];
+                    }
+                    const userColor = classification.entities.color;
+                    const userSize = classification.entities.size;
+                    if ((userColor || userSize) &&
+                        Array.isArray(memory.availableVariants) &&
+                        memory.availableVariants.length > 0 &&
+                        !memory.selectedVariantId) {
+                        const variantsForMatch = memory.availableVariants.map((v) => ({
+                            id: v.id,
+                            name: v.name,
+                            color: v.color ?? null,
+                            size: v.size ?? null,
+                        }));
+                        const matched = this.matchVariant(variantsForMatch, userColor, userSize);
+                        if (matched) {
+                            memory.selectedVariantId = matched.id;
+                            memory.selectedVariantName = matched.name;
+                            memory.selectionState = 'awaiting_confirmation';
+                            this.setConfirmIntent(classification, userColor, userSize);
+                            ctx.trace.push(`lock-held: matched variant ${matched.name} from memory.availableVariants`);
+                        }
+                        else {
+                            ctx.trace.push(`lock-held: no variant matched for color="${userColor ?? ''}" size="${userSize ?? ''}"`);
+                        }
+                    }
+                }
+                if (classification.slotAction === 'new_inquiry' &&
+                    memory.selectedProductId &&
+                    searchCandidate &&
+                    memory.selectedProductId !== searchCandidate.product.id &&
+                    lockDecision.adopt) {
+                    ctx.trace.push(`lock dropped due to new_inquiry: ${searchCandidate.product.id.slice(0, 8)}`);
                 }
                 if (isFirstProductPresentation) {
                     memory.selectionState = 'awaiting_product';
@@ -1576,9 +1654,17 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             const first = productData[0];
             const askingForProduct = memory.selectionState === 'awaiting_product' && productData.length > 1;
             if (!askingForProduct) {
-                stateUpdate.selectedProductId = first.product.id;
-                memory.selectedProductId = first.product.id;
-                memory.selectedProductTitle = memory.selectedProductTitle || first.product.title;
+                const lockDecision = this.shouldAdoptSearchLock(first, memory, classification);
+                if (lockDecision.adopt) {
+                    stateUpdate.selectedProductId = first.product.id;
+                    memory.selectedProductId = first.product.id;
+                    memory.selectedProductTitle = memory.selectedProductTitle || first.product.title;
+                }
+                else {
+                    ctx.trace.push(`buildResponse: kept locked product ${memory.selectedProductId.slice(0, 8)} ` +
+                        `(productData[0] was ${first.product.id.slice(0, 8)} — ${lockDecision.reason})`);
+                    stateUpdate.selectedProductId = memory.selectedProductId ?? null;
+                }
             }
             else {
                 stateUpdate.selectedProductId = memory.selectedProductId ?? null;
@@ -2068,6 +2154,45 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             return productData;
         return narrowed;
     }
+    titlesOverlap(a, b) {
+        const tokenize = (s) => s
+            .toLowerCase()
+            .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+            .split(/\s+/)
+            .filter((t) => t.length >= 2 &&
+            !ReplyEngineService_1.TITLE_STOP_WORDS.has(t) &&
+            !ReplyEngineService_1.TITLE_GENERIC_NOUNS.has(t));
+        const ta = new Set(tokenize(a));
+        const tb = new Set(tokenize(b));
+        if (ta.size === 0 || tb.size === 0) {
+            return true;
+        }
+        for (const t of ta)
+            if (tb.has(t))
+                return true;
+        return false;
+    }
+    shouldAdoptSearchLock(candidate, memory, classification) {
+        if (!memory.selectedProductId) {
+            return { adopt: true, reason: 'no prior lock' };
+        }
+        if (memory.selectedProductId === candidate.product.id) {
+            return { adopt: true, reason: 'same product' };
+        }
+        const productNameMismatch = !!classification.entities.productName &&
+            !!memory.selectedProductTitle &&
+            !this.titlesOverlap(classification.entities.productName, memory.selectedProductTitle);
+        const userChangedProduct = classification.slotAction === 'correction' ||
+            classification.slotAction === 'new_inquiry' ||
+            productNameMismatch;
+        if (userChangedProduct) {
+            const why = productNameMismatch
+                ? `productName mismatch (${classification.entities.productName} vs ${memory.selectedProductTitle})`
+                : `slotAction=${classification.slotAction}`;
+            return { adopt: true, reason: `user changed: ${why}` };
+        }
+        return { adopt: false, reason: 'lock held' };
+    }
     async searchProducts(tenantId, conversationId, keywords, category) {
         if (category && keywords.length === 0) {
             const results = await this.availabilityService.checkAll(tenantId, {
@@ -2496,6 +2621,13 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
     }
 };
 exports.ReplyEngineService = ReplyEngineService;
+ReplyEngineService.TITLE_STOP_WORDS = new Set([
+    'енд', 'and', '&', 'і', 'та', 'для', 'від', 'з', 'на',
+]);
+ReplyEngineService.TITLE_GENERIC_NOUNS = new Set([
+    'топ', 'сукня', 'штани', 'светр', 'сорочка', 'футболка',
+    'куртка', 'юбка', 'блуза', 'спідниця', 'жакет',
+]);
 ReplyEngineService.COLOR_TRANSLATIONS = {
     'чорний': 'black', 'чорна': 'black', 'чорне': 'black',
     'білий': 'white', 'біла': 'white', 'біле': 'white',

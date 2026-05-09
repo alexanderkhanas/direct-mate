@@ -63,6 +63,8 @@ export declare class ReplyEngineService {
     private readonly instagramContentService;
     private readonly subscriptionsService;
     private readonly sizeChartsService;
+    private static readonly TITLE_STOP_WORDS;
+    private static readonly TITLE_GENERIC_NOUNS;
     private readonly logger;
     private readonly openai;
     private readonly model;
@@ -95,6 +97,8 @@ export declare class ReplyEngineService {
     private shouldSearchProducts;
     private extractSearchKeywords;
     private narrowByProductName;
+    private titlesOverlap;
+    private shouldAdoptSearchLock;
     private searchProducts;
     private updateMemoryFromAction;
     private buildOrderPayload;

@@ -6,6 +6,7 @@ import { StockBalance } from './entities/stock-balance.entity';
 import { Category } from './entities/category.entity';
 import { SearchProductsDto } from './dto/search-products.dto';
 import { ImageHashService } from './image-hash.service';
+import { ImageEmbeddingService } from './image-embedding.service';
 export interface ImportProductInput {
     externalProductId: string;
     title: string;
@@ -54,8 +55,9 @@ export declare class CatalogService {
     private readonly categoryRepo;
     private readonly dataSource;
     private readonly imageHashService;
+    private readonly imageEmbeddingService;
     private readonly logger;
-    constructor(productRepo: Repository<Product>, variantRepo: Repository<ProductVariant>, stockRepo: Repository<StockBalance>, mediaRepo: Repository<ProductMedia>, categoryRepo: Repository<Category>, dataSource: DataSource, imageHashService: ImageHashService);
+    constructor(productRepo: Repository<Product>, variantRepo: Repository<ProductVariant>, stockRepo: Repository<StockBalance>, mediaRepo: Repository<ProductMedia>, categoryRepo: Repository<Category>, dataSource: DataSource, imageHashService: ImageHashService, imageEmbeddingService: ImageEmbeddingService);
     searchProducts(tenantId: string, dto: SearchProductsDto): Promise<any[]>;
     upsertProduct(tenantId: string, data: Partial<Product> & {
         externalProductId: string;

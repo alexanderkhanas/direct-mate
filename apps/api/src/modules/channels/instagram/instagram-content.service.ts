@@ -10,6 +10,7 @@ import { ProductVariant } from '../../catalog/entities/product-variant.entity';
 import { StoreConfig } from '../../engine/entities/store-config.entity';
 import { CryptoService } from '../../../common/crypto.service';
 import { ImageHashService } from '../../catalog/image-hash.service';
+import { ImageEmbeddingService } from '../../catalog/image-embedding.service';
 import { DataSource } from 'typeorm';
 import { ConnectionType, ConnectionStatus } from '@direct-mate/shared';
 
@@ -20,6 +21,34 @@ const DEFAULT_SKU_PATTERNS = [
   'Код[:\\s]*(\\S+)',
   'арт\\.?[:\\s]*(\\S+)',
 ];
+
+/**
+ * One product candidate routed to the GPT vision verification step.
+ *
+ * `cosine` is null for `linked`-only candidates (we don't run a CLIP
+ * embed against the IG post photo URL — they're included as
+ * supplementary corroboration and rely on GPT to rank them visually).
+ *
+ * `source`:
+ *   - `clip` — surfaced by the CLIP cosine ranking.
+ *   - `linked` — drawn from the last 10 confirmed
+ *     `instagram_media_mappings` rows, productId NOT covered by CLIP.
+ *   - `clip+linked` — surfaced by CLIP AND productId is also present
+ *     in linked media (strongest corroboration; satisfies the
+ *     "strong linked-media corroboration" branch of the acceptance
+ *     gate even when cosine < the strong-cosine floor).
+ */
+type VisionCandidate = {
+  productId: string;
+  variantId: string | null;
+  color: string | null;
+  mediaUrl: string;
+  title: string;
+  sku: string | null;
+  category: string | null;
+  cosine: number | null;
+  source: 'clip' | 'linked' | 'clip+linked';
+};
 
 @Injectable()
 export class InstagramContentService {
@@ -40,6 +69,7 @@ export class InstagramContentService {
     private readonly crypto: CryptoService,
     private readonly config: ConfigService,
     private readonly imageHashService: ImageHashService,
+    private readonly imageEmbeddingService: ImageEmbeddingService,
     private readonly dataSource: DataSource,
   ) {
     this.openai = new OpenAI({ apiKey: this.config.get<string>('openai.apiKey') });
@@ -539,20 +569,24 @@ export class InstagramContentService {
   async matchCustomerPhoto(
     tenantId: string,
     customerImageUrl: string,
+    opts?: { conversationId?: string },
   ): Promise<{ productId: string; variantId: string | null; confidence: number } | null> {
-    // Two-stage match flow:
-    //   Stage 1 — pHash on `product_media`. Direct resolve when the
-    //             closest hash is within MATCH_THRESHOLD AND not tied
-    //             with the second-closest. Catches "customer saved /
-    //             screenshotted the catalog photo" deterministically.
-    //   Stage 2 — Vision narrowing. When pHash has no exact-enough
-    //             match, take the top-K closest catalog images by
-    //             Hamming distance + the linked instagram media as
-    //             candidates, send them to GPT-4o-mini Vision with
-    //             the customer image, accept on confidence ≥ 0.7.
-    //   Stage 3 — Hand-off. If neither stage resolves, return null
-    //             and let the engine route the conversation to a
-    //             human.
+    // Three-stage flow:
+    //   Stage 1 — pHash exact-match shortcut. Catches "customer
+    //             reshares our catalog photo verbatim".
+    //   Stage 2 — CLIP cosine ranking over `product_media.clip_embedding`
+    //             (semantic / visual similarity, robust to
+    //             angle/crop/lighting). Top results are deduped by
+    //             productId; up to 15 distinct products go to vision.
+    //             Last 10 confirmed `instagram_media_mappings` rows are
+    //             merged in (linked-media corroboration); overlaps
+    //             upgrade source to `clip+linked`.
+    //   Stage 3 — GPT vision verifies which candidate (if any) is the
+    //             same product. Final accept/reject lives here. Never
+    //             auto-accept based on CLIP cosine alone.
+    const conversationTag = opts?.conversationId ?? '-';
+
+    // ─── Stage 1: pHash direct match ───────────────────────────────
     const phashCandidates = await this.findCatalogCandidatesByPhash(
       tenantId,
       customerImageUrl,
@@ -583,8 +617,12 @@ export class InstagramContentService {
       }
     }
 
-    // Load linked media with images (existing pool, used as extra
-    // candidates in the vision call)
+    // Load linked media (last 10 confirmed mappings). Used both for
+    // exact-URL short-circuit AND as supplementary candidates in
+    // Stage 2. A linked candidate is "strong corroboration" — the
+    // mapping was admin-confirmed or auto-linked from SKU caption,
+    // so a vision pick against one is more trustworthy than a pure
+    // CLIP-only pick.
     const linkedMedia = await this.mappingRepo
       .createQueryBuilder('m')
       .where('m.tenant_id = :tenantId', { tenantId })
@@ -594,9 +632,8 @@ export class InstagramContentService {
       .limit(10)
       .getMany();
 
-    // Short-circuit: if the customer URL is exactly one of the linked media_urls,
-    // we already know the match. Skips a vision call entirely. Useful when a
-    // screenshot mapping was ingested verbatim, and for deterministic simulator runs.
+    // Short-circuit: customer URL is literally one of the linked
+    // media URLs (deterministic, simulator-friendly).
     const exact = linkedMedia.find((m) => m.mediaUrl === customerImageUrl);
     if (exact) {
       this.logger.log(
@@ -609,68 +646,102 @@ export class InstagramContentService {
       };
     }
 
-    // Build the unified candidate set for vision: top-K catalog images
-    // ranked by pHash distance + the linked media pool. pHash narrowing
-    // keeps the vision call cheap by sending only ~5 catalog candidates
-    // instead of 200+. Linked media is unhashed (different table); we
-    // pass them through as-is.
-    type VisionCandidate = {
-      productId: string;
-      variantId: string | null;
-      color: string | null;
-      url: string;
-      // For diagnostics in logs.
-      source: 'phash' | 'linked';
-      phashDistance?: number;
-    };
+    // ─── Stage 2: CLIP retrieval ───────────────────────────────────
+    const customerEmbedding = await this.imageEmbeddingService.embedFromUrl(
+      customerImageUrl,
+    );
 
-    // Top-K: empirically the matching catalog photo can sit at rank
-    // 25–30 when a customer sends a story screenshot (Instagram chrome
-    // + framing differences move the dHash significantly). 25 entries
-    // is a safe ceiling — vision still distinguishes them reliably and
-    // the cost stays well under a cent per call.
-    const TOP_K = 25;
-    const catalogTopK: VisionCandidate[] = [];
-    if (phashCandidates) {
-      const top = phashCandidates.candidates.slice(0, TOP_K);
-      this.logger.log(
-        `pHash narrowing: top distances=[${top.map((c) => c.distance).join(', ')}]`,
+    let clipCandidates: VisionCandidate[] = [];
+    let top1: VisionCandidate | undefined;
+    let top2: VisionCandidate | undefined;
+    let ambiguousCloseCandidates = false;
+
+    if (customerEmbedding) {
+      clipCandidates = await this.findCatalogCandidatesByClip(
+        tenantId,
+        customerEmbedding,
       );
-      for (const c of top) {
-        catalogTopK.push({
-          productId: c.product_id,
-          variantId: null, // resolved later if vision picks this candidate
-          color: c.color,
-          url: c.url,
-          source: 'phash',
-          phashDistance: c.distance,
-        });
+      top1 = clipCandidates[0];
+      top2 = clipCandidates[1];
+      if (
+        top1 &&
+        top2 &&
+        top1.productId !== top2.productId &&
+        (top1.cosine ?? 0) - (top2.cosine ?? 0) < 0.03
+      ) {
+        ambiguousCloseCandidates = true;
       }
+    } else {
+      this.logger.warn(
+        `Customer photo: CLIP embedding failed (conv=${conversationTag}) → falling back to linked-only candidates`,
+      );
     }
-    const linkedCandidates: VisionCandidate[] = linkedMedia.map((m) => ({
-      productId: m.productId!,
-      variantId: m.variantId,
-      color: null,
-      url: m.mediaUrl!,
-      source: 'linked',
-    }));
-    const allCandidates = [...catalogTopK, ...linkedCandidates];
+
+    // Mark CLIP candidates that overlap with linked media. Their
+    // source upgrades from `clip` → `clip+linked` so the acceptance
+    // gate's "strong linked-media corroboration" branch can fire
+    // even when the picked candidate came in via the CLIP path.
+    const linkedProductIds = new Set(
+      linkedMedia
+        .filter((m) => m.productId)
+        .map((m) => m.productId as string),
+    );
+    for (const c of clipCandidates) {
+      if (linkedProductIds.has(c.productId)) c.source = 'clip+linked';
+    }
+
+    // Linked-only candidates: any linked-media row whose productId
+    // isn't already covered by the CLIP set. We pull product
+    // metadata in `hydrateCandidateMetadata` further down.
+    const clipProductIds = new Set(clipCandidates.map((c) => c.productId));
+    const linkedOnly: VisionCandidate[] = linkedMedia
+      .filter(
+        (m) =>
+          m.productId && m.mediaUrl && !clipProductIds.has(m.productId),
+      )
+      .slice(0, 10)
+      .map(
+        (m): VisionCandidate => ({
+          productId: m.productId!,
+          variantId: m.variantId ?? null,
+          color: null,
+          mediaUrl: m.mediaUrl!,
+          title: '',
+          sku: null,
+          category: null,
+          cosine: null,
+          source: 'linked',
+        }),
+      );
+
+    // Final candidate set: cap CLIP top to 15 distinct products,
+    // append linked-only (up to 10). Vision sees at most 25
+    // deduped product candidates.
+    const allCandidates: VisionCandidate[] = [
+      ...clipCandidates.slice(0, 15),
+      ...linkedOnly,
+    ];
 
     if (allCandidates.length === 0) {
-      this.logger.log('Customer photo: no catalog or linked candidates → handoff');
+      this.logger.log(
+        `Customer photo: no CLIP or linked candidates (conv=${conversationTag}) → handoff`,
+      );
       return null;
     }
 
-    // Download customer image
+    // Hydrate title / sku / category for any candidate that doesn't
+    // already have them (linked-only rows arrive without metadata).
+    await this.hydrateCandidateMetadata(allCandidates);
+
+    // ─── Stage 3: Vision verification ──────────────────────────────
     const customerDataUrl = await this.toBase64DataUrl(customerImageUrl);
     if (!customerDataUrl) {
       this.logger.warn('matchCustomerPhoto: could not download customer image');
       return null;
     }
 
-    // Download candidate product images
     const candidateDataUrls = await Promise.all(
-      allCandidates.map((c) => this.toBase64DataUrl(c.url)),
+      allCandidates.map((c) => this.toBase64DataUrl(c.mediaUrl)),
     );
     const validIdx: number[] = [];
     const validUrls: string[] = [];
@@ -682,9 +753,28 @@ export class InstagramContentService {
       }
     }
 
-    if (validIdx.length === 0) return null;
+    if (validIdx.length === 0) {
+      this.logger.warn(
+        `Customer photo: all candidate images failed to download → handoff`,
+      );
+      return null;
+    }
 
     try {
+      const candidateMetadataLines = validIdx
+        .map((idx, promptIdx) => {
+          const c = allCandidates[idx];
+          const parts = [
+            `${promptIdx + 1}: title="${c.title || '(unknown)'}"`,
+          ];
+          if (c.sku) parts.push(`sku=${c.sku}`);
+          if (c.category) parts.push(`category=${c.category}`);
+          parts.push(`source=${c.source}`);
+          if (c.cosine !== null) parts.push(`cosine=${c.cosine.toFixed(3)}`);
+          return '  ' + parts.join(' ');
+        })
+        .join('\n');
+
       const imageContent: OpenAI.Chat.ChatCompletionContentPart[] = [
         {
           type: 'image_url',
@@ -697,14 +787,18 @@ export class InstagramContentService {
         {
           type: 'text',
           text:
-            `Image 0 is a customer's screenshot/photo of a product they are interested in. ` +
-            `Images 1 to ${validUrls.length} are products from OUR store, ranked by pHash visual similarity. ` +
-            `Find which candidate (if any) shows the SAME product as image 0. ` +
-            `Same product = same garment type, same color/pattern, same overall cut. ` +
-            `Different angle, different model, different framing, or Instagram chrome are OK — these are normal between catalog and customer screenshots. ` +
-            `Two different products that happen to look similar (different brand, different cut, different details) → return -1. ` +
+            `Image 0 is a customer's screenshot or photo of a product they are interested in. ` +
+            `It may be from Instagram, a reseller page, a brand page, or a cropped image — different framing, model pose, crop, lighting, and Instagram UI chrome are normal.\n\n` +
+            `Images 1 to ${validUrls.length} are products from OUR store, with the following metadata:\n` +
+            candidateMetadataLines +
+            `\n\n` +
+            `Select a candidate ONLY if it appears to be the same actual product/SKU as image 0 — not just visually similar. ` +
+            `Use BOTH visual evidence AND the metadata (title / brand / category / SKU) when deciding. ` +
+            `Two different products that happen to look similar (different brand, different cut, different SKU) → return -1. ` +
+            `If unsure, return -1. ` +
+            `Do NOT infer products outside the candidate list.\n\n` +
             `Reply with JSON only: {"match": <index 1-${validUrls.length} or -1>, "confidence": <0.0 to 1.0>}. ` +
-            `Use confidence ≥ 0.85 when you are confident it is the same product.`,
+            `Use confidence ≥ 0.85 only when you are confident it is the same product.`,
         },
       ];
 
@@ -713,11 +807,6 @@ export class InstagramContentService {
       const response = await this.openai.chat.completions.create({
         model: visionModel,
         messages: [{ role: 'user', content: imageContent }],
-        // Budget: ~15 tokens for the visible JSON, the rest for
-        // hidden reasoning. gpt-5.4-mini and other reasoning models
-        // count both against this limit; under-budgeting starves
-        // the model's deliberation and produces low-quality match=-1
-        // shortcuts.
         max_completion_tokens: 2000,
       });
 
@@ -729,54 +818,84 @@ export class InstagramContentService {
         );
         return null;
       }
+      const result = JSON.parse(jsonMatch[0]) as {
+        match: number;
+        confidence: number;
+      };
 
-      const result = JSON.parse(jsonMatch[0]) as { match: number; confidence: number };
-
-      this.logger.log(
-        `Customer photo: vision raw response match=${result.match} confidence=${result.confidence}, ` +
-          `candidates sent=${validUrls.length}: ` +
-          validIdx
-            .map((idx, i) => {
-              const c = allCandidates[idx];
-              const dist = c.phashDistance !== undefined ? `d=${c.phashDistance}` : c.source;
-              return `[${i + 1}=${dist} prod=${c.productId.slice(0, 8)}]`;
-            })
-            .join(' '),
-      );
-
-      // Map 1-based prompt index back to 0-based array index.
       const matchIdx = result.match - 1;
+      const validRange =
+        matchIdx >= 0 && matchIdx < validIdx.length;
+      const candidate = validRange
+        ? allCandidates[validIdx[matchIdx]]
+        : null;
 
-      if (matchIdx >= 0 && matchIdx < validIdx.length && result.confidence >= 0.85) {
-        const candidate = allCandidates[validIdx[matchIdx]];
+      const margin =
+        top1 && top2 ? (top1.cosine ?? 0) - (top2.cosine ?? 0) : null;
 
-        // pHash distance floor: a vision match against a candidate
-        // whose hash is far from the customer image is essentially
-        // a "best of bad options" pick — reject it. Linked-media
-        // candidates are exempt because they came from confirmed
-        // product mappings, so visual evidence is corroborated by
-        // an explicit Instagram media link.
-        const PHASH_MAX_DIST_FOR_VISION_ACCEPT = 22;
-        if (
-          candidate.source === 'phash' &&
-          candidate.phashDistance !== undefined &&
-          candidate.phashDistance > PHASH_MAX_DIST_FOR_VISION_ACCEPT
-        ) {
-          this.logger.log(
-            `Customer photo: vision picked phashDist=${candidate.phashDistance} (>${PHASH_MAX_DIST_FOR_VISION_ACCEPT}) — rejecting as low-quality match`,
-          );
-          return null;
-        }
+      // Diagnostic log per spec: IDs/scores only, no raw content.
+      const diag = {
+        tenantId,
+        conversationId: conversationTag,
+        top1: top1
+          ? {
+              productId: top1.productId,
+              cosine: top1.cosine,
+              source: top1.source,
+            }
+          : null,
+        top2: top2
+          ? {
+              productId: top2.productId,
+              cosine: top2.cosine,
+              source: top2.source,
+            }
+          : null,
+        margin,
+        ambiguousCloseCandidates,
+        gptMatch: result.match,
+        gptConfidence: result.confidence,
+      };
 
+      // ─── Acceptance gate ───────────────────────────────────────
+      // Accept only if all hold:
+      //   1. GPT selected a valid candidate (not -1).
+      //   2. GPT confidence ≥ 0.85.
+      //   3. Selected candidate has cosine ≥ 0.70 OR strong
+      //      linked-media corroboration (`source` includes "linked").
+      //   4. Candidate is in the deduped top product candidate set
+      //      (true by construction — `allCandidates` already deduped).
+      //   5. We are NOT bypassing GPT based on CLIP alone.
+      const STRONG_COSINE = 0.7;
+      const CONFIDENCE_FLOOR = 0.85;
+      const isLinkedCorroborated =
+        candidate !== null &&
+        (candidate.source === 'linked' || candidate.source === 'clip+linked');
+      const cosineOk =
+        candidate !== null &&
+        candidate.cosine !== null &&
+        candidate.cosine >= STRONG_COSINE;
+
+      if (
+        candidate &&
+        result.confidence >= CONFIDENCE_FLOOR &&
+        (cosineOk || isLinkedCorroborated)
+      ) {
         const variantId =
           candidate.variantId ??
           (candidate.color
             ? await this.resolveVariantByColor(candidate.productId, candidate.color)
             : null);
         this.logger.log(
-          `Customer photo: vision matched (source=${candidate.source}` +
-            (candidate.phashDistance !== undefined ? `, pHashDist=${candidate.phashDistance}` : '') +
-            `, confidence=${result.confidence}) → product ${candidate.productId}`,
+          `Customer photo: ACCEPTED ${JSON.stringify({
+            ...diag,
+            selected: {
+              productId: candidate.productId,
+              source: candidate.source,
+              cosine: candidate.cosine,
+            },
+            finalDecision: 'accepted',
+          })}`,
         );
         return {
           productId: candidate.productId,
@@ -785,13 +904,133 @@ export class InstagramContentService {
         };
       }
 
-      this.logger.log(
-        `Customer photo: vision no match (best: match=${result.match}, confidence=${result.confidence})`,
-      );
+      // High CLIP, GPT-reject — log so we can tune later, but still
+      // hand off (do NOT bypass GPT).
+      if (
+        top1 &&
+        (top1.cosine ?? 0) >= 0.85 &&
+        (!candidate || result.confidence < CONFIDENCE_FLOOR)
+      ) {
+        this.logger.log(
+          `Customer photo: high CLIP score but vision rejected ${JSON.stringify({
+            ...diag,
+            finalDecision: 'handoff',
+          })}`,
+        );
+      } else {
+        this.logger.log(
+          `Customer photo: HANDOFF ${JSON.stringify({
+            ...diag,
+            finalDecision: 'handoff',
+          })}`,
+        );
+      }
       return null;
     } catch (err) {
       this.logger.error(`matchCustomerPhoto vision call failed: ${err}`);
       return null;
+    }
+  }
+
+  // ─── CLIP retrieval ────────────────────────────────────────────
+
+  /**
+   * Rank tenant `product_media` rows with non-null clip_embedding by
+   * cosine similarity to the customer image embedding. Filter weak
+   * candidates (cosine < 0.60), dedupe by productId (best media row
+   * per product), return top 15 distinct products with attached
+   * title / sku / category metadata.
+   *
+   * CLIP is for retrieval ONLY. Returned candidates still go through
+   * GPT vision verification + the acceptance gate before any product
+   * is reported as a match. Never auto-accept by cosine alone.
+   */
+  private async findCatalogCandidatesByClip(
+    tenantId: string,
+    customerEmbedding: Float32Array,
+  ): Promise<VisionCandidate[]> {
+    type Row = {
+      product_id: string;
+      color: string | null;
+      url: string;
+      clip_embedding: Buffer;
+      title: string;
+      sku: string | null;
+      category: string | null;
+    };
+    const rows: Row[] = await this.dataSource.query(
+      `SELECT pm.product_id, pm.color, pm.url, pm.clip_embedding,
+              p.title, p.sku, p.category
+         FROM product_media pm
+         JOIN products p ON p.id = pm.product_id
+        WHERE p.tenant_id = $1 AND pm.clip_embedding IS NOT NULL`,
+      [tenantId],
+    );
+
+    if (rows.length === 0) {
+      this.logger.log('CLIP: no product_media rows with clip_embedding for tenant');
+      return [];
+    }
+
+    const scored: VisionCandidate[] = [];
+    for (const r of rows) {
+      const emb = this.imageEmbeddingService.deserializeEmbedding(
+        r.clip_embedding,
+      );
+      if (!emb) continue;
+      const cosine = this.imageEmbeddingService.cosine(
+        customerEmbedding,
+        emb,
+      );
+      if (cosine < 0.6) continue;
+      scored.push({
+        productId: r.product_id,
+        variantId: null,
+        color: r.color,
+        mediaUrl: r.url,
+        title: r.title,
+        sku: r.sku,
+        category: r.category,
+        cosine,
+        source: 'clip',
+      });
+    }
+
+    scored.sort((a, b) => (b.cosine ?? 0) - (a.cosine ?? 0));
+    const top30 = scored.slice(0, 30);
+
+    // Dedupe by productId — first row per product is the best by
+    // cosine since the array is already sorted descending.
+    const seen = new Map<string, VisionCandidate>();
+    for (const c of top30) {
+      if (!seen.has(c.productId)) seen.set(c.productId, c);
+    }
+    return Array.from(seen.values()).slice(0, 15);
+  }
+
+  /**
+   * Fill in title / sku / category for any candidate that arrived
+   * without them (linked-only rows). CLIP candidates already carry
+   * these from the join in `findCatalogCandidatesByClip`.
+   */
+  private async hydrateCandidateMetadata(
+    candidates: VisionCandidate[],
+  ): Promise<void> {
+    const missing = candidates.filter((c) => !c.title);
+    if (missing.length === 0) return;
+    const ids = [...new Set(missing.map((c) => c.productId))];
+    const products = await this.productRepo
+      .createQueryBuilder('p')
+      .select(['p.id', 'p.title', 'p.sku', 'p.category'])
+      .where('p.id IN (:...ids)', { ids })
+      .getMany();
+    const byId = new Map(products.map((p) => [p.id, p]));
+    for (const c of missing) {
+      const p = byId.get(c.productId);
+      if (!p) continue;
+      c.title = p.title ?? '';
+      c.sku = p.sku ?? null;
+      c.category = p.category ?? null;
     }
   }
 

@@ -471,4 +471,117 @@ export const LUXESPACE_SCENARIOS: Record<string, SimulatorScenario> = {
     ],
     flaky: true,
   },
+
+  // ─── Photo-locked product survives noisy follow-up search ───────
+  // Regression for the JOSA → Silvine bug seen on 2026-05-09:
+  //
+  //   1. Customer screenshots JOSA Mesh-Jersey Turtleneck Top.
+  //   2. CLIP photo match resolves to JOSA (productId 2010148a, image 353.jpg)
+  //      and the engine asks for a size.
+  //   3. Customer types only "L".
+  //   4. The classifier returns slotAction=fills_missing_slot with
+  //      entities.productName="JOSA …" and entities.size="L". The engine
+  //      re-runs `searchAndFilterProducts` (because shouldSearchProducts
+  //      returned true), the title-keyword search returns 5 products that
+  //      did NOT include JOSA itself (narrowByProductName + the
+  //      color-stripped catalog dropped it), and the unguarded
+  //      `memory.selectedProductId = first.product.id` write at both the
+  //      search-target site and the buildResponse site silently replaced
+  //      the photo lock with Silvine's product id (096ca336).
+  //   5. Reply rendered with Silvine's image (266.jpg) but kept JOSA's
+  //      title — frankenstate visible to the customer.
+  //
+  // Fix lives in `reply-engine.service.ts:shouldAdoptSearchLock` plus
+  // the lock-aware updates in searchAndFilterProducts + buildResponse.
+  // This scenario asserts both the bare-size-fill (lock holds) and the
+  // explicit-name-switch (lock drops) branches.
+
+  luxespace_photo_lock_holds_through_size_fill: {
+    name: 'luxespace — Photo-locked product survives bare-size variant fill',
+    description:
+      'JOSA → Silvine regression. Photo locks JOSA, customer types "L", ' +
+      'engine must keep selectedProductId pinned to JOSA (NOT silently ' +
+      "swap it to a similarly-titled top from search results) and bind " +
+      "the L variant on JOSA's catalog.",
+    tenantId: LUXESPACE,
+    flowConfigOverride: FLOW_OVERRIDE,
+    turns: [
+      {
+        message: '',
+        // JOSA's catalog photo URL — pHash Stage 1 hits with distance 0
+        // and resolves to JOSA deterministically without depending on
+        // CLIP behavior or vision model availability.
+        mediaReference: {
+          mediaId: 'https://cdn.directmate.app/luxespace/images/353.jpg',
+          type: 'customer_photo',
+        },
+        expect: {
+          decision: 'reply',
+          scenario: 'ask_variant_choice',
+          replyContains: 'JOSA',
+          state: { selectionState: 'awaiting_variant' },
+          note: 'Photo locks selectedProductId to JOSA (2010148a)',
+        },
+      },
+      {
+        message: 'L',
+        expect: {
+          decision: 'reply',
+          // Critical assertion: the reply must STILL be about JOSA.
+          // Before the fix, this turn surfaced "Silvine" / "Bianca" /
+          // "Citta" / "Alexander McQueen" from a noisy title-keyword
+          // search that dropped JOSA itself.
+          replyContains: 'JOSA',
+          replyNotContains: ['Silvine', 'Bianca', 'Citta', 'McQueen'],
+          state: { selectionState: 'awaiting_confirmation' },
+          note: 'Bare "L" must keep JOSA lock and bind the L variant',
+        },
+      },
+    ],
+  },
+
+  luxespace_photo_lock_drops_on_explicit_name_switch: {
+    name: 'luxespace — Photo-locked product replaced when customer names a different product',
+    description:
+      'Sibling regression to the bare-size scenario. Photo locks JOSA. ' +
+      'Customer then explicitly names a different product ("Silvine") in ' +
+      'the same turn as a size. Classifier returns ' +
+      'slotAction=fills_missing_slot but entities.productName="Silvine", ' +
+      'which does NOT overlap with the locked title after stop-word + ' +
+      'generic-noun stripping in `titlesOverlap`. productNameMismatch ' +
+      'fires → lock IS overwritten to Silvine.',
+    tenantId: LUXESPACE,
+    flowConfigOverride: FLOW_OVERRIDE,
+    turns: [
+      {
+        message: '',
+        mediaReference: {
+          mediaId: 'https://cdn.directmate.app/luxespace/images/353.jpg',
+          type: 'customer_photo',
+        },
+        expect: {
+          decision: 'reply',
+          replyContains: 'JOSA',
+          state: { selectionState: 'awaiting_variant' },
+          note: 'Photo locks JOSA; next turn explicitly switches product',
+        },
+      },
+      {
+        message: 'хочу Silvine L',
+        expect: {
+          decision: 'reply',
+          replyContains: 'Silvine',
+          replyNotContains: 'JOSA',
+          note: 'Explicit Silvine name → productNameMismatch → lock overwritten',
+        },
+      },
+    ],
+    // Marked flaky because the classifier's productName extraction on
+    // mixed Cyrillic+Latin strings ("хочу Silvine L") is somewhat
+    // input-sensitive. The engine-side guard is the deterministic part;
+    // failures here usually mean the classifier didn't extract
+    // entities.productName="Silvine" — investigate prompt before
+    // touching the lock guard.
+    flaky: true,
+  },
 };

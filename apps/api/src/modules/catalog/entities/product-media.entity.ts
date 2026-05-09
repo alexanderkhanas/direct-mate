@@ -31,6 +31,14 @@ export class ProductMedia {
   @Column({ type: 'char', length: 16, nullable: true })
   phash!: string | null;
 
+  // CLIP image embedding (Xenova/clip-vit-base-patch32, 512 × float32 =
+  // 2048 bytes), L2-normalized at write time so cosine similarity is a
+  // dot product. Used by Stage 2 of customer-photo matching to retrieve
+  // semantically-similar candidates before GPT vision verification.
+  // NULL when embedding failed or for rows synced before CLIP rollout.
+  @Column({ type: 'bytea', nullable: true })
+  clipEmbedding!: Buffer | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt!: Date;
 

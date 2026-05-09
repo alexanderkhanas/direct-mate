@@ -6,6 +6,7 @@ export declare class ProductMedia {
     color: string | null;
     sortOrder: number;
     phash: string | null;
+    clipEmbedding: Buffer | null;
     createdAt: Date;
     product: Product;
 }

@@ -17,6 +17,7 @@ const category_entity_1 = require("./entities/category.entity");
 const catalog_service_1 = require("./catalog.service");
 const catalog_controller_1 = require("./catalog.controller");
 const image_hash_service_1 = require("./image-hash.service");
+const image_embedding_service_1 = require("./image-embedding.service");
 let CatalogModule = class CatalogModule {
 };
 exports.CatalogModule = CatalogModule;
@@ -32,8 +33,13 @@ exports.CatalogModule = CatalogModule = __decorate([
             ]),
         ],
         controllers: [catalog_controller_1.CatalogController],
-        providers: [catalog_service_1.CatalogService, image_hash_service_1.ImageHashService],
-        exports: [catalog_service_1.CatalogService, image_hash_service_1.ImageHashService, typeorm_1.TypeOrmModule],
+        providers: [catalog_service_1.CatalogService, image_hash_service_1.ImageHashService, image_embedding_service_1.ImageEmbeddingService],
+        exports: [
+            catalog_service_1.CatalogService,
+            image_hash_service_1.ImageHashService,
+            image_embedding_service_1.ImageEmbeddingService,
+            typeorm_1.TypeOrmModule,
+        ],
     })
 ], CatalogModule);
 //# sourceMappingURL=catalog.module.js.map

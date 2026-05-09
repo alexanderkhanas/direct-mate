@@ -40,6 +40,10 @@ __decorate([
     __metadata("design:type", Object)
 ], ProductMedia.prototype, "phash", void 0);
 __decorate([
+    (0, typeorm_1.Column)({ type: 'bytea', nullable: true }),
+    __metadata("design:type", Object)
+], ProductMedia.prototype, "clipEmbedding", void 0);
+__decorate([
     (0, typeorm_1.CreateDateColumn)({ type: 'timestamptz' }),
     __metadata("design:type", Date)
 ], ProductMedia.prototype, "createdAt", void 0);
