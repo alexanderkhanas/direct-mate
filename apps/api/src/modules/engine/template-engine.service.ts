@@ -42,6 +42,7 @@ const INTENT_TO_SCENARIO: Record<string, string> = {
   confirm_choice: 'confirm_selection',
   confirm_last_in_stock: 'confirm_last_in_stock',
   confirm_variant_available: 'confirm_variant_available',
+  decline_selection: 'decline_selection',
   provide_details: 'collect_checkout_info',
   delivery_question: 'answer_delivery',
   payment_question: 'answer_payment',
@@ -169,6 +170,21 @@ export class TemplateEngineService {
           recentTemplateIds,
           flowConfig,
         );
+      }
+      // decline_selection: short hardcoded ack when no template authored.
+      // Same architectural pattern as the offer-decline ack noted in
+      // CLAUDE.md — response space is tiny, determinism + zero LLM cost
+      // outweighs tonal variation. Tenants can override by authoring a
+      // template under this scenario.
+      if (scenario === 'decline_selection') {
+        this.logger.log(
+          'decline_selection: no template authored — emitting hardcoded ack',
+        );
+        return {
+          text: 'Окей 💛 Як визначитесь — пишіть.',
+          templateId: '__hardcoded_decline_selection__',
+          scenario: 'decline_selection',
+        };
       }
       this.logger.warn(`No active templates for scenario=${scenario}`);
       return null;
@@ -572,6 +588,27 @@ export class TemplateEngineService {
     }
     if (!vars['size'] && memory?.selectedSize) {
       vars['size'] = memory.selectedSize;
+    }
+    // Auto-selected variant fallback: 5.5d/5.5m/5.5b auto-pick a single
+    // in-stock variant and store the result on memory.selectedVariantId
+    // + memory.availableVariants. Pull color/size from that record so
+    // templates like confirm_last_in_stock ("лише розмір {size}") and
+    // confirm_selection ("({color}, {size})") render with the resolved
+    // dimensions even when the customer never typed them.
+    if (
+      (!vars['color'] || !vars['size']) &&
+      memory?.selectedVariantId &&
+      Array.isArray(memory.availableVariants)
+    ) {
+      const av = (memory.availableVariants as Array<{
+        id: string;
+        color?: string | null;
+        size?: string | null;
+      }>).find((v) => v.id === memory.selectedVariantId);
+      if (av) {
+        if (!vars['color'] && av.color) vars['color'] = av.color;
+        if (!vars['size'] && av.size) vars['size'] = av.size;
+      }
     }
     if (classification.entities.customerName)
       vars['customer_name'] = classification.entities.customerName;

@@ -180,6 +180,7 @@ recommend_product             — Рекомендація товару
 ask_recommendation_from_shown — Рекомендація зі списку
 confirm_selection             — Підтвердження вибору
 confirm_last_in_stock         — Останній доступний варіант (опц., fallback → confirm_selection)
+decline_selection             — Відмова від вибору (опц., fallback → hardcoded "Окей 💛 Як визначитесь — пишіть.")
 ask_variant_choice            — Вибір варіанту
 collect_checkout_info         — Збір даних для замовлення
 confirm_order                 — Підтвердження замовлення

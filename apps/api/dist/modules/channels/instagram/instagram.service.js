@@ -219,7 +219,7 @@ let InstagramService = InstagramService_1 = class InstagramService {
             return { mediaId: message.reply_to.mid, type: 'post_reply' };
         }
         if (message.attachments?.length) {
-            const shareAttachment = message.attachments.find((a) => a.type === 'share');
+            const shareAttachment = message.attachments.find((a) => a.type === 'share' || a.type === 'ig_post');
             if (shareAttachment?.payload?.ig_post_media_id) {
                 return {
                     mediaId: shareAttachment.payload.ig_post_media_id,

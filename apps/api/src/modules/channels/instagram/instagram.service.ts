@@ -294,9 +294,12 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
     }
 
     // Post share: user shared a product post from the feed.
-    // Meta sends attachments[].type='share' with payload.ig_post_media_id.
+    // Meta sends attachments[].type='share' or 'ig_post' (newer payload
+    // shape) with payload.ig_post_media_id.
     if (message.attachments?.length) {
-      const shareAttachment = message.attachments.find((a) => a.type === 'share');
+      const shareAttachment = message.attachments.find(
+        (a) => a.type === 'share' || a.type === 'ig_post',
+      );
       if (shareAttachment?.payload?.ig_post_media_id) {
         return {
           mediaId: shareAttachment.payload.ig_post_media_id,

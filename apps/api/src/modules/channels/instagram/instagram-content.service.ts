@@ -696,25 +696,78 @@ export class InstagramContentService {
         })),
         {
           type: 'text',
-          text: `The first image is a screenshot sent by a customer. The next ${validUrls.length} images are products from the store (index 0 to ${validUrls.length - 1}). Does the customer's screenshot show the same product as any of the indexed images? Reply with JSON only: {"match": <index or -1 if no match>, "confidence": <0.0 to 1.0>}`,
+          text:
+            `Image 0 is a customer's screenshot/photo of a product they are interested in. ` +
+            `Images 1 to ${validUrls.length} are products from OUR store, ranked by pHash visual similarity. ` +
+            `Find which candidate (if any) shows the SAME product as image 0. ` +
+            `Same product = same garment type, same color/pattern, same overall cut. ` +
+            `Different angle, different model, different framing, or Instagram chrome are OK — these are normal between catalog and customer screenshots. ` +
+            `Two different products that happen to look similar (different brand, different cut, different details) → return -1. ` +
+            `Reply with JSON only: {"match": <index 1-${validUrls.length} or -1>, "confidence": <0.0 to 1.0>}. ` +
+            `Use confidence ≥ 0.85 when you are confident it is the same product.`,
         },
       ];
 
+      const visionModel =
+        this.config.get<string>('openai.model') ?? 'gpt-5.4-mini';
       const response = await this.openai.chat.completions.create({
-        model: 'gpt-4o-mini',
+        model: visionModel,
         messages: [{ role: 'user', content: imageContent }],
-        max_tokens: 50,
-        temperature: 0,
+        // Budget: ~15 tokens for the visible JSON, the rest for
+        // hidden reasoning. gpt-5.4-mini and other reasoning models
+        // count both against this limit; under-budgeting starves
+        // the model's deliberation and produces low-quality match=-1
+        // shortcuts.
+        max_completion_tokens: 2000,
       });
 
       const text = response.choices[0]?.message?.content?.trim() ?? '';
       const jsonMatch = text.match(/\{.*\}/s);
-      if (!jsonMatch) return null;
+      if (!jsonMatch) {
+        this.logger.warn(
+          `Customer photo: vision returned non-JSON response: "${text.slice(0, 200)}"`,
+        );
+        return null;
+      }
 
       const result = JSON.parse(jsonMatch[0]) as { match: number; confidence: number };
 
-      if (result.match >= 0 && result.match < validIdx.length && result.confidence >= 0.7) {
-        const candidate = allCandidates[validIdx[result.match]];
+      this.logger.log(
+        `Customer photo: vision raw response match=${result.match} confidence=${result.confidence}, ` +
+          `candidates sent=${validUrls.length}: ` +
+          validIdx
+            .map((idx, i) => {
+              const c = allCandidates[idx];
+              const dist = c.phashDistance !== undefined ? `d=${c.phashDistance}` : c.source;
+              return `[${i + 1}=${dist} prod=${c.productId.slice(0, 8)}]`;
+            })
+            .join(' '),
+      );
+
+      // Map 1-based prompt index back to 0-based array index.
+      const matchIdx = result.match - 1;
+
+      if (matchIdx >= 0 && matchIdx < validIdx.length && result.confidence >= 0.85) {
+        const candidate = allCandidates[validIdx[matchIdx]];
+
+        // pHash distance floor: a vision match against a candidate
+        // whose hash is far from the customer image is essentially
+        // a "best of bad options" pick — reject it. Linked-media
+        // candidates are exempt because they came from confirmed
+        // product mappings, so visual evidence is corroborated by
+        // an explicit Instagram media link.
+        const PHASH_MAX_DIST_FOR_VISION_ACCEPT = 22;
+        if (
+          candidate.source === 'phash' &&
+          candidate.phashDistance !== undefined &&
+          candidate.phashDistance > PHASH_MAX_DIST_FOR_VISION_ACCEPT
+        ) {
+          this.logger.log(
+            `Customer photo: vision picked phashDist=${candidate.phashDistance} (>${PHASH_MAX_DIST_FOR_VISION_ACCEPT}) — rejecting as low-quality match`,
+          );
+          return null;
+        }
+
         const variantId =
           candidate.variantId ??
           (candidate.color

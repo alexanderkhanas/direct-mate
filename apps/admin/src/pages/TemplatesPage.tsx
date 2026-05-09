@@ -34,6 +34,7 @@ const SCENARIO_LABELS: Record<string, string> = {
   confirm_selection: 'Підтвердження вибору',
   confirm_last_in_stock: 'Останній доступний варіант',
   confirm_variant_available: 'Підтвердження розміру',
+  decline_selection: 'Відмова від вибору',
   // Checkout
   collect_checkout_info: 'Збір даних для замовлення',
   order_confirmed_ask_delivery: 'Запит даних доставки',
@@ -91,6 +92,7 @@ const SCENARIO_COLORS: Record<string, string> = {
   confirm_selection: 'bg-cyan-100 text-cyan-700',
   confirm_last_in_stock: 'bg-cyan-100 text-cyan-700',
   confirm_variant_available: 'bg-lime-100 text-lime-700',
+  decline_selection: 'bg-gray-100 text-gray-700',
   collect_checkout_info: 'bg-indigo-100 text-indigo-700',
   confirm_order: 'bg-emerald-100 text-emerald-700',
   order_confirmed_ask_delivery: 'bg-teal-100 text-teal-700',

@@ -436,7 +436,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 const match = await this.instagramContentService.matchCustomerPhoto(input.tenantId, input.mediaReference.mediaId);
                 if (match) {
                     ctx.trace.push(`customer_photo: matched to product ${match.productId} (confidence=${match.confidence})`);
-                    const mediaProductData = await this.availabilityService.findAllByProductId(match.productId, match.variantId ?? undefined);
+                    const mediaProductData = await this.availabilityService.findAllByProductId(match.productId);
                     ctx.mediaProductData = mediaProductData;
                     this.logToFile({
                         event: 'customer_photo_matched',
@@ -732,6 +732,18 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 imageUrl: v.imageUrl ?? null,
             }));
             memory.totalVariantsForSelectedProduct = first.variants.length;
+            const captionEmpty = !(input.messageText ?? '').trim();
+            if (captionEmpty) {
+                ctx.trace.push(`5.5m: photo with empty caption → coerce intent=${classification.primaryIntent}/${classification.recommendedAction}→availability_check`);
+                classification.primaryIntent = 'availability_check';
+                classification.recommendedAction = 'show_products';
+                classification.slotAction = 'new_inquiry';
+                classification.entities.color = undefined;
+                classification.entities.size = undefined;
+                memory.selectedVariantId = undefined;
+                memory.selectedVariantName = undefined;
+                memory.selectionState = 'awaiting_product';
+            }
             if (classification.entities.productName &&
                 classification.entities.productName !== first.product.title) {
                 ctx.trace.push(`5.5m: overrode classifier productName="${classification.entities.productName}" → media-resolved "${first.product.title}"`);
@@ -794,9 +806,17 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                     memory.selectedVariantId = inStock[0].id;
                     memory.selectedVariantName = memory.availableVariants[0].name;
                     memory.selectionState = 'awaiting_confirmation';
-                    classification.primaryIntent = 'confirm_choice';
-                    classification.recommendedAction = 'confirm_selection';
-                    this.logger.log(`5.5m: Story reply — single variant auto-selected: ${memory.selectedVariantName}`);
+                    const isLastInStockMedia = (memory.totalVariantsForSelectedProduct ?? 0) > 1;
+                    if (isLastInStockMedia) {
+                        classification.primaryIntent = 'confirm_last_in_stock';
+                        classification.recommendedAction = 'confirm_last_in_stock';
+                        ctx.trace.push(`5.5m: last-in-stock (1 of ${memory.totalVariantsForSelectedProduct}) → confirm_last_in_stock`);
+                    }
+                    else {
+                        classification.primaryIntent = 'confirm_choice';
+                        classification.recommendedAction = 'confirm_selection';
+                    }
+                    this.logger.log(`5.5m: Story reply — single variant auto-selected: ${memory.selectedVariantName} (intent=${classification.primaryIntent})`);
                 }
                 else {
                     memory.selectionState = 'awaiting_variant';
@@ -979,6 +999,44 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
     resolveVariantSelection(input, ctx) {
         const { memory, effectiveConfig, productData } = ctx;
         const classification = ctx.classification;
+        if (classification.slotAction === 'rejection' &&
+            memory.selectionState === 'awaiting_confirmation' &&
+            memory.selectedProductId &&
+            !classification.entities.productName &&
+            !classification.entities.category) {
+            memory.selectionState = 'awaiting_product';
+            memory.selectedVariantId = undefined;
+            memory.selectedVariantName = undefined;
+            classification.primaryIntent = 'decline_selection';
+            classification.recommendedAction = 'decline_selection';
+            ctx.trace.push('5.5a-rej: rejection on selected product → decline_selection');
+            this.logger.log('5.5a-rej: customer declined the offered variant → decline_selection');
+        }
+        if (memory.selectionState === 'awaiting_confirmation' &&
+            memory.selectedProductId &&
+            classification.slotAction !== 'confirmation' &&
+            classification.slotAction !== 'rejection' &&
+            Array.isArray(memory.availableVariants) &&
+            memory.availableVariants.length > 0) {
+            const available = memory.availableVariants;
+            const askedSize = classification.entities.size;
+            const askedColor = classification.entities.color;
+            const sizeMissing = askedSize &&
+                !available.some((v) => v.size && v.size.toLowerCase() === askedSize.toLowerCase());
+            const colorMissing = askedColor &&
+                !available.some((v) => v.color && v.color.toLowerCase() === askedColor.toLowerCase());
+            const genericVariantQuery = !askedSize &&
+                !askedColor &&
+                classification.primaryIntent === 'ask_variant_choice' &&
+                available.length <= 1;
+            if (sizeMissing || colorMissing || genericVariantQuery) {
+                memory.requestedVariant = askedSize || askedColor || undefined;
+                classification.primaryIntent = 'variant_not_available';
+                classification.recommendedAction = 'variant_not_available';
+                ctx.trace.push(`5.5a-pre: post-selection variant query (asked=${memory.requestedVariant ?? 'generic'}) → variant_not_available`);
+                this.logger.log(`5.5a-pre: customer asked about unavailable variant (${memory.requestedVariant ?? 'generic'}) on selected product → variant_not_available`);
+            }
+        }
         this.logger.log(`5.5a check: slotAction=${classification.slotAction} selState=${memory.selectionState} prodId=${!!memory.selectedProductId} varId=${!!memory.selectedVariantId}`);
         if (classification.slotAction === 'confirmation' &&
             memory.selectionState === 'awaiting_confirmation' &&
@@ -1657,6 +1715,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             ask_recommendation_from_shown: 'recommend',
             confirm_selection: 'confirm_selection',
             confirm_last_in_stock: 'confirm_selection',
+            decline_selection: 'decline_selection',
             collect_checkout_info: 'start_checkout',
             order_confirmed_ask_delivery: 'ask_delivery',
             confirm_order: 'confirm_order',
@@ -2052,6 +2111,10 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         return undefined;
     }
     updateMemoryFromAction(actualAction, memory, templateResult, classification, productData) {
+        if (templateResult?.scenario === 'variant_not_available') {
+            memory.lastAction = 'told_variant_not_available';
+            return;
+        }
         switch (actualAction) {
             case 'recommend':
                 memory.lastAction = 'gave_recommendation';

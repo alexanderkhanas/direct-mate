@@ -398,6 +398,15 @@ export class ClassifierService {
       `    "порадьте розмір"               → ask_recommendation`,
       `    "який розмір брати при зрості 170?" → ask_recommendation (asking bot to choose, not asking for a table)`,
       ``,
+      `POST-SELECTION VARIANT FOLLOW-UP:`,
+      `When CONVERSATION STATE shows a product is already selected (Selected product != "not selected", Selection state == "awaiting_confirmation"), and the customer asks about other sizes/colors of THIS product, classify as 'ask_variant_choice' — NOT 'ask_question' or 'product_inquiry'. The engine will route to a "variant not available" reply if the asked size/color isn't in stock.`,
+      `  Examples (with a selected product in memory):`,
+      `    "А є в інших розмірах?"          → ask_variant_choice`,
+      `    "Чи є L?"                        → ask_variant_choice (extract size: "L")`,
+      `    "А інший колір є?"               → ask_variant_choice`,
+      `    "є в M?"                         → ask_variant_choice (extract size: "M")`,
+      `    "інші розміри?"                  → ask_variant_choice`,
+      ``,
       `Call classify_message with your analysis.`,
     ]
       .filter((s) => s !== undefined)

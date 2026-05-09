@@ -614,9 +614,14 @@ export class ReplyEngineService {
         );
         if (match) {
           ctx.trace.push(`customer_photo: matched to product ${match.productId} (confidence=${match.confidence})`);
+          // Always load the FULL variant set (not filtered by match.variantId)
+          // so memory.totalVariantsForSelectedProduct reflects the catalog
+          // truth — needed for the "last in stock" detection in 5.5d.
+          // Variant pre-selection of match.variantId is handled by 5.5m's
+          // auto-select / variant-match branches based on what's actually
+          // in stock, which is what the customer can buy anyway.
           const mediaProductData = await this.availabilityService.findAllByProductId(
             match.productId,
-            match.variantId ?? undefined,
           );
           ctx.mediaProductData = mediaProductData;
           this.logToFile({
@@ -1049,6 +1054,38 @@ export class ReplyEngineService {
       // Record full catalog variant count for "last in stock" detection in 5.5d.
       memory.totalVariantsForSelectedProduct = first.variants.length;
 
+      // Photo arrived with no caption text: the photo IS the inquiry. The
+      // classifier sees only conversation history, which can produce
+      // misleading actions — e.g. on a 2nd/3rd photo the classifier may
+      // return action=confirm_selection because a prior turn had a variant
+      // selected, even though the customer is sharing a fresh story
+      // screenshot. Coerce to availability_check so the scenario-override
+      // block below picks confirm_last_in_stock / ask_variant_choice /
+      // confirm_selection based on actual stock state of the resolved
+      // product. Photo-with-meaningful-caption (text non-empty) stays
+      // untouched so price / delivery / FAQ flows still work.
+      const captionEmpty = !(input.messageText ?? '').trim();
+      if (captionEmpty) {
+        ctx.trace.push(
+          `5.5m: photo with empty caption → coerce intent=${classification.primaryIntent}/${classification.recommendedAction}→availability_check`,
+        );
+        classification.primaryIntent = 'availability_check';
+        classification.recommendedAction = 'show_products';
+        classification.slotAction = 'new_inquiry';
+        // Clear classifier-inferred color/size — with empty text these came
+        // from conversation history, not the current turn. Keeping them would
+        // route the matcher to confirm_variant_available against the inferred
+        // variant instead of the stock-based scenario the photo deserves.
+        classification.entities.color = undefined;
+        classification.entities.size = undefined;
+        // Clear stale variant lock so the auto-select / variant-match logic
+        // below treats this as a fresh inquiry instead of inheriting a prior
+        // selection that the customer may not have meant to confirm.
+        memory.selectedVariantId = undefined;
+        memory.selectedVariantName = undefined;
+        memory.selectionState = 'awaiting_product';
+      }
+
       // Reconcile classifier-extracted productName with media-resolved title.
       // The classifier reads recent conversation history, so it can extract a
       // product name from prior turns even when the customer has switched to a
@@ -1136,9 +1173,24 @@ export class ReplyEngineService {
           memory.selectedVariantId = inStock[0].id;
           memory.selectedVariantName = (memory.availableVariants as Array<{ name: string }>)[0].name;
           memory.selectionState = 'awaiting_confirmation';
-          classification.primaryIntent = 'confirm_choice'; // no size asked — use generic confirm_selection
-          classification.recommendedAction = 'confirm_selection';
-          this.logger.log(`5.5m: Story reply — single variant auto-selected: ${memory.selectedVariantName}`);
+          // Match 5.5d: when the catalog has multiple variants but only
+          // one is in stock, route to confirm_last_in_stock so the copy
+          // can call out the scarcity. Falls back to confirm_selection
+          // when no template authored (template engine handles the
+          // fallback).
+          const isLastInStockMedia =
+            (memory.totalVariantsForSelectedProduct ?? 0) > 1;
+          if (isLastInStockMedia) {
+            classification.primaryIntent = 'confirm_last_in_stock';
+            classification.recommendedAction = 'confirm_last_in_stock';
+            ctx.trace.push(
+              `5.5m: last-in-stock (1 of ${memory.totalVariantsForSelectedProduct}) → confirm_last_in_stock`,
+            );
+          } else {
+            classification.primaryIntent = 'confirm_choice'; // no size asked — use generic confirm_selection
+            classification.recommendedAction = 'confirm_selection';
+          }
+          this.logger.log(`5.5m: Story reply — single variant auto-selected: ${memory.selectedVariantName} (intent=${classification.primaryIntent})`);
         } else {
           // No specific variant, multiple options → ask which they want
           memory.selectionState = 'awaiting_variant';
@@ -1415,6 +1467,84 @@ export class ReplyEngineService {
   ): void {
     const { memory, effectiveConfig, productData } = ctx;
     const classification = ctx.classification;
+
+    // 5.5a-rej: customer is in `awaiting_confirmation` (variant offered)
+    // and rejects without naming an alternative product/category. Route
+    // to a polite-decline scenario and clear the selection. Without
+    // this branch the engine falls through to the default render path
+    // and re-asks the same confirm question, or worse — when classifier
+    // mis-classifies the rejection's primary_intent, the search step
+    // can fire and surface a DIFFERENT product.
+    if (
+      classification.slotAction === 'rejection' &&
+      memory.selectionState === 'awaiting_confirmation' &&
+      memory.selectedProductId &&
+      !classification.entities.productName &&
+      !classification.entities.category
+    ) {
+      memory.selectionState = 'awaiting_product';
+      memory.selectedVariantId = undefined;
+      memory.selectedVariantName = undefined;
+      classification.primaryIntent = 'decline_selection';
+      classification.recommendedAction = 'decline_selection';
+      ctx.trace.push('5.5a-rej: rejection on selected product → decline_selection');
+      this.logger.log(
+        '5.5a-rej: customer declined the offered variant → decline_selection',
+      );
+    }
+
+    // 5.5a-pre: customer has a selected product (post-confirmation or
+    // mid-flow) and is asking about a variant we don't have. Route to
+    // `variant_not_available` so the bot answers "L not in stock, only
+    // M available" instead of falling through to handoff.
+    //
+    // Two trigger shapes:
+    //   - classifier extracted a size/color that isn't in availableVariants
+    //     (specific ask: "А є в L?")
+    //   - intent === 'ask_variant_choice' AND only one variant in stock
+    //     (generic ask: "А є в інших розмірах?")
+    if (
+      memory.selectionState === 'awaiting_confirmation' &&
+      memory.selectedProductId &&
+      classification.slotAction !== 'confirmation' &&
+      classification.slotAction !== 'rejection' &&
+      Array.isArray(memory.availableVariants) &&
+      memory.availableVariants.length > 0
+    ) {
+      const available = memory.availableVariants as Array<{
+        color?: string | null;
+        size?: string | null;
+      }>;
+      const askedSize = classification.entities.size;
+      const askedColor = classification.entities.color;
+      const sizeMissing =
+        askedSize &&
+        !available.some(
+          (v) => v.size && v.size.toLowerCase() === askedSize.toLowerCase(),
+        );
+      const colorMissing =
+        askedColor &&
+        !available.some(
+          (v) => v.color && v.color.toLowerCase() === askedColor.toLowerCase(),
+        );
+      const genericVariantQuery =
+        !askedSize &&
+        !askedColor &&
+        classification.primaryIntent === 'ask_variant_choice' &&
+        available.length <= 1;
+
+      if (sizeMissing || colorMissing || genericVariantQuery) {
+        memory.requestedVariant = askedSize || askedColor || undefined;
+        classification.primaryIntent = 'variant_not_available';
+        classification.recommendedAction = 'variant_not_available';
+        ctx.trace.push(
+          `5.5a-pre: post-selection variant query (asked=${memory.requestedVariant ?? 'generic'}) → variant_not_available`,
+        );
+        this.logger.log(
+          `5.5a-pre: customer asked about unavailable variant (${memory.requestedVariant ?? 'generic'}) on selected product → variant_not_available`,
+        );
+      }
+    }
 
     // 5.5a Full selection confirmed: product + variant both set + user confirms → proceed to checkout
     this.logger.log(`5.5a check: slotAction=${classification.slotAction} selState=${memory.selectionState} prodId=${!!memory.selectedProductId} varId=${!!memory.selectedVariantId}`);
@@ -2333,6 +2463,7 @@ export class ReplyEngineService {
       ask_recommendation_from_shown: 'recommend',
       confirm_selection: 'confirm_selection',
       confirm_last_in_stock: 'confirm_selection',
+      decline_selection: 'decline_selection',
       collect_checkout_info: 'start_checkout',
       order_confirmed_ask_delivery: 'ask_delivery',
       confirm_order: 'confirm_order',
@@ -2957,6 +3088,19 @@ export class ReplyEngineService {
     classification?: any,
     productData?: any[],
   ): void {
+    // variant_not_available is informational — the customer asked about a
+    // variant we don't have while their previously-resolved variant is
+    // still on the table. Don't reset selection state or clear the
+    // variant id; let them confirm the originally offered variant on the
+    // next turn. (Without this short-circuit, scenarioToAction maps
+    // variant_not_available → 'ask_variant_choice', whose case below
+    // wipes selectedVariantId and downgrades state to awaiting_variant —
+    // and the engine then re-searches and may surface a DIFFERENT product.)
+    if (templateResult?.scenario === 'variant_not_available') {
+      memory.lastAction = 'told_variant_not_available';
+      return;
+    }
+
     switch (actualAction) {
       case 'recommend':
         memory.lastAction = 'gave_recommendation';
