@@ -96,4 +96,13 @@ export const BASE_TEMPLATES: TemplateSpec[] = [
     priority: 90,
     active: true,
   },
+  {
+    scenario: 'narrowing_no_match',
+    stage: 'product_discovery',
+    blocks: ['Серед показаних варіантів немає такого 💛 Пошукати ширше в каталозі?'],
+    requiredVariables: [],
+    toneTags: ['warm'],
+    priority: 90,
+    active: true,
+  },
 ];

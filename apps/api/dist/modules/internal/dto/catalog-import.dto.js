@@ -206,6 +206,14 @@ __decorate([
     __metadata("design:type", Object)
 ], ImportProductDto.prototype, "modelName", void 0);
 __decorate([
+    (0, swagger_1.ApiPropertyOptional)({
+        example: 'чорна black mesh-jersey сітчастий джерсі коктейльна без рукавів міні',
+    }),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsOptional)(),
+    __metadata("design:type", Object)
+], ImportProductDto.prototype, "searchKeywords", void 0);
+__decorate([
     (0, swagger_1.ApiPropertyOptional)({ example: 'https://cdn.directmate.app/luxespace/images/178.jpg' }),
     (0, class_validator_1.IsString)(),
     (0, class_validator_1.IsOptional)(),

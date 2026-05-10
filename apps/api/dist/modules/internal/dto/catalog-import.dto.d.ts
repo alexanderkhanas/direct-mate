@@ -28,6 +28,7 @@ export declare class ImportProductDto {
     gender?: Gender | null;
     season?: string | null;
     modelName?: string | null;
+    searchKeywords?: string | null;
     image?: string;
     status?: string;
     variants: ImportVariantDto[];

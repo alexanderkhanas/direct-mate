@@ -169,16 +169,7 @@ let AvailabilityService = class AvailabilityService {
         const fullPhrase = searchTerms.join(' ');
         let variants = [];
         if (dto.category) {
-            variants = await this.searchAllByCategoryName(tenantId, dto.category);
-            if (variants.length && searchTerms.length > 0) {
-                const lowerTerms = searchTerms.map((t) => t.toLowerCase());
-                const narrowed = variants.filter((v) => {
-                    const title = (v.product?.title ?? '').toLowerCase();
-                    return lowerTerms.some((t) => title.includes(t));
-                });
-                if (narrowed.length > 0)
-                    variants = narrowed;
-            }
+            variants = await this.searchAllByCategoryName(tenantId, dto.category, searchTerms);
         }
         if (!variants.length && searchTerms.length === 0)
             return [];
@@ -218,13 +209,35 @@ let AvailabilityService = class AvailabilityService {
            SELECT pp.id FROM products pp
             WHERE pp.tenant_id = :tenantId
               AND pp.status = 'active'
-              AND pp.title ILIKE :q
+              AND (
+                pp.title ILIKE :q
+                OR pp.search_keywords ILIKE :q
+              )
             ORDER BY pp.last_synced_at DESC NULLS LAST
             LIMIT 10
          )`, { tenantId, q: `%${term}%` })
             .getMany();
     }
-    async searchAllByCategoryName(tenantId, categoryName) {
+    async searchAllByCategoryName(tenantId, categoryName, searchTerms = []) {
+        const params = { tenantId, cat: categoryName };
+        let termsSql = '';
+        if (searchTerms.length > 0) {
+            const lowered = searchTerms
+                .map((t) => t.trim())
+                .filter((t) => t.length > 0)
+                .map((t) => t.toLowerCase());
+            if (lowered.length > 0) {
+                params.terms = lowered;
+                termsSql = `
+              AND NOT EXISTS (
+                SELECT 1 FROM unnest(ARRAY[:...terms]::text[]) AS term
+                 WHERE NOT (
+                   lower(pp.title) LIKE '%' || term || '%'
+                   OR lower(coalesce(pp.search_keywords, '')) LIKE '%' || term || '%'
+                 )
+              )`;
+            }
+        }
         return this.variantRepo
             .createQueryBuilder('v')
             .innerJoinAndSelect('v.product', 'p')
@@ -240,10 +253,10 @@ let AvailabilityService = class AvailabilityService {
                    INNER JOIN categories c ON c.id = pc.category_id
                    WHERE pc.product_id = pp.id AND lower(c.name) = lower(:cat)
                 ) OR lower(pp.category) = lower(:cat)
-              )
+              )${termsSql}
             ORDER BY pp.last_synced_at DESC NULLS LAST
             LIMIT 10
-         )`, { tenantId, cat: categoryName })
+         )`, params)
             .getMany();
     }
     async searchAllByDescription(tenantId, term) {
@@ -313,7 +326,13 @@ let AvailabilityService = class AvailabilityService {
             const pid = v.product.id;
             if (!productMap.has(pid)) {
                 productMap.set(pid, {
-                    product: { id: pid, title: v.product.title, imageUrl: null, category: v.product.category ?? null },
+                    product: {
+                        id: pid,
+                        title: v.product.title,
+                        imageUrl: null,
+                        category: v.product.category ?? null,
+                        searchKeywords: v.product.searchKeywords ?? null,
+                    },
                     variants: [],
                 });
             }

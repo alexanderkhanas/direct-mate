@@ -200,6 +200,20 @@ export class ImportProductDto {
   modelName?: string | null;
 
   /**
+   * AI-enriched search blob produced at sync time (n8n Normalize step).
+   * Free text — connectors emit a Ukrainian-heavy mix of color
+   * synonyms, garment terms, and style/fabric/occasion tags so the
+   * existing keyword-loop search picks up phrasings the catalog title
+   * doesn't carry verbatim.
+   */
+  @ApiPropertyOptional({
+    example: 'чорна black mesh-jersey сітчастий джерсі коктейльна без рукавів міні',
+  })
+  @IsString()
+  @IsOptional()
+  searchKeywords?: string | null;
+
+  /**
    * Single primary image URL (Torgsoft style). Translated to a
    * one-element images array under the hood. Coexists with the legacy
    * `images?[]` array — if both are present, `images[]` wins.

@@ -30,10 +30,12 @@ const audit_service_1 = require("../audit/audit.service");
 const classifier_service_1 = require("../engine/classifier.service");
 const template_engine_service_1 = require("../engine/template-engine.service");
 const policy_engine_service_1 = require("../engine/policy-engine.service");
+const color_i18n_1 = require("../engine/color-i18n");
 const format_1 = require("../../common/format");
 const shared_1 = require("@direct-mate/shared");
 const instagram_content_service_1 = require("../channels/instagram/instagram-content.service");
 const size_charts_service_1 = require("../size-charts/size-charts.service");
+const nonEmptyStr = (v) => typeof v === 'string' && v.trim().length > 0;
 const LOG_FILE = path.join(process.cwd(), 'conversations.log');
 const RECOMMENDED_SIZE_PREFIX = (size) => `За вашими параметрами рекомендую розмір ${size} 💛`;
 const ASK_FOR_MEASUREMENTS_HELP = 'Напишіть свій зріст та вагу і я допоможу підібрати розмір 💛';
@@ -715,10 +717,20 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             isFirstProductPresentation = false;
             memory.lastPresentedProducts = mediaProductData.map((p) => ({
                 title: p.product.title,
-                variants: [...new Set(p.variants.map((v) => [...new Set([v.size, v.color].filter(Boolean))].join(', ') || 'standard'))],
+                variants: [...new Set(p.variants.map((v) => [...new Set([v.size, (0, color_i18n_1.localizeColor)(v.color)].filter(Boolean))].join(', ') || 'standard'))],
                 price: [
                     ...new Set(p.variants.map((v) => `${v.price} ${(0, format_1.formatCurrency)(v.currency)}`)),
                 ].join(' / '),
+                productId: p.product.id,
+                rawVariants: p.variants.map((v) => ({
+                    id: v.id,
+                    color: v.color,
+                    size: v.size,
+                    price: v.price,
+                    salePrice: null,
+                    available: v.effectiveAvailable > 0,
+                })),
+                searchKeywords: p.product.searchKeywords ?? null,
             }));
             const first = mediaProductData[0];
             const inStock = first.variants.filter((v) => v.effectiveAvailable > 0);
@@ -726,7 +738,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             memory.selectedProductTitle = first.product.title;
             memory.availableVariants = inStock.map((v) => ({
                 id: v.id,
-                name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+                name: [...new Set([(0, color_i18n_1.localizeColor)(v.color), v.size].filter(Boolean))].join(', ') || 'standard',
                 color: v.color,
                 size: v.size,
                 imageUrl: v.imageUrl ?? null,
@@ -757,7 +769,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 if (userColor || userSize) {
                     const matched = this.matchVariant(inStock.map((v) => ({
                         id: v.id,
-                        name: [...new Set([v.color, v.size].filter(Boolean))].join(', '),
+                        name: [...new Set([(0, color_i18n_1.localizeColor)(v.color), v.size].filter(Boolean))].join(', '),
                         color: v.color ?? null,
                         size: v.size ?? null,
                     })), userColor, userSize);
@@ -825,6 +837,14 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                     this.logger.log(`5.5m: Story reply — product pre-seeded, no variant → ask_variant_choice`);
                 }
             }
+        }
+        if (!productData && this.isNarrowingSlotFill(classification, memory)) {
+            const narrowed = this.narrowLastPresentedInMemory(memory.lastPresentedProducts, classification, ctx);
+            ctx.trace.push(`narrow_gate: fired, ${narrowed.length} products survived (from ${memory.lastPresentedProducts.length})`);
+            if (narrowed.length === 0) {
+                return await this.handleNarrowingNoMatch(input, ctx);
+            }
+            productData = narrowed;
         }
         const needsSearch = !productData && this.shouldSearchProducts(classification, memory);
         ctx.trace.push(`search: needsSearch=${needsSearch}`);
@@ -894,10 +914,12 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 const filtered = productData
                     .map(p => {
                     const productHasColorDim = p.variants.some(v => !!v.color);
+                    const titleLower = p.product.title.toLowerCase();
+                    const skLower = (p.product.searchKeywords ?? '').toLowerCase();
+                    const productMatchesColorByMetadata = !!userColor &&
+                        userColorForms.some(f => titleLower.includes(f) || skLower.includes(f));
                     if (userColor && !productHasColorDim) {
-                        const titleLower = p.product.title.toLowerCase();
-                        const titleMatchesColor = userColorForms.some(f => titleLower.includes(f));
-                        if (!titleMatchesColor) {
+                        if (!productMatchesColorByMetadata) {
                             return { ...p, variants: [] };
                         }
                     }
@@ -905,12 +927,16 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                         ...p,
                         variants: p.variants.filter(v => {
                             if (userColor && productHasColorDim) {
-                                if (!v.color)
-                                    return false;
-                                const variantColorForms = this.translateColor(v.color);
-                                const overlap = userColorForms.some(uf => variantColorForms.some(vf => vf === uf || vf.includes(uf) || uf.includes(vf)));
-                                if (!overlap)
-                                    return false;
+                                if (productMatchesColorByMetadata) {
+                                }
+                                else {
+                                    if (!v.color)
+                                        return false;
+                                    const variantColorForms = this.translateColor(v.color);
+                                    const overlap = userColorForms.some(uf => variantColorForms.some(vf => vf === uf || vf.includes(uf) || uf.includes(vf)));
+                                    if (!overlap)
+                                        return false;
+                                }
                             }
                             if (userSizeLower) {
                                 if (!v.size)
@@ -977,10 +1003,20 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 const lockHolds = !!memory.selectedProductId && !lockDecision.adopt;
                 const toPresented = (p) => ({
                     title: p.product.title,
-                    variants: [...new Set(p.variants.map((v) => [...new Set([v.size, v.color].filter(Boolean))].join(', ') || 'standard'))],
+                    variants: [...new Set(p.variants.map((v) => [...new Set([v.size, (0, color_i18n_1.localizeColor)(v.color)].filter(Boolean))].join(', ') || 'standard'))],
                     price: [
                         ...new Set(p.variants.map((v) => `${v.price} ${(0, format_1.formatCurrency)(v.currency)}`)),
                     ].join(' / '),
+                    productId: p.product.id,
+                    rawVariants: p.variants.map((v) => ({
+                        id: v.id,
+                        color: v.color,
+                        size: v.size,
+                        price: v.price,
+                        salePrice: null,
+                        available: v.effectiveAvailable > 0,
+                    })),
+                    searchKeywords: p.product.searchKeywords ?? null,
                 });
                 if (lockHolds) {
                     if (lockedProductInResults) {
@@ -998,7 +1034,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                         .filter((v) => v.effectiveAvailable > 0)
                         .map((v) => ({
                         id: v.id,
-                        name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+                        name: [...new Set([(0, color_i18n_1.localizeColor)(v.color), v.size].filter(Boolean))].join(', ') || 'standard',
                         color: v.color ?? null,
                         size: v.size ?? null,
                         imageUrl: v.imageUrl ?? null,
@@ -1017,7 +1053,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                             .filter((v) => v.effectiveAvailable > 0)
                             .map((v) => ({
                             id: v.id,
-                            name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+                            name: [...new Set([(0, color_i18n_1.localizeColor)(v.color), v.size].filter(Boolean))].join(', ') || 'standard',
                             color: v.color ?? null,
                             size: v.size ?? null,
                             imageUrl: v.imageUrl ?? null,
@@ -1823,7 +1859,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
     buildAvailableVariantsList(variants) {
         return variants.map((v) => ({
             id: v.id,
-            name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+            name: [...new Set([(0, color_i18n_1.localizeColor)(v.color), v.size].filter(Boolean))].join(', ') || 'standard',
             color: v.color,
             size: v.size,
             imageUrl: v.imageUrl ?? null,
@@ -2105,6 +2141,9 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             && classification.slotAction !== 'correction') {
             return false;
         }
+        if (this.isNarrowingSlotFill(classification, memory)) {
+            return false;
+        }
         const searchActions = [
             'show_products',
             'recommend',
@@ -2126,6 +2165,118 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         return (searchActions.includes(classification.recommendedAction) ||
             searchIntents.includes(classification.primaryIntent) ||
             (hasEntities && noProductsShownYet));
+    }
+    isNarrowingSlotFill(classification, memory) {
+        if (classification.slotAction !== 'fills_missing_slot')
+            return false;
+        if (memory.selectionState !== 'awaiting_product')
+            return false;
+        const presented = memory.lastPresentedProducts;
+        if (!presented?.length)
+            return false;
+        const anyHasRawVariants = presented.some((p) => (p.rawVariants?.length ?? 0) > 0);
+        if (!anyHasRawVariants)
+            return false;
+        const { color, size, productName } = classification.entities;
+        const hasNarrowingEntity = nonEmptyStr(color) || nonEmptyStr(size);
+        if (!hasNarrowingEntity)
+            return false;
+        if (nonEmptyStr(productName))
+            return false;
+        return true;
+    }
+    narrowLastPresentedInMemory(presented, classification, ctx) {
+        const { color: userColor, size: userSize } = classification.entities;
+        const userColorForms = nonEmptyStr(userColor)
+            ? this.translateColor(userColor)
+            : [];
+        const userSizeLower = nonEmptyStr(userSize)
+            ? userSize.toLowerCase().trim()
+            : '';
+        const out = [];
+        for (const p of presented) {
+            if (!p.rawVariants?.length || !p.productId)
+                continue;
+            const titleLower = p.title.toLowerCase();
+            const skLower = (p.searchKeywords ?? '').toLowerCase();
+            const productHasColorDim = p.rawVariants.some((v) => !!v.color);
+            const productMatchesColorByMetadata = userColorForms.length > 0 &&
+                userColorForms.some((f) => titleLower.includes(f) || skLower.includes(f));
+            if (userColorForms.length > 0 &&
+                !productHasColorDim &&
+                !productMatchesColorByMetadata) {
+                continue;
+            }
+            const matchedVariants = p.rawVariants.filter((v) => {
+                if (userColorForms.length > 0 && productHasColorDim) {
+                    if (productMatchesColorByMetadata) {
+                    }
+                    else {
+                        if (!v.color)
+                            return false;
+                        const variantForms = this.translateColor(v.color);
+                        const overlap = userColorForms.some((uf) => variantForms.some((vf) => vf === uf || vf.includes(uf) || uf.includes(vf)));
+                        if (!overlap)
+                            return false;
+                    }
+                }
+                if (userSizeLower) {
+                    if (!v.size)
+                        return false;
+                    if (v.size.toLowerCase().trim() !== userSizeLower)
+                        return false;
+                }
+                return true;
+            });
+            if (matchedVariants.length === 0)
+                continue;
+            out.push({
+                product: {
+                    id: p.productId,
+                    title: p.title,
+                    imageUrl: null,
+                    category: null,
+                    searchKeywords: p.searchKeywords ?? null,
+                },
+                variants: matchedVariants.map((v) => ({
+                    id: v.id,
+                    color: v.color,
+                    size: v.size,
+                    price: v.price,
+                    currency: 'UAH',
+                    effectiveAvailable: v.available ? 1 : 0,
+                    imageUrl: null,
+                })),
+            });
+        }
+        if (out.length === 0) {
+            ctx.trace.push(`narrow: no product satisfied color="${userColor ?? ''}" size="${userSize ?? ''}"`);
+        }
+        return out;
+    }
+    async handleNarrowingNoMatch(input, ctx) {
+        const { memory, classification } = ctx;
+        classification.recommendedAction = 'narrowing_no_match';
+        const templateResult = await this.templateEngine.render({
+            tenantId: input.tenantId,
+            classification,
+            memory,
+            recentTemplateIds: memory.recentTemplateIds ?? [],
+            messageText: input.messageText,
+        });
+        const reply = templateResult?.text ??
+            'Серед показаних варіантів немає такого 💛 Пошукати ширше в каталозі?';
+        memory.lastAction = 'narrow_no_match';
+        const stateUpdate = {};
+        stateUpdate.contextJson = memory;
+        ctx.trace.push(`narrow_no_match: rendered ${templateResult?.scenario ?? 'fallback-string'}`);
+        return {
+            decision: shared_1.ReplyDecision.Reply,
+            reply: { text: reply, sendNow: true },
+            handoff: { required: false, reason: null },
+            stateUpdate,
+            templateScenario: templateResult?.scenario ?? 'narrowing_no_match',
+        };
     }
     extractSearchKeywords(classification) {
         const keywords = [];
@@ -2213,6 +2364,25 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             }
             return undefined;
         }
+        if (category && keywords.length > 1) {
+            const combined = keywords.filter(Boolean).join(' ');
+            const results = await this.availabilityService.checkAll(tenantId, {
+                query: combined,
+                category,
+            });
+            await this.auditService.log({
+                tenantId,
+                conversationId,
+                type: shared_1.AuditLogType.AvailabilityCheck,
+                details: { keyword: combined, category, productsFound: results.length },
+            });
+            if (results.length > 0) {
+                return results.map((r) => ({
+                    product: r.product,
+                    variants: r.variants,
+                }));
+            }
+        }
         for (const keyword of keywords) {
             if (!keyword)
                 continue;
@@ -2251,7 +2421,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                     memory.selectedProductTitle = recommended.product.title;
                     memory.availableVariants = recommended.variants.map((v) => ({
                         id: v.id,
-                        name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+                        name: [...new Set([(0, color_i18n_1.localizeColor)(v.color), v.size].filter(Boolean))].join(', ') || 'standard',
                         color: v.color,
                         size: v.size,
                         imageUrl: v.imageUrl ?? null,
@@ -2425,11 +2595,12 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             `3. If you showed options and user asks for recommendation -> recommend with a reason. Don't re-ask.`,
             `4. When presenting products: ALWAYS include the price. Be conversational, not tabular.`,
             `5. NEVER say "contact manager", "зараз перевірю ціну", or reveal you are AI.`,
-            `6. If product not found, say you'll check and follow up.`,
+            `6. If a product (or a specific attribute like color/size/material) was not found, say so plainly and offer to check — do NOT name a product from memory unless its listed variants exactly match what the customer asked for.`,
             `7. Lead the conversation forward.`,
             `8. NEVER greet mid-conversation.`,
             `9. Keep replies SHORT (1-3 sentences max).`,
             `10. NEVER confirm an order, say "замовлення оформлено", "в обробці", "дані отримала", or imply an order exists unless ALL of these are true: selectedProductId exists, checkout is in progress, system is expecting delivery details.`,
+            `11. NEVER invent product variants, colors, prices, sizes, materials, or any product detail that does not appear verbatim in the "Products shown" memory or "Product data from database" section above. If the customer asks for an attribute (color, size, material) that none of the listed products have, say so plainly and offer to check the broader catalog. Examples of correct replies: "У показаних немає чорних — пошукати в каталозі ширше?" / "Серед цих немає вашого розміру." Examples of FORBIDDEN replies: claiming a color, size, or material exists for a product when its listed variants don't include it.`,
             this.buildOrderStateContext(params.memory),
             `\nClassification context:`,
             `Intent: ${params.classification.primaryIntent}`,

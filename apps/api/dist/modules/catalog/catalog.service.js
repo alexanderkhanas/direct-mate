@@ -36,6 +36,7 @@ const PRODUCT_DIFF_FIELDS = [
     'salePrice',
     'modelName',
     'status',
+    'searchKeywords',
 ];
 const VARIANT_DIFF_FIELDS = [
     'sku',
@@ -341,6 +342,7 @@ let CatalogService = CatalogService_1 = class CatalogService {
             salePrice: this.firstSalePriceFromVariants(p),
             modelName: p.modelName ?? null,
             status: p.status ?? shared_1.ProductStatus.Active,
+            searchKeywords: p.searchKeywords ?? null,
         };
     }
     firstSalePriceFromVariants(p) {

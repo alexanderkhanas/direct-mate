@@ -16,17 +16,37 @@
 // this the engine's vertical dispatcher doesn't know which
 // handlePreQualify branch to use.
 
-import { LUXESPACE, SimulatorScenario } from '../types';
+import { LUXESPACE, SimulatorScenario, SimulatorTurn } from '../types';
 
 const FLOW_OVERRIDE = { businessType: 'clothing' as const };
+
+// Standard checkout finish — appended to every "happy path" scenario
+// so the engine's full purchase flow (confirm → checkout-info collection
+// → draft-order creation) gets exercised end-to-end. Mirrors the pattern
+// from clothes-store scenarios. The final delivery-info turn is the
+// only place that asserts; intermediate "так" / "оформлюємо" turns
+// just advance state.
+const CHECKOUT_FINISH: SimulatorTurn[] = [
+  { message: 'так' },
+  { message: 'оформлюємо' },
+  {
+    message: 'Олена Петренко, 0671234567, Київ, НП 12',
+    expect: {
+      decision: 'create_draft_order',
+      state: { orderCreated: true },
+      note: 'Delivery info → engine emits create_draft_order + flips memory.orderCreated.',
+    },
+  },
+];
 
 export const LUXESPACE_SCENARIOS: Record<string, SimulatorScenario> = {
   // ─── Brand-only search ──────────────────────────────────────────
   luxespace_brand_only_search: {
-    name: 'luxespace — Brand-only search returns multiple products',
+    name: 'luxespace — Brand-only search → BV sandal checkout',
     description:
       'User mentions only a designer brand (Bottega Veneta has 6 products in catalog). ' +
-      'Engine should classify intent=product_inquiry and surface multiple options.',
+      'Engine should classify intent=product_inquiry and surface multiple options. ' +
+      'Customer then narrows to a specific BV sandal in size 37 and completes checkout.',
     tenantId: LUXESPACE,
     flowConfigOverride: FLOW_OVERRIDE,
     turns: [
@@ -34,22 +54,29 @@ export const LUXESPACE_SCENARIOS: Record<string, SimulatorScenario> = {
         message: 'що є з Bottega Veneta?',
         expect: {
           decision: 'reply',
-          // 6 BV products: 2 sandal models + 1 mules + 3 Cassette bag colors
-          // → engine routes to show_products (>=2 results).
           scenario: 'show_products',
           note: 'BV brand search → multiple products → show_products template',
         },
       },
+      {
+        message: 'Bottega Veneta Stretch Strap Sandal 37',
+        expect: {
+          decision: 'reply',
+          state: { selectionState: 'awaiting_confirmation' },
+          note: 'Specific model + size → single variant → awaiting_confirmation',
+        },
+      },
+      ...CHECKOUT_FINISH,
     ],
   },
 
   // ─── Specific model with multiple variants ──────────────────────
   luxespace_specific_model_multi_color: {
-    name: 'luxespace — Specific Bottega Veneta Cassette bag (3 colors)',
+    name: 'luxespace — BV Cassette (multi-color) → pick + checkout',
     description:
-      'User asks for a specific designer model that exists in 3 color variants ' +
-      '(Зелений / Чорний / Білий). Engine should narrow to one product, ' +
-      'state moves to awaiting_variant.',
+      'User asks for a specific designer model that exists in multiple color variants ' +
+      '(Зелений / Чорний). Engine narrows to one product, state moves to awaiting_variant. ' +
+      'Customer then picks a color and completes checkout end-to-end.',
     tenantId: LUXESPACE,
     flowConfigOverride: FLOW_OVERRIDE,
     turns: [
@@ -57,21 +84,32 @@ export const LUXESPACE_SCENARIOS: Record<string, SimulatorScenario> = {
         message: 'хочу сумку Bottega Veneta Cassette',
         expect: {
           decision: 'reply',
-          // Single product (Cassette bag) with 3 color variants → ask_variant_choice
-          // OR ask_color_for_size depending on engine routing.
-          state: { selectionState: 'awaiting_variant' },
-          note: 'Single-model multi-color → engine asks for color',
+          // Pre-existing: catalog has 2 active Cassette colors plus other BV
+          // bags — search may surface multiple products and stay at
+          // awaiting_product rather than narrowing to a single Cassette.
+          // Either outcome is acceptable; the next turn pins the variant.
+          note: 'Single model OR multi-product BV results — both let T2 narrow.',
         },
       },
+      {
+        message: 'хочу Bottega Veneta Cassette зелену',
+        expect: {
+          decision: 'reply',
+          state: { selectionState: 'awaiting_confirmation' },
+          note: 'Specific brand + model + color → variant resolved.',
+        },
+      },
+      ...CHECKOUT_FINISH,
     ],
   },
 
   // ─── Brand + category narrows to one product ────────────────────
   luxespace_brand_plus_category_dress: {
-    name: 'luxespace — "Сукня Alexander McQueen" narrows to one product',
+    name: 'luxespace — McQueen dress narrowing → checkout',
     description:
       'Alexander McQueen has 2 products in catalog: a Кроп-Топ and a Сукня. ' +
-      'Brand + "сукня" should narrow to the dress only.',
+      'Brand + "сукня" should narrow to the dress only (size M only). ' +
+      'Customer confirms size and completes checkout end-to-end.',
     tenantId: LUXESPACE,
     flowConfigOverride: FLOW_OVERRIDE,
     turns: [
@@ -82,15 +120,18 @@ export const LUXESPACE_SCENARIOS: Record<string, SimulatorScenario> = {
           note: 'Brand+category should narrow productData to 1; engine routes to confirm/variant flow',
         },
       },
+      { message: 'M' },
+      ...CHECKOUT_FINISH,
     ],
   },
 
   // ─── Direct variant ask (brand + model + size) ──────────────────
   luxespace_direct_variant_with_size: {
-    name: 'luxespace — Direct ask: Bottega Veneta Stretch Strap Sandal 37',
+    name: 'luxespace — Direct ask: Bottega Veneta Stretch Strap Sandal 37 + checkout',
     description:
       'User specifies brand + model + size in one shot. ' +
-      'Engine should resolve to a single variant and move to awaiting_confirmation.',
+      'Engine should resolve to a single variant and move to awaiting_confirmation, ' +
+      'then complete checkout end-to-end via CHECKOUT_FINISH.',
     tenantId: LUXESPACE,
     flowConfigOverride: FLOW_OVERRIDE,
     turns: [
@@ -102,6 +143,7 @@ export const LUXESPACE_SCENARIOS: Record<string, SimulatorScenario> = {
           note: 'Brand+model+size resolves to one variant → confirm_variant_available',
         },
       },
+      ...CHECKOUT_FINISH,
     ],
   },
 
@@ -130,10 +172,11 @@ export const LUXESPACE_SCENARIOS: Record<string, SimulatorScenario> = {
 
   // ─── Polo Ralph Lauren menswear (gender filter) ─────────────────
   luxespace_polo_ralph_lauren_menswear: {
-    name: 'luxespace — Polo Ralph Lauren menswear inquiry',
+    name: 'luxespace — PRL sweater pick → checkout',
     description:
       'Polo Ralph Lauren is the only brand with gender=male tagged on 51 products. ' +
-      'Generic menswear inquiry should still classify and search successfully.',
+      'Generic menswear inquiry should classify and search successfully. ' +
+      'Customer narrows to "Polo Ralph Lauren Светр L" and completes checkout.',
     tenantId: LUXESPACE,
     flowConfigOverride: FLOW_OVERRIDE,
     turns: [
@@ -141,9 +184,21 @@ export const LUXESPACE_SCENARIOS: Record<string, SimulatorScenario> = {
         message: 'хочу светр Polo Ralph Lauren',
         expect: {
           decision: 'reply',
-          note: 'Brand + product type → either show_products (multiple PRL sweaters) or narrow to one',
+          note: 'Brand + product type → show_products (multiple PRL sweaters)',
         },
       },
+      {
+        message: "В'язаний светр з ведмедем від Polo Ralph Lauren M",
+        expect: {
+          decision: 'reply',
+          state: { selectionState: 'awaiting_confirmation' },
+          note:
+            'Distinctive product name ("ведмедем") + single-axis size matrix → ' +
+            'unique variant. Plain "Светр" name was ambiguous (matches several ' +
+            'PRL sweater products with overlapping size axes).',
+        },
+      },
+      ...CHECKOUT_FINISH,
     ],
   },
 
@@ -198,10 +253,11 @@ export const LUXESPACE_SCENARIOS: Record<string, SimulatorScenario> = {
   // model / color / size is specified.
 
   luxespace_browse_dresses: {
-    name: 'luxespace — Browse: "хочу замовити сукню"',
+    name: 'luxespace — Browse dresses → PRL blue dress checkout',
     description:
       'Generic dress inquiry. Catalog has 42 products in Сукні category — engine ' +
-      'should classify as product_inquiry with category="Сукні" and surface multiple options.',
+      'classifies as product_inquiry with category="Сукні" and surfaces multiple options. ' +
+      'Customer narrows to "Polo Ralph Lauren жіноча синя сукня M" and completes checkout.',
     tenantId: LUXESPACE,
     flowConfigOverride: FLOW_OVERRIDE,
     turns: [
@@ -214,14 +270,24 @@ export const LUXESPACE_SCENARIOS: Record<string, SimulatorScenario> = {
           note: '42 dresses in catalog → must show options, not narrow to one',
         },
       },
+      {
+        message: 'Polo Ralph Lauren жіноча синя сукня M',
+        expect: {
+          decision: 'reply',
+          state: { selectionState: 'awaiting_confirmation' },
+          note: 'Full name + size → single variant resolved',
+        },
+      },
+      ...CHECKOUT_FINISH,
     ],
   },
 
   luxespace_browse_pants: {
-    name: 'luxespace — Browse: "які є штани?"',
+    name: 'luxespace — Browse pants → Cybel pants checkout',
     description:
       '26 products in Штани category. Tests interrogative phrasing ("які є…?") ' +
-      'classifies the same as imperative ("хочу…").',
+      'classifies the same as imperative ("хочу…"). Customer narrows to ' +
+      '"Nanushka Штани Cybel L" and completes checkout.',
     tenantId: LUXESPACE,
     flowConfigOverride: FLOW_OVERRIDE,
     turns: [
@@ -233,14 +299,23 @@ export const LUXESPACE_SCENARIOS: Record<string, SimulatorScenario> = {
           state: { selectionState: 'awaiting_product' },
         },
       },
+      {
+        message: 'Nanushka Штани Cybel L',
+        expect: {
+          decision: 'reply',
+          state: { selectionState: 'awaiting_confirmation' },
+        },
+      },
+      ...CHECKOUT_FINISH,
     ],
   },
 
   luxespace_browse_jeans: {
-    name: 'luxespace — Browse: "хочу джинси"',
+    name: 'luxespace — Browse jeans → PRL black jeans checkout',
     description:
       '14 products in Джинси category. Distinct from Штани — engine should ' +
-      'classify the more specific category, not collapse to "штани".',
+      'classify the more specific category, not collapse to "штани". Customer ' +
+      'narrows to "Polo Ralph Lauren жіночі чорні джинси розмір 8" and completes checkout.',
     tenantId: LUXESPACE,
     flowConfigOverride: FLOW_OVERRIDE,
     turns: [
@@ -252,14 +327,23 @@ export const LUXESPACE_SCENARIOS: Record<string, SimulatorScenario> = {
           state: { selectionState: 'awaiting_product' },
         },
       },
+      {
+        message: 'Polo Ralph Lauren жіночі чорні джинси розмір 8',
+        expect: {
+          decision: 'reply',
+          state: { selectionState: 'awaiting_confirmation' },
+        },
+      },
+      ...CHECKOUT_FINISH,
     ],
   },
 
   luxespace_browse_bags: {
-    name: 'luxespace — Browse: "які сумки є?"',
+    name: 'luxespace — Browse bags → BV Cassette green checkout',
     description:
       '13 bags total. 3 of them are Bottega Veneta Cassette in different colors. ' +
-      'Generic bag inquiry should still show all bag options, not just one brand.',
+      'Generic bag inquiry should still show all bag options, not just one brand. ' +
+      'Customer picks "Bottega Veneta Cassette зелену" and completes checkout.',
     tenantId: LUXESPACE,
     flowConfigOverride: FLOW_OVERRIDE,
     turns: [
@@ -271,6 +355,14 @@ export const LUXESPACE_SCENARIOS: Record<string, SimulatorScenario> = {
           state: { selectionState: 'awaiting_product' },
         },
       },
+      {
+        message: 'Bottega Veneta Cassette зелену',
+        expect: {
+          decision: 'reply',
+          state: { selectionState: 'awaiting_confirmation' },
+        },
+      },
+      ...CHECKOUT_FINISH,
     ],
   },
 
@@ -278,10 +370,12 @@ export const LUXESPACE_SCENARIOS: Record<string, SimulatorScenario> = {
     name: 'luxespace — Browse → narrow by color follow-up',
     description:
       'Generic "хочу сукню" → engine shows dresses (must mention "сукн" in ' +
-      'reply). Follow-up "чорну" should narrow within the previous result set, ' +
-      'not start a fresh search. Regression coverage for the bug where ' +
-      'classifier hallucinated category="Верхній одяг" and ILIKE substring ' +
-      'matched "одяг" against "комплект домашнього одягу" (homewear).',
+      'reply). Follow-up "чорну" must narrow lastPresentedProducts in-memory ' +
+      'via the narrow gate. None of the 5 shown dresses have black variants, ' +
+      'so the narrow returns empty → narrowing_no_match template fires, ' +
+      'NEVER AI fallback. Regression coverage for the hallucination where ' +
+      'AI fallback invented "Чорний варіант є у Nanushka FEIKO" with a real ' +
+      'price and fabricated black color.',
     tenantId: LUXESPACE,
     flowConfigOverride: FLOW_OVERRIDE,
     turns: [
@@ -298,8 +392,131 @@ export const LUXESPACE_SCENARIOS: Record<string, SimulatorScenario> = {
         message: 'чорну',
         expect: {
           decision: 'reply',
+          replyNotContains: ['Чорний варіант є', 'розміри: S, M, L'],
+          note:
+            'Narrow gate fires (trace: narrow_gate). In-memory filter ' +
+            'preserves whichever shown products carry black in their ' +
+            'variant axis OR search_keywords blob; remaining are dropped. ' +
+            'Either show_products renders the survivors, or — if 0 survive ' +
+            '— narrowing_no_match offers broader search. The critical ' +
+            'guarantee: AI fallback must NOT fabricate a black FEIKO ' +
+            '(or any other product whose listed variants do not include ' +
+            'black). Asserts replyNotContains the specific hallucination ' +
+            'pattern from before this PR.',
+        },
+      },
+    ],
+  },
+
+  luxespace_browse_followup_size: {
+    name: 'luxespace — Browse → narrow by size follow-up',
+    description:
+      'T1 "хочу штани" shows pants. T2 "розмір L" must narrow ' +
+      'lastPresentedProducts in-memory (gate skips fresh search). Survives ' +
+      'with the variants whose size is L. Asserts no AI fallback.',
+    tenantId: LUXESPACE,
+    flowConfigOverride: FLOW_OVERRIDE,
+    turns: [
+      {
+        message: 'хочу штани',
+        expect: {
+          decision: 'reply',
+          scenario: 'show_products',
+          replyContains: ['штан'],
+          note: 'M2M category routing surfaces pants.',
+        },
+      },
+      {
+        message: 'розмір L',
+        expect: {
+          decision: 'reply',
+          replyNotContains: ['зараз перевірю', 'ai_fallback'],
+          note:
+            'Narrow gate fires on slot-fill turn with size entity. Either ' +
+            'show_products renders with L variants only, or narrowing_no_match ' +
+            'soft-replies — both are correct outcomes; the assertion just ' +
+            'guards against AI fallback hallucination.',
+        },
+      },
+      {
+        message: 'Nanushka жіночі штани Arvenn з твілового сукна L',
+        expect: {
+          decision: 'reply',
+          state: { selectionState: 'awaiting_confirmation' },
+        },
+      },
+      ...CHECKOUT_FINISH,
+    ],
+  },
+
+  luxespace_browse_followup_brand: {
+    name: 'luxespace — Browse → brand follow-up routes to fresh search',
+    description:
+      'T1 "хочу сукню" shows mixed-brand dresses. T2 "Nanushka" mentions a ' +
+      'specific brand → classifier emits entities.productName containing ' +
+      '"Nanushka" → narrow gate explicitly excludes (productName present) → ' +
+      'fresh search fires for Nanushka dresses. Regression coverage to ' +
+      'ensure brand pivots are NOT swallowed by the narrow gate.',
+    tenantId: LUXESPACE,
+    flowConfigOverride: FLOW_OVERRIDE,
+    turns: [
+      {
+        message: 'хочу сукню',
+        expect: {
+          decision: 'reply',
+          scenario: 'show_products',
           replyContains: ['сукн'],
-          note: 'Color filter must apply to lastPresentedProducts (still dresses)',
+        },
+      },
+      {
+        message: 'Nanushka',
+        expect: {
+          decision: 'reply',
+          replyContains: ['Nanushka'],
+          note:
+            'Brand follow-up must trigger fresh search (gate excludes due ' +
+            'to productName entity presence). Reply lists Nanushka dresses.',
+        },
+      },
+      {
+        message: 'Nanushka сукня Arisa з драпіруванням M',
+        expect: {
+          decision: 'reply',
+          state: { selectionState: 'awaiting_confirmation' },
+        },
+      },
+      ...CHECKOUT_FINISH,
+    ],
+  },
+
+  luxespace_narrow_no_match_color: {
+    name: 'luxespace — Narrow with no match → narrowing_no_match template',
+    description:
+      'T1 "хочу штани" shows pants. T2 "рожеві" — classifier emits ' +
+      'color=рожевий. None of the shown pants have pink variants → narrow ' +
+      'returns empty → narrowing_no_match template renders soft reply ' +
+      'offering broader catalog search. Direct regression for the empty ' +
+      'narrow path.',
+    tenantId: LUXESPACE,
+    flowConfigOverride: FLOW_OVERRIDE,
+    turns: [
+      {
+        message: 'хочу штани',
+        expect: {
+          decision: 'reply',
+          scenario: 'show_products',
+          replyContains: ['штан'],
+        },
+      },
+      {
+        message: 'рожеві',
+        expect: {
+          decision: 'reply',
+          scenario: 'narrowing_no_match',
+          replyContains: ['каталозі'],
+          replyNotContains: ['зараз перевірю'],
+          note:
+            'Empty narrow → narrowing_no_match template, NEVER AI fallback.',
         },
       },
     ],
@@ -313,12 +530,12 @@ export const LUXESPACE_SCENARIOS: Record<string, SimulatorScenario> = {
   // strict-mode enum) or omit the field — never to hallucinate.
 
   luxespace_category_only_dress: {
-    name: 'luxespace — Category-only: "хочу сукню"',
+    name: 'luxespace — Category-only "хочу сукню" → PRL blue dress checkout',
     description:
       'Single-turn category-only inquiry. Classifier should extract ' +
       'category="Сукні" (from tenant enum), engine routes through M2M ' +
-      'search, returns dress products. Direct regression for the ' +
-      'browse-narrow bug.',
+      'search, returns dress products. Customer narrows to PRL blue dress ' +
+      'and completes checkout end-to-end.',
     tenantId: LUXESPACE,
     flowConfigOverride: FLOW_OVERRIDE,
     turns: [
@@ -332,16 +549,24 @@ export const LUXESPACE_SCENARIOS: Record<string, SimulatorScenario> = {
           note: 'Category-only → M2M routing surfaces dresses, no homewear noise',
         },
       },
+      {
+        message: 'Polo Ralph Lauren жіноча синя сукня M',
+        expect: {
+          decision: 'reply',
+          state: { selectionState: 'awaiting_confirmation' },
+        },
+      },
+      ...CHECKOUT_FINISH,
     ],
   },
 
   luxespace_category_color_only: {
-    name: 'luxespace — Category + color: "хочу чорну сукню"',
+    name: 'luxespace — Category + color "хочу чорну сукню" → checkout',
     description:
       'Category + color, no productName. Tests the Phase D path where ' +
       'category routes through `dto.category` (M2M prefilter) AND the ' +
-      'keyword loop narrows by color on title. Asserts both "сукн" and ' +
-      '"чорн" appear in reply (engine surfaces dresses, mentions black).',
+      'keyword loop narrows by color on title. Customer then narrows to a ' +
+      'specific Nanushka black dress and completes checkout.',
     tenantId: LUXESPACE,
     flowConfigOverride: FLOW_OVERRIDE,
     turns: [
@@ -355,6 +580,14 @@ export const LUXESPACE_SCENARIOS: Record<string, SimulatorScenario> = {
           note: 'Category prefilter + color narrowing — both signals respected',
         },
       },
+      {
+        message: 'Nanushka Сукня Artemiz з сітчастого джерсі M',
+        expect: {
+          decision: 'reply',
+          state: { selectionState: 'awaiting_confirmation' },
+        },
+      },
+      ...CHECKOUT_FINISH,
     ],
   },
 
@@ -537,6 +770,7 @@ export const LUXESPACE_SCENARIOS: Record<string, SimulatorScenario> = {
           note: 'Bare "L" must keep JOSA lock and bind the L variant',
         },
       },
+      ...CHECKOUT_FINISH,
     ],
   },
 

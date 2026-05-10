@@ -45,6 +45,10 @@ __decorate([
 __decorate([
     (0, typeorm_1.Column)({ type: 'text', nullable: true }),
     __metadata("design:type", Object)
+], Product.prototype, "searchKeywords", void 0);
+__decorate([
+    (0, typeorm_1.Column)({ type: 'text', nullable: true }),
+    __metadata("design:type", Object)
 ], Product.prototype, "category", void 0);
 __decorate([
     (0, typeorm_1.Column)({ type: 'text', nullable: true }),

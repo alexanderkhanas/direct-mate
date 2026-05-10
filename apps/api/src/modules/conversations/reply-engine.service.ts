@@ -22,6 +22,7 @@ import {
   ProductSearchResult,
 } from '../engine/template-engine.service';
 import { PolicyEngineService, PolicyEvaluation } from '../engine/policy-engine.service';
+import { localizeColor } from '../engine/color-i18n';
 import { formatCurrency } from '../../common/format';
 import {
   AuditLogType,
@@ -62,6 +63,11 @@ export interface ReplyEngineOutput {
   /** Debug trace — populated during process(), useful for simulator diagnostics */
   trace?: string[];
 }
+
+// ─── Module-level helpers ─────────────────────────────────────────
+
+const nonEmptyStr = (v: unknown): v is string =>
+  typeof v === 'string' && v.trim().length > 0;
 
 // ─── Internal processing context ─────────────────────────────────
 
@@ -1045,11 +1051,21 @@ export class ReplyEngineService {
       memory.lastPresentedProducts = mediaProductData.map((p) => ({
         title: p.product.title,
         variants: [...new Set(p.variants.map((v) =>
-          [...new Set([v.size, v.color].filter(Boolean))].join(', ') || 'standard',
+          [...new Set([v.size, localizeColor(v.color)].filter(Boolean))].join(', ') || 'standard',
         ))],
         price: [
           ...new Set(p.variants.map((v) => `${v.price} ${formatCurrency(v.currency)}`)),
         ].join(' / '),
+        productId: p.product.id,
+        rawVariants: p.variants.map((v) => ({
+          id: v.id,
+          color: v.color,
+          size: v.size,
+          price: v.price,
+          salePrice: null,
+          available: v.effectiveAvailable > 0,
+        })),
+        searchKeywords: p.product.searchKeywords ?? null,
       }));
 
       // 5.5m: Pre-seed memory so variant matching works for story/post replies.
@@ -1062,7 +1078,7 @@ export class ReplyEngineService {
       memory.selectedProductTitle = first.product.title;
       memory.availableVariants = inStock.map((v) => ({
         id: v.id,
-        name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+        name: [...new Set([localizeColor(v.color), v.size].filter(Boolean))].join(', ') || 'standard',
         color: v.color,
         size: v.size,
         imageUrl: v.imageUrl ?? null,
@@ -1135,7 +1151,12 @@ export class ReplyEngineService {
           const matched = this.matchVariant(
             inStock.map((v) => ({
               id: v.id,
-              name: [...new Set([v.color, v.size].filter(Boolean))].join(', '),
+              // Localize the color half of `name` so that matched.name —
+              // which flows directly into memory.selectedVariantName and
+              // confirm-template renders ("Чудовий вибір! Чорний, M...") —
+              // is consistently Ukrainian. matchVariant itself looks at
+              // color/size separately and is unaffected by the name.
+              name: [...new Set([localizeColor(v.color), v.size].filter(Boolean))].join(', '),
               color: v.color ?? null,
               size: v.size ?? null,
             })),
@@ -1215,6 +1236,30 @@ export class ReplyEngineService {
           this.logger.log(`5.5m: Story reply — product pre-seeded, no variant → ask_variant_choice`);
         }
       }
+    }
+
+    // In-memory narrow: when the user's reply is just a color/size to
+    // filter the previously-shown list, hydrate productData from
+    // memory.lastPresentedProducts and skip the DB round-trip. See
+    // `isNarrowingSlotFill` for the gate conditions.
+    if (!productData && this.isNarrowingSlotFill(classification, memory)) {
+      const narrowed = this.narrowLastPresentedInMemory(
+        memory.lastPresentedProducts!,
+        classification,
+        ctx,
+      );
+      ctx.trace.push(
+        `narrow_gate: fired, ${narrowed.length} products survived (from ${memory.lastPresentedProducts!.length})`,
+      );
+      if (narrowed.length === 0) {
+        // Empty narrow: customer asked for a color/size none of the
+        // shown products satisfy. Render narrowing_no_match template
+        // — do NOT fall through to AI fallback, which would see the
+        // shown products in memory context and hallucinate one
+        // matching the user's criterion.
+        return await this.handleNarrowingNoMatch(input, ctx);
+      }
+      productData = narrowed;
     }
 
     const needsSearch = !productData && this.shouldSearchProducts(classification, memory);
@@ -1335,15 +1380,31 @@ export class ReplyEngineService {
         const userSizeLower = userSize?.toLowerCase().trim();
         const filtered = productData
           .map(p => {
-            // Color-on-title products (e.g. "Кремова футболка") have no color
-            // variant axis; the color is baked into the title. For these, match
-            // the user's color against the product title instead of variants —
-            // if title doesn't contain the requested color, drop the whole product.
+            // Color metadata for the whole product, regardless of whether
+            // it has a per-variant color axis. Two paths can confirm the
+            // product itself is the right color even when variants don't
+            // carry color values:
+            //   - title contains the requested color word ("Кремова
+            //     футболка", "Polo Ralph Lauren Чорна міді-сукня")
+            //   - search_keywords contains the requested color (n8n
+            //     normalization emits color synonyms based on the
+            //     original variant colors before color-stripping —
+            //     so a single-color product whose variants got stripped
+            //     to color=null still has the color in search_keywords)
             const productHasColorDim = p.variants.some(v => !!v.color);
+            const titleLower = p.product.title.toLowerCase();
+            const skLower = (p.product.searchKeywords ?? '').toLowerCase();
+            const productMatchesColorByMetadata = !!userColor &&
+              userColorForms.some(
+                f => titleLower.includes(f) || skLower.includes(f),
+              );
+
             if (userColor && !productHasColorDim) {
-              const titleLower = p.product.title.toLowerCase();
-              const titleMatchesColor = userColorForms.some(f => titleLower.includes(f));
-              if (!titleMatchesColor) {
+              // Color-stripped or never-had-variant-color product.
+              // Title or search_keywords MUST corroborate, otherwise
+              // drop. (Pure size filter still applies via the variant
+              // pass below.)
+              if (!productMatchesColorByMetadata) {
                 return { ...p, variants: [] };
               }
             }
@@ -1351,20 +1412,32 @@ export class ReplyEngineService {
               ...p,
               variants: p.variants.filter(v => {
                 if (userColor && productHasColorDim) {
-                  if (!v.color) return false;
-                  // Canonicalize BOTH sides via translateColor so Ukrainian
-                  // gender forms ("чорна" feminine vs "Чорний" masculine
-                  // variant) match through their shared "black" canonical
-                  // translation. Without this both sides stay raw and
-                  // gender mismatch causes the filter to silently drop
-                  // legitimate variants.
-                  const variantColorForms = this.translateColor(v.color);
-                  const overlap = userColorForms.some(uf =>
-                    variantColorForms.some(vf =>
-                      vf === uf || vf.includes(uf) || uf.includes(vf),
-                    ),
-                  );
-                  if (!overlap) return false;
+                  // Variant-level color dimension exists. Standard path:
+                  // require the variant's own color to match. EXCEPT
+                  // when the product's metadata (title / search_keywords)
+                  // already corroborates the requested color — that
+                  // covers products like "Polo Ralph Lauren Чорна
+                  // міді-сукня" where the title baked in the color
+                  // and the variant axis encodes only size.
+                  if (productMatchesColorByMetadata) {
+                    // Don't require per-variant color match; let any
+                    // size/active variant survive.
+                  } else {
+                    if (!v.color) return false;
+                    // Canonicalize BOTH sides via translateColor so Ukrainian
+                    // gender forms ("чорна" feminine vs "Чорний" masculine
+                    // variant) match through their shared "black" canonical
+                    // translation. Without this both sides stay raw and
+                    // gender mismatch causes the filter to silently drop
+                    // legitimate variants.
+                    const variantColorForms = this.translateColor(v.color);
+                    const overlap = userColorForms.some(uf =>
+                      variantColorForms.some(vf =>
+                        vf === uf || vf.includes(uf) || uf.includes(vf),
+                      ),
+                    );
+                    if (!overlap) return false;
+                  }
                 }
                 if (userSizeLower) {
                   if (!v.size) return false;
@@ -1469,11 +1542,21 @@ export class ReplyEngineService {
         const toPresented = (p: ProductSearchResult) => ({
           title: p.product.title,
           variants: [...new Set(p.variants.map((v) =>
-            [...new Set([v.size, v.color].filter(Boolean))].join(', ') || 'standard',
+            [...new Set([v.size, localizeColor(v.color)].filter(Boolean))].join(', ') || 'standard',
           ))],
           price: [
             ...new Set(p.variants.map((v) => `${v.price} ${formatCurrency(v.currency)}`)),
           ].join(' / '),
+          productId: p.product.id,
+          rawVariants: p.variants.map((v) => ({
+            id: v.id,
+            color: v.color,
+            size: v.size,
+            price: v.price,
+            salePrice: null,
+            available: v.effectiveAvailable > 0,
+          })),
+          searchKeywords: p.product.searchKeywords ?? null,
         });
         if (lockHolds) {
           if (lockedProductInResults) {
@@ -1496,7 +1579,7 @@ export class ReplyEngineService {
             .filter((v) => v.effectiveAvailable > 0)
             .map((v) => ({
               id: v.id,
-              name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+              name: [...new Set([localizeColor(v.color), v.size].filter(Boolean))].join(', ') || 'standard',
               color: v.color ?? null,
               size: v.size ?? null,
               imageUrl: v.imageUrl ?? null,
@@ -1517,7 +1600,7 @@ export class ReplyEngineService {
               .filter((v) => v.effectiveAvailable > 0)
               .map((v) => ({
                 id: v.id,
-                name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+                name: [...new Set([localizeColor(v.color), v.size].filter(Boolean))].join(', ') || 'standard',
                 color: v.color ?? null,
                 size: v.size ?? null,
                 imageUrl: v.imageUrl ?? null,
@@ -2678,7 +2761,7 @@ export class ReplyEngineService {
   ): Array<{ id: string; name: string; color: string | null; size: string | null; imageUrl: string | null }> {
     return variants.map((v) => ({
       id: v.id,
-      name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+      name: [...new Set([localizeColor(v.color), v.size].filter(Boolean))].join(', ') || 'standard',
       color: v.color,
       size: v.size,
       imageUrl: v.imageUrl ?? null,
@@ -3106,6 +3189,20 @@ export class ReplyEngineService {
       return false;
     }
 
+    // Narrowing slot-fill: user replies with just a color / size / material
+    // after a product list was shown, intending to filter the shown list
+    // (NOT start a fresh DB query). When the prior turn captured structured
+    // variant data in `rawVariants`, skip search — the in-memory narrow path
+    // in `searchAndFilterProducts` will filter `lastPresentedProducts`
+    // directly. Without this gate, the engine fires a fresh ILIKE search on
+    // the user's surface form ("чорну" — accusative case) which the catalog
+    // search_keywords blob (only nominative `чорний/чорна/чорне`) can never
+    // match, returning 0 rows and routing to AI fallback that hallucinates
+    // a product matching the user's criterion.
+    if (this.isNarrowingSlotFill(classification, memory)) {
+      return false;
+    }
+
     const searchActions = [
       'show_products',
       'recommend',
@@ -3132,6 +3229,195 @@ export class ReplyEngineService {
       searchIntents.includes(classification.primaryIntent) ||
       (hasEntities && noProductsShownYet)
     );
+  }
+
+  /**
+   * Slot-fill turn that should narrow the previously-presented list
+   * in-memory rather than fire a fresh DB search.
+   *
+   * Fires when ALL of:
+   *  - classifier said the user is filling a missing slot (not a new
+   *    inquiry, not confirming, not correcting)
+   *  - the engine is awaiting product selection (already showed a list)
+   *  - prior turn captured structured `rawVariants` (legacy conversations
+   *    pre-deploy don't have this — fail-closed and let fresh search run)
+   *  - the user supplied at least one narrowing entity (color / size)
+   *  - the user did NOT mention a different product (a productName
+   *    follow-up like "Nanushka" or a specific model after a generic
+   *    list is a pivot, not a narrow — let fresh search run). Material
+   *    and brand entities aren't in the classifier schema today;
+   *    revisit when they're added.
+   *
+   * Used by both `shouldSearchProducts` (to skip the fresh-search branch)
+   * and `searchAndFilterProducts` (to call `narrowLastPresentedInMemory`).
+   */
+  private isNarrowingSlotFill(
+    classification: ClassificationResult,
+    memory: AssistantMemory,
+  ): boolean {
+    if (classification.slotAction !== 'fills_missing_slot') return false;
+    if (memory.selectionState !== 'awaiting_product') return false;
+
+    const presented = memory.lastPresentedProducts;
+    if (!presented?.length) return false;
+    const anyHasRawVariants = presented.some(
+      (p) => (p.rawVariants?.length ?? 0) > 0,
+    );
+    if (!anyHasRawVariants) return false;
+
+    const { color, size, productName } = classification.entities;
+    const hasNarrowingEntity = nonEmptyStr(color) || nonEmptyStr(size);
+    if (!hasNarrowingEntity) return false;
+    if (nonEmptyStr(productName)) return false;
+
+    return true;
+  }
+
+  /**
+   * Filter `presented` products by the user's color / size from the
+   * current classification. Returns the survivors converted to
+   * `ProductSearchResult` shape so downstream code (template engine,
+   * variant matchers) can consume them as if a fresh search returned
+   * them.
+   *
+   * Color matching uses `translateColor` on both sides — variant.color
+   * and entities.color — so Ukrainian gendered forms ("чорна" vs the
+   * variant's stored "Чорний") and English ↔ Ukrainian both match
+   * via the shared canonical token. Products that have no per-variant
+   * color axis but mention the color in their title or
+   * `searchKeywords` blob are kept (covers the "Polo Ralph Lauren
+   * Чорна сукня" pattern where the color is baked into the product
+   * itself, not the variant matrix).
+   */
+  private narrowLastPresentedInMemory(
+    presented: NonNullable<AssistantMemory['lastPresentedProducts']>,
+    classification: ClassificationResult,
+    ctx: ProcessingContext,
+  ): ProductSearchResult[] {
+    const { color: userColor, size: userSize } = classification.entities;
+    const userColorForms = nonEmptyStr(userColor)
+      ? this.translateColor(userColor)
+      : [];
+    const userSizeLower = nonEmptyStr(userSize)
+      ? userSize.toLowerCase().trim()
+      : '';
+
+    const out: ProductSearchResult[] = [];
+    for (const p of presented) {
+      if (!p.rawVariants?.length || !p.productId) continue;
+
+      const titleLower = p.title.toLowerCase();
+      const skLower = (p.searchKeywords ?? '').toLowerCase();
+      const productHasColorDim = p.rawVariants.some((v) => !!v.color);
+      const productMatchesColorByMetadata =
+        userColorForms.length > 0 &&
+        userColorForms.some(
+          (f) => titleLower.includes(f) || skLower.includes(f),
+        );
+
+      // Pre-filter: if user asked for a color but neither the variant
+      // axis nor the product metadata can corroborate, drop the whole
+      // product.
+      if (
+        userColorForms.length > 0 &&
+        !productHasColorDim &&
+        !productMatchesColorByMetadata
+      ) {
+        continue;
+      }
+
+      const matchedVariants = p.rawVariants.filter((v) => {
+        if (userColorForms.length > 0 && productHasColorDim) {
+          if (productMatchesColorByMetadata) {
+            // Title/sk corroborates color; size filter alone applies.
+          } else {
+            if (!v.color) return false;
+            const variantForms = this.translateColor(v.color);
+            const overlap = userColorForms.some((uf) =>
+              variantForms.some(
+                (vf) => vf === uf || vf.includes(uf) || uf.includes(vf),
+              ),
+            );
+            if (!overlap) return false;
+          }
+        }
+        if (userSizeLower) {
+          if (!v.size) return false;
+          if (v.size.toLowerCase().trim() !== userSizeLower) return false;
+        }
+        return true;
+      });
+
+      if (matchedVariants.length === 0) continue;
+
+      out.push({
+        product: {
+          id: p.productId,
+          title: p.title,
+          imageUrl: null,
+          category: null,
+          searchKeywords: p.searchKeywords ?? null,
+        },
+        variants: matchedVariants.map((v) => ({
+          id: v.id,
+          color: v.color,
+          size: v.size,
+          price: v.price,
+          currency: 'UAH',
+          effectiveAvailable: v.available ? 1 : 0,
+          imageUrl: null,
+        })),
+      });
+    }
+    if (out.length === 0) {
+      ctx.trace.push(
+        `narrow: no product satisfied color="${userColor ?? ''}" size="${userSize ?? ''}"`,
+      );
+    }
+    return out;
+  }
+
+  /**
+   * Render the `narrowing_no_match` template scenario when the user's
+   * narrowing reply (e.g. "чорну") matches none of the presented
+   * products. Soft reply offering a broader catalog search; never
+   * routes to AI fallback (which would have memory context and
+   * hallucinate a product).
+   */
+  private async handleNarrowingNoMatch(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+  ): Promise<ReplyEngineOutput> {
+    const { memory, classification } = ctx;
+    classification.recommendedAction = 'narrowing_no_match';
+
+    const templateResult = await this.templateEngine.render({
+      tenantId: input.tenantId,
+      classification,
+      memory,
+      recentTemplateIds: memory.recentTemplateIds ?? [],
+      messageText: input.messageText,
+    });
+
+    const reply =
+      templateResult?.text ??
+      'Серед показаних варіантів немає такого 💛 Пошукати ширше в каталозі?';
+
+    memory.lastAction = 'narrow_no_match';
+    const stateUpdate: Partial<ConversationState> = {};
+    stateUpdate.contextJson = memory as any;
+
+    ctx.trace.push(
+      `narrow_no_match: rendered ${templateResult?.scenario ?? 'fallback-string'}`,
+    );
+
+    return {
+      decision: ReplyDecision.Reply,
+      reply: { text: reply, sendNow: true },
+      handoff: { required: false, reason: null },
+      stateUpdate,
+      templateScenario: templateResult?.scenario ?? 'narrowing_no_match',
+    };
   }
 
   /**
@@ -3320,6 +3606,38 @@ export class ReplyEngineService {
       return undefined;
     }
 
+    // Category + keywords: combined AND-narrowed call. Sending ALL
+    // keywords at once (e.g. ["сукня", "чорна"]) lets the SQL
+    // `WHERE` clause require BOTH terms (each must match title or
+    // search_keywords) before the LIMIT picks the top 10. Without
+    // this, the per-keyword OR-loop below would return 5 dresses on
+    // the first iteration with "сукня" alone, never narrowing by
+    // "чорна" — and the customer's color signal silently lost.
+    if (category && keywords.length > 1) {
+      const combined = keywords.filter(Boolean).join(' ');
+      const results = await this.availabilityService.checkAll(tenantId, {
+        query: combined,
+        category,
+      });
+
+      await this.auditService.log({
+        tenantId,
+        conversationId,
+        type: AuditLogType.AvailabilityCheck,
+        details: { keyword: combined, category, productsFound: results.length },
+      });
+
+      if (results.length > 0) {
+        return results.map((r) => ({
+          product: r.product,
+          variants: r.variants,
+        }));
+      }
+      // Fall through to the per-keyword OR-loop below for resilience
+      // when AND-narrow returned 0 (one of the terms is a typo /
+      // synonym mismatch / off-catalog phrase).
+    }
+
     for (const keyword of keywords) {
       if (!keyword) continue;
       const results = await this.availabilityService.checkAll(tenantId, {
@@ -3378,7 +3696,7 @@ export class ReplyEngineService {
           memory.selectedProductTitle = recommended.product.title;
           memory.availableVariants = recommended.variants.map((v: any) => ({
             id: v.id,
-            name: [...new Set([v.color, v.size].filter(Boolean))].join(', ') || 'standard',
+            name: [...new Set([localizeColor(v.color), v.size].filter(Boolean))].join(', ') || 'standard',
             color: v.color,
             size: v.size,
             imageUrl: v.imageUrl ?? null,
@@ -3596,11 +3914,12 @@ export class ReplyEngineService {
       `3. If you showed options and user asks for recommendation -> recommend with a reason. Don't re-ask.`,
       `4. When presenting products: ALWAYS include the price. Be conversational, not tabular.`,
       `5. NEVER say "contact manager", "зараз перевірю ціну", or reveal you are AI.`,
-      `6. If product not found, say you'll check and follow up.`,
+      `6. If a product (or a specific attribute like color/size/material) was not found, say so plainly and offer to check — do NOT name a product from memory unless its listed variants exactly match what the customer asked for.`,
       `7. Lead the conversation forward.`,
       `8. NEVER greet mid-conversation.`,
       `9. Keep replies SHORT (1-3 sentences max).`,
       `10. NEVER confirm an order, say "замовлення оформлено", "в обробці", "дані отримала", or imply an order exists unless ALL of these are true: selectedProductId exists, checkout is in progress, system is expecting delivery details.`,
+      `11. NEVER invent product variants, colors, prices, sizes, materials, or any product detail that does not appear verbatim in the "Products shown" memory or "Product data from database" section above. If the customer asks for an attribute (color, size, material) that none of the listed products have, say so plainly and offer to check the broader catalog. Examples of correct replies: "У показаних немає чорних — пошукати в каталозі ширше?" / "Серед цих немає вашого розміру." Examples of FORBIDDEN replies: claiming a color, size, or material exists for a product when its listed variants don't include it.`,
       this.buildOrderStateContext(params.memory),
       `\nClassification context:`,
       `Intent: ${params.classification.primaryIntent}`,

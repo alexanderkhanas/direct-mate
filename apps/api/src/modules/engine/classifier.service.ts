@@ -35,6 +35,30 @@ export interface AssistantMemory {
     title: string;
     variants: string[];
     price: string;
+    /** Stable id of the product row. Lets the in-memory narrow path
+     *  reconstruct a ProductSearchResult-shaped object without a DB
+     *  round-trip. Optional — older conversations from before the
+     *  narrow path landed do not carry it; readers must tolerate
+     *  absence and fail-closed (skip narrow → fresh search). */
+    productId?: string;
+    /** Structured variant matrix. Required for in-memory narrowing
+     *  by color / size on slot-fill follow-ups (see
+     *  `narrowLastPresentedInMemory` in reply-engine). The display
+     *  string in `variants` is for prompts and human eyes; this is
+     *  for filtering. */
+    rawVariants?: Array<{
+      id: string;
+      color: string | null;
+      size: string | null;
+      price: number;
+      salePrice: number | null;
+      available: boolean;
+    }>;
+    /** Mirror of `products.search_keywords` for color-in-blob fallback
+     *  during in-memory narrow when variants carry no color axis but
+     *  the product itself is the right color (e.g. single-color
+     *  products that got color-stripped by the n8n normalize step). */
+    searchKeywords?: string | null;
   }>;
   awaitingField?: string;
   selectedCategory?: string;
@@ -159,7 +183,11 @@ function buildClassifyTool(
             properties: {
               product_name: { type: ['string', 'null'] },
               category: categoryField,
-              color: { type: ['string', 'null'] },
+              color: {
+                type: ['string', 'null'],
+                description:
+                  'Color the customer is asking about. Always emit in masculine nominative form regardless of the case the customer used. Ukrainian: emit "чорний" (not "чорну" / "чорної" / "чорному" / "чорні"), "білий" (not "білу" / "білі"), "червоний" (not "червону"). English: emit lowercase canonical form ("black", "white", "red"). This rule applies even when the customer types accusative, genitive, locative, or plural — strip the case ending and return the masculine nominative.',
+              },
               size: { type: ['string', 'null'] },
               skin_type: { type: ['string', 'null'] },
               quantity: { type: ['number', 'null'] },

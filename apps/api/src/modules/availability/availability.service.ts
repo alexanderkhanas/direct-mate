@@ -243,20 +243,20 @@ export class AvailabilityService {
 
     // Priority 0: classifier-extracted category routes through the
     // M2M (categories + product_categories) for an exact match. When
-    // both `category` and keywords are present, narrow the M2M result
-    // set in-memory by case-insensitive title `includes` on each
-    // keyword. When category is the only signal (no keywords), return
-    // the M2M results directly.
+    // search terms are present, push them into the SQL WHERE clause
+    // (against title OR `search_keywords`) BEFORE the LIMIT 10 so the
+    // cap picks the 10 most relevant products instead of an arbitrary
+    // 10 by `last_synced_at`. Without this push-down, on a fresh
+    // catalog sync every product shares the same timestamp and the
+    // top-10 is non-deterministic — color/style queries silently miss
+    // products whose color is in `search_keywords` but who didn't win
+    // the timestamp tie-break.
     if (dto.category) {
-      variants = await this.searchAllByCategoryName(tenantId, dto.category);
-      if (variants.length && searchTerms.length > 0) {
-        const lowerTerms = searchTerms.map((t) => t.toLowerCase());
-        const narrowed = variants.filter((v) => {
-          const title = (v.product?.title ?? '').toLowerCase();
-          return lowerTerms.some((t) => title.includes(t));
-        });
-        if (narrowed.length > 0) variants = narrowed;
-      }
+      variants = await this.searchAllByCategoryName(
+        tenantId,
+        dto.category,
+        searchTerms,
+      );
     }
 
     // Without category and without keywords there's nothing to search.
@@ -301,6 +301,14 @@ export class AvailabilityService {
     // for those products. The naive `.take(N)` on the variant query
     // truncates mid-matrix and the engine then renders incomplete
     // size/color info (e.g., a 5-size product appears with one size).
+    //
+    // Match `term` against EITHER the title OR the AI-enriched
+    // `search_keywords` blob. The blob is populated at sync time by
+    // n8n's Normalize step and carries Ukrainian color synonyms, style
+    // tags, fabric / occasion words that the brand-marketing-voice
+    // title rarely contains. ILIKE on `search_keywords` is backed by a
+    // pg_trgm GIN index (see `1778340000000-ProductsSearchKeywords`)
+    // so the OR'd predicate stays cheap.
     return this.variantRepo
       .createQueryBuilder('v')
       .innerJoinAndSelect('v.product', 'p')
@@ -311,7 +319,10 @@ export class AvailabilityService {
            SELECT pp.id FROM products pp
             WHERE pp.tenant_id = :tenantId
               AND pp.status = 'active'
-              AND pp.title ILIKE :q
+              AND (
+                pp.title ILIKE :q
+                OR pp.search_keywords ILIKE :q
+              )
             ORDER BY pp.last_synced_at DESC NULLS LAST
             LIMIT 10
          )`,
@@ -335,9 +346,46 @@ export class AvailabilityService {
   private async searchAllByCategoryName(
     tenantId: string,
     categoryName: string,
+    searchTerms: string[] = [],
   ): Promise<ProductVariant[]> {
     // Two-step: cap PRODUCTS, then load full variant matrix. See note
     // on searchAllByTitle.
+    //
+    // When `searchTerms` is non-empty, push the keyword OR-match into
+    // the SQL `WHERE` clause BEFORE the `LIMIT 10`. Without this, the
+    // top-10 is picked by `last_synced_at` only — for tenants where
+    // every product was synced in the same instant (e.g. luxespace's
+    // 36 dresses share one timestamp), the cap was returning an
+    // arbitrary 10, and queries like "хочу чорну сукню" surfaced only
+    // a couple of black-tagged dresses out of 18 in the catalog.
+    // Matching against title OR search_keywords lets the LIMIT pick
+    // the 10 most relevant.
+    const params: Record<string, unknown> = { tenantId, cat: categoryName };
+    let termsSql = '';
+    if (searchTerms.length > 0) {
+      const lowered = searchTerms
+        .map((t) => t.trim())
+        .filter((t) => t.length > 0)
+        .map((t) => t.toLowerCase());
+      if (lowered.length > 0) {
+        params.terms = lowered;
+        // AND-narrow: every term must match either title or
+        // search_keywords. Implemented as "no term fails to match"
+        // so we can keep the OR-on-source predicate per term but
+        // require ALL terms across the product. This converts a
+        // generic "сукня чорна" query into "must mention dress AND
+        // must mention black somewhere on the product", which is
+        // what the customer actually meant.
+        termsSql = `
+              AND NOT EXISTS (
+                SELECT 1 FROM unnest(ARRAY[:...terms]::text[]) AS term
+                 WHERE NOT (
+                   lower(pp.title) LIKE '%' || term || '%'
+                   OR lower(coalesce(pp.search_keywords, '')) LIKE '%' || term || '%'
+                 )
+              )`;
+      }
+    }
     return this.variantRepo
       .createQueryBuilder('v')
       .innerJoinAndSelect('v.product', 'p')
@@ -354,11 +402,11 @@ export class AvailabilityService {
                    INNER JOIN categories c ON c.id = pc.category_id
                    WHERE pc.product_id = pp.id AND lower(c.name) = lower(:cat)
                 ) OR lower(pp.category) = lower(:cat)
-              )
+              )${termsSql}
             ORDER BY pp.last_synced_at DESC NULLS LAST
             LIMIT 10
          )`,
-        { tenantId, cat: categoryName },
+        params,
       )
       .getMany();
   }
@@ -467,7 +515,7 @@ export class AvailabilityService {
   // ─── Shared helpers ────────────────────────────────────────────
 
   private groupVariantsByProduct(variants: ProductVariant[]): Array<{
-    product: { id: string; title: string; imageUrl?: string | null };
+    product: { id: string; title: string; imageUrl?: string | null; searchKeywords?: string | null };
     variants: Array<{
       id: string;
       size: string | null;
@@ -479,7 +527,7 @@ export class AvailabilityService {
     }>;
   }> {
     const productMap = new Map<string, {
-      product: { id: string; title: string; imageUrl?: string | null; category?: string | null };
+      product: { id: string; title: string; imageUrl?: string | null; category?: string | null; searchKeywords?: string | null };
       variants: Array<{
         id: string;
         size: string | null;
@@ -495,7 +543,13 @@ export class AvailabilityService {
       const pid = v.product.id;
       if (!productMap.has(pid)) {
         productMap.set(pid, {
-          product: { id: pid, title: v.product.title, imageUrl: null, category: v.product.category ?? null },
+          product: {
+            id: pid,
+            title: v.product.title,
+            imageUrl: null,
+            category: v.product.category ?? null,
+            searchKeywords: v.product.searchKeywords ?? null,
+          },
           variants: [],
         });
       }

@@ -37,6 +37,21 @@ export class Product {
   description!: string | null;
 
   /**
+   * AI-enriched search blob. Populated at sync time by the n8n
+   * normalization step (same OpenAI tool-call that emits the cleaned
+   * title / brand / model). A fat Ukrainian-heavy text mixing color
+   * synonyms (Чорний / Чорна / Чорне / Black), garment terms, and
+   * style / fabric / occasion / fit tags. Indexed with pg_trgm so
+   * ILIKE remains cheap.
+   *
+   * Used by `availabilityService.searchAllByTitle` (OR'd against
+   * `products.title`) so the existing keyword loop transparently
+   * picks up enriched matches without a new search tier.
+   */
+  @Column({ type: 'text', nullable: true })
+  searchKeywords!: string | null;
+
+  /**
    * Legacy single-category text field. Kept for back-compat with
    * existing readers (catalog.listProducts, etc). Sync writes the first
    * input category here as a denormalized convenience; the `categories`

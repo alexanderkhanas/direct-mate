@@ -28,6 +28,15 @@ export interface ImportProductInput {
   gender?: 'male' | 'female' | 'unisex' | 'kids' | null;
   season?: string | null;
   modelName?: string | null;
+  /**
+   * AI-enriched search blob produced at sync time (n8n Normalize step).
+   * Ukrainian-heavy text mixing color synonyms, garment terms, style
+   * tags. Stored verbatim on `products.search_keywords`. Connectors
+   * that don't run normalization (or older n8n versions) omit this
+   * field — the column stays NULL and search falls back to title/
+   * description as before.
+   */
+  searchKeywords?: string | null;
   /** Single image URL (Torgsoft style). Coexists with images[] for legacy connectors. */
   image?: string;
   status?: string;
@@ -72,6 +81,7 @@ const PRODUCT_DIFF_FIELDS = [
   'salePrice',
   'modelName',
   'status',
+  'searchKeywords',
 ] as const;
 
 // Fields on ProductVariant that the sync owns + diffs against incoming.
@@ -533,6 +543,7 @@ export class CatalogService {
       salePrice: this.firstSalePriceFromVariants(p),
       modelName: p.modelName ?? null,
       status: (p.status as ProductStatus) ?? ProductStatus.Active,
+      searchKeywords: p.searchKeywords ?? null,
     };
   }
 

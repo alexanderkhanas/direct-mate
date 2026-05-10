@@ -95,6 +95,9 @@ export declare class ReplyEngineService {
     private extractPreQualifyData;
     private recommendSize;
     private shouldSearchProducts;
+    private isNarrowingSlotFill;
+    private narrowLastPresentedInMemory;
+    private handleNarrowingNoMatch;
     private extractSearchKeywords;
     private narrowByProductName;
     private titlesOverlap;

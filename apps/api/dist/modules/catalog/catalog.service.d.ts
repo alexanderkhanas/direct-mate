@@ -18,6 +18,7 @@ export interface ImportProductInput {
     gender?: 'male' | 'female' | 'unisex' | 'kids' | null;
     season?: string | null;
     modelName?: string | null;
+    searchKeywords?: string | null;
     image?: string;
     status?: string;
     variants: Array<{

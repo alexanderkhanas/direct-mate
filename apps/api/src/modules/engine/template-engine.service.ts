@@ -6,11 +6,25 @@ import { PhraseBlock } from './entities/phrase-block.entity';
 import { FaqItem } from './entities/faq-item.entity';
 import { ClassificationResult, AssistantMemory } from './classifier.service';
 import { formatCurrency, sortSizes } from '../../common/format';
+import { localizeColor, localizeColorList } from './color-i18n';
 
 // ─── Interfaces ──────────────────────────────────────────────────
 
 export interface ProductSearchResult {
-  product: { id: string; title: string; imageUrl?: string | null; category?: string | null };
+  product: {
+    id: string;
+    title: string;
+    imageUrl?: string | null;
+    category?: string | null;
+    /**
+     * AI-enriched search blob from `products.search_keywords`. Mirrors
+     * the column verbatim so engine-layer matchers (e.g. the
+     * color-in-title fallback in `reply-engine.service.ts`) can OR
+     * against the same surface that `availabilityService.searchAllByTitle`
+     * uses, instead of being limited to the title alone.
+     */
+    searchKeywords?: string | null;
+  };
   variants: Array<{
     id: string;
     size: string | null;
@@ -53,6 +67,7 @@ const INTENT_TO_SCENARIO: Record<string, string> = {
   variant_not_available: 'variant_not_available',
   product_not_found: 'product_not_found',
   size_chart_request: 'show_size_chart',
+  narrowing_no_match: 'narrowing_no_match',
 };
 
 // ─── Action-to-scenario fallback mapping ─────────────────────────
@@ -72,6 +87,7 @@ const ACTION_TO_SCENARIO: Record<string, string> = {
   variant_not_available: 'variant_not_available',
   product_not_found: 'product_not_found',
   ask_continue_or_checkout: 'ask_continue_or_checkout',
+  narrowing_no_match: 'narrowing_no_match',
 };
 
 // ─── Service ─────────────────────────────────────────────────────
@@ -576,7 +592,7 @@ export class TemplateEngineService {
     if (classification.entities.category)
       vars['category'] = classification.entities.category;
     if (classification.entities.color)
-      vars['color'] = classification.entities.color;
+      vars['color'] = localizeColor(classification.entities.color);
     if (classification.entities.size)
       vars['size'] = classification.entities.size;
     // Memory fallback: when user provided color/size in a prior turn but
@@ -584,7 +600,7 @@ export class TemplateEngineService {
     // missing axis), the partial-variant templates still need {color}
     // or {size} to render.
     if (!vars['color'] && memory?.selectedColor) {
-      vars['color'] = memory.selectedColor;
+      vars['color'] = localizeColor(memory.selectedColor);
     }
     if (!vars['size'] && memory?.selectedSize) {
       vars['size'] = memory.selectedSize;
@@ -606,7 +622,7 @@ export class TemplateEngineService {
         size?: string | null;
       }>).find((v) => v.id === memory.selectedVariantId);
       if (av) {
-        if (!vars['color'] && av.color) vars['color'] = av.color;
+        if (!vars['color'] && av.color) vars['color'] = localizeColor(av.color);
         if (!vars['size'] && av.size) vars['size'] = av.size;
       }
     }
@@ -665,8 +681,8 @@ export class TemplateEngineService {
       const allVariants = first.variants
         .filter((v) => v.effectiveAvailable > 0)
         .map((v) => suppressSizes
-          ? (v.color || '')
-          : [...new Set([v.color, v.size].filter(Boolean))].join(', '))
+          ? localizeColor(v.color)
+          : [...new Set([localizeColor(v.color), v.size].filter(Boolean))].join(', '))
         .filter(Boolean);
       const uniqueVariants = [...new Set(allVariants)];
       if (uniqueVariants.length > 0) {
@@ -684,7 +700,7 @@ export class TemplateEngineService {
         const inStockVariants = first.variants.filter((v) => v.effectiveAvailable > 0);
         const match = this.matchVariant(userVariantInput, inStockVariants);
         if (match) {
-          const variantDetail = [match.variant.color, match.variant.size].filter(Boolean).join(', ');
+          const variantDetail = [localizeColor(match.variant.color), match.variant.size].filter(Boolean).join(', ');
           vars['variant_name'] = variantDetail;
           vars['matched_variant_id'] = match.variant.id;
           vars['variant_match_confidence'] = String(match.confidence);
@@ -695,7 +711,7 @@ export class TemplateEngineService {
         // Single variant product — auto-select
         const only = first.variants[0];
         if (only.effectiveAvailable > 0) {
-          const variantDetail = [only.color, only.size].filter(Boolean).join(', ');
+          const variantDetail = [localizeColor(only.color), only.size].filter(Boolean).join(', ');
           if (variantDetail) vars['variant_name'] = variantDetail;
           vars['matched_variant_id'] = only.id;
         }
@@ -711,7 +727,7 @@ export class TemplateEngineService {
           // Pre-qualify recommended a size — show colors only since size is fixed.
           const colors = [...new Set(inStockVars.map((v) => v.color).filter(Boolean))] as string[];
           vars['variant_type'] = 'Відтінки';
-          vars['variant_list'] = colors.join(', ');
+          vars['variant_list'] = localizeColorList(colors);
         } else if (memory?.variantStep === 'color') {
           // Two-step color step: group available sizes per color so the user
           // sees what's in stock for each color before picking.
@@ -733,7 +749,7 @@ export class TemplateEngineService {
           }
           vars['variant_type'] = 'Відтінки';
           vars['variant_list'] = Array.from(colorGroups.entries())
-            .map(([color, sizes]) => sizes.length ? `${color} (${sortSizes(sizes).join(', ')})` : color)
+            .map(([color, sizes]) => sizes.length ? `${localizeColor(color)} (${sortSizes(sizes).join(', ')})` : localizeColor(color))
             .join(', ');
         } else if (memory?.variantStep === 'size') {
           // Show only sizes filtered by selected color
@@ -751,7 +767,7 @@ export class TemplateEngineService {
           const hasSizes = inStockVars.some(v => v.size);
 
           if (hasColors && hasSizes) {
-            // Group by color: "White: S, M, L, XL\nBlack: S, M, L, XL"
+            // Group by color: "Чорний: S, M, L, XL\nБілий: S, M, L, XL"
             const colorGroups = new Map<string, string[]>();
             for (const v of inStockVars) {
               if (v.color) {
@@ -762,11 +778,11 @@ export class TemplateEngineService {
               }
             }
             vars['variant_list'] = Array.from(colorGroups.entries())
-              .map(([color, sizes]) => sizes.length ? `${color}: ${sortSizes(sizes).join(', ')}` : color)
+              .map(([color, sizes]) => sizes.length ? `${localizeColor(color)}: ${sortSizes(sizes).join(', ')}` : localizeColor(color))
               .join('\n');
           } else {
             const variantNames = inStockVars
-              .map(v => [...new Set([v.color, v.size].filter(Boolean))].join(', '))
+              .map(v => [...new Set([localizeColor(v.color), v.size].filter(Boolean))].join(', '))
               .filter(Boolean);
             vars['variant_list'] = [...new Set(variantNames)].join(', ');
           }
@@ -778,8 +794,8 @@ export class TemplateEngineService {
     const suppressSizesFromMemory = !!memory?.recommendedSize;
     if (!vars['variant_list'] && Array.isArray(memory?.availableVariants) && memory.availableVariants.length > 0) {
       if (suppressSizesFromMemory) {
-        const colors = [...new Set(memory.availableVariants.map((v: any) => v.color).filter(Boolean))];
-        vars['variant_list'] = colors.join(', ');
+        const colors = [...new Set(memory.availableVariants.map((v: any) => v.color).filter(Boolean))] as string[];
+        vars['variant_list'] = localizeColorList(colors);
         vars['variant_type'] = 'Відтінки';
       } else if (memory?.variantStep === 'color') {
         let candidates = memory.availableVariants;
@@ -797,7 +813,7 @@ export class TemplateEngineService {
           }
         }
         vars['variant_list'] = Array.from(colorGroups.entries())
-          .map(([color, sizes]) => sizes.length ? `${color} (${sortSizes(sizes).join(', ')})` : color)
+          .map(([color, sizes]) => sizes.length ? `${localizeColor(color)} (${sortSizes(sizes).join(', ')})` : localizeColor(color))
           .join(', ');
         vars['variant_type'] = 'Відтінки';
       } else if (memory?.variantStep === 'size') {
@@ -809,7 +825,16 @@ export class TemplateEngineService {
         vars['variant_list'] = sortSizes(sizes).join(', ');
         vars['variant_type'] = 'Розміри';
       } else {
-        vars['variant_list'] = [...new Set(memory.availableVariants.map((v: any) => v.name))].join(', ');
+        // memory.availableVariants[i].name is a pre-built "Color, Size"
+        // string (see reply-engine.service.ts mappers). Re-tokenize so
+        // we can localize the color half before re-emitting.
+        vars['variant_list'] = [...new Set(
+          (memory.availableVariants as Array<{ color?: string | null; size?: string | null; name: string }>)
+            .map((v) => {
+              const detail = [...new Set([localizeColor(v.color), v.size].filter(Boolean))].join(', ');
+              return detail || v.name;
+            })
+        )].join(', ');
         if (!vars['variant_type']) {
           vars['variant_type'] = this.detectVariantType(
             memory.availableVariants.map((v: any) => ({ color: v.color, size: v.size })) as any,
@@ -935,8 +960,8 @@ export class TemplateEngineService {
       if (!multiProduct && displayVariants.length === 1) {
         const v = displayVariants[0];
         const detail = suppressSizes
-          ? (v.color || '')
-          : [...new Set([v.color, v.size].filter(Boolean))].join(', ');
+          ? localizeColor(v.color)
+          : [...new Set([localizeColor(v.color), v.size].filter(Boolean))].join(', ');
         if (!samePriceForAll) {
           productLine += detail ? ` (${detail}) — ${v.price} ${formatCurrency(v.currency)}` : ` — ${v.price} ${formatCurrency(v.currency)}`;
         } else if (detail) {
@@ -948,9 +973,9 @@ export class TemplateEngineService {
 
         if (suppressSizes) {
           // Only show colors when sizes are pre-determined
-          const uniqueColors = [...new Set(displayVariants.map((v) => v.color).filter(Boolean))];
+          const uniqueColors = [...new Set(displayVariants.map((v) => v.color).filter(Boolean))] as string[];
           if (uniqueColors.length > 0) {
-            lines.push(`Відтінки: ${uniqueColors.join(', ')}`);
+            lines.push(`Відтінки: ${localizeColorList(uniqueColors)}`);
           }
         } else {
           // Check if variants have BOTH color and size populated
@@ -976,20 +1001,20 @@ export class TemplateEngineService {
               Array.from(colorGroups.values()).map((sizes) => [...sizes].sort().join('|')),
             );
             if (sizeSignatures.size === 1) {
-              const colors = Array.from(colorGroups.keys()).join(', ');
+              const colors = localizeColorList(Array.from(colorGroups.keys()));
               const sizes = sortSizes(Array.from(colorGroups.values())[0] ?? []).join(', ');
               lines.push(`Відтінки: ${colors}`);
               if (sizes) lines.push(`Розміри: ${sizes}`);
             } else {
               const grouped = Array.from(colorGroups.entries())
-                .map(([color, sizes]) => sizes.length ? `${color} (${sortSizes(sizes).join(', ')})` : color)
+                .map(([color, sizes]) => sizes.length ? `${localizeColor(color)} (${sortSizes(sizes).join(', ')})` : localizeColor(color))
                 .join(', ');
               lines.push(`Відтінки: ${grouped}`);
             }
           } else {
             // Single dimension — use detected type label
             const variantNames = displayVariants
-              .map((v) => [...new Set([v.color, v.size].filter(Boolean))].join(', '))
+              .map((v) => [...new Set([localizeColor(v.color), v.size].filter(Boolean))].join(', '))
               .filter(Boolean);
             const uniqueVariantNames = [...new Set(variantNames)];
 

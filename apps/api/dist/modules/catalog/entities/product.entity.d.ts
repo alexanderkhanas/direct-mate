@@ -9,6 +9,7 @@ export declare class Product {
     sku: string | null;
     title: string;
     description: string | null;
+    searchKeywords: string | null;
     category: string | null;
     brand: string | null;
     material: string | null;
