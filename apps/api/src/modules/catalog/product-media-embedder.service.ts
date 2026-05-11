@@ -5,6 +5,11 @@ import { Repository } from 'typeorm';
 import { ProductMedia } from './entities/product-media.entity';
 import { ImageEmbeddingService } from './image-embedding.service';
 
+// Bytes → rounded MB for log readability. Used in instrumentation so a
+// crash log shows which embedding (#5 vs #500) and what RSS trajectory
+// preceded it.
+const toMB = (bytes: number): number => Math.round(bytes / 1024 / 1024);
+
 /**
  * Background worker that fills in missing `product_media.clip_embedding`
  * rows. Decoupled from the catalog-import hot path so a slow or
@@ -87,23 +92,63 @@ export class ProductMediaEmbedderService implements OnModuleInit, OnModuleDestro
       return;
     }
     this.running = true;
+    const tickStartedAt = Date.now();
+    const startRss = process.memoryUsage().rss;
+    let processed = 0;
+    let embedded = 0;
+    let failed = 0;
+    let pending: ProductMedia[] = [];
     try {
-      const pending = await this.fetchPending();
+      pending = await this.fetchPending();
       if (pending.length === 0) return;
-      let embedded = 0;
-      let failed = 0;
-      for (const row of pending) {
-        const ok = await this.embedRow(row);
-        if (ok) embedded++;
-        else failed++;
-      }
       this.logger.log(
-        `embedder tick: embedded=${embedded} failed=${failed} batch=${pending.length}`,
+        `tick start: ${pending.length} rows, rss=${toMB(startRss)}MB`,
       );
+      for (const row of pending) {
+        const beforeRss = process.memoryUsage().rss;
+        const beforeMs = Date.now();
+        try {
+          const ok = await this.embedRow(row);
+          const afterRss = process.memoryUsage().rss;
+          processed++;
+          if (ok) embedded++;
+          else failed++;
+          this.logger.log(
+            `embed #${processed}/${pending.length} ${ok ? 'ok' : 'skip'} ` +
+              `row=${row.id} ` +
+              `dur=${Date.now() - beforeMs}ms ` +
+              `rss=${toMB(afterRss)}MB ` +
+              `delta=${toMB(afterRss - beforeRss)}MB`,
+          );
+        } catch (err) {
+          // embedRow has its own try/catch and never rejects in
+          // practice; this is a belt-and-braces last line so a
+          // synchronous throw still surfaces the failing row #.
+          this.logger.error(
+            `embed FAIL #${processed + 1}/${pending.length} row=${row.id}: ${err}`,
+          );
+          throw err;
+        }
+      }
     } catch (err) {
       // Defensive — repo errors shouldn't crash the worker loop.
       this.logger.error(`embedder tick failed: ${err}`);
     } finally {
+      const endRss = process.memoryUsage().rss;
+      this.logger.log(
+        `tick end: processed=${processed}/${pending.length} ` +
+          `embedded=${embedded} failed=${failed} ` +
+          `dur=${Date.now() - tickStartedAt}ms ` +
+          `rss=${toMB(endRss)}MB rss_delta=${toMB(endRss - startRss)}MB`,
+      );
+      if (global.gc) {
+        const beforeGcRss = process.memoryUsage().rss;
+        global.gc();
+        const afterGcRss = process.memoryUsage().rss;
+        this.logger.log(
+          `gc: freed=${toMB(beforeGcRss - afterGcRss)}MB rss=${toMB(afterGcRss)}MB`,
+        );
+      }
       this.running = false;
     }
   }

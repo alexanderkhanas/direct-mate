@@ -46,4 +46,10 @@ COPY --from=builder /app/apps/api/test-assets ./apps/api/test-assets
 ENV NODE_ENV=production
 EXPOSE 3000
 WORKDIR /app/apps/api
-CMD ["node", "dist/main"]
+# --expose-gc lets the CLIP embedder worker (product-media-embedder.service)
+# call global.gc() between ticks, giving V8 an explicit collection hint so
+# native handles from onnxruntime-node + sharp don't accumulate across
+# embeddings. --max-old-space-size=2048 caps V8 heap so heap pressure
+# triggers earlier and visibly rather than hiding inside an oversized
+# default budget. Cheap insurance, no measured regression.
+CMD ["node", "--expose-gc", "--max-old-space-size=2048", "dist/main"]
