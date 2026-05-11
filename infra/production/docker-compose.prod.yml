@@ -65,6 +65,9 @@ services:
       CLIP_ENABLED: ${CLIP_ENABLED:-true}
       REPLICATE_API_TOKEN: ${REPLICATE_API_TOKEN}
       REPLICATE_CLIP_MODEL_VERSION: ${REPLICATE_CLIP_MODEL_VERSION}
+      # Default 10 rows per tick. Override via .env (e.g. set to 1)
+      # when Replicate throttles us to a low burst tier.
+      CLIP_BACKFILL_BATCH: ${CLIP_BACKFILL_BATCH:-10}
     volumes:
       - uploads:/app/apps/api/uploads
       - logs:/app/apps/api/logs
