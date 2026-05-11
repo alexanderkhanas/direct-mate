@@ -89,8 +89,9 @@ export const PILOT_STORE = 'df1ab482-b328-4e8d-9d8c-40f8a426cf66';
 export const CLOTHES_STORE = 'f42abe74-54af-468f-8912-39f1c19106af';
 // luxespace — luxury multi-brand reseller (Bottega Veneta, Polo Ralph
 // Lauren, Nanushka, Alexander McQueen, …). Catalog imported from
-// Torgsoft via FTP. UUID is dev-local; on a fresh DB look it up with:
-//   SELECT id FROM tenants WHERE slug = 'luxe-space';
-export const LUXESPACE = '83042b63-f95e-4945-9017-65b948b4fe22';
+// Torgsoft via FTP. Slug-based (not UUID) so the same scenario file
+// works across envs — dev luxe-space and prod luxe-space have
+// different UUIDs. `SimulatorService.resolveTenantId` accepts both.
+export const LUXESPACE = 'luxe-space';
 export const DEMO_WOMEN_CLOTHES_SLUG = 'demo-women-clothes';
 export const DEMO_COSMETICS_SLUG = 'demo-cosmetics';
