@@ -1,5 +1,12 @@
 # Stage 1: Build
-FROM node:20-alpine AS builder
+# Debian slim — must match the runtime libc. Native node modules
+# (bcrypt, onnxruntime, etc.) are compiled / unpacked during `npm ci`
+# against the build environment's libc, then COPY'd into stage 2 as-is.
+# Mixing Alpine builder + Debian runtime ships musl-linked .node files
+# into a glibc runtime → ERR_DLOPEN_FAILED on every native module
+# require. Keep both stages on slim so the .node binaries are
+# glibc-linked throughout.
+FROM node:20-slim AS builder
 WORKDIR /app
 
 COPY package*.json .npmrc ./
