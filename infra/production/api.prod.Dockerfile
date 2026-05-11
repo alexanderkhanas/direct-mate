@@ -20,6 +20,18 @@ RUN cd apps/api && npm run build
 FROM node:20-alpine
 WORKDIR /app
 
+# Glibc compatibility shim. `onnxruntime-node` (pulled in transitively by
+# `@xenova/transformers` for CLIP image embeddings — see
+# `image-embedding.service.ts`) ships prebuilt native binaries linked
+# against glibc / ld-linux-x86-64.so.2. Alpine's musl libc lacks that
+# loader, so any `require('onnxruntime-node')` throws ERR_DLOPEN_FAILED.
+# The ImageEmbeddingService catches the error at module-init, but the
+# dlopen failure also bubbles uncaught through the dynamic-import chain
+# and kills the Node process (502 across the API). `libc6-compat`
+# provides the missing loader + glibc symlinks so onnxruntime loads
+# cleanly. Stays in the runtime stage only — keeps the builder lean.
+RUN apk add --no-cache libc6-compat
+
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages/shared ./packages/shared
 COPY --from=builder /app/apps/api/dist ./apps/api/dist
