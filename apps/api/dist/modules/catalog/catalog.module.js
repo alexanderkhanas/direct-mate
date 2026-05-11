@@ -18,6 +18,7 @@ const catalog_service_1 = require("./catalog.service");
 const catalog_controller_1 = require("./catalog.controller");
 const image_hash_service_1 = require("./image-hash.service");
 const image_embedding_service_1 = require("./image-embedding.service");
+const product_media_embedder_service_1 = require("./product-media-embedder.service");
 let CatalogModule = class CatalogModule {
 };
 exports.CatalogModule = CatalogModule;
@@ -33,7 +34,12 @@ exports.CatalogModule = CatalogModule = __decorate([
             ]),
         ],
         controllers: [catalog_controller_1.CatalogController],
-        providers: [catalog_service_1.CatalogService, image_hash_service_1.ImageHashService, image_embedding_service_1.ImageEmbeddingService],
+        providers: [
+            catalog_service_1.CatalogService,
+            image_hash_service_1.ImageHashService,
+            image_embedding_service_1.ImageEmbeddingService,
+            product_media_embedder_service_1.ProductMediaEmbedderService,
+        ],
         exports: [
             catalog_service_1.CatalogService,
             image_hash_service_1.ImageHashService,

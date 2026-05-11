@@ -53,6 +53,14 @@ interface TransformersModule {
   RawImage: {
     fromURL: (url: string) => Promise<unknown>;
   };
+  env: {
+    backends: {
+      onnx: {
+        executionProviders: string[];
+        wasm?: { numThreads?: number; simd?: boolean };
+      };
+    };
+  };
 }
 
 @Injectable()
@@ -86,11 +94,26 @@ export class ImageEmbeddingService implements OnModuleInit {
       this.transformers = await dynamicImport<TransformersModule>(
         '@xenova/transformers',
       );
+      // Force the WASM execution provider — the default CPU EP in
+      // onnxruntime-node segfaults under concurrent inference
+      // (observed in prod: SIGSEGV exit 139 + `free(): invalid size`
+      // glibc heap corruption). WASM runs the model inside a sandbox,
+      // ~2-3× slower per inference but immune to native crashes.
+      // Order in the array IS the priority — ['wasm'] means CPU is
+      // never attempted.
+      this.transformers.env.backends.onnx.executionProviders = ['wasm'];
+      // Single-threaded WASM keeps things deterministic + low-memory.
+      // CLIP-ViT-base inference doesn't benefit much from extra
+      // threads at this batch size (single image at a time via the
+      // serialized embed queue).
+      if (this.transformers.env.backends.onnx.wasm) {
+        this.transformers.env.backends.onnx.wasm.numThreads = 1;
+      }
       this.extractor = await this.transformers.pipeline(
         'image-feature-extraction',
         'Xenova/clip-vit-base-patch32',
       );
-      this.logger.log('CLIP image embedding model loaded');
+      this.logger.log('CLIP image embedding model loaded (WASM EP)');
     } catch (err) {
       this.logger.error(
         `Failed to load CLIP model — embeddings will be skipped: ${err}`,

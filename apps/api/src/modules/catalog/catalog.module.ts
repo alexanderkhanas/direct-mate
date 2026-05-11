@@ -9,6 +9,7 @@ import { CatalogService } from './catalog.service';
 import { CatalogController } from './catalog.controller';
 import { ImageHashService } from './image-hash.service';
 import { ImageEmbeddingService } from './image-embedding.service';
+import { ProductMediaEmbedderService } from './product-media-embedder.service';
 
 @Module({
   imports: [
@@ -21,7 +22,12 @@ import { ImageEmbeddingService } from './image-embedding.service';
     ]),
   ],
   controllers: [CatalogController],
-  providers: [CatalogService, ImageHashService, ImageEmbeddingService],
+  providers: [
+    CatalogService,
+    ImageHashService,
+    ImageEmbeddingService,
+    ProductMediaEmbedderService,
+  ],
   exports: [
     CatalogService,
     ImageHashService,

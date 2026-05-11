@@ -7,6 +7,7 @@ export declare class ProductMedia {
     sortOrder: number;
     phash: string | null;
     clipEmbedding: Buffer | null;
+    embeddingAttemptedAt: Date | null;
     createdAt: Date;
     product: Product;
 }

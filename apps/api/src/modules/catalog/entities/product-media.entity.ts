@@ -35,9 +35,18 @@ export class ProductMedia {
   // 2048 bytes), L2-normalized at write time so cosine similarity is a
   // dot product. Used by Stage 2 of customer-photo matching to retrieve
   // semantically-similar candidates before GPT vision verification.
-  // NULL when embedding failed or for rows synced before CLIP rollout.
+  // NULL when embedding failed or for rows synced before CLIP rollout —
+  // the background `ProductMediaEmbedder` worker fills these in
+  // asynchronously after the catalog-import returns.
   @Column({ type: 'bytea', nullable: true })
   clipEmbedding!: Buffer | null;
+
+  // Last attempt at computing `clipEmbedding`. NULL = never tried
+  // (eligible immediately). Non-NULL with NULL `clipEmbedding` = the
+  // try failed; the worker honours 15-min backoff before re-trying so
+  // a permanently-broken image URL doesn't dominate the queue.
+  @Column({ type: 'timestamptz', nullable: true })
+  embeddingAttemptedAt!: Date | null;
 
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt!: Date;

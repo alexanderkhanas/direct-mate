@@ -23,7 +23,6 @@ const product_media_entity_1 = require("./entities/product-media.entity");
 const stock_balance_entity_1 = require("./entities/stock-balance.entity");
 const category_entity_1 = require("./entities/category.entity");
 const image_hash_service_1 = require("./image-hash.service");
-const image_embedding_service_1 = require("./image-embedding.service");
 const shared_1 = require("@direct-mate/shared");
 const PRODUCT_DIFF_FIELDS = [
     'title',
@@ -48,7 +47,7 @@ const VARIANT_DIFF_FIELDS = [
     'currency',
 ];
 let CatalogService = CatalogService_1 = class CatalogService {
-    constructor(productRepo, variantRepo, stockRepo, mediaRepo, categoryRepo, dataSource, imageHashService, imageEmbeddingService) {
+    constructor(productRepo, variantRepo, stockRepo, mediaRepo, categoryRepo, dataSource, imageHashService) {
         this.productRepo = productRepo;
         this.variantRepo = variantRepo;
         this.stockRepo = stockRepo;
@@ -56,7 +55,6 @@ let CatalogService = CatalogService_1 = class CatalogService {
         this.categoryRepo = categoryRepo;
         this.dataSource = dataSource;
         this.imageHashService = imageHashService;
-        this.imageEmbeddingService = imageEmbeddingService;
         this.logger = new common_1.Logger(CatalogService_1.name);
     }
     async searchProducts(tenantId, dto) {
@@ -246,19 +244,13 @@ let CatalogService = CatalogService_1 = class CatalogService {
                 if (p.images !== undefined) {
                     await mgr.delete(product_media_entity_1.ProductMedia, { productId });
                     const rows = this.collectImageRows(p);
-                    const [phashes, embeddings] = await Promise.all([
-                        Promise.all(rows.map((img) => this.imageHashService.hashFromUrl(img.url))),
-                        Promise.all(rows.map((img) => this.imageEmbeddingService.embedFromUrl(img.url))),
-                    ]);
+                    const phashes = await Promise.all(rows.map((img) => this.imageHashService.hashFromUrl(img.url)));
                     for (let i = 0; i < rows.length; i++) {
-                        const emb = embeddings[i];
                         await mgr.save(product_media_entity_1.ProductMedia, mgr.create(product_media_entity_1.ProductMedia, {
                             productId,
                             ...rows[i],
                             phash: phashes[i],
-                            clipEmbedding: emb
-                                ? this.imageEmbeddingService.serializeEmbedding(emb)
-                                : null,
+                            clipEmbedding: null,
                         }));
                     }
                 }
@@ -537,7 +529,6 @@ exports.CatalogService = CatalogService = CatalogService_1 = __decorate([
         typeorm_2.Repository,
         typeorm_2.Repository,
         typeorm_2.DataSource,
-        image_hash_service_1.ImageHashService,
-        image_embedding_service_1.ImageEmbeddingService])
+        image_hash_service_1.ImageHashService])
 ], CatalogService);
 //# sourceMappingURL=catalog.service.js.map

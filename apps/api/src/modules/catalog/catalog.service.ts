@@ -8,7 +8,6 @@ import { StockBalance } from './entities/stock-balance.entity';
 import { Category } from './entities/category.entity';
 import { SearchProductsDto } from './dto/search-products.dto';
 import { ImageHashService } from './image-hash.service';
-import { ImageEmbeddingService } from './image-embedding.service';
 import { ProductStatus } from '@direct-mate/shared';
 
 /**
@@ -112,7 +111,6 @@ export class CatalogService {
     private readonly categoryRepo: Repository<Category>,
     private readonly dataSource: DataSource,
     private readonly imageHashService: ImageHashService,
-    private readonly imageEmbeddingService: ImageEmbeddingService,
   ) {}
 
   async searchProducts(tenantId: string, dto: SearchProductsDto) {
@@ -394,38 +392,30 @@ export class CatalogService {
         // `images` field (`undefined`) as "no signal" so legacy
         // connectors that don't pipe images through don't get wiped.
         //
-        // Each new row gets a 64-bit dHash + a 512-dim CLIP embedding
-        // computed inline. pHash powers the deterministic exact-match
-        // shortcut (Stage 1 of customer-photo lookup); CLIP embedding
-        // powers semantic candidate retrieval (Stage 2). A failed
-        // download / decode for either path stores NULL on that column —
-        // the row still works as a catalog image, just isn't matchable
-        // along the failed dimension. We compute both in parallel so
-        // a slow CLIP pass doesn't compound a slow pHash pass.
+        // pHash is computed inline (fast, no native crash class) and
+        // powers Stage 1 of customer-photo lookup. CLIP embeddings
+        // (`clip_embedding`) are LEFT NULL here on purpose — the
+        // `ProductMediaEmbedder` background worker picks pending rows
+        // up and fills them in asynchronously. CLIP previously ran
+        // inline via `Promise.all(rows.map(embedFromUrl))`; that
+        // pattern hammered the same onnxruntime session with
+        // concurrent inference and SIGSEGV'd the api process under
+        // catalog-import load. Decoupling means a slow / unstable
+        // CLIP can never block or crash the sync hot path.
         if (p.images !== undefined) {
           await mgr.delete(ProductMedia, { productId });
           const rows = this.collectImageRows(p);
-          const [phashes, embeddings] = await Promise.all([
-            Promise.all(
-              rows.map((img) => this.imageHashService.hashFromUrl(img.url)),
-            ),
-            Promise.all(
-              rows.map((img) =>
-                this.imageEmbeddingService.embedFromUrl(img.url),
-              ),
-            ),
-          ]);
+          const phashes = await Promise.all(
+            rows.map((img) => this.imageHashService.hashFromUrl(img.url)),
+          );
           for (let i = 0; i < rows.length; i++) {
-            const emb = embeddings[i];
             await mgr.save(
               ProductMedia,
               mgr.create(ProductMedia, {
                 productId,
                 ...rows[i],
                 phash: phashes[i],
-                clipEmbedding: emb
-                  ? this.imageEmbeddingService.serializeEmbedding(emb)
-                  : null,
+                clipEmbedding: null,
               }),
             );
           }
