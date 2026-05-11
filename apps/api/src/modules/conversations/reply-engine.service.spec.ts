@@ -1,6 +1,7 @@
-import { ReplyEngineService } from './reply-engine.service';
+import { ReplyEngineService, markRepliedOnResult } from './reply-engine.service';
 import { TemplateEngineService } from '../engine/template-engine.service';
 import { ClassificationResult, AssistantMemory } from '../engine/classifier.service';
+import { ReplyDecision } from '@direct-mate/shared';
 
 /**
  * Unit tests for the mid-flow size-help branch + secondary
@@ -788,5 +789,125 @@ describe('ReplyEngineService.narrowByProductName — productName-aware search na
     // "zara" matches both → narrowed.length === productData.length (no actual narrowing)
     const result = callNarrow(data, 'Zara');
     expect(result).toHaveLength(2);
+  });
+});
+
+/**
+ * markRepliedOnResult invariant — every reply or handoff emission must
+ * stamp memory.lastReplyAt and propagate it via stateUpdate.contextJson.
+ * This guards the 6h dormancy welcome gate against future code paths
+ * that bypass `withTrace` (which is the centralized chokepoint).
+ */
+describe('markRepliedOnResult', () => {
+  const FIXED_NOW = new Date('2026-05-10T15:00:00.000Z');
+  const fixedNow = () => FIXED_NOW;
+
+  function makeReplyResult(overrides: any = {}) {
+    return {
+      decision: ReplyDecision.Reply,
+      reply: { text: 'hello', sendNow: true },
+      handoff: { required: false, reason: null },
+      stateUpdate: null as any,
+      ...overrides,
+    };
+  }
+
+  function makeHandoffResult(overrides: any = {}) {
+    return {
+      decision: ReplyDecision.Handoff,
+      reply: null,
+      handoff: { required: true, reason: 'manual' },
+      stateUpdate: null as any,
+      ...overrides,
+    };
+  }
+
+  function makeNoOpResult(overrides: any = {}) {
+    return {
+      decision: ReplyDecision.Reply,
+      reply: { text: null as any, sendNow: false },
+      handoff: { required: false, reason: null },
+      stateUpdate: null as any,
+      ...overrides,
+    };
+  }
+
+  it('sets lastReplyAt on a reply with text', () => {
+    const memory: AssistantMemory = {};
+    const result = makeReplyResult();
+    markRepliedOnResult(memory, result, fixedNow);
+    expect(memory.lastReplyAt).toBe(FIXED_NOW.toISOString());
+    expect((result.stateUpdate as any).contextJson.lastReplyAt).toBe(
+      FIXED_NOW.toISOString(),
+    );
+  });
+
+  it('sets lastReplyAt on a handoff (no reply text)', () => {
+    const memory: AssistantMemory = {};
+    const result = makeHandoffResult();
+    markRepliedOnResult(memory, result, fixedNow);
+    expect(memory.lastReplyAt).toBe(FIXED_NOW.toISOString());
+    expect((result.stateUpdate as any).contextJson.lastReplyAt).toBe(
+      FIXED_NOW.toISOString(),
+    );
+  });
+
+  it('does NOT set lastReplyAt on a no-op (no text + no handoff)', () => {
+    const memory: AssistantMemory = {};
+    const result = makeNoOpResult();
+    markRepliedOnResult(memory, result, fixedNow);
+    expect(memory.lastReplyAt).toBeUndefined();
+    expect(result.stateUpdate).toBeNull();
+  });
+
+  it('preserves prior memory fields when patching contextJson', () => {
+    const memory: AssistantMemory = {
+      welcomedAt: '2026-05-10T08:00:00.000Z',
+      selectedProductId: 'p-123',
+    };
+    const result = makeReplyResult();
+    markRepliedOnResult(memory, result, fixedNow);
+    const ctxJson = (result.stateUpdate as any).contextJson;
+    expect(ctxJson.welcomedAt).toBe('2026-05-10T08:00:00.000Z');
+    expect(ctxJson.selectedProductId).toBe('p-123');
+    expect(ctxJson.lastReplyAt).toBe(FIXED_NOW.toISOString());
+  });
+
+  it('merges into existing stateUpdate without losing other fields', () => {
+    const memory: AssistantMemory = {};
+    const result = makeReplyResult({
+      stateUpdate: { selectedVariantId: 'v-1' as any },
+    });
+    markRepliedOnResult(memory, result, fixedNow);
+    expect((result.stateUpdate as any).selectedVariantId).toBe('v-1');
+    expect((result.stateUpdate as any).contextJson.lastReplyAt).toBe(
+      FIXED_NOW.toISOString(),
+    );
+  });
+
+  it('handles multiple result shapes encountered in process()', () => {
+    // Mirrors every reply-emitting decision the engine returns: Reply,
+    // Handoff, CreateDraftOrder. None should slip through.
+    const cases: Array<{ name: string; result: any }> = [
+      { name: 'Reply', result: makeReplyResult() },
+      { name: 'Handoff', result: makeHandoffResult() },
+      {
+        name: 'CreateDraftOrder',
+        result: {
+          decision: ReplyDecision.CreateDraftOrder,
+          reply: { text: 'order created', sendNow: true },
+          handoff: { required: false, reason: null },
+          stateUpdate: null,
+        },
+      },
+    ];
+    for (const c of cases) {
+      const memory: AssistantMemory = {};
+      markRepliedOnResult(memory, c.result, fixedNow);
+      // Per-case label via stringified case name in the failure message.
+      if (memory.lastReplyAt !== FIXED_NOW.toISOString()) {
+        throw new Error(`${c.name}: lastReplyAt unset (expected ${FIXED_NOW.toISOString()})`);
+      }
+    }
   });
 });

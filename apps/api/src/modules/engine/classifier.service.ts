@@ -116,6 +116,13 @@ export interface AssistantMemory {
    *  resolves greeting intent, which renders the natural greeting reply on
    *  its own). Once set, the welcome doesn't re-fire. */
   welcomedAt?: string;
+  /** ISO timestamp of the most recent OUTBOUND bot reply on this
+   *  conversation. Used by the welcome gate to re-fire the AI
+   *  introduction after 6h of bot silence. Updated centrally in
+   *  `reply-engine.service.ts` `withTrace` for every reply-emitting
+   *  return. Optional: legacy conversations don't have it, treated as
+   *  "not dormant" until the first new reply lands. */
+  lastReplyAt?: string;
 }
 
 // ─── OpenAI tool definition ──────────────────────────────────────

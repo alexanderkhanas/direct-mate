@@ -27,6 +27,14 @@ export interface SimulatorTurnLog {
   replyText: string | null;
   prefixReply?: string | null;
   secondaryReply?: string | null;
+  /** Follow-up bot bubbles emitted alongside the primary `replyText`.
+   *  Production Instagram sends each as a separate DM (see
+   *  `instagram.service.ts:732-749`). The welcome gate promotes the
+   *  AI introduction to primary and demotes the contextual reply to
+   *  `extraReplies[0]`; the admin simulator must render these as
+   *  additional bot bubbles or it looks like the contextual reply
+   *  was lost. */
+  extraReplies?: Array<{ text: string; imageUrls?: string[] }>;
   imageUrls?: string[];
   state: Record<string, unknown>;
   assertions: Array<{ field: string; pass: boolean; expected: unknown; actual: unknown; message?: string }>;
@@ -195,6 +203,10 @@ export class SimulatorService {
         replyText: result.reply?.text ?? null,
         prefixReply: null,
         secondaryReply: null,
+        extraReplies: (result.extraReplies ?? []).map((r) => ({
+          text: r.text,
+          imageUrls: r.imageUrls,
+        })),
         imageUrls: result.reply?.imageUrls,
         state: {
           selectionState: memory.selectionState,

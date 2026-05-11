@@ -105,4 +105,13 @@ export const BASE_TEMPLATES: TemplateSpec[] = [
     priority: 90,
     active: true,
   },
+  {
+    scenario: 'conversation_start_greeting',
+    stage: 'greeting',
+    blocks: ['Вітаю, з вами АІ асистент @directmate.app'],
+    requiredVariables: [],
+    toneTags: ['warm'],
+    priority: 90,
+    active: true,
+  },
 ];

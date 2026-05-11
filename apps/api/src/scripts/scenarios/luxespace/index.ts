@@ -222,6 +222,81 @@ export const LUXESPACE_SCENARIOS: Record<string, SimulatorScenario> = {
     ],
   },
 
+  // ─── AI-introduction welcome (first-turn + dormancy) ────────────
+  luxespace_first_turn_intro_non_greeting: {
+    name: 'luxespace — First-turn AI intro on non-greeting',
+    description:
+      'New conversation + non-greeting opener → engine prepends the AI ' +
+      "introduction (\"Вітаю, з вами АІ асистент @directmate.app\") AS the " +
+      'primary reply, with the contextual show_products reply demoted to ' +
+      'extraReplies[0]. Tenants without a `conversation_start_greeting` ' +
+      'template (luxespace today) receive the hardcoded fallback string.',
+    tenantId: LUXESPACE,
+    flowConfigOverride: FLOW_OVERRIDE,
+    turns: [
+      {
+        message: 'хочу сукню',
+        expect: {
+          decision: 'reply',
+          replyContains: ['АІ асистент', '@directmate.app'],
+          extraReplyCount: 1,
+          note:
+            'Primary reply is the intro; extraReplies[0] carries the dress ' +
+            'list. lastReplyAt and welcomedAt both set after this turn.',
+        },
+      },
+    ],
+  },
+
+  luxespace_first_turn_intro_greeting_skipped: {
+    name: 'luxespace — First-turn greeting skips AI intro',
+    description:
+      'When the customer opens with "Привіт", the existing `greeting` ' +
+      'template fires and the AI intro is skipped (no double-greet). ' +
+      'Trace contains "welcome skipped: greeting intent".',
+    tenantId: LUXESPACE,
+    flowConfigOverride: FLOW_OVERRIDE,
+    turns: [
+      {
+        message: 'Доброго дня',
+        expect: {
+          decision: 'reply',
+          scenario: 'greeting',
+          replyNotContains: ['@directmate.app', 'АІ асистент'],
+          note: 'No AI-intro layer when intent === greeting.',
+        },
+      },
+    ],
+  },
+
+  luxespace_no_intro_mid_conversation: {
+    name: 'luxespace — Mid-conversation skips AI intro',
+    description:
+      'After the AI intro fires on Turn 1, subsequent turns within the 6h ' +
+      'window must NOT re-prepend it. Trace shows "welcome skipped: not ' +
+      'dormant" once the bot has replied at least once.',
+    tenantId: LUXESPACE,
+    flowConfigOverride: FLOW_OVERRIDE,
+    turns: [
+      {
+        message: 'хочу сукню',
+        expect: {
+          decision: 'reply',
+          replyContains: ['АІ асистент'],
+          note: 'Turn 1 fires the intro.',
+        },
+      },
+      {
+        message: 'Polo Ralph Lauren жіноча синя сукня M',
+        expect: {
+          decision: 'reply',
+          replyNotContains: ['@directmate.app', 'АІ асистент'],
+          note: 'Turn 2 within 6h → no re-intro, contextual reply only.',
+        },
+      },
+    ],
+  },
+
   // ─── Price inquiry (high-ticket) ────────────────────────────────
   luxespace_price_inquiry_high_ticket: {
     name: 'luxespace — Price inquiry on a 45999 UAH bag',

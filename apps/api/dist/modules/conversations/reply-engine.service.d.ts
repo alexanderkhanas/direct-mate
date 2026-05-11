@@ -7,7 +7,7 @@ import { ConversationState } from './entities/conversation-state.entity';
 import { StoreConfig } from '../engine/entities/store-config.entity';
 import { AvailabilityService } from '../availability/availability.service';
 import { AuditService } from '../audit/audit.service';
-import { ClassifierService, ClassificationResult } from '../engine/classifier.service';
+import { ClassifierService, ClassificationResult, AssistantMemory } from '../engine/classifier.service';
 import { TemplateEngineService } from '../engine/template-engine.service';
 import { PolicyEngineService } from '../engine/policy-engine.service';
 import { ReplyDecision } from '@direct-mate/shared';
@@ -50,6 +50,7 @@ export interface ReplyEngineOutput {
     templateScenario?: string;
     trace?: string[];
 }
+export declare function markRepliedOnResult(memory: AssistantMemory, result: ReplyEngineOutput, now?: () => Date): void;
 export declare class ReplyEngineService {
     private readonly settingsRepo;
     private readonly examplesRepo;

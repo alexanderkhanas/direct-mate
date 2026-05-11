@@ -50,6 +50,10 @@ interface TurnLog {
   replyText: string | null;
   prefixReply?: string | null;
   secondaryReply?: string | null;
+  /** Follow-up bot bubbles emitted alongside the primary reply.
+   *  Production Instagram sends each as a separate DM; the simulator
+   *  must render them too or it looks like content was lost. */
+  extraReplies?: Array<{ text: string; imageUrls?: string[] }>;
   imageUrls?: string[];
   state: Record<string, unknown>;
   assertions?: AssertionResult[];
@@ -391,6 +395,29 @@ function TurnView({ turn }: { turn: TurnLog }) {
           </div>
         </div>
       )}
+
+      {/* Extra replies (follow-up bot bubbles emitted by the engine).
+        * Mirrors what production Instagram sends as separate DMs. The
+        * AI-introduction welcome demotes the contextual reply to
+        * extraReplies[0]; without this block it would be invisible in
+        * the simulator. */}
+      {turn.extraReplies?.map((extra, idx) => (
+        <div key={`extra-${idx}`} className="flex justify-end">
+          <div className="max-w-[75%]">
+            <div className="bg-gray-900 text-white px-3.5 py-2.5 rounded-2xl rounded-br-sm text-sm leading-relaxed whitespace-pre-wrap">
+              {extra.text}
+            </div>
+            {extra.imageUrls && extra.imageUrls.length > 0 && (
+              <div className="flex justify-end mt-1">
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-600">
+                  <Image className="h-2.5 w-2.5" />
+                  {extra.imageUrls.length} image(s)
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+      ))}
 
       {/* Secondary reply (cross-sell) — RIGHT, different shade */}
       {turn.secondaryReply && (

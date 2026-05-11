@@ -14,6 +14,7 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
 var ReplyEngineService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ReplyEngineService = void 0;
+exports.markRepliedOnResult = markRepliedOnResult;
 const common_1 = require("@nestjs/common");
 const subscriptions_service_1 = require("../subscriptions/subscriptions.service");
 const typeorm_1 = require("@nestjs/typeorm");
@@ -36,6 +37,17 @@ const shared_1 = require("@direct-mate/shared");
 const instagram_content_service_1 = require("../channels/instagram/instagram-content.service");
 const size_charts_service_1 = require("../size-charts/size-charts.service");
 const nonEmptyStr = (v) => typeof v === 'string' && v.trim().length > 0;
+const DORMANT_MS = 6 * 60 * 60 * 1000;
+function markRepliedOnResult(memory, result, now = () => new Date()) {
+    const hasUserVisibleAction = !!result.reply?.text || result.handoff?.required === true;
+    if (!hasUserVisibleAction)
+        return;
+    memory.lastReplyAt = now().toISOString();
+    result.stateUpdate = {
+        ...result.stateUpdate,
+        contextJson: { ...memory },
+    };
+}
 const LOG_FILE = path.join(process.cwd(), 'conversations.log');
 const RECOMMENDED_SIZE_PREFIX = (size) => `За вашими параметрами рекомендую розмір ${size} 💛`;
 const ASK_FOR_MEASUREMENTS_HELP = 'Напишіть свій зріст та вагу і я допоможу підібрати розмір 💛';
@@ -65,7 +77,11 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
     }
     async process(input) {
         const ctx = await this.loadContext(input);
-        const withTrace = (r) => { r.trace = ctx.trace; return r; };
+        const withTrace = (r) => {
+            r.trace = ctx.trace;
+            markRepliedOnResult(ctx.memory, r);
+            return r;
+        };
         const planActive = await this.subscriptionsService.isActive(input.tenantId);
         if (!planActive) {
             ctx.trace.push('subscription: inactive → soft block');
@@ -98,28 +114,43 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             return withTrace(searchResult);
         this.resolveVariantSelection(input, ctx);
         const result = await this.buildResponse(input, ctx);
-        if (!ctx.memory.welcomedAt &&
+        const lastReplyAge = ctx.memory.lastReplyAt
+            ? Date.now() - new Date(ctx.memory.lastReplyAt).getTime()
+            : null;
+        const isDormant = lastReplyAge !== null && lastReplyAge > DORMANT_MS;
+        const shouldIntroduce = (!ctx.memory.welcomedAt || isDormant) &&
             ctx.classification?.primaryIntent !== 'greeting' &&
-            result.reply?.text) {
+            !!result.reply?.text;
+        if (shouldIntroduce) {
             const greeting = await this.templateEngine.renderCustomScenario(input.tenantId, 'conversation_start_greeting', {});
-            if (greeting) {
-                ctx.trace.push('first-turn welcome prepended');
-                ctx.memory.welcomedAt = new Date().toISOString();
-                result.stateUpdate = {
-                    ...result.stateUpdate,
-                    contextJson: { ...ctx.memory },
-                };
-                const contextualReply = result.reply;
-                result.reply = { text: greeting.text, sendNow: true };
-                result.extraReplies = [
-                    {
-                        text: contextualReply.text,
-                        sendNow: true,
-                        imageUrls: contextualReply.imageUrls,
-                    },
-                    ...(result.extraReplies ?? []),
-                ];
-            }
+            const introText = greeting?.text ?? 'Вітаю, з вами АІ асистент @directmate.app';
+            ctx.trace.push(isDormant
+                ? `welcome re-prepended (dormant ${Math.round(lastReplyAge / 60000)}m since ${ctx.memory.lastReplyAt})`
+                : 'first-turn welcome prepended');
+            ctx.memory.welcomedAt = new Date().toISOString();
+            result.stateUpdate = {
+                ...result.stateUpdate,
+                contextJson: { ...ctx.memory },
+            };
+            const contextualReply = result.reply;
+            result.reply = { text: introText, sendNow: true };
+            result.extraReplies = [
+                {
+                    text: contextualReply.text,
+                    sendNow: true,
+                    imageUrls: contextualReply.imageUrls,
+                },
+                ...(result.extraReplies ?? []),
+            ];
+        }
+        else if (ctx.classification?.primaryIntent === 'greeting') {
+            ctx.trace.push('welcome skipped: greeting intent');
+        }
+        else if (ctx.memory.welcomedAt && lastReplyAge !== null && !isDormant) {
+            ctx.trace.push(`welcome skipped: not dormant (last reply ${Math.round(lastReplyAge / 60000)}m ago)`);
+        }
+        else if (ctx.memory.welcomedAt && lastReplyAge === null) {
+            ctx.trace.push('welcome skipped: legacy memory (no lastReplyAt) — treated as recent');
         }
         return withTrace(result);
     }

@@ -69,6 +69,38 @@ export interface ReplyEngineOutput {
 const nonEmptyStr = (v: unknown): v is string =>
   typeof v === 'string' && v.trim().length > 0;
 
+/** 6 hours in milliseconds — bot-silence threshold after which the
+ *  welcome gate re-fires the AI introduction on the next inbound. */
+const DORMANT_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Centralized "bot has replied" marker. Mutates `memory.lastReplyAt`
+ * and patches `result.stateUpdate.contextJson` so the new timestamp
+ * survives persistence. Called from `process()` `withTrace` for every
+ * reply-emitting return path.
+ *
+ * Skips no-op returns where there's neither a user-visible reply nor a
+ * handoff signal — keeps the timer from advancing on internal-only
+ * paths.
+ *
+ * Exported for unit testing the contract independently of the full
+ * `process()` flow.
+ */
+export function markRepliedOnResult(
+  memory: AssistantMemory,
+  result: ReplyEngineOutput,
+  now: () => Date = () => new Date(),
+): void {
+  const hasUserVisibleAction =
+    !!result.reply?.text || result.handoff?.required === true;
+  if (!hasUserVisibleAction) return;
+  memory.lastReplyAt = now().toISOString();
+  result.stateUpdate = {
+    ...result.stateUpdate,
+    contextJson: { ...memory },
+  };
+}
+
 // ─── Internal processing context ─────────────────────────────────
 
 interface ProcessingContext {
@@ -153,7 +185,16 @@ export class ReplyEngineService {
 
   async process(input: ReplyEngineInput): Promise<ReplyEngineOutput> {
     const ctx = await this.loadContext(input);
-    const withTrace = (r: ReplyEngineOutput) => { r.trace = ctx.trace; return r; };
+    // Centralized markReplied: every reply-emitting return path inside
+    // `process()` flows through `withTrace`. The exported
+    // `markRepliedOnResult` helper guarantees any future code path that
+    // emits a reply or handoff updates `lastReplyAt` — without
+    // scattered call sites that drift over time.
+    const withTrace = (r: ReplyEngineOutput) => {
+      r.trace = ctx.trace;
+      markRepliedOnResult(ctx.memory, r);
+      return r;
+    };
 
     // 1.5. Subscription gate: soft-block if trial expired or plan inactive
     const planActive = await this.subscriptionsService.isActive(input.tenantId);
@@ -193,40 +234,63 @@ export class ReplyEngineService {
 
     const result = await this.buildResponse(input, ctx);
 
-    // Conversation-start greeting: fire ONCE per conversation, before the
-    // contextual reply. Skip if classifier resolved greeting intent (the
-    // existing `greeting` scenario covers that flow on its own — avoid
-    // double "Вітаю"). Template-driven opt-in: tenants without an active
-    // `conversation_start_greeting` template render null here and nothing
-    // happens.
-    if (
-      !ctx.memory.welcomedAt &&
+    // Conversation-start greeting: fire when this is a new conversation
+    // OR the bot has been silent >6h (DORMANT_MS). Skip if classifier
+    // resolved greeting intent (the existing `greeting` scenario covers
+    // that flow on its own — avoid double "Вітаю"). The hardcoded
+    // fallback string fires for tenants without a custom
+    // `conversation_start_greeting` template; tenants can author their
+    // own copy via the admin panel to override.
+    const lastReplyAge = ctx.memory.lastReplyAt
+      ? Date.now() - new Date(ctx.memory.lastReplyAt).getTime()
+      : null;
+    const isDormant =
+      lastReplyAge !== null && lastReplyAge > DORMANT_MS;
+
+    const shouldIntroduce =
+      (!ctx.memory.welcomedAt || isDormant) &&
       ctx.classification?.primaryIntent !== 'greeting' &&
-      result.reply?.text
-    ) {
+      !!result.reply?.text;
+
+    if (shouldIntroduce) {
       const greeting = await this.templateEngine.renderCustomScenario(
         input.tenantId,
         'conversation_start_greeting',
         {},
       );
-      if (greeting) {
-        ctx.trace.push('first-turn welcome prepended');
-        ctx.memory.welcomedAt = new Date().toISOString();
-        result.stateUpdate = {
-          ...result.stateUpdate,
-          contextJson: { ...ctx.memory },
-        };
-        const contextualReply = result.reply;
-        result.reply = { text: greeting.text, sendNow: true };
-        result.extraReplies = [
-          {
-            text: contextualReply.text!,
-            sendNow: true,
-            imageUrls: contextualReply.imageUrls,
-          },
-          ...(result.extraReplies ?? []),
-        ];
-      }
+      const introText =
+        greeting?.text ?? 'Вітаю, з вами АІ асистент @directmate.app';
+
+      ctx.trace.push(
+        isDormant
+          ? `welcome re-prepended (dormant ${Math.round(lastReplyAge! / 60000)}m since ${ctx.memory.lastReplyAt})`
+          : 'first-turn welcome prepended',
+      );
+      ctx.memory.welcomedAt = new Date().toISOString();
+      result.stateUpdate = {
+        ...result.stateUpdate,
+        contextJson: { ...ctx.memory },
+      };
+      const contextualReply = result.reply!;
+      result.reply = { text: introText, sendNow: true };
+      result.extraReplies = [
+        {
+          text: contextualReply.text!,
+          sendNow: true,
+          imageUrls: contextualReply.imageUrls,
+        },
+        ...(result.extraReplies ?? []),
+      ];
+    } else if (ctx.classification?.primaryIntent === 'greeting') {
+      ctx.trace.push('welcome skipped: greeting intent');
+    } else if (ctx.memory.welcomedAt && lastReplyAge !== null && !isDormant) {
+      ctx.trace.push(
+        `welcome skipped: not dormant (last reply ${Math.round(lastReplyAge / 60000)}m ago)`,
+      );
+    } else if (ctx.memory.welcomedAt && lastReplyAge === null) {
+      ctx.trace.push(
+        'welcome skipped: legacy memory (no lastReplyAt) — treated as recent',
+      );
     }
 
     return withTrace(result);
