@@ -42,6 +42,13 @@ COPY --from=builder /app/apps/api/package.json ./apps/api/
 # Demo seed reads source images from test-assets/. Ship the dir so
 # `npm run seed:demo:prod` can copy them into uploads/ on first run.
 COPY --from=builder /app/apps/api/test-assets ./apps/api/test-assets
+# Static HTML pages (privacy, terms, data deletion) are served by
+# `useStaticAssets(join(__dirname, '..', 'src'), { prefix: '/static' })`
+# in apps/api/src/main.ts. The nest build only emits compiled JS into
+# dist/, so without copying these explicitly the `src/` path doesn't
+# exist at runtime and every /static/*.html returns 404. Required by
+# the Meta app config which links to /static/privacy.html.
+COPY --from=builder /app/apps/api/src/privacy.html /app/apps/api/src/terms.html /app/apps/api/src/data-deletion.html ./apps/api/src/
 
 ENV NODE_ENV=production
 EXPOSE 3000
