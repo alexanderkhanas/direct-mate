@@ -1,4 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 
 /**
  * CLIP image-embedding wrapper around `@xenova/transformers`.
@@ -59,8 +60,28 @@ export class ImageEmbeddingService implements OnModuleInit {
   private readonly logger = new Logger(ImageEmbeddingService.name);
   private extractor: Pipeline | null = null;
   private transformers: TransformersModule | null = null;
+  private enabled = true;
+  /** Serializes concurrent embed calls onto a single ORT session.
+   *  Parallel inference on one onnxruntime-node session segfaults
+   *  (SIGSEGV exit 139) — observed under catalog-import where each
+   *  product's images embed in parallel. Chaining promises through a
+   *  shared lock keeps the session single-threaded. */
+  private embedQueue: Promise<unknown> = Promise.resolve();
+
+  constructor(private readonly config: ConfigService) {}
 
   async onModuleInit(): Promise<void> {
+    // Production safety: env flag to disable CLIP entirely. Set
+    // CLIP_ENABLED=false when onnxruntime is unstable on the host.
+    // `embedFromUrl` then returns null and downstream code writes
+    // null clipEmbedding rows — pHash + GPT vision still work for
+    // customer-photo matching.
+    const flag = this.config.get<string>('CLIP_ENABLED');
+    if (flag !== undefined && flag.toLowerCase() !== 'true' && flag !== '1') {
+      this.enabled = false;
+      this.logger.warn('CLIP disabled by CLIP_ENABLED env flag');
+      return;
+    }
     try {
       this.transformers = await dynamicImport<TransformersModule>(
         '@xenova/transformers',
@@ -84,11 +105,23 @@ export class ImageEmbeddingService implements OnModuleInit {
    * handle null gracefully — never throw in request path.
    */
   async embedFromUrl(url: string): Promise<Float32Array | null> {
-    if (!this.extractor || !this.transformers) {
-      this.logger.warn('embedFromUrl called before model loaded — returning null');
+    if (!this.enabled || !this.extractor || !this.transformers) {
       return null;
     }
 
+    // Chain onto the shared queue — only one CLIP inference at a time.
+    // Multiple concurrent callers serialize behind this lock; failures
+    // on one URL don't break the chain (each step has its own try/catch).
+    const next = this.embedQueue.then(() => this.embedOne(url));
+    // Swallow rejection in the queue tracker so future calls aren't
+    // poisoned by a single failure; the caller still receives the
+    // (resolved-to-null or thrown) result from `next`.
+    this.embedQueue = next.catch(() => null);
+    return next;
+  }
+
+  private async embedOne(url: string): Promise<Float32Array | null> {
+    if (!this.extractor || !this.transformers) return null;
     try {
       const image = await this.transformers.RawImage.fromURL(url);
       const out = await this.extractor(image);
