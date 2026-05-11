@@ -551,7 +551,21 @@ export class ReplyEngineService {
 
     // 4.6 Handle adds_to_cart: customer wants to add another product to cart
     if (classification.slotAction === 'adds_to_cart' && !memory.orderCreated) {
-      const sameProduct = memory.selectedProductTitle &&
+      // Category mismatch overrides the productName-absent default. Without
+      // this guard, vague asks like "Ще хочу якусь кофту" (productName=null,
+      // category="Кардигани") fall into the sameProduct branch — keeping the
+      // previously-selected Bag locked in and re-confirming it instead of
+      // showing the requested cardigans. Compare against memory.selectedCategory
+      // (set on every successful search in `searchAndFilterProducts`).
+      const userMentionedDifferentCategory =
+        !!classification.entities.category &&
+        !!memory.selectedCategory &&
+        classification.entities.category.toLowerCase() !==
+          memory.selectedCategory.toLowerCase();
+
+      const sameProduct =
+        !userMentionedDifferentCategory &&
+        memory.selectedProductTitle &&
         (!classification.entities.productName ||
          memory.selectedProductTitle.toLowerCase().includes(classification.entities.productName.toLowerCase()) ||
          classification.entities.productName.toLowerCase().includes(memory.selectedProductTitle.toLowerCase()));
@@ -612,6 +626,7 @@ export class ReplyEngineService {
         ctx.trace.push(`4.6: adds_to_cart same product (${memory.selectedProductTitle}), cleared variant only, selectionState=awaiting_product`);
         this.logger.log('adds_to_cart: same product, clearing variant for new selection');
       } else {
+        const priorCategory = memory.selectedCategory;
         // New product entirely — clear everything
         memory.selectedProductId = undefined;
         memory.selectedProductTitle = undefined;
@@ -622,7 +637,15 @@ export class ReplyEngineService {
         memory.variantStep = null;
         memory.selectedColor = undefined;
         memory.selectedSize = undefined;
-        ctx.trace.push(`4.6: adds_to_cart new product, cleared all selection`);
+        // Also clear selectedCategory so the next search picks up the
+        // NEW category from classification.entities.category rather than
+        // re-using the prior one (which was "Сумки" while the user is
+        // now asking for "Кардигани").
+        memory.selectedCategory = undefined;
+        const why = userMentionedDifferentCategory
+          ? `different category (${classification.entities.category} vs ${priorCategory ?? '?'})`
+          : 'different product';
+        ctx.trace.push(`4.6: adds_to_cart new product (${why}), cleared all selection`);
         this.logger.log('adds_to_cart: clearing selection for new product, keeping cart');
       }
     }
@@ -3264,6 +3287,24 @@ export class ReplyEngineService {
     // match, returning 0 rows and routing to AI fallback that hallucinates
     // a product matching the user's criterion.
     if (this.isNarrowingSlotFill(classification, memory)) {
+      return false;
+    }
+
+    // Cart-aware checkout: when items already in cart and the user signals
+    // start_checkout WITHOUT introducing a new product or category ("оформлюємо",
+    // "ні, давайте оформляти"), there's nothing to search for — the cart is the
+    // payload. Without this gate, the engine fires an empty-keyword search,
+    // gets 0 rows, and falls into the product_not_found handoff branch even
+    // though the customer is just trying to check out. Adds_to_cart with a
+    // new product/category is intentionally NOT excluded here — that case
+    // SHOULD search for the new item.
+    if (
+      memory.selectionState === 'cart_item_added' &&
+      (memory.cartItems?.length ?? 0) > 0 &&
+      classification.recommendedAction === 'start_checkout' &&
+      !classification.entities.productName &&
+      !classification.entities.category
+    ) {
       return false;
     }
 

@@ -597,6 +597,116 @@ export const LUXESPACE_SCENARIOS: Record<string, SimulatorScenario> = {
     ],
   },
 
+  luxespace_adds_to_cart_different_category: {
+    name: 'luxespace — adds_to_cart with different category shows new products',
+    description:
+      'Regression for the production bug seen on conv 556d0307: customer ' +
+      'confirmed a Bottega Veneta Cassette (Сумки), then asked "Ще хочу ' +
+      'якусь кофту" (Кардигани). Classifier correctly emitted ' +
+      'slotAction=adds_to_cart with category=Кардигани and NO productName. ' +
+      'The 4.6 sameProduct check defaulted to true on missing productName, ' +
+      'kept the Bag locked, and re-confirmed it instead of showing ' +
+      'cardigans. Fix: also force sameProduct=false when entities.category ' +
+      'differs from memory.selectedCategory. Trace must show ' +
+      '"adds_to_cart new product (different category ...)".',
+    tenantId: LUXESPACE,
+    flowConfigOverride: FLOW_OVERRIDE,
+    turns: [
+      {
+        message: 'хочу сумку Bottega Veneta Cassette',
+        expect: {
+          decision: 'reply',
+          note: 'Resolves to Cassette product (single product OR awaiting_variant).',
+        },
+      },
+      {
+        message: 'зелену',
+        expect: {
+          decision: 'reply',
+          state: { selectionState: 'awaiting_confirmation' },
+          note: 'Color picked → variant resolved → awaiting_confirmation on the Bag.',
+        },
+      },
+      {
+        message: 'так',
+        expect: {
+          decision: 'reply',
+          state: { selectionState: 'cart_item_added' },
+          note: 'Bag added to cart.',
+        },
+      },
+      {
+        message: 'ще хочу якусь кофту',
+        expect: {
+          decision: 'reply',
+          scenario: 'show_products',
+          replyNotContains: ['Cassette', 'Bottega', 'оформлюємо'],
+          state: { cartLength: 1, cartHasVariant: 'Зелений' },
+          note:
+            'Customer requests a NEW category (Кардигани/Лонгсліви) — engine ' +
+            'must NOT fall into sameProduct branch and re-confirm the Bag. ' +
+            'Reply should be a fresh product list of cardigans/sweaters. ' +
+            'Cart still holds the Bag pending the second item.',
+        },
+      },
+      {
+        message: "В'язаний светр з ведмедем від Polo Ralph Lauren M",
+        expect: {
+          decision: 'reply',
+          state: { selectionState: 'awaiting_confirmation' },
+          note:
+            'Distinctive product name ("ведмедем" / "ведмідь" only appears in ' +
+            "this product's title) avoids the ambiguity-with-other-PRL-knits " +
+            'issue seen with plain "Светр L".',
+        },
+      },
+      {
+        message: 'так',
+        expect: {
+          decision: 'reply',
+          state: { selectionState: 'cart_item_added', cartLength: 2, cartHasVariant: 'Зелений' },
+          note:
+            'Second item added → cart now holds BOTH the Cassette bag (Зелений) ' +
+            'AND the new knit product. The specific knit varies because the ' +
+            'classifier maps "светр" to whichever tenant category it considers ' +
+            'closest (Світшоти / Кардигани / Лонгсліви — all valid), so we ' +
+            'assert ONLY the cart-shape invariant, not the exact second title.',
+        },
+      },
+      {
+        message: 'оформлюємо',
+        expect: {
+          decision: 'reply',
+          scenario: 'collect_checkout_info',
+          state: { cartLength: 2, cartHasVariant: 'Зелений' },
+          note:
+            "Engine routes to checkout — cart preserved. This turn is the " +
+            "regression guard for the bug where 'оформлюємо' with action=" +
+            "start_checkout triggered an empty product search → handoff. The " +
+            'cart-aware shortcut in `shouldSearchProducts` skips the search ' +
+            'when cart is non-empty and no new product/category was named.',
+        },
+      },
+      {
+        message: 'Олена Петренко, 0671234567, Київ, НП 12',
+        expect: {
+          decision: 'create_draft_order',
+          state: {
+            orderCreated: true,
+            cartLength: 2,
+            cartHasVariant: 'Зелений',
+          },
+          replyContains: ['Cassette'],
+          note:
+            'Draft order created with BOTH items intact. Reply summary lists ' +
+            'the Cassette bag (the stable first-item identifier). cartItems ' +
+            'still contains both at order time — order payload built from ' +
+            'cartItems, not from selectedProductId alone.',
+        },
+      },
+    ],
+  },
+
   // ─── Phase E: tenant-aware category routing coverage ────────────
   // These three scenarios exercise the M2M-driven category search +
   // classifier enum constraint added in the "Tenant-aware classifier

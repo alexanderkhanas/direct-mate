@@ -358,7 +358,12 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             }
         }
         if (classification.slotAction === 'adds_to_cart' && !memory.orderCreated) {
-            const sameProduct = memory.selectedProductTitle &&
+            const userMentionedDifferentCategory = !!classification.entities.category &&
+                !!memory.selectedCategory &&
+                classification.entities.category.toLowerCase() !==
+                    memory.selectedCategory.toLowerCase();
+            const sameProduct = !userMentionedDifferentCategory &&
+                memory.selectedProductTitle &&
                 (!classification.entities.productName ||
                     memory.selectedProductTitle.toLowerCase().includes(classification.entities.productName.toLowerCase()) ||
                     classification.entities.productName.toLowerCase().includes(memory.selectedProductTitle.toLowerCase()));
@@ -404,6 +409,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 this.logger.log('adds_to_cart: same product, clearing variant for new selection');
             }
             else {
+                const priorCategory = memory.selectedCategory;
                 memory.selectedProductId = undefined;
                 memory.selectedProductTitle = undefined;
                 memory.selectedVariantId = undefined;
@@ -413,7 +419,11 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 memory.variantStep = null;
                 memory.selectedColor = undefined;
                 memory.selectedSize = undefined;
-                ctx.trace.push(`4.6: adds_to_cart new product, cleared all selection`);
+                memory.selectedCategory = undefined;
+                const why = userMentionedDifferentCategory
+                    ? `different category (${classification.entities.category} vs ${priorCategory ?? '?'})`
+                    : 'different product';
+                ctx.trace.push(`4.6: adds_to_cart new product (${why}), cleared all selection`);
                 this.logger.log('adds_to_cart: clearing selection for new product, keeping cart');
             }
         }
@@ -2173,6 +2183,13 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             return false;
         }
         if (this.isNarrowingSlotFill(classification, memory)) {
+            return false;
+        }
+        if (memory.selectionState === 'cart_item_added' &&
+            (memory.cartItems?.length ?? 0) > 0 &&
+            classification.recommendedAction === 'start_checkout' &&
+            !classification.entities.productName &&
+            !classification.entities.category) {
             return false;
         }
         const searchActions = [
