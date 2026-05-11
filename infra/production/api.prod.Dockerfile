@@ -17,20 +17,16 @@ COPY apps/api apps/api
 RUN cd apps/api && npm run build
 
 # Stage 2: Production
-FROM node:20-alpine
-WORKDIR /app
-
-# Glibc compatibility shim. `onnxruntime-node` (pulled in transitively by
+# Debian slim (NOT Alpine). `onnxruntime-node` (pulled in transitively by
 # `@xenova/transformers` for CLIP image embeddings — see
 # `image-embedding.service.ts`) ships prebuilt native binaries linked
-# against glibc / ld-linux-x86-64.so.2. Alpine's musl libc lacks that
-# loader, so any `require('onnxruntime-node')` throws ERR_DLOPEN_FAILED.
-# The ImageEmbeddingService catches the error at module-init, but the
-# dlopen failure also bubbles uncaught through the dynamic-import chain
-# and kills the Node process (502 across the API). `libc6-compat`
-# provides the missing loader + glibc symlinks so onnxruntime loads
-# cleanly. Stays in the runtime stage only — keeps the builder lean.
-RUN apk add --no-cache libc6-compat
+# against glibc. Alpine's musl + libc6-compat shim resolves the dlopen
+# but onnxruntime's internal C++ threads still SIGABRT with `Ort::Exception`
+# at startup, crashing the API. node:20-slim is Debian-based with real
+# glibc — onnxruntime loads and runs cleanly. Image is ~140MB larger
+# than Alpine but production stability > image size.
+FROM node:20-slim
+WORKDIR /app
 
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages/shared ./packages/shared
