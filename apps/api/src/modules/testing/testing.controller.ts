@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { Request } from 'express';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { DataSource } from 'typeorm';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import {
   CurrentUser,
@@ -23,19 +24,34 @@ import { SCENARIOS, SimulatorScenario } from '../../scripts/scenarios';
 /**
  * Returns scenarios visible to the caller:
  * - Superadmin without X-Tenant-Id header → all scenarios (all stores)
- * - Everyone else (including superadmin with tenant override) → scenarios matching current tenantId
+ * - Everyone else (including superadmin with tenant override) → scenarios
+ *   whose `tenantId` matches the caller's tenant by either UUID or slug.
+ *
+ * Slug-aware so scenarios authored with `tenantId: 'luxe-space'` (or any
+ * other slug constant — see `scripts/scenarios/types.ts`) match in both
+ * dev and prod despite different per-env UUIDs. The user's JWT only
+ * carries the UUID, so we look up the slug from the DB and accept either
+ * identifier as a match.
  */
-function filterScenariosForRequest(
+async function filterScenariosForRequest(
   req: Request & { user: JwtPayload },
   effectiveTenantId: string,
-): Array<[string, SimulatorScenario]> {
+  dataSource: DataSource,
+): Promise<Array<[string, SimulatorScenario]>> {
   const rawUser = req.user;
   const hasTenantOverride = Boolean(req.headers['x-tenant-id']);
   const isSuperadminGlobal = rawUser?.role === 'superadmin' && !hasTenantOverride;
 
   const entries = Object.entries(SCENARIOS);
   if (isSuperadminGlobal) return entries;
-  return entries.filter(([, s]) => s.tenantId === effectiveTenantId);
+
+  const rows: Array<{ slug: string }> = await dataSource.query(
+    `SELECT slug FROM tenants WHERE id = $1 LIMIT 1`,
+    [effectiveTenantId],
+  );
+  const acceptableIds = new Set<string>([effectiveTenantId]);
+  if (rows[0]?.slug) acceptableIds.add(rows[0].slug);
+  return entries.filter(([, s]) => acceptableIds.has(s.tenantId));
 }
 
 @ApiTags('testing')
@@ -46,16 +62,18 @@ export class TestingController {
   constructor(
     private readonly testingService: TestingService,
     private readonly simulatorService: SimulatorService,
+    private readonly dataSource: DataSource,
   ) {}
 
   // ─── Simulator endpoints ──────────────────────────────────────
 
   @Get('simulator/scenarios')
-  getSimulatorScenarios(
+  async getSimulatorScenarios(
     @Req() req: Request & { user: JwtPayload },
     @CurrentUser() user: JwtPayload,
   ) {
-    return filterScenariosForRequest(req, user.tenantId).map(([key, s]) => ({
+    const visible = await filterScenariosForRequest(req, user.tenantId, this.dataSource);
+    return visible.map(([key, s]) => ({
       key,
       name: s.name,
       tenantId: s.tenantId,
@@ -69,7 +87,7 @@ export class TestingController {
     @Req() req: Request & { user: JwtPayload },
     @CurrentUser() user: JwtPayload,
   ) {
-    const visible = filterScenariosForRequest(req, user.tenantId);
+    const visible = await filterScenariosForRequest(req, user.tenantId, this.dataSource);
     const entry = visible.find(([key]) => key === body.scenarioKey);
     if (!entry) throw new NotFoundException(`Scenario "${body.scenarioKey}" not found`);
     const [, scenario] = entry;
@@ -82,7 +100,7 @@ export class TestingController {
     @Req() req: Request & { user: JwtPayload },
     @CurrentUser() user: JwtPayload,
   ) {
-    const visible = filterScenariosForRequest(req, user.tenantId);
+    const visible = await filterScenariosForRequest(req, user.tenantId, this.dataSource);
     const results = [];
     for (const [key, scenario] of visible) {
       const turns = await this.simulatorService.runScenario(scenario);
