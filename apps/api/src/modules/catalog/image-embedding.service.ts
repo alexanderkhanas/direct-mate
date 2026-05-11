@@ -56,11 +56,21 @@ interface TransformersModule {
   env: {
     backends: {
       onnx: {
-        executionProviders: string[];
         wasm?: { numThreads?: number; simd?: boolean };
       };
     };
   };
+}
+
+// Internal binding inside @xenova/transformers 2.x. `executionProviders`
+// is a *module-local mutable array* that `models.js` imports and passes
+// directly to `InferenceSession.create()`. Setting
+// `env.backends.onnx.executionProviders` is a no-op — that path mutates
+// ORT's runtime env, not the array the session reads. Only mutation of
+// this array's contents (via .length=0 / .push) is observable to the
+// session constructor.
+interface OnnxBackendModule {
+  executionProviders: string[];
 }
 
 @Injectable()
@@ -94,14 +104,27 @@ export class ImageEmbeddingService implements OnModuleInit {
       this.transformers = await dynamicImport<TransformersModule>(
         '@xenova/transformers',
       );
-      // Force the WASM execution provider — the default CPU EP in
-      // onnxruntime-node segfaults under concurrent inference
-      // (observed in prod: SIGSEGV exit 139 + `free(): invalid size`
-      // glibc heap corruption). WASM runs the model inside a sandbox,
-      // ~2-3× slower per inference but immune to native crashes.
-      // Order in the array IS the priority — ['wasm'] means CPU is
-      // never attempted.
-      this.transformers.env.backends.onnx.executionProviders = ['wasm'];
+      // Force WASM by mutating the *actual* module-local
+      // `executionProviders` array that `models.js` imports. The
+      // previous attempt — `env.backends.onnx.executionProviders = ['wasm']`
+      // — was a no-op: it wrote to ORT's runtime env, not to the array
+      // the session constructor reads. Reassignment of the imported
+      // binding is not safe (ESM bindings are read-only); we must
+      // mutate the array contents in place.
+      const onnxBackend = await dynamicImport<OnnxBackendModule>(
+        '@xenova/transformers/src/backends/onnx.js',
+      );
+      if (!Array.isArray(onnxBackend.executionProviders)) {
+        this.logger.error(
+          'executionProviders binding not accessible — WASM force did not apply',
+        );
+        throw new Error('executionProviders binding not accessible');
+      }
+      onnxBackend.executionProviders.length = 0;
+      onnxBackend.executionProviders.push('wasm');
+      this.logger.log(
+        `executionProviders pinned: ${JSON.stringify(onnxBackend.executionProviders)}`,
+      );
       // Single-threaded WASM keeps things deterministic + low-memory.
       // CLIP-ViT-base inference doesn't benefit much from extra
       // threads at this batch size (single image at a time via the
