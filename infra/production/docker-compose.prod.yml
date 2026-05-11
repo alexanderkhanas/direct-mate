@@ -54,11 +54,17 @@ services:
       DEMO_BUDGET_CENTS_GPT54_MINI: ${DEMO_BUDGET_CENTS_GPT54_MINI:-1500}
       DEMO_BUDGET_CENTS_GPT54: ${DEMO_BUDGET_CENTS_GPT54:-500}
       DEMO_CORS_ALLOWED_ORIGINS: ${DEMO_CORS_ALLOWED_ORIGINS:-https://${DOMAIN}}
-      # CLIP image embeddings via onnxruntime. Set CLIP_ENABLED=false
-      # to disable when ORT misbehaves under load (SIGSEGV during
-      # catalog-import). pHash + GPT vision still handle customer-photo
-      # matching with graceful degradation.
+      # CLIP image embeddings. Backend switched from in-process
+      # onnxruntime-node@1.14 (which heap-corrupted on this glibc) to
+      # the Replicate API — see image-embedding.service.ts. Set
+      # CLIP_ENABLED=false as a kill-switch; pHash + GPT vision still
+      # handle customer-photo matching with graceful degradation.
+      # REPLICATE_* must be forwarded explicitly: docker-compose reads
+      # .env for interpolation, but the container only sees variables
+      # listed here in `environment:`.
       CLIP_ENABLED: ${CLIP_ENABLED:-true}
+      REPLICATE_API_TOKEN: ${REPLICATE_API_TOKEN}
+      REPLICATE_CLIP_MODEL_VERSION: ${REPLICATE_CLIP_MODEL_VERSION}
     volumes:
       - uploads:/app/apps/api/uploads
       - logs:/app/apps/api/logs
