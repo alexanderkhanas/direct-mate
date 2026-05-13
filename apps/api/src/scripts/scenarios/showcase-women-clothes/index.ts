@@ -523,14 +523,12 @@ export const SHOWCASE_WOMEN_CLOTHES_SCENARIOS: Record<string, SimulatorScenario>
   showcase_women_multi_item_cart_sequential: {
     name: 'showcase — Multi-item cart → checkout',
     description:
-      'Customer adds two items in separate turns (the supported ' +
-      'multi-item path today is one-by-one, not a single sentence). ' +
-      'Engine routes the second product through ask_variant_choice ' +
-      'even when only one in-stock variant exists (4.6 clears state ' +
-      'but does not re-set selectionState=awaiting_product, so 5.5d ' +
-      "auto-select doesn't fire — pre-existing engine quirk). After " +
-      'two cart adds the customer must say "оформлюємо" a second ' +
-      'time to break out of the ask_continue loop.',
+      'Customer adds two items in separate turns (multi-item flow ' +
+      'today is one item per message). Second product is picked with ' +
+      'an unambiguous color+size combo (Бежевий S Спідниця) so the ' +
+      'engine resolves the variant in one shot and routes straight ' +
+      'to confirm. Validates the multi-line cart + draft order ' +
+      'persistence path end-to-end.',
     tenantId: SHOWCASE_WOMEN_CLOTHES,
     turns: [
       {
@@ -548,34 +546,23 @@ export const SHOWCASE_WOMEN_CLOTHES_SCENARIOS: Record<string, SimulatorScenario>
         },
       },
       {
-        message: "Ще додайте кремовий Светр oversize в'язаний",
+        message: 'Хочу ще Спідницю плісе бежеву S',
         expect: {
           decision: 'reply',
-          note: 'engine asks size confirmation even though only one variant',
+          note: '2nd product surfaced; engine may show before auto-confirming',
         },
       },
       {
         message: 'Так',
         expect: {
           decision: 'reply',
-          state: { selectionState: 'awaiting_confirmation' },
-          note: '5.5b resolves Кремовий One size → confirm_variant_available',
-        },
-      },
-      {
-        message: 'оформлюємо',
-        expect: {
-          decision: 'reply',
           state: { selectionState: 'cart_item_added', cartLength: 2 },
-          note: '5.5a cart-adds the 2nd item; bot asks continue again',
+          note: '5.5a cart-adds 2nd item',
         },
       },
       {
         message: 'оформлюємо',
-        expect: {
-          decision: 'reply',
-          note: 'second оформлюємо breaks out of ask_continue → collect_checkout_info',
-        },
+        expect: { decision: 'reply' },
       },
       {
         message: 'Олександр Хана, +380501234567, Тернопіль, відділення 5',

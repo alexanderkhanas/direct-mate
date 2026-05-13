@@ -985,6 +985,22 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             }
             const searchKeywords = this.extractSearchKeywords(classification);
             productData = await this.searchProducts(input.tenantId, input.conversationId, searchKeywords, classification.entities.category);
+            const fallbackEnabled = this.config.get('SEARCH_RAW_TEXT_FALLBACK') === 'true';
+            if (fallbackEnabled &&
+                (!productData || productData.length === 0) &&
+                searchKeywords.length === 0 &&
+                !classification.entities.category &&
+                ['product_inquiry', 'availability_check', 'category_browse', 'ready_to_order'].includes(classification.primaryIntent) &&
+                input.messageText.trim().length > 3) {
+                const rawTextResults = await this.availabilityService.checkAll(input.tenantId, { query: input.messageText.trim() });
+                if (rawTextResults.length > 0) {
+                    productData = rawTextResults.map((r) => ({
+                        product: r.product,
+                        variants: r.variants,
+                    }));
+                    ctx.trace.push(`search: classifier dropped entities — raw-text fallback recovered ${productData.length} product(s)`);
+                }
+            }
             this.logToFile({
                 event: 'product_search',
                 conversationId: input.conversationId,

@@ -1544,6 +1544,44 @@ export class ReplyEngineService {
         classification.entities.category,
       );
 
+      // Raw-text fallback for classifier entity-drop noise.
+      // When the classifier returns empty entities (no productName,
+      // category, or color) but the customer clearly wrote a product
+      // query (intent=product_inquiry/availability_check), the standard
+      // path returns 0 products → handoff. The fallback fires a
+      // trigram search on the raw message so the engine recovers a
+      // candidate product instead of bailing.
+      //
+      // Gated by SEARCH_RAW_TEXT_FALLBACK=true so we can ship it
+      // disabled, harden the classifier prompt first, and flip the
+      // flag only if real production traffic still surfaces the drop.
+      const fallbackEnabled =
+        this.config.get<string>('SEARCH_RAW_TEXT_FALLBACK') === 'true';
+      if (
+        fallbackEnabled &&
+        (!productData || productData.length === 0) &&
+        searchKeywords.length === 0 &&
+        !classification.entities.category &&
+        ['product_inquiry', 'availability_check', 'category_browse', 'ready_to_order'].includes(
+          classification.primaryIntent,
+        ) &&
+        input.messageText.trim().length > 3
+      ) {
+        const rawTextResults = await this.availabilityService.checkAll(
+          input.tenantId,
+          { query: input.messageText.trim() },
+        );
+        if (rawTextResults.length > 0) {
+          productData = rawTextResults.map((r) => ({
+            product: r.product,
+            variants: r.variants,
+          }));
+          ctx.trace.push(
+            `search: classifier dropped entities — raw-text fallback recovered ${productData.length} product(s)`,
+          );
+        }
+      }
+
       this.logToFile({
         event: 'product_search',
         conversationId: input.conversationId,
