@@ -33,7 +33,9 @@ const SCENARIO_LABELS: Record<string, string> = {
   // Confirmation
   confirm_selection: 'Підтвердження вибору',
   confirm_last_in_stock: 'Останній доступний варіант',
+  confirm_selection_last_in_stock: 'Підтвердження — остання позиція',
   confirm_variant_available: 'Підтвердження розміру',
+  confirm_color_variant_in_stock: 'Підтвердження кольору (story-link)',
   decline_selection: 'Відмова від вибору',
   // Checkout
   collect_checkout_info: 'Збір даних для замовлення',
@@ -81,7 +83,7 @@ const PHRASE_TYPES = [
 ];
 
 const AVAILABLE_VARIABLES =
-  '{product_name}, {category}, {color}, {size}, {price}, {product_list}, {variants}, {variant_type}, {variant_list}, {customer_name}, {phone}, {city}, {delivery_branch}, {order_summary}, {reason}, {brand}, {name}, {skin_type}, {requested_variant}, {matched_variant_id}';
+  '{product_name}, {category}, {color}, {color_variant}, {size}, {sizes}, {other_colors_variants}, {price}, {product_list}, {variants}, {variant_type}, {variant_list}, {variant_name}, {customer_name}, {phone}, {city}, {delivery_branch}, {order_summary}, {reason}, {brand}, {name}, {skin_type}, {requested_variant}, {matched_variant_id}';
 
 const SCENARIO_COLORS: Record<string, string> = {
   greeting: 'bg-blue-100 text-blue-700',
@@ -91,7 +93,9 @@ const SCENARIO_COLORS: Record<string, string> = {
   ask_recommendation_from_shown: 'bg-orange-100 text-orange-700',
   confirm_selection: 'bg-cyan-100 text-cyan-700',
   confirm_last_in_stock: 'bg-cyan-100 text-cyan-700',
+  confirm_selection_last_in_stock: 'bg-cyan-100 text-cyan-700',
   confirm_variant_available: 'bg-lime-100 text-lime-700',
+  confirm_color_variant_in_stock: 'bg-lime-100 text-lime-700',
   decline_selection: 'bg-gray-100 text-gray-700',
   collect_checkout_info: 'bg-indigo-100 text-indigo-700',
   confirm_order: 'bg-emerald-100 text-emerald-700',
