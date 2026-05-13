@@ -155,11 +155,23 @@ export class ProductMediaEmbedderService implements OnModuleInit, OnModuleDestro
 
   private async fetchPending(): Promise<ProductMedia[]> {
     // Raw SQL — the partial index `product_media_embed_pending_idx`
-    // covers exactly this predicate and ordering, so the planner can
-    // do a cheap index scan + LIMIT.
+    // covers most of this predicate so the planner can do a cheap
+    // index scan + LIMIT.
+    //
+    // `url LIKE 'http%'` filters out demo-seed rows that store
+    // relative paths like `/uploads/cosmetics/foo.jpg`. Those work
+    // for the in-app demo widget (the api serves them through
+    // `useStaticAssets`) but Replicate is external and refuses
+    // them with HTTP 422 ("Does not match format 'uri'"). Without
+    // this filter the worker burns ~3,500 Replicate calls/day
+    // retrying ~36 rows on the 15-min backoff, none of which can
+    // ever succeed. Skipping at the SQL layer means those rows
+    // stay `clip_embedding IS NULL` permanently — fine, since the
+    // demo widget doesn't use Stage 2 CLIP retrieval.
     return this.mediaRepo
       .createQueryBuilder('m')
       .where('m.clipEmbedding IS NULL')
+      .andWhere(`m.url LIKE 'http%'`)
       .andWhere(
         `(m.embeddingAttemptedAt IS NULL OR m.embeddingAttemptedAt < NOW() - INTERVAL '${this.backoffMinutes} minutes')`,
       )
