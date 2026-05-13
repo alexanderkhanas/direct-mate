@@ -445,7 +445,15 @@ export default function ContentLinkingPage() {
           mapping={detailMapping}
           products={productList}
           onLink={(productId) => {
-            linkProduct.mutate({ id: detailMapping.id, productId });
+            // Detail-modal linking is product-level only; color picking
+            // happens in ProductLinkModal. Send linkedColor: null
+            // explicitly so the PATCH payload satisfies the mutation
+            // signature and the server clears any prior color binding.
+            linkProduct.mutate({
+              id: detailMapping.id,
+              productId,
+              linkedColor: null,
+            });
             setDetailMapping(null);
           }}
           onUnlink={() => {
