@@ -93,5 +93,10 @@ export const CLOTHES_STORE = 'f42abe74-54af-468f-8912-39f1c19106af';
 // works across envs — dev luxe-space and prod luxe-space have
 // different UUIDs. `SimulatorService.resolveTenantId` accepts both.
 export const LUXESPACE = 'luxe-space';
+// showcase-women-clothes — non-demo (is_demo=false) clothing tenant
+// created via `seed:showcase:prod:women-clothes` for live sales-demo
+// use, with a custom 10-product catalog inserted via SQL. Slug-based
+// to dodge env-specific UUIDs; only seeded on prod today.
+export const SHOWCASE_WOMEN_CLOTHES = 'showcase-women-clothes';
 export const DEMO_WOMEN_CLOTHES_SLUG = 'demo-women-clothes';
 export const DEMO_COSMETICS_SLUG = 'demo-cosmetics';

@@ -9,6 +9,7 @@ import { PILOT_STORE_SCENARIOS } from './pilot-store';
 import { CLOTHES_STORE_SCENARIOS } from './clothes-store';
 import { COSMETICS_SCENARIOS } from './cosmetics';
 import { LUXESPACE_SCENARIOS } from './luxespace';
+import { SHOWCASE_WOMEN_CLOTHES_SCENARIOS } from './showcase-women-clothes';
 
 export {
   SimulatorScenario,
@@ -17,6 +18,7 @@ export {
   PILOT_STORE,
   CLOTHES_STORE,
   LUXESPACE,
+  SHOWCASE_WOMEN_CLOTHES,
   DEMO_WOMEN_CLOTHES_SLUG,
   DEMO_COSMETICS_SLUG,
 } from './types';
@@ -26,4 +28,5 @@ export const SCENARIOS: Record<string, SimulatorScenario> = {
   ...CLOTHES_STORE_SCENARIOS,
   ...COSMETICS_SCENARIOS,
   ...LUXESPACE_SCENARIOS,
+  ...SHOWCASE_WOMEN_CLOTHES_SCENARIOS,
 };
