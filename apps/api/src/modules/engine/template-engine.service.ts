@@ -55,6 +55,7 @@ const INTENT_TO_SCENARIO: Record<string, string> = {
   ready_to_order: 'collect_checkout_info',
   confirm_choice: 'confirm_selection',
   confirm_last_in_stock: 'confirm_last_in_stock',
+  confirm_selection_last_in_stock: 'confirm_selection_last_in_stock',
   confirm_variant_available: 'confirm_variant_available',
   decline_selection: 'decline_selection',
   provide_details: 'collect_checkout_info',
@@ -78,6 +79,7 @@ const ACTION_TO_SCENARIO: Record<string, string> = {
   start_checkout: 'collect_checkout_info',
   ask_delivery: 'order_confirmed_ask_delivery',
   confirm_selection: 'confirm_selection',
+  confirm_selection_last_in_stock: 'confirm_selection_last_in_stock',
   confirm_variant_available: 'confirm_variant_available',
   show_price: 'show_price',
   greet: 'greeting',
@@ -187,6 +189,23 @@ export class TemplateEngineService {
           flowConfig,
         );
       }
+      // confirm_selection_last_in_stock: optional, opt-in via authored
+      // template. Fall back to confirm_variant_available (the non-urgent
+      // sibling) so customer still gets a sensible reply.
+      if (scenario === 'confirm_selection_last_in_stock') {
+        this.logger.log(
+          'confirm_selection_last_in_stock: no template authored — falling back to confirm_variant_available',
+        );
+        return this.renderScenario(
+          tenantId,
+          'confirm_variant_available',
+          classification,
+          productData,
+          memory,
+          recentTemplateIds,
+          flowConfig,
+        );
+      }
       // decline_selection: short hardcoded ack when no template authored.
       // Same architectural pattern as the offer-decline ack noted in
       // CLAUDE.md — response space is tiny, determinism + zero LLM cost
@@ -243,7 +262,7 @@ export class TemplateEngineService {
 
     // Collect product image URLs for scenarios that show products
     const allProductScenarios = ['show_products'];
-    const singleProductScenarios = ['confirm_selection', 'confirm_variant_available', 'recommend_product', 'ask_recommendation_from_shown'];
+    const singleProductScenarios = ['confirm_selection', 'confirm_variant_available', 'confirm_selection_last_in_stock', 'recommend_product', 'ask_recommendation_from_shown'];
     const variantChoiceScenarios = ['ask_variant_choice', 'ask_size_for_color', 'ask_color_for_size'];
     const imageUrls: string[] = [];
     if (productData) {

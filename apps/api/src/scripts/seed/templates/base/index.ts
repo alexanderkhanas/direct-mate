@@ -88,6 +88,17 @@ export const BASE_TEMPLATES: TemplateSpec[] = [
     active: true,
   },
   {
+    scenario: 'confirm_selection_last_in_stock',
+    stage: 'product_selected',
+    blocks: [
+      '{product_name} — {price} {variant_name} є, остання позиція в наявності 💛\nДодаємо до замовлення?',
+    ],
+    requiredVariables: ['product_name', 'price', 'variant_name'],
+    toneTags: ['warm'],
+    priority: 95,
+    active: true,
+  },
+  {
     scenario: 'ask_continue_or_checkout',
     stage: 'product_selection',
     blocks: ['{product_name} ({variant_name}) — додано 💛 Хочете ще щось, чи оформлюємо?'],

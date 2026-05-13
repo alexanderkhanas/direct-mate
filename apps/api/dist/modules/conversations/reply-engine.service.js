@@ -112,6 +112,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         const searchResult = await this.searchAndFilterProducts(input, ctx);
         if (searchResult)
             return withTrace(searchResult);
+        await this.handleVariantUnavailable(input, ctx);
         this.resolveVariantSelection(input, ctx);
         const result = await this.buildResponse(input, ctx);
         const lastReplyAge = ctx.memory.lastReplyAt
@@ -1151,9 +1152,52 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         ctx.isFirstProductPresentation = isFirstProductPresentation;
         return null;
     }
+    async handleVariantUnavailable(_input, ctx) {
+        const { memory, productData } = ctx;
+        const classification = ctx.classification;
+        if (!productData || productData.length !== 1)
+            return;
+        const userColor = classification.entities.color;
+        const userSize = classification.entities.size;
+        if (!userColor && !userSize)
+            return;
+        const inStockInSearch = productData[0].variants.filter((v) => v.effectiveAvailable > 0);
+        if (inStockInSearch.length > 0)
+            return;
+        const productId = productData[0].product.id;
+        const full = await this.availabilityService.findAllByProductId(productId);
+        if (full.length === 0)
+            return;
+        const inStockAlternatives = full[0].variants.filter((v) => v.effectiveAvailable > 0);
+        memory.requestedVariant =
+            [userColor, userSize].filter(Boolean).join(' ') || undefined;
+        memory.selectedProductId = productId;
+        memory.selectionState = 'awaiting_product';
+        memory.selectedVariantId = undefined;
+        memory.selectedVariantName = undefined;
+        ctx.isFirstProductPresentation = false;
+        if (inStockAlternatives.length === 0) {
+            classification.primaryIntent = 'out_of_stock';
+            classification.recommendedAction = 'out_of_stock';
+            memory.lastAction = 'told_out_of_stock';
+            ctx.trace.push(`5.5o: variant unavailable (req=${memory.requestedVariant ?? 'generic'}) alts=0 → out_of_stock`);
+        }
+        else {
+            memory.availableVariants =
+                this.buildAvailableVariantsList(inStockAlternatives);
+            classification.primaryIntent = 'variant_not_available';
+            classification.recommendedAction = 'variant_not_available';
+            memory.lastAction = 'told_variant_not_available';
+            ctx.trace.push(`5.5o: variant unavailable (req=${memory.requestedVariant ?? 'generic'}) alts=${inStockAlternatives.length} → variant_not_available`);
+        }
+    }
     resolveVariantSelection(input, ctx) {
         const { memory, effectiveConfig, productData } = ctx;
         const classification = ctx.classification;
+        if (classification.primaryIntent === 'variant_not_available' ||
+            classification.primaryIntent === 'out_of_stock') {
+            return;
+        }
         if (classification.slotAction === 'rejection' &&
             memory.selectionState === 'awaiting_confirmation' &&
             memory.selectedProductId &&
@@ -1442,6 +1486,10 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                         memory.selectedVariantName = matched.name;
                         memory.selectionState = 'awaiting_confirmation';
                         this.setConfirmIntent(classification, userColor, userSize);
+                        const matchedFull = variants.find((v) => v.id === matched.id);
+                        if (this.maybeUpgradeToLastInStock(classification, matchedFull)) {
+                            ctx.trace.push(`5.5c: last-in-stock variant (qty=1) → confirm_selection_last_in_stock`);
+                        }
                     }
                     else {
                         memory.selectionState = 'awaiting_variant';
@@ -1490,6 +1538,9 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 memory.selectedVariantName = [...new Set([variants[0].color, variants[0].size].filter(Boolean))].join(', ') || 'standard';
                 memory.selectionState = 'awaiting_confirmation';
                 this.setConfirmIntent(classification, classification.entities.color, classification.entities.size);
+                if (this.maybeUpgradeToLastInStock(classification, variants[0])) {
+                    ctx.trace.push(`5.5c: last-in-stock variant (qty=1) → confirm_selection_last_in_stock`);
+                }
             }
         }
         if (memory.selectionState === 'awaiting_product' &&
@@ -1878,6 +1929,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             ask_recommendation_from_shown: 'recommend',
             confirm_selection: 'confirm_selection',
             confirm_last_in_stock: 'confirm_selection',
+            confirm_selection_last_in_stock: 'confirm_variant_available',
             decline_selection: 'decline_selection',
             collect_checkout_info: 'start_checkout',
             order_confirmed_ask_delivery: 'ask_delivery',
@@ -1896,6 +1948,15 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         const isVariantQuery = !!(userSize || userColor);
         classification.primaryIntent = isVariantQuery ? 'confirm_variant_available' : 'confirm_choice';
         classification.recommendedAction = isVariantQuery ? 'confirm_variant_available' : 'confirm_selection';
+    }
+    maybeUpgradeToLastInStock(classification, matchedVariant) {
+        if (matchedVariant?.effectiveAvailable === 1 &&
+            classification.primaryIntent === 'confirm_variant_available') {
+            classification.primaryIntent = 'confirm_selection_last_in_stock';
+            classification.recommendedAction = 'confirm_selection_last_in_stock';
+            return true;
+        }
+        return false;
     }
     buildAvailableVariantsList(variants) {
         return variants.map((v) => ({

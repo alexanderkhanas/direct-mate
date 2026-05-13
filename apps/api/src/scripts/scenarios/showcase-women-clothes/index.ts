@@ -141,23 +141,20 @@ export const SHOWCASE_WOMEN_CLOTHES_SCENARIOS: Record<string, SimulatorScenario>
     description:
       'Customer asks for the basic midi dress in XL. Only Чорний XL exists ' +
       'as a variant row and stock_balances.available_qty = 0. Engine must ' +
-      'NOT advance to confirmation — reply should mention unavailability ' +
-      'and offer the in-stock sizes (S/M/L).',
+      'route through the 5.5o OOS-variant branch to variant_not_available ' +
+      'and offer the in-stock sizes (S/M/L) as alternatives.',
     tenantId: SHOWCASE_WOMEN_CLOTHES,
     turns: [
       {
         message: 'базова міді сукня в XL',
         expect: {
           decision: 'reply',
-          // The reply could be variant_not_available, out_of_stock, or
-          // ask_size_choice depending on which template the engine picks.
-          // All three carry the "немає" cue.
-          replyContains: ['немає', 'наявн'],
-          note: 'XL is OOS — must not advance to checkout',
+          scenario: 'variant_not_available',
+          replyContains: 'немає в наявності',
+          note: 'XL is OOS — must route to variant_not_available, not checkout',
         },
       },
     ],
-    flaky: true,
   },
 
   // ─── Out-of-stock specific color×size combo ─────────────────────
@@ -166,44 +163,42 @@ export const SHOWCASE_WOMEN_CLOTHES_SCENARIOS: Record<string, SimulatorScenario>
     description:
       'Customer directly asks for the white tee in M. That variant exists ' +
       'but qty=0. Other M sizes (Чорний M, Бежевий M) are in stock so the ' +
-      'engine has alternatives to mention.',
+      'engine has alternatives to mention. Routes through 5.5o.',
     tenantId: SHOWCASE_WOMEN_CLOTHES,
     turns: [
       {
         message: 'футболка біла M',
         expect: {
           decision: 'reply',
-          replyContains: ['немає', 'наявн'],
-          note: 'Білий M qty=0 — engine offers alternatives or declines',
+          scenario: 'variant_not_available',
+          replyContains: 'немає в наявності',
+          note: 'Білий M qty=0 — engine routes via 5.5o → variant_not_available',
         },
       },
     ],
-    flaky: true,
   },
 
   // ─── Last-in-stock signalling ───────────────────────────────────
   showcase_women_last_in_stock_jeans: {
     name: 'showcase — Джинси 28 → last-in-stock',
     description:
-      'Customer asks for jeans in size 28 (qty=1). Engine should either ' +
-      'fire confirm_last_in_stock template (preferred) or note "залишився" ' +
-      'in some other form. Validates the low-stock signalling path.',
+      'Customer asks for jeans in size 28 (qty=1). The 5.5c last-in-stock ' +
+      'upgrade detects effectiveAvailable===1 + isVariantQuery and routes ' +
+      'to confirm_selection_last_in_stock so the bot calls out scarcity ' +
+      'while still inviting the customer to confirm the order.',
     tenantId: SHOWCASE_WOMEN_CLOTHES,
     turns: [
       {
         message: 'джинси розмір 28',
         expect: {
           decision: 'reply',
-          // confirm_last_in_stock has a "Наразі залишився лише" copy;
-          // out_of_stock has "немає". Either ack the scarcity is the
-          // goal here, not the exact template.
-          replyContains: ['залиш'],
+          scenario: 'confirm_selection_last_in_stock',
+          replyContains: 'остання позиція',
           state: { selectionState: 'awaiting_confirmation' },
-          note: 'Single-unit variant → engine should signal scarcity',
+          note: 'Single-unit variant + user-specified size → confirm_selection_last_in_stock',
         },
       },
     ],
-    flaky: true,
   },
 
   // ─── Direct variant ask (one-shot resolution) ───────────────────

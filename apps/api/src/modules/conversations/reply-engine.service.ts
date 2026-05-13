@@ -230,6 +230,8 @@ export class ReplyEngineService {
     const searchResult = await this.searchAndFilterProducts(input, ctx);
     if (searchResult) return withTrace(searchResult);
 
+    await this.handleVariantUnavailable(input, ctx);
+
     this.resolveVariantSelection(input, ctx);
 
     const result = await this.buildResponse(input, ctx);
@@ -1783,6 +1785,79 @@ export class ReplyEngineService {
     return null;
   }
 
+  // ─── Step 5.5o: OOS-variant routing ────────────────────────────
+  //
+  // User asked for a specific variant (by color and/or size) and the
+  // matching variants are all out of stock. The search step at
+  // `searchAndFilterProducts` pre-filtered productData[0].variants
+  // down to only the user's requested combo — which is OOS — so 5.5c
+  // sees zero in-stock variants and falls through with no intent set.
+  // We re-fetch the full variant set so we can either:
+  //   - route to `variant_not_available` with in-stock alternatives, or
+  //   - route to `out_of_stock` if the product is entirely dead.
+  //
+  // Trigger is data-state only (no slotAction gate) so this catches
+  // both new_inquiry first-turn asks AND fills_missing_slot mid-flow
+  // — the symptom is identical regardless of why we got here.
+  //
+  // TODO: if a multi-product all-OOS query ever appears in the wild,
+  // extend the trigger to productData.length >= 1 and consolidate
+  // alternatives across products.
+  private async handleVariantUnavailable(
+    _input: ReplyEngineInput,
+    ctx: ProcessingContext,
+  ): Promise<void> {
+    const { memory, productData } = ctx;
+    const classification = ctx.classification;
+
+    if (!productData || productData.length !== 1) return;
+    const userColor = classification.entities.color;
+    const userSize = classification.entities.size;
+    if (!userColor && !userSize) return;
+
+    const inStockInSearch = productData[0].variants.filter(
+      (v) => v.effectiveAvailable > 0,
+    );
+    if (inStockInSearch.length > 0) return;
+
+    const productId = productData[0].product.id;
+    const full = await this.availabilityService.findAllByProductId(productId);
+    if (full.length === 0) return;
+    const inStockAlternatives = full[0].variants.filter(
+      (v) => v.effectiveAvailable > 0,
+    );
+
+    memory.requestedVariant =
+      [userColor, userSize].filter(Boolean).join(' ') || undefined;
+    memory.selectedProductId = productId;
+    memory.selectionState = 'awaiting_product';
+    memory.selectedVariantId = undefined;
+    memory.selectedVariantName = undefined;
+
+    // Suppress the first-product-presentation force in template-engine —
+    // otherwise it overrides our OOS routing with `show_products` and
+    // renders the OOS variant as a product card.
+    ctx.isFirstProductPresentation = false;
+
+    if (inStockAlternatives.length === 0) {
+      classification.primaryIntent = 'out_of_stock';
+      classification.recommendedAction = 'out_of_stock';
+      memory.lastAction = 'told_out_of_stock';
+      ctx.trace.push(
+        `5.5o: variant unavailable (req=${memory.requestedVariant ?? 'generic'}) alts=0 → out_of_stock`,
+      );
+    } else {
+      memory.availableVariants =
+        this.buildAvailableVariantsList(inStockAlternatives);
+      classification.primaryIntent = 'variant_not_available';
+      classification.recommendedAction = 'variant_not_available';
+      memory.lastAction = 'told_variant_not_available';
+      ctx.trace.push(
+        `5.5o: variant unavailable (req=${memory.requestedVariant ?? 'generic'}) alts=${inStockAlternatives.length} → variant_not_available`,
+      );
+    }
+  }
+
   // ─── Step 6: Variant selection state machine (5.5a-5.5d) ───────
 
   private resolveVariantSelection(
@@ -1791,6 +1866,16 @@ export class ReplyEngineService {
   ): void {
     const { memory, effectiveConfig, productData } = ctx;
     const classification = ctx.classification;
+
+    // Short-circuit when 5.5o has already routed to an OOS scenario.
+    // 5.5c/5.5d would otherwise fuzzy-match the requested variant
+    // ("XL") onto an alternative ("L") and overwrite the routing.
+    if (
+      classification.primaryIntent === 'variant_not_available' ||
+      classification.primaryIntent === 'out_of_stock'
+    ) {
+      return;
+    }
 
     // 5.5a-rej: customer is in `awaiting_confirmation` (variant offered)
     // and rejects without naming an alternative product/category. Route
@@ -2190,6 +2275,12 @@ export class ReplyEngineService {
             memory.selectedVariantName = matched.name;
             memory.selectionState = 'awaiting_confirmation';
             this.setConfirmIntent(classification, userColor, userSize);
+            const matchedFull = variants.find((v) => v.id === matched.id);
+            if (this.maybeUpgradeToLastInStock(classification, matchedFull)) {
+              ctx.trace.push(
+                `5.5c: last-in-stock variant (qty=1) → confirm_selection_last_in_stock`,
+              );
+            }
           } else {
             // Match was ambiguous (multiple variants fit one provided axis).
             // Preserve the known axis and route to the partial-variant scenario
@@ -2241,6 +2332,11 @@ export class ReplyEngineService {
         memory.selectedVariantName = [...new Set([variants[0].color, variants[0].size].filter(Boolean))].join(', ') || 'standard';
         memory.selectionState = 'awaiting_confirmation';
         this.setConfirmIntent(classification, classification.entities.color, classification.entities.size);
+        if (this.maybeUpgradeToLastInStock(classification, variants[0])) {
+          ctx.trace.push(
+            `5.5c: last-in-stock variant (qty=1) → confirm_selection_last_in_stock`,
+          );
+        }
       }
     }
 
@@ -2802,6 +2898,10 @@ export class ReplyEngineService {
       ask_recommendation_from_shown: 'recommend',
       confirm_selection: 'confirm_selection',
       confirm_last_in_stock: 'confirm_selection',
+      // Same post-render side effects as the non-urgent sibling — just
+      // different copy. Map to confirm_variant_available so the existing
+      // case in updateMemoryFromAction handles awaiting_confirmation state.
+      confirm_selection_last_in_stock: 'confirm_variant_available',
       decline_selection: 'decline_selection',
       collect_checkout_info: 'start_checkout',
       order_confirmed_ask_delivery: 'ask_delivery',
@@ -2836,6 +2936,35 @@ export class ReplyEngineService {
     const isVariantQuery = !!(userSize || userColor);
     classification.primaryIntent = isVariantQuery ? 'confirm_variant_available' : 'confirm_choice';
     classification.recommendedAction = isVariantQuery ? 'confirm_variant_available' : 'confirm_selection';
+  }
+
+  /**
+   * If the resolved variant is the last in stock (effectiveAvailable===1)
+   * AND we're on the variant-query path (confirm_variant_available was
+   * just set by setConfirmIntent), upgrade to confirm_selection_last_in_stock
+   * so the bot can call out the scarcity. Mutates only `classification`;
+   * caller still owns memory state writes.
+   *
+   * Self-gates on primaryIntent === 'confirm_variant_available' — won't
+   * touch the generic auto-select path (confirm_choice/confirm_selection)
+   * since that case is handled by the existing 5.5d confirm_last_in_stock
+   * branch with its own copy. Out of scope: 5.5b two-step matches, 5.5d
+   * (memory.availableVariants lacks effectiveAvailable), and 1739
+   * lock-held matches. Add coverage there only when needed.
+   */
+  private maybeUpgradeToLastInStock(
+    classification: ClassificationResult,
+    matchedVariant: { effectiveAvailable: number } | undefined,
+  ): boolean {
+    if (
+      matchedVariant?.effectiveAvailable === 1 &&
+      classification.primaryIntent === 'confirm_variant_available'
+    ) {
+      classification.primaryIntent = 'confirm_selection_last_in_stock';
+      classification.recommendedAction = 'confirm_selection_last_in_stock';
+      return true;
+    }
+    return false;
   }
 
   /**

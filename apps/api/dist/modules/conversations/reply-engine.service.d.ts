@@ -80,11 +80,13 @@ export declare class ReplyEngineService {
     private classifyOfferAnswer;
     private handlePreQualifyCosmetics;
     private searchAndFilterProducts;
+    private handleVariantUnavailable;
     private resolveVariantSelection;
     private buildResponse;
     private maybeAttachSizeChart;
     private scenarioToAction;
     private setConfirmIntent;
+    private maybeUpgradeToLastInStock;
     private buildAvailableVariantsList;
     private resolveShortReply;
     private static readonly COLOR_TRANSLATIONS;
