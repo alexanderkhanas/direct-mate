@@ -105,6 +105,19 @@ export interface AssistantMemory {
   variantStep?: 'color' | 'size' | null;
   selectedColor?: string;
   selectedSize?: string;
+  /**
+   * Transient — set by `handleColorLinkedMedia` when a story/post link
+   * resolves to a specific color. Comma-joined in-stock sizes for that
+   * color, used by `confirm_color_variant_in_stock` template's
+   * {sizes} variable. Recomputed each turn the link is resolved.
+   */
+  mediaLinkSizes?: string;
+  /**
+   * Transient — comma-joined localized colors of the same product
+   * (excluding the linked color) that have at least one in-stock
+   * variant. Used by the {other_colors_variants} template variable.
+   */
+  mediaLinkOtherColors?: string;
   /** Total active variants on the selected product BEFORE in-stock filter.
    *  Set when memory.availableVariants is populated; used by 5.5d to detect
    *  "last in stock" cases (catalog has multiple variants but only one is

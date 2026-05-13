@@ -479,7 +479,10 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             try {
                 const match = await this.instagramContentService.matchCustomerPhoto(input.tenantId, input.mediaReference.mediaId);
                 if (match) {
-                    ctx.trace.push(`customer_photo: matched to product ${match.productId} (confidence=${match.confidence})`);
+                    ctx.trace.push(`customer_photo: matched to product ${match.productId}${match.color ? ` color=${match.color}` : ''} (confidence=${match.confidence}, method=${match.matchMethod})`);
+                    await this.instagramContentService
+                        .persistCustomerPhotoMatch(input.tenantId, input.mediaReference.mediaId, match)
+                        .catch((err) => this.logger.warn(`Failed to persist customer-photo match (non-fatal): ${err}`));
                     const mediaProductData = await this.availabilityService.findAllByProductId(match.productId);
                     ctx.mediaProductData = mediaProductData;
                     this.logToFile({
@@ -488,6 +491,9 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                         productId: match.productId,
                         confidence: match.confidence,
                     });
+                    if (match.color) {
+                        await this.handleColorLinkedMedia(ctx, match.productId, match.color);
+                    }
                     return null;
                 }
             }
@@ -499,7 +505,10 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         }
         const mapping = await this.instagramContentService.findByMediaId(input.tenantId, input.mediaReference.mediaId);
         if (mapping?.productId) {
-            const mediaProductData = await this.availabilityService.findAllByProductId(mapping.productId, mapping.variantId ?? undefined);
+            const variantIdFilter = mapping.linkedColor
+                ? undefined
+                : (mapping.variantId ?? undefined);
+            const mediaProductData = await this.availabilityService.findAllByProductId(mapping.productId, variantIdFilter);
             ctx.mediaProductData = mediaProductData;
             this.logToFile({
                 event: 'media_product_resolved',
@@ -508,8 +517,12 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
                 mediaType: input.mediaReference.type,
                 productId: mapping.productId,
                 variantId: mapping.variantId,
+                linkedColor: mapping.linkedColor,
                 productsFound: mediaProductData.length,
             });
+            if (mapping.linkedColor) {
+                await this.handleColorLinkedMedia(ctx, mapping.productId, mapping.linkedColor);
+            }
         }
         else {
             this.instagramContentService
@@ -518,6 +531,80 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             return this.doHandoff(input, 'unlinked_media_reference', 'Секунду, зараз перевірю 💛');
         }
         return null;
+    }
+    async handleColorLinkedMedia(ctx, productId, linkedColor) {
+        const productData = ctx.mediaProductData;
+        if (!productData || productData.length === 0)
+            return;
+        const allVariants = productData[0].variants;
+        const linkedForms = this.translateColor(linkedColor);
+        const colorMatches = (variantColor) => {
+            if (!variantColor)
+                return false;
+            const variantForms = this.translateColor(variantColor);
+            return linkedForms.some((lf) => variantForms.some((vf) => vf === lf || vf.includes(lf) || lf.includes(vf)));
+        };
+        const colorMatchedInStock = allVariants.filter((v) => colorMatches(v.color) && v.effectiveAvailable > 0);
+        const otherColorsInStock = allVariants.filter((v) => !colorMatches(v.color) && v.effectiveAvailable > 0);
+        const memory = ctx.memory;
+        const classification = ctx.classification;
+        if (colorMatchedInStock.length > 0) {
+            memory.selectedColor = linkedColor;
+            memory.selectedProductId = productId;
+            memory.selectionState = 'awaiting_variant';
+            memory.variantStep = 'size';
+            memory.requestedVariant = undefined;
+            const allInStock = allVariants.filter((v) => v.effectiveAvailable > 0);
+            memory.availableVariants = this.buildAvailableVariantsList(allInStock);
+            if (classification.entities.size) {
+                ctx.trace.push(`media-link: color="${linkedColor}" + user size → fall through to 5.5c`);
+                return;
+            }
+            memory.mediaLinkSizes = colorMatchedInStock
+                .map((v) => v.size)
+                .filter((s) => !!s)
+                .join(', ');
+            const otherColorsSeen = new Set();
+            const otherColorsLocalized = [];
+            for (const v of otherColorsInStock) {
+                if (!v.color)
+                    continue;
+                const canonical = this.translateColor(v.color).sort().join('|');
+                if (otherColorsSeen.has(canonical))
+                    continue;
+                otherColorsSeen.add(canonical);
+                otherColorsLocalized.push((0, color_i18n_1.localizeColor)(v.color));
+            }
+            memory.mediaLinkOtherColors = otherColorsLocalized.join(', ');
+            classification.primaryIntent = 'confirm_color_variant_in_stock';
+            classification.recommendedAction = 'confirm_color_variant_in_stock';
+            ctx.trace.push(`media-link: color="${linkedColor}" in-stock=${colorMatchedInStock.length} alts=${otherColorsLocalized.length} → confirm_color_variant_in_stock`);
+            return;
+        }
+        if (otherColorsInStock.length > 0) {
+            memory.selectedProductId = productId;
+            memory.requestedVariant = linkedColor;
+            memory.availableVariants =
+                this.buildAvailableVariantsList(otherColorsInStock);
+            memory.selectionState = 'awaiting_product';
+            memory.selectedVariantId = undefined;
+            memory.selectedVariantName = undefined;
+            classification.primaryIntent = 'variant_not_available';
+            classification.recommendedAction = 'variant_not_available';
+            memory.lastAction = 'told_variant_not_available';
+            ctx.isFirstProductPresentation = false;
+            ctx.trace.push(`media-link: color="${linkedColor}" OOS, ${otherColorsInStock.length} alts → variant_not_available`);
+            return;
+        }
+        memory.selectedProductId = productId;
+        memory.selectionState = 'awaiting_product';
+        memory.selectedVariantId = undefined;
+        memory.selectedVariantName = undefined;
+        classification.primaryIntent = 'out_of_stock';
+        classification.recommendedAction = 'out_of_stock';
+        memory.lastAction = 'told_out_of_stock';
+        ctx.isFirstProductPresentation = false;
+        ctx.trace.push(`media-link: color="${linkedColor}" + all colors OOS → out_of_stock`);
     }
     async handlePreQualify(input, ctx) {
         const businessType = ctx.effectiveConfig?.flowConfig?.businessType ?? 'clothing';
@@ -1374,6 +1461,20 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             memory.selectedProductId &&
             !memory.selectedVariantId &&
             (classification.slotAction === 'fills_missing_slot' || classification.slotAction === 'confirmation')) {
+            const switchUserColor = classification.entities.color;
+            if (memory.variantStep === 'size' &&
+                switchUserColor &&
+                memory.selectedColor) {
+                const userForms = this.translateColor(switchUserColor);
+                const currentForms = this.translateColor(memory.selectedColor);
+                const sameColor = userForms.some((uf) => currentForms.some((cf) => cf === uf || cf.includes(uf) || uf.includes(cf)));
+                if (!sameColor) {
+                    ctx.trace.push(`5.5b-2 color-switch: ${memory.selectedColor} → ${switchUserColor}`);
+                    memory.variantStep = 'color';
+                    memory.selectedColor = undefined;
+                    memory.selectedSize = undefined;
+                }
+            }
             const rawVariants = memory.availableVariants;
             const variants = Array.isArray(rawVariants) ? rawVariants : [];
             const userColor = classification.entities.color;
@@ -1773,7 +1874,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
         }
         ctx.trace.push(`action: ${actualAction}`);
         this.updateMemoryFromAction(actualAction, memory, templateResult, classification, productData);
-        const skipVariantUpdate = ['variant_not_available', 'ask_variant_choice', 'ask_size_for_color', 'ask_color_for_size'].includes(templateResult?.scenario ?? '');
+        const skipVariantUpdate = ['variant_not_available', 'ask_variant_choice', 'ask_size_for_color', 'ask_color_for_size', 'confirm_color_variant_in_stock'].includes(templateResult?.scenario ?? '');
         if (templateResult?.matchedVariantId && !skipVariantUpdate) {
             memory.selectedVariantId = templateResult.matchedVariantId;
             memory.selectedVariantName = classification.entities.color ?? classification.entities.size ?? memory.selectedVariantName;
@@ -1930,6 +2031,7 @@ let ReplyEngineService = ReplyEngineService_1 = class ReplyEngineService {
             confirm_selection: 'confirm_selection',
             confirm_last_in_stock: 'confirm_selection',
             confirm_selection_last_in_stock: 'confirm_variant_available',
+            confirm_color_variant_in_stock: 'ask_variant_choice',
             decline_selection: 'decline_selection',
             collect_checkout_info: 'start_checkout',
             order_confirmed_ask_delivery: 'ask_delivery',

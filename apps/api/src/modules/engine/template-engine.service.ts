@@ -54,6 +54,7 @@ const INTENT_TO_SCENARIO: Record<string, string> = {
   ask_recommendation: 'recommend_product',
   ready_to_order: 'collect_checkout_info',
   confirm_choice: 'confirm_selection',
+  confirm_color_variant_in_stock: 'confirm_color_variant_in_stock',
   confirm_last_in_stock: 'confirm_last_in_stock',
   confirm_selection_last_in_stock: 'confirm_selection_last_in_stock',
   confirm_variant_available: 'confirm_variant_available',
@@ -80,6 +81,7 @@ const ACTION_TO_SCENARIO: Record<string, string> = {
   ask_delivery: 'order_confirmed_ask_delivery',
   confirm_selection: 'confirm_selection',
   confirm_selection_last_in_stock: 'confirm_selection_last_in_stock',
+  confirm_color_variant_in_stock: 'confirm_color_variant_in_stock',
   confirm_variant_available: 'confirm_variant_available',
   show_price: 'show_price',
   greet: 'greeting',
@@ -206,6 +208,24 @@ export class TemplateEngineService {
           flowConfig,
         );
       }
+      // confirm_color_variant_in_stock: optional, opt-in via authored
+      // template. Falls back to confirm_variant_available so the bot
+      // still confirms the SKU; the color-level "also in other colors"
+      // hint just isn't surfaced when the tenant hasn't authored copy.
+      if (scenario === 'confirm_color_variant_in_stock') {
+        this.logger.log(
+          'confirm_color_variant_in_stock: no template authored — falling back to confirm_variant_available',
+        );
+        return this.renderScenario(
+          tenantId,
+          'confirm_variant_available',
+          classification,
+          productData,
+          memory,
+          recentTemplateIds,
+          flowConfig,
+        );
+      }
       // decline_selection: short hardcoded ack when no template authored.
       // Same architectural pattern as the offer-decline ack noted in
       // CLAUDE.md — response space is tiny, determinism + zero LLM cost
@@ -287,6 +307,35 @@ export class TemplateEngineService {
             seen.add(url);
             imageUrls.push(url);
           }
+        }
+      } else if (
+        scenario === 'confirm_color_variant_in_stock' &&
+        productData[0]
+      ) {
+        // Color-link scenario: send one image per distinct color of
+        // the product (in-stock variants only). Customer sees the
+        // linked color up front AND visually previews the alternate
+        // colors mentioned in {other_colors_variants}. Order: linked
+        // color first, others in catalog order. Dedup by lowercased
+        // color so case variations ("Black"/"black") don't double up.
+        const first = productData[0];
+        const linkedLower = memory?.selectedColor?.toLowerCase() ?? '';
+        const seen = new Set<string>();
+        const linkedImages: string[] = [];
+        const otherImages: string[] = [];
+        for (const v of first.variants) {
+          if (!v.color || v.effectiveAvailable <= 0) continue;
+          const colorKey = v.color.toLowerCase();
+          if (seen.has(colorKey)) continue;
+          seen.add(colorKey);
+          const url = v.imageUrl ?? null;
+          if (!url) continue;
+          if (colorKey === linkedLower) linkedImages.push(url);
+          else otherImages.push(url);
+        }
+        imageUrls.push(...linkedImages, ...otherImages);
+        if (imageUrls.length === 0 && first.product.imageUrl) {
+          imageUrls.push(first.product.imageUrl);
         }
       } else if (singleProductScenarios.includes(scenario)) {
         // For single-product scenarios, prefer the selected variant's image if available.
@@ -605,9 +654,12 @@ export class TemplateEngineService {
   ): Record<string, string> {
     const vars: Record<string, string> = {};
 
-    // From entities
-    if (classification.entities.productName)
-      vars['product_name'] = classification.entities.productName;
+    // From entities — note product_name is intentionally NOT taken from
+    // classification.entities.productName here. The classifier often
+    // extracts a partial / casual reference ("літня квіткова"); the
+    // catalog title is the truth-of-record. We assign product_name
+    // below from productData (or memory) and only fall back to the
+    // classifier value when neither is available.
     if (classification.entities.category)
       vars['category'] = classification.entities.category;
     if (classification.entities.color)
@@ -661,6 +713,23 @@ export class TemplateEngineService {
     // Requested variant (for variant_not_available scenario)
     if (memory?.requestedVariant) {
       vars['requested_variant'] = memory.requestedVariant;
+    }
+
+    // Color-linked media variables. Populated by reply-engine's
+    // handleColorLinkedMedia (variables are transient — recomputed
+    // each turn the link resolves). Used by
+    // `confirm_color_variant_in_stock` template:
+    //   {color_variant}        — localized linked color
+    //   {sizes}                — in-stock sizes for that color
+    //   {other_colors_variants}— other localized colors w/ stock
+    if (memory?.selectedColor && !vars['color_variant']) {
+      vars['color_variant'] = localizeColor(memory.selectedColor);
+    }
+    if (memory?.mediaLinkSizes) {
+      vars['sizes'] = memory.mediaLinkSizes;
+    }
+    if (memory?.mediaLinkOtherColors) {
+      vars['other_colors_variants'] = memory.mediaLinkOtherColors;
     }
 
     // From memory (fallback for recommendation scenarios)
@@ -809,6 +878,50 @@ export class TemplateEngineService {
       }
     }
 
+    // Variant_list scoping for variant_not_available: when customer
+    // asked for ONE axis (size only OR color only), the alternative
+    // list should surface ONLY that axis. Showing "Чорний, S, Чорний,
+    // M, Чорний, L" when the user asked for size XL is redundant —
+    // the color repeats and obscures the actual answer "S, M, L".
+    // Color+size asks (e.g. "білий M") fall through to the existing
+    // full-name formatter — that's a richer ambiguity left for a
+    // future "В Білому: S, L / Інші кольори: …" template.
+    if (
+      !vars['variant_list'] &&
+      classification.primaryIntent === 'variant_not_available' &&
+      Array.isArray(memory?.availableVariants) &&
+      memory.availableVariants.length > 0
+    ) {
+      const userSize = classification.entities.size;
+      const userColor = classification.entities.color;
+      const av = memory.availableVariants as Array<{
+        color?: string | null;
+        size?: string | null;
+        name: string;
+      }>;
+      if (userSize && !userColor) {
+        const sizes = [
+          ...new Set(
+            av.map((v) => v.size).filter((s): s is string => !!s),
+          ),
+        ];
+        if (sizes.length > 0) {
+          vars['variant_list'] = sortSizes(sizes).join(', ');
+          vars['variant_type'] = 'Розміри';
+        }
+      } else if (userColor && !userSize) {
+        const colors = [
+          ...new Set(
+            av.map((v) => v.color).filter((c): c is string => !!c),
+          ),
+        ];
+        if (colors.length > 0) {
+          vars['variant_list'] = localizeColorList(colors);
+          vars['variant_type'] = 'Відтінки';
+        }
+      }
+    }
+
     // From memory: variant_list fallback (if not built from productData)
     const suppressSizesFromMemory = !!memory?.recommendedSize;
     if (!vars['variant_list'] && Array.isArray(memory?.availableVariants) && memory.availableVariants.length > 0) {
@@ -873,6 +986,14 @@ export class TemplateEngineService {
     }
     if (memory?.selectedCategory && !vars['category']) {
       vars['category'] = memory.selectedCategory;
+    }
+
+    // Final product_name fallback: when search resolved no product
+    // and no memory of last-presented exists, use the classifier's
+    // extracted partial as a last resort. Catalog title (set above
+    // from productData) and lastPresentedProducts both take priority.
+    if (!vars['product_name'] && classification.entities.productName) {
+      vars['product_name'] = classification.entities.productName;
     }
 
     // Default reason if not provided (for recommendation templates)

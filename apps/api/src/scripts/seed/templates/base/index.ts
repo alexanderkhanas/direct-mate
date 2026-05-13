@@ -99,6 +99,25 @@ export const BASE_TEMPLATES: TemplateSpec[] = [
     active: true,
   },
   {
+    scenario: 'confirm_color_variant_in_stock',
+    stage: 'product_selected',
+    blocks: [
+      '{product_name} — {color_variant} є в наявності\n' +
+        'Розміри: {sizes}\n' +
+        'Також є в інших кольорах: {other_colors_variants}\n' +
+        'Бажаєте замовити?',
+    ],
+    requiredVariables: [
+      'product_name',
+      'color_variant',
+      'sizes',
+      'other_colors_variants',
+    ],
+    toneTags: ['warm'],
+    priority: 95,
+    active: true,
+  },
+  {
     scenario: 'ask_continue_or_checkout',
     stage: 'product_selection',
     blocks: ['{product_name} ({variant_name}) — додано 💛 Хочете ще щось, чи оформлюємо?'],

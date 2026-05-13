@@ -30,6 +30,16 @@ export class InstagramMediaMapping {
   @Column({ type: 'uuid', nullable: true })
   variantId!: string | null;
 
+  /**
+   * Tenant-supplied color slug for color-level links (e.g. "Чорний",
+   * "Black"). Distinct from `variantId` which targets a specific SKU.
+   * NULL = product-level link (current default). Filtering against
+   * variant.color uses canonical set-overlap via `translateColor` so
+   * mixed-language catalogs still match.
+   */
+  @Column({ type: 'text', nullable: true })
+  linkedColor!: string | null;
+
   @Column({ type: 'text', nullable: true })
   caption!: string | null;
 

@@ -41,7 +41,7 @@ export class InstagramContentController {
   update(
     @CurrentUser() user: JwtPayload,
     @Param('id') id: string,
-    @Body() body: { productId?: string | null; variantId?: string | null; confirmed?: boolean },
+    @Body() body: { productId?: string | null; variantId?: string | null; linkedColor?: string | null; confirmed?: boolean },
   ) {
     return this.contentService.updateMapping(id, user.tenantId, body);
   }

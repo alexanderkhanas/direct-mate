@@ -724,7 +724,25 @@ export class ReplyEngineService {
           input.mediaReference.mediaId,
         );
         if (match) {
-          ctx.trace.push(`customer_photo: matched to product ${match.productId} (confidence=${match.confidence})`);
+          ctx.trace.push(
+            `customer_photo: matched to product ${match.productId}${match.color ? ` color=${match.color}` : ''} (confidence=${match.confidence}, method=${match.matchMethod})`,
+          );
+          // Persist the match so the next turn for the same media_id
+          // skips the LLM-cost matching pipeline. Race-safe via
+          // ON CONFLICT DO NOTHING; threshold gating already happened
+          // inside matchCustomerPhoto (this branch only fires on
+          // accepted matches).
+          await this.instagramContentService
+            .persistCustomerPhotoMatch(
+              input.tenantId,
+              input.mediaReference.mediaId,
+              match,
+            )
+            .catch((err) =>
+              this.logger.warn(
+                `Failed to persist customer-photo match (non-fatal): ${err}`,
+              ),
+            );
           // Always load the FULL variant set (not filtered by match.variantId)
           // so memory.totalVariantsForSelectedProduct reflects the catalog
           // truth — needed for the "last in stock" detection in 5.5d.
@@ -741,6 +759,16 @@ export class ReplyEngineService {
             productId: match.productId,
             confidence: match.confidence,
           });
+          // Route through color-linked-media handler when the matched
+          // candidate carries a color (pHash/CLIP/vision all extract it).
+          // Otherwise fall through to the normal flow.
+          if (match.color) {
+            await this.handleColorLinkedMedia(
+              ctx,
+              match.productId,
+              match.color,
+            );
+          }
           return null; // continue normal flow with resolved product
         }
       } catch (err) {
@@ -757,10 +785,16 @@ export class ReplyEngineService {
     );
 
     if (mapping?.productId) {
-      // Known product — load full product data for use in product search step
+      // Known product — load full product data for use in product search step.
+      // For color-linked mappings, load the FULL variant set (ignoring
+      // variantId filter) so handleColorLinkedMedia can compute
+      // alternatives across all colors. Otherwise behave as before.
+      const variantIdFilter = mapping.linkedColor
+        ? undefined
+        : (mapping.variantId ?? undefined);
       const mediaProductData = await this.availabilityService.findAllByProductId(
         mapping.productId,
-        mapping.variantId ?? undefined,
+        variantIdFilter,
       );
       ctx.mediaProductData = mediaProductData;
       this.logToFile({
@@ -770,8 +804,16 @@ export class ReplyEngineService {
         mediaType: input.mediaReference.type,
         productId: mapping.productId,
         variantId: mapping.variantId,
+        linkedColor: mapping.linkedColor,
         productsFound: mediaProductData.length,
       });
+      if (mapping.linkedColor) {
+        await this.handleColorLinkedMedia(
+          ctx,
+          mapping.productId,
+          mapping.linkedColor,
+        );
+      }
     } else {
       this.instagramContentService
         .saveUnlinkedMedia(
@@ -788,6 +830,138 @@ export class ReplyEngineService {
     }
 
     return null;
+  }
+
+  /**
+   * Filter `ctx.mediaProductData` to variants whose color canonically
+   * matches `linkedColor` and route the engine to one of three
+   * scenarios based on stock:
+   *
+   *   - linked-color in stock        → confirm_color_variant_in_stock
+   *   - linked-color OOS, alts exist → variant_not_available (reuses
+   *                                    the existing 5.5o path)
+   *   - all variants OOS             → out_of_stock
+   *
+   * Skips the new scenario when the customer's message text already
+   * carries a size — 5.5b/5.5c handle that partial-variant flow with
+   * existing wording.
+   *
+   * Color comparison uses `translateColor` set-overlap (canonical
+   * forms), NOT raw string equality, so mixed-language catalogs
+   * (Cyrillic + English on the same product) still match cleanly.
+   */
+  private async handleColorLinkedMedia(
+    ctx: ProcessingContext,
+    productId: string,
+    linkedColor: string,
+  ): Promise<void> {
+    const productData = ctx.mediaProductData;
+    if (!productData || productData.length === 0) return;
+    const allVariants = productData[0].variants;
+    const linkedForms = this.translateColor(linkedColor);
+    const colorMatches = (variantColor: string | null): boolean => {
+      if (!variantColor) return false;
+      const variantForms = this.translateColor(variantColor);
+      return linkedForms.some((lf) =>
+        variantForms.some((vf) => vf === lf || vf.includes(lf) || lf.includes(vf)),
+      );
+    };
+    const colorMatchedInStock = allVariants.filter(
+      (v) => colorMatches(v.color) && v.effectiveAvailable > 0,
+    );
+    const otherColorsInStock = allVariants.filter(
+      (v) => !colorMatches(v.color) && v.effectiveAvailable > 0,
+    );
+
+    const memory = ctx.memory;
+    const classification = ctx.classification;
+
+    // Happy path: linked color has stock.
+    if (colorMatchedInStock.length > 0) {
+      // Do NOT filter productData[0].variants — downstream image
+      // attachment for confirm_color_variant_in_stock iterates the
+      // full variant set to send one image per color (all colors
+      // visible to the customer up front). Filtering would erase the
+      // other-color images.
+      memory.selectedColor = linkedColor;
+      memory.selectedProductId = productId;
+      memory.selectionState = 'awaiting_variant';
+      memory.variantStep = 'size';
+      memory.requestedVariant = undefined;
+      // Populate memory.availableVariants with ALL in-stock variants
+      // (across all colors) so 5.5b-2's color-switch detection has the
+      // full set to re-resolve against if the customer picks a
+      // different color on the next turn.
+      const allInStock = allVariants.filter((v) => v.effectiveAvailable > 0);
+      memory.availableVariants = this.buildAvailableVariantsList(allInStock);
+
+      // Defer to 5.5b/5.5c when the customer narrowed to a size in
+      // the same message — they expect a SKU-level confirm, not the
+      // color-level pitch.
+      if (classification.entities.size) {
+        ctx.trace.push(
+          `media-link: color="${linkedColor}" + user size → fall through to 5.5c`,
+        );
+        return;
+      }
+
+      // Pre-compute template variables. {sizes} = in-stock sizes for
+      // the linked color. {other_colors_variants} = canonical-deduped
+      // other colors with at least one in-stock variant, localized.
+      memory.mediaLinkSizes = colorMatchedInStock
+        .map((v) => v.size)
+        .filter((s): s is string => !!s)
+        .join(', ');
+      const otherColorsSeen = new Set<string>();
+      const otherColorsLocalized: string[] = [];
+      for (const v of otherColorsInStock) {
+        if (!v.color) continue;
+        const canonical = this.translateColor(v.color).sort().join('|');
+        if (otherColorsSeen.has(canonical)) continue;
+        otherColorsSeen.add(canonical);
+        otherColorsLocalized.push(localizeColor(v.color));
+      }
+      memory.mediaLinkOtherColors = otherColorsLocalized.join(', ');
+
+      classification.primaryIntent = 'confirm_color_variant_in_stock';
+      classification.recommendedAction = 'confirm_color_variant_in_stock';
+      ctx.trace.push(
+        `media-link: color="${linkedColor}" in-stock=${colorMatchedInStock.length} alts=${otherColorsLocalized.length} → confirm_color_variant_in_stock`,
+      );
+      return;
+    }
+
+    // Partial OOS: linked color sold out, other colors available.
+    if (otherColorsInStock.length > 0) {
+      memory.selectedProductId = productId;
+      memory.requestedVariant = linkedColor;
+      memory.availableVariants =
+        this.buildAvailableVariantsList(otherColorsInStock);
+      memory.selectionState = 'awaiting_product';
+      memory.selectedVariantId = undefined;
+      memory.selectedVariantName = undefined;
+      classification.primaryIntent = 'variant_not_available';
+      classification.recommendedAction = 'variant_not_available';
+      memory.lastAction = 'told_variant_not_available';
+      ctx.isFirstProductPresentation = false;
+      ctx.trace.push(
+        `media-link: color="${linkedColor}" OOS, ${otherColorsInStock.length} alts → variant_not_available`,
+      );
+      return;
+    }
+
+    // All variants OOS.
+    memory.selectedProductId = productId;
+    memory.selectionState = 'awaiting_product';
+    memory.selectedVariantId = undefined;
+    memory.selectedVariantName = undefined;
+    classification.primaryIntent = 'out_of_stock';
+    classification.recommendedAction = 'out_of_stock';
+    memory.lastAction = 'told_out_of_stock';
+    ctx.isFirstProductPresentation = false;
+    ctx.trace.push(
+      `media-link: color="${linkedColor}" + all colors OOS → out_of_stock`,
+    );
   }
 
   // ─── Step 4: Pre-qualification gate (block 4.8) ────────────────
@@ -2122,6 +2296,36 @@ export class ReplyEngineService {
       !memory.selectedVariantId &&
       (classification.slotAction === 'fills_missing_slot' || classification.slotAction === 'confirmation')
     ) {
+      // Color-switch detection: customer was in size-step (i.e. a
+      // color was already picked, e.g. via story-link or prior color
+      // step) but now names a DIFFERENT color. Reset to color-step so
+      // the color branch below resolves the new color and routes to
+      // ask_size_for_color for the new color's sizes — instead of
+      // letting the size branch run with the wrong selectedColor or
+      // falling through to template-engine's first-match heuristic.
+      // Canonical comparison via translateColor so "білий" vs "Білий"
+      // and "white" all collapse to the same canonical form.
+      const switchUserColor = classification.entities.color;
+      if (
+        memory.variantStep === 'size' &&
+        switchUserColor &&
+        memory.selectedColor
+      ) {
+        const userForms = this.translateColor(switchUserColor);
+        const currentForms = this.translateColor(memory.selectedColor);
+        const sameColor = userForms.some((uf) =>
+          currentForms.some((cf) => cf === uf || cf.includes(uf) || uf.includes(cf)),
+        );
+        if (!sameColor) {
+          ctx.trace.push(
+            `5.5b-2 color-switch: ${memory.selectedColor} → ${switchUserColor}`,
+          );
+          memory.variantStep = 'color';
+          memory.selectedColor = undefined;
+          memory.selectedSize = undefined;
+        }
+      }
+
       const rawVariants = memory.availableVariants;
       const variants = Array.isArray(rawVariants) ? rawVariants : [];
       const userColor = classification.entities.color;
@@ -2662,7 +2866,7 @@ export class ReplyEngineService {
 
     // Update selected variant ID from template variable matching
     // Skip for variant_not_available / ask_variant_choice — those scenarios explicitly cleared the variant
-    const skipVariantUpdate = ['variant_not_available', 'ask_variant_choice', 'ask_size_for_color', 'ask_color_for_size'].includes(templateResult?.scenario ?? '');
+    const skipVariantUpdate = ['variant_not_available', 'ask_variant_choice', 'ask_size_for_color', 'ask_color_for_size', 'confirm_color_variant_in_stock'].includes(templateResult?.scenario ?? '');
     if (templateResult?.matchedVariantId && !skipVariantUpdate) {
       memory.selectedVariantId = templateResult.matchedVariantId;
       memory.selectedVariantName = classification.entities.color ?? classification.entities.size ?? memory.selectedVariantName;
@@ -2902,6 +3106,14 @@ export class ReplyEngineService {
       // different copy. Map to confirm_variant_available so the existing
       // case in updateMemoryFromAction handles awaiting_confirmation state.
       confirm_selection_last_in_stock: 'confirm_variant_available',
+      // Color-linked media scenario: after rendering, the engine is
+      // in awaiting_variant + variantStep='size'. Customer's next
+      // turn ("M" / "хочу M") gets resolved by 5.5b/5.5c against the
+      // linked color. Map to ask_variant_choice so the post-render
+      // hook preserves awaiting_variant state (mapping to
+      // confirm_variant_available would force awaiting_confirmation
+      // and break the size-fill on the next turn).
+      confirm_color_variant_in_stock: 'ask_variant_choice',
       decline_selection: 'decline_selection',
       collect_checkout_info: 'start_checkout',
       order_confirmed_ask_delivery: 'ask_delivery',

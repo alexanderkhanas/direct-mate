@@ -75,6 +75,7 @@ export declare class ReplyEngineService {
     private loadContext;
     private classifyMessage;
     private resolveMediaProduct;
+    private handleColorLinkedMedia;
     private handlePreQualify;
     private handlePreQualifyClothing;
     private classifyOfferAnswer;

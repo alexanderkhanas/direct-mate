@@ -15,6 +15,7 @@ interface MediaMapping {
   mediaType: string;
   productId: string | null;
   variantId: string | null;
+  linkedColor: string | null;
   caption: string | null;
   mediaUrl: string | null;
   permalink: string | null;
@@ -30,6 +31,7 @@ interface Product {
   category: string | null;
   sku: string | null;
   imageUrl: string | null;
+  variants?: Array<{ id: string; color: string | null; size: string | null }>;
 }
 
 function MediaTypeIcon({ type }: { type: string }) {
@@ -49,11 +51,12 @@ function statusBadge(mapping: MediaMapping, t: (key: string) => string) {
 function ProductLinkModal({ products, caption, onSelect, onClose }: {
   products: Product[];
   caption: string | null;
-  onSelect: (product: Product) => void;
+  onSelect: (product: Product, linkedColor: string | null) => void;
   onClose: () => void;
 }) {
   const { t } = useT();
   const [search, setSearch] = useState('');
+  const [picked, setPicked] = useState<Product | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -62,6 +65,26 @@ function ProductLinkModal({ products, caption, onSelect, onClose }: {
     document.addEventListener('keydown', handleEsc);
     return () => document.removeEventListener('keydown', handleEsc);
   }, [onClose]);
+
+  const distinctColors = picked
+    ? Array.from(
+        new Set(
+          (picked.variants ?? [])
+            .map((v) => v.color)
+            .filter((c): c is string => !!c),
+        ),
+      )
+    : [];
+
+  const handlePick = (product: Product) => {
+    // No colors available → commit as product-level link immediately.
+    const colorsAvail = (product.variants ?? []).some((v) => !!v.color);
+    if (!colorsAvail) {
+      onSelect(product, null);
+      return;
+    }
+    setPicked(product);
+  };
 
   const q = search.toLowerCase();
   const filtered = products.filter(p =>
@@ -108,7 +131,53 @@ function ProductLinkModal({ products, caption, onSelect, onClose }: {
         </div>
 
         <div className="overflow-y-auto p-4">
-          {filtered.length === 0 ? (
+          {picked ? (
+            <div className="space-y-4">
+              <div className="flex items-center gap-3 rounded-lg border border-gray-200 p-3">
+                <div className="h-12 w-12 flex-shrink-0 overflow-hidden rounded-lg bg-gray-100">
+                  {picked.imageUrl ? (
+                    <img src={picked.imageUrl} alt={picked.title} className="h-full w-full object-cover" />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center">
+                      <Package className="h-6 w-6 text-gray-300" />
+                    </div>
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-gray-900">{picked.title}</p>
+                  {picked.category && <p className="truncate text-xs text-gray-400">{picked.category}</p>}
+                </div>
+                <button
+                  onClick={() => setPicked(null)}
+                  className="text-xs text-blue-600 hover:underline"
+                >
+                  {t('content.change') ?? 'Change'}
+                </button>
+              </div>
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  {t('content.pick_color') ?? 'Pick color (or skip for all colors)'}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => onSelect(picked, null)}
+                    className="rounded-full border border-gray-200 bg-white px-4 py-1.5 text-xs font-medium text-gray-700 hover:border-blue-400"
+                  >
+                    {t('content.all_colors') ?? 'All colors'}
+                  </button>
+                  {distinctColors.map((color) => (
+                    <button
+                      key={color}
+                      onClick={() => onSelect(picked, color)}
+                      className="rounded-full border border-gray-200 bg-white px-4 py-1.5 text-xs font-medium text-gray-700 hover:border-blue-400 hover:bg-blue-50"
+                    >
+                      {color}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : filtered.length === 0 ? (
             <div className="py-10 text-center text-sm text-gray-400">No products found</div>
           ) : (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -117,7 +186,7 @@ function ProductLinkModal({ products, caption, onSelect, onClose }: {
                 return (
                   <button
                     key={p.id}
-                    onClick={() => onSelect(p)}
+                    onClick={() => handlePick(p)}
                     className="group text-left rounded-xl border border-gray-200 hover:border-blue-400 hover:shadow-md transition-all overflow-hidden bg-white"
                   >
                     <div className="aspect-square bg-gray-100 overflow-hidden">
@@ -189,14 +258,31 @@ export default function ContentLinkingPage() {
   });
 
   const linkProduct = useMutation({
-    mutationFn: ({ id, productId }: { id: string; productId: string }) =>
-      api.patch(`/instagram/media-mappings/${id}`, { productId, confirmed: true }),
+    mutationFn: ({
+      id,
+      productId,
+      linkedColor,
+    }: {
+      id: string;
+      productId: string;
+      linkedColor: string | null;
+    }) =>
+      api.patch(`/instagram/media-mappings/${id}`, {
+        productId,
+        linkedColor,
+        confirmed: true,
+      }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['content-linking'] }),
   });
 
   const unlinkProduct = useMutation({
     mutationFn: (id: string) =>
-      api.patch(`/instagram/media-mappings/${id}`, { productId: null, variantId: null, confirmed: false }),
+      api.patch(`/instagram/media-mappings/${id}`, {
+        productId: null,
+        variantId: null,
+        linkedColor: null,
+        confirmed: false,
+      }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['content-linking'] }),
   });
 
@@ -315,6 +401,11 @@ export default function ContentLinkingPage() {
                           {productList.find(p => p.id === mapping.productId)?.title ?? 'Linked'}
                         </span>
                       </div>
+                      {mapping.linkedColor && (
+                        <span className="rounded-md bg-purple-50 px-2 py-1 text-xs font-medium text-purple-700">
+                          {mapping.linkedColor}
+                        </span>
+                      )}
                       {statusBadge(mapping, t)}
                     </>
                   ) : (
@@ -337,8 +428,12 @@ export default function ContentLinkingPage() {
         <ProductLinkModal
           products={productList}
           caption={linkingMapping.caption}
-          onSelect={(p) => {
-            linkProduct.mutate({ id: linkingMapping.id, productId: p.id });
+          onSelect={(p, linkedColor) => {
+            linkProduct.mutate({
+              id: linkingMapping.id,
+              productId: p.id,
+              linkedColor,
+            });
             setLinkingMapping(null);
           }}
           onClose={() => setLinkingMapping(null)}

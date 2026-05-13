@@ -84,6 +84,49 @@ export class InstagramContentService {
     });
   }
 
+  /**
+   * Persist a customer-photo match to `instagram_media_mappings` so
+   * subsequent turns for the same media_id read from cache instead of
+   * re-running pHash/CLIP/vision. Race-safe: `(tenantId, instagramMediaId)`
+   * UNIQUE constraint + orIgnore() means a duplicate-key conflict from
+   * a concurrent write is silently no-op'd. Always inserts with
+   * `confirmed=false` so the admin linking page surfaces auto-matches
+   * for review.
+   */
+  async persistCustomerPhotoMatch(
+    tenantId: string,
+    mediaId: string,
+    match: {
+      productId: string;
+      variantId: string | null;
+      color: string | null;
+      confidence: number;
+      matchMethod:
+        | 'customer_photo_phash'
+        | 'customer_photo_exact'
+        | 'customer_photo_clip'
+        | 'customer_photo_vision';
+    },
+  ): Promise<void> {
+    await this.mappingRepo
+      .createQueryBuilder()
+      .insert()
+      .into(InstagramMediaMapping)
+      .values({
+        tenantId,
+        instagramMediaId: mediaId,
+        mediaType: 'customer_photo',
+        productId: match.productId,
+        variantId: match.variantId,
+        linkedColor: match.color,
+        matchMethod: match.matchMethod,
+        matchConfidence: match.confidence,
+        confirmed: false,
+      })
+      .orIgnore()
+      .execute();
+  }
+
   async saveUnlinkedMedia(
     tenantId: string,
     mediaId: string,
@@ -125,13 +168,19 @@ export class InstagramContentService {
   async updateMapping(
     id: string,
     tenantId: string,
-    data: { productId?: string | null; variantId?: string | null; confirmed?: boolean },
+    data: {
+      productId?: string | null;
+      variantId?: string | null;
+      linkedColor?: string | null;
+      confirmed?: boolean;
+    },
   ): Promise<InstagramMediaMapping> {
     const mapping = await this.mappingRepo.findOne({ where: { id, tenantId } });
     if (!mapping) throw new NotFoundException('Mapping not found');
 
     if (data.productId !== undefined) mapping.productId = data.productId;
     if (data.variantId !== undefined) mapping.variantId = data.variantId;
+    if (data.linkedColor !== undefined) mapping.linkedColor = data.linkedColor;
     if (data.confirmed !== undefined) mapping.confirmed = data.confirmed;
     if (data.productId) mapping.matchMethod = 'manual';
 
@@ -451,12 +500,13 @@ export class InstagramContentService {
       await this.mappingRepo.update(story.id, {
         productId: sourcePost.productId,
         variantId: sourcePost.variantId,
+        linkedColor: sourcePost.linkedColor,
         matchMethod: 'story_from_post',
         matchConfidence: 1.0,
       });
 
       this.logger.log(
-        `Story ${story.instagramMediaId} inherited product ${sourcePost.productId} from post ${shortcode}`,
+        `Story ${story.instagramMediaId} inherited product ${sourcePost.productId}${sourcePost.linkedColor ? ` (color=${sourcePost.linkedColor})` : ''} from post ${shortcode}`,
       );
       inherited++;
     }
@@ -547,11 +597,12 @@ export class InstagramContentService {
           await this.mappingRepo.update(story.id, {
             productId: sourcePost.productId,
             variantId: sourcePost.variantId,
+            linkedColor: sourcePost.linkedColor,
             matchMethod: 'ai_vision_match',
             matchConfidence: result.confidence,
           });
           this.logger.log(
-            `Story ${story.instagramMediaId} matched to post ${sourcePost.instagramMediaId} via vision (confidence: ${result.confidence})`,
+            `Story ${story.instagramMediaId} matched to post ${sourcePost.instagramMediaId}${sourcePost.linkedColor ? ` (color=${sourcePost.linkedColor})` : ''} via vision (confidence: ${result.confidence})`,
           );
         } else {
           this.logger.log(
@@ -570,7 +621,17 @@ export class InstagramContentService {
     tenantId: string,
     customerImageUrl: string,
     opts?: { conversationId?: string },
-  ): Promise<{ productId: string; variantId: string | null; confidence: number } | null> {
+  ): Promise<{
+    productId: string;
+    variantId: string | null;
+    color: string | null;
+    confidence: number;
+    matchMethod:
+      | 'customer_photo_phash'
+      | 'customer_photo_exact'
+      | 'customer_photo_clip'
+      | 'customer_photo_vision';
+  } | null> {
     // Three-stage flow:
     //   Stage 1 — pHash exact-match shortcut. Catches "customer
     //             reshares our catalog photo verbatim".
@@ -612,7 +673,9 @@ export class InstagramContentService {
         return {
           productId: closest.product_id,
           variantId,
+          color: closest.color ?? null,
           confidence,
+          matchMethod: 'customer_photo_phash',
         };
       }
     }
@@ -642,7 +705,9 @@ export class InstagramContentService {
       return {
         productId: exact.productId!,
         variantId: exact.variantId,
+        color: exact.linkedColor ?? null,
         confidence: 1.0,
+        matchMethod: 'customer_photo_exact',
       };
     }
 
@@ -900,7 +965,12 @@ export class InstagramContentService {
         return {
           productId: candidate.productId,
           variantId,
+          color: candidate.color ?? null,
           confidence: result.confidence,
+          // CLIP-corroborated picks are `clip`/`clip+linked`; pure linked
+          // picks come from the linked-media exact branch above. The
+          // vision step is what gates acceptance in all cases.
+          matchMethod: 'customer_photo_vision',
         };
       }
 
@@ -1165,20 +1235,34 @@ export class InstagramContentService {
     const variants = await this.variantRepo
       .createQueryBuilder('v')
       .innerJoin('v.product', 'p')
-      .select(['v.id', 'v.sku', 'v.productId'])
+      .select(['v.id', 'v.sku', 'v.productId', 'v.color'])
       .where('p.tenantId = :tenantId', { tenantId })
       .andWhere('v.active = true')
       .andWhere('v.sku IS NOT NULL')
       .getMany();
 
-    const skuMap = new Map<string, { variantId: string | null; productId: string }>();
-    // Product-level SKUs first (no variant)
+    const skuMap = new Map<
+      string,
+      { variantId: string | null; productId: string; color: string | null }
+    >();
+    // Product-level SKUs first (no variant, no color)
     for (const p of products) {
-      if (p.sku) skuMap.set(p.sku.toLowerCase(), { variantId: null, productId: p.id });
+      if (p.sku)
+        skuMap.set(p.sku.toLowerCase(), {
+          variantId: null,
+          productId: p.id,
+          color: null,
+        });
     }
-    // Variant-level SKUs (override product if same SKU)
+    // Variant-level SKUs (override product if same SKU) — propagate
+    // the variant's color so applySkuMatch can populate linkedColor.
     for (const v of variants) {
-      if (v.sku) skuMap.set(v.sku.toLowerCase(), { variantId: v.id, productId: v.productId });
+      if (v.sku)
+        skuMap.set(v.sku.toLowerCase(), {
+          variantId: v.id,
+          productId: v.productId,
+          color: v.color ?? null,
+        });
     }
 
     let matched = 0;
@@ -1214,14 +1298,20 @@ export class InstagramContentService {
 
   private async applySkuMatch(
     mapping: InstagramMediaMapping,
-    match: { variantId: string | null; productId: string },
+    match: { variantId: string | null; productId: string; color: string | null },
     sku: string,
   ): Promise<void> {
     mapping.productId = match.productId;
     mapping.variantId = match.variantId;
+    // Variant-level SKU match carries a color → persist as the
+    // canonical color-link for downstream `confirm_color_variant_in_stock`
+    // routing. Product-level SKU match leaves linkedColor null.
+    mapping.linkedColor = match.color;
     mapping.matchMethod = 'sku_from_caption';
     mapping.confirmed = true;
     await this.mappingRepo.save(mapping);
-    this.logger.log(`SKU match: "${sku}" → product ${match.productId}${match.variantId ? ` variant ${match.variantId}` : ''}`);
+    this.logger.log(
+      `SKU match: "${sku}" → product ${match.productId}${match.variantId ? ` variant ${match.variantId}` : ''}${match.color ? ` color=${match.color}` : ''}`,
+    );
   }
 }
