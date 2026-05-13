@@ -288,11 +288,27 @@ export class SimulatorService {
       const actual = result.templateScenario ?? null;
       push('scenario', actual === expect.scenario, expect.scenario, actual);
     }
+    // Check across primary reply AND extraReplies — when the engine
+    // prepends a welcome bubble, primary becomes the welcome text and
+    // the contextual reply gets demoted to extraReplies[0]. Substring
+    // assertions should pass when the target text appears anywhere in
+    // the user-visible bubble stack (matches the local CLI's behavior
+    // at apps/api/src/scripts/simulate-conversation.ts).
+    const allReplyTexts = [
+      result.reply?.text ?? '',
+      ...(result.extraReplies ?? []).map((r) => r.text ?? ''),
+    ]
+      .filter(Boolean)
+      .map((t) => t.toLowerCase());
+    const anyReplyIncludes = (sub: string) =>
+      allReplyTexts.some((t) => t.includes(sub.toLowerCase()));
+    const previewReplies = () =>
+      allReplyTexts.map((t) => t.slice(0, 80)).join(' ‖ ');
     for (const sub of arr(expect.replyContains)) {
-      push('replyContains', (result.reply?.text ?? '').toLowerCase().includes(sub.toLowerCase()), sub, result.reply?.text?.slice(0, 80));
+      push('replyContains', anyReplyIncludes(sub), sub, previewReplies());
     }
     for (const sub of arr(expect.replyNotContains)) {
-      push('replyNotContains', !(result.reply?.text ?? '').toLowerCase().includes(sub.toLowerCase()), `NOT ${sub}`, result.reply?.text?.slice(0, 80));
+      push('replyNotContains', !anyReplyIncludes(sub), `NOT ${sub}`, previewReplies());
     }
     if (expect.imageCount !== undefined) {
       const actual = result.reply?.imageUrls?.length ?? 0;
