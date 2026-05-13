@@ -158,7 +158,7 @@ export async function seedCatalog(
     productsCreated++;
 
     for (const v of spec.variants) {
-      const variantId = await insertVariant(ds, productId, spec.externalId, v);
+      const variantId = await insertVariant(ds, tenantId, productId, spec.externalId, v);
       variantsCreated++;
       await insertStock(ds, variantId, v.stock);
     }
@@ -168,6 +168,7 @@ export async function seedCatalog(
 
 async function insertVariant(
   ds: DataSource,
+  tenantId: string,
   productId: string,
   productExternalId: string,
   v: VariantSpec,
@@ -176,11 +177,11 @@ async function insertVariant(
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')}-${(v.size ?? '_').toLowerCase().replace(/\s+/g, '-')}`;
   const inserted: Array<{ id: string }> = await ds.query(
-    `INSERT INTO product_variants (product_id, external_variant_id,
+    `INSERT INTO product_variants (tenant_id, product_id, external_variant_id,
                                     color, size, price, currency, active)
-     VALUES ($1, $2, $3, $4, $5, 'UAH', true)
+     VALUES ($1, $2, $3, $4, $5, $6, 'UAH', true)
      RETURNING id`,
-    [productId, externalVariantId, v.color, v.size, v.price],
+    [tenantId, productId, externalVariantId, v.color, v.size, v.price],
   );
   return inserted[0].id;
 }
