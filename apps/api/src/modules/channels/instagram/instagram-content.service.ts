@@ -691,6 +691,24 @@ export class InstagramContentService {
       .where('m.tenant_id = :tenantId', { tenantId })
       .andWhere('m.product_id IS NOT NULL')
       .andWhere('m.media_url IS NOT NULL')
+      // Exclude self-generated customer-photo mappings — those rows
+      // are produced by past customer-photo matches (persisted by
+      // `persistCustomerPhotoMatch` for cache reuse). Letting them
+      // back into this "trusted linked" query creates a contamination
+      // loop: one noisy vision accept becomes a future "linked"
+      // candidate, escalating confidence without human review. Only
+      // human-confirmed mappings (admin manual) and SKU-caption /
+      // story-from-post auto-links count as trusted corroboration
+      // for new photo matches.
+      .andWhere(
+        `(m.match_method IS NULL
+          OR m.match_method NOT IN (
+            'customer_photo_phash',
+            'customer_photo_clip',
+            'customer_photo_vision',
+            'customer_photo_exact'
+          ))`,
+      )
       .orderBy('m.created_at', 'DESC')
       .limit(10)
       .getMany();
@@ -873,6 +891,14 @@ export class InstagramContentService {
         model: visionModel,
         messages: [{ role: 'user', content: imageContent }],
         max_completion_tokens: 2000,
+        // temperature=0 to suppress vision flicker. Without this the
+        // OpenAI default (1.0) sampled the same image to different
+        // match indices across retries — observed in prod where a
+        // customer photo with bit-identical CLIP embedding (cosine
+        // 0.976) got gptMatch=-1 on attempt 1 and gptMatch=1 on
+        // attempt 2 with the same prompt. Matches the story-matching
+        // vision call elsewhere in this file.
+        temperature: 0,
       });
 
       const text = response.choices[0]?.message?.content?.trim() ?? '';

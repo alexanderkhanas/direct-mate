@@ -1,7 +1,13 @@
 # compiled output
-/dist
-/node_modules
-/build
+dist
+node_modules
+build
+
+# Exception: packages/shared/dist is the shared package's distributed
+# entrypoint (package.json points main+types at dist/). Keep tracked so
+# fresh clones can `import '@direct-mate/shared'` before any build step.
+!packages/shared/dist/
+!packages/shared/dist/**
 
 # Logs
 logs

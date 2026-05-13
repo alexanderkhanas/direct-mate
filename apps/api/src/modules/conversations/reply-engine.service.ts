@@ -923,6 +923,21 @@ export class ReplyEngineService {
       }
       memory.mediaLinkOtherColors = otherColorsLocalized.join(', ');
 
+      // Single-color product (or every other color OOS) → no
+      // alternatives to pitch. The confirm_color_variant_in_stock
+      // template requires `{other_colors_variants}` and would fall
+      // through to AI fallback when that value is empty. Route to
+      // ask_size_for_color instead — same color+sizes shape,
+      // doesn't require the other-colors var.
+      if (otherColorsLocalized.length === 0) {
+        classification.primaryIntent = 'ask_size_for_color';
+        classification.recommendedAction = 'ask_size_for_color';
+        ctx.trace.push(
+          `media-link: color="${linkedColor}" in-stock=${colorMatchedInStock.length} alts=0 → ask_size_for_color (single-color product)`,
+        );
+        return;
+      }
+
       classification.primaryIntent = 'confirm_color_variant_in_stock';
       classification.recommendedAction = 'confirm_color_variant_in_stock';
       ctx.trace.push(
