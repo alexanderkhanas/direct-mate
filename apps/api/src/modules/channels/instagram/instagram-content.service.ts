@@ -875,8 +875,20 @@ export class InstagramContentService {
         `Customer photo: ${failedCandidates.length}/${allCandidates.length} candidate images failed to download — ${JSON.stringify(failedCandidates.slice(0, 5))}`,
       );
     } else {
+      // Per-candidate fingerprint: title + source + first-16 of base64-SHA-256.
+      // Lets a local probe re-fetch each URL, compute its SHA, and prove
+      // the exact bytes sent to OpenAI match (or don't) between envs.
+      const crypto = await import('node:crypto');
+      const fingerprints = validIdx.map((idx, promptIdx) => {
+        const c = allCandidates[idx];
+        const dataUrl = candidateDataUrls[idx]!;
+        const semi = dataUrl.indexOf(',');
+        const bytes = Buffer.from(dataUrl.slice(semi + 1), 'base64');
+        const sha = crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+        return `${promptIdx + 1}:${c.title.slice(0, 20).replace(/\s+/g, '_')}[${c.source}]=${sha}`;
+      });
       this.logger.log(
-        `Customer photo: ${validIdx.length}/${allCandidates.length} candidate images downloaded`,
+        `Customer photo: ${validIdx.length}/${allCandidates.length} candidate images downloaded — ${fingerprints.join(' ')}`,
       );
     }
 
