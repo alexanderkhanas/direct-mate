@@ -865,4 +865,89 @@ export const SHOWCASE_WOMEN_CLOTHES_SCENARIOS: Record<string, SimulatorScenario>
     ],
     flaky: true,
   },
+
+  // ─── Size chart resolved from lastPresentedProducts ─────────────
+  showcase_women_size_chart_from_shown_products: {
+    name: 'showcase — Size chart resolved from shown products',
+    description:
+      'After browsing dresses without picking one, customer asks ' +
+      '"розмірна сітка є?". memory.selectedProductId and ' +
+      'ctx.mediaProductData are both empty, so the chart handler must ' +
+      'derive category from memory.lastPresentedProducts (last entry → ' +
+      'getBrandAndCategoryForProduct returns category=Сукні) and ' +
+      'resolve to the "сукні" chart instead of the tenant default ' +
+      '("верх"). Validates the history-aware chart resolution path. ' +
+      'Marked flaky because turn 1\'s classifier may also stamp ' +
+      'memory.selectedCategory="сукні" — in that case the existing ' +
+      'fallback path lands on the same chart and the assertion still ' +
+      'passes; the differentiator is the ' +
+      '"size_chart_request: ctx source=shown" trace line in ' +
+      'conversations.log.',
+    tenantId: SHOWCASE_WOMEN_CLOTHES,
+    turns: [
+      {
+        message: 'є сукні?',
+        expect: {
+          decision: 'reply',
+          scenario: 'show_products',
+          note: 'dresses surfaced; lastPresentedProducts populated with productIds',
+        },
+      },
+      {
+        message: 'розмірна сітка є?',
+        expect: {
+          decision: 'reply',
+          scenario: 'show_size_chart',
+          imageCount: 1,
+          note:
+            'engine resolves сукні chart (not the "верх" default) via ' +
+            'memory.lastPresentedProducts → category=Сукні. Functional ' +
+            'proof is the "size_chart_request: ctx source=shown" trace ' +
+            'line + the resolved chart image. Showcase tenant has no ' +
+            'show_size_chart template seeded so the rendered text falls ' +
+            'back to generic "Ось наша розмірна сітка 💛" — chart-name ' +
+            'replyContains would be brittle here.',
+        },
+      },
+    ],
+    flaky: true,
+  },
+
+  // Complementary help-style coverage for the same fix. Help-style
+  // attaches the chart via extraReplies, which production Instagram
+  // drops (CLAUDE.md tech debt at instagram.service.ts:668-674) — the
+  // engine-side resolution is still exercised end-to-end here, and the
+  // new trace line at the extraReplies attach point makes the silent
+  // drop discoverable in prod logs.
+  showcase_women_size_chart_help_style_from_shown_products: {
+    name: 'showcase — Help-style size chart after browse',
+    description:
+      'After browsing dresses, customer asks "як зрозуміти який мій ' +
+      'розмір?" (help-style). Engine asks for measurements and attaches ' +
+      'the сукні chart as an extraReply. Validates that the same ' +
+      'history-aware derivation applies before the help-style vs ' +
+      'direct-ask split.',
+    tenantId: SHOWCASE_WOMEN_CLOTHES,
+    turns: [
+      {
+        message: 'є сукні?',
+        expect: {
+          decision: 'reply',
+          scenario: 'show_products',
+        },
+      },
+      {
+        message: 'як зрозуміти який мій розмір?',
+        expect: {
+          decision: 'reply',
+          extraReplyCount: 1,
+          note:
+            'primary reply asks for measurements; chart attached as ' +
+            'extraReplies[0]. Production Instagram drops this — trace ' +
+            '"help-style attaching chart as extraReply" identifies it.',
+        },
+      },
+    ],
+    flaky: true,
+  },
 };

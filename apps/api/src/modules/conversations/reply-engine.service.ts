@@ -4671,6 +4671,8 @@ export class ReplyEngineService {
     // the direct chart-ask flow attach it.
     let brand: string | null = null;
     let category: string | null = entities.category ?? memory.selectedCategory ?? null;
+    let ctxSource: 'media' | 'selected' | 'shown' | 'classifier' | 'none' =
+      category ? 'classifier' : 'none';
 
     const contextProductId =
       ctx.mediaProductData?.[0]?.product?.id ?? memory.selectedProductId ?? null;
@@ -4681,7 +4683,26 @@ export class ReplyEngineService {
       );
       brand = info.brand ?? brand;
       category = info.category ?? category;
+      ctxSource = ctx.mediaProductData?.[0]?.product?.id ? 'media' : 'selected';
+    } else {
+      // No hard product context — derive from products shown earlier in this
+      // conversation. memory.lastPresentedProducts is fully overwritten on
+      // each surfacing turn, so the array reflects the latest surfacing only
+      // and "last entry" = most relevant product from that turn.
+      const history = await this.resolveChartContextFromHistory(input.tenantId, memory, ctx);
+      if (history.source === 'shown') {
+        if (history.brand) brand = history.brand;
+        // Classifier-extracted category is more direct evidence than
+        // inferred-from-shown, so only upgrade when the current category is
+        // null.
+        if (!category && history.category) category = history.category;
+        ctxSource = 'shown';
+      }
     }
+
+    ctx.trace.push(
+      `size_chart_request: ctx source=${ctxSource} brand=${brand ?? '-'} category=${category ?? '-'}`,
+    );
 
     const chart = await this.sizeChartsService.resolveForContext(input.tenantId, {
       brand,
@@ -4725,6 +4746,13 @@ export class ReplyEngineService {
             imageUrls: [chartUrl],
           },
         ];
+        // Production Instagram replier ignores result.extraReplies (see
+        // CLAUDE.md tech debt at instagram.service.ts:668-674), so this
+        // chart bubble is silently dropped in prod. Trace it so log
+        // analysis can identify the silent-drop case post-fix.
+        ctx.trace.push(
+          `size_chart_request: help-style attaching chart as extraReply chartId=${chart.id} (prod Instagram drops extraReplies)`,
+        );
       }
       return {
         decision: ReplyDecision.Reply,
@@ -4759,7 +4787,7 @@ export class ReplyEngineService {
     const publicUrl = this.sizeChartsService.publicUrl(chart.imagePath);
 
     ctx.trace.push(
-      `size_chart_request: resolved chart ${chart.id} (brand=${brand ?? '-'}, category=${category ?? '-'})`,
+      `size_chart_request: resolved chart ${chart.id} (brand=${brand ?? '-'}, category=${category ?? '-'}, source=${ctxSource})`,
     );
 
     await this.auditService.log({
@@ -4792,6 +4820,57 @@ export class ReplyEngineService {
       stateUpdate: null,
       templateScenario: rendered?.scenario ?? 'show_size_chart',
     };
+  }
+
+  /**
+   * Walks memory.lastPresentedProducts from end to start (up to 3 entries)
+   * looking for a product with a brand or category in the catalog. Returns
+   * the first non-empty hit. Used by handleSizeChartRequest when no hard
+   * product context (media / selected) is available — lets the chart cascade
+   * pick the right brand/category from products the customer just browsed.
+   */
+  private async resolveChartContextFromHistory(
+    tenantId: string,
+    memory: AssistantMemory,
+    ctx: ProcessingContext,
+  ): Promise<{
+    brand: string | null;
+    category: string | null;
+    source: 'shown' | 'none';
+    shownIndex?: number;
+  }> {
+    const presented = memory.lastPresentedProducts;
+    if (!Array.isArray(presented) || presented.length === 0) {
+      return { brand: null, category: null, source: 'none' };
+    }
+    const WALK_DEPTH = 3;
+    const lastIdx = presented.length - 1;
+    const stopAt = Math.max(0, lastIdx - (WALK_DEPTH - 1));
+    let lookups = 0;
+    for (let i = lastIdx; i >= stopAt; i--) {
+      const entry = presented[i];
+      if (!entry?.productId) continue;
+      const info = await this.sizeChartsService.getBrandAndCategoryForProduct(
+        tenantId,
+        entry.productId,
+      );
+      lookups += 1;
+      if (info.brand || info.category) {
+        ctx.trace.push(
+          `size_chart_request: history walk hit lastPresentedProducts[${i}] productId=${entry.productId} brand=${info.brand ?? '-'} category=${info.category ?? '-'}`,
+        );
+        return {
+          brand: info.brand,
+          category: info.category,
+          source: 'shown',
+          shownIndex: i,
+        };
+      }
+    }
+    ctx.trace.push(
+      `size_chart_request: history walk exhausted (entries=${lookups}, allEmpty=true)`,
+    );
+    return { brand: null, category: null, source: 'none' };
   }
 
   // ─── Handoff helper ────────────────────────────────────────────
