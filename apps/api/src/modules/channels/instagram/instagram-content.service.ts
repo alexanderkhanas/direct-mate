@@ -943,19 +943,25 @@ export class InstagramContentService {
 
       const visionModel =
         this.config.get<string>('openai.model') ?? 'gpt-5.4-mini';
-      const response = await this.openai.chat.completions.create({
-        model: visionModel,
-        messages: [{ role: 'user', content: imageContent }],
-        max_completion_tokens: 2000,
-        // temperature=0 to suppress vision flicker. Without this the
-        // OpenAI default (1.0) sampled the same image to different
-        // match indices across retries — observed in prod where a
-        // customer photo with bit-identical CLIP embedding (cosine
-        // 0.976) got gptMatch=-1 on attempt 1 and gptMatch=1 on
-        // attempt 2 with the same prompt. Matches the story-matching
-        // vision call elsewhere in this file.
-        temperature: 0,
-      });
+      // Use withResponse() to capture x-request-id from response headers.
+      // Local probe with identical input bytes + identical key + identical
+      // model name accepts the same match prod rejects; we've ruled out
+      // every observable variable. request_id lets us escalate to OpenAI
+      // support with a concrete pair of conflicting request IDs.
+      const apiResult = await this.openai.chat.completions
+        .create({
+          model: visionModel,
+          messages: [{ role: 'user', content: imageContent }],
+          max_completion_tokens: 2000,
+          temperature: 0,
+        })
+        .withResponse();
+      const response = apiResult.data;
+      const requestId = apiResult.response.headers.get('x-request-id') ?? 'unknown';
+      const openaiModelHeader = apiResult.response.headers.get('openai-model') ?? 'unknown';
+      this.logger.log(
+        `Customer photo: vision request_id=${requestId} openai-model-header=${openaiModelHeader} model-sent=${visionModel}`,
+      );
 
       const text = response.choices[0]?.message?.content?.trim() ?? '';
       const jsonMatch = text.match(/\{.*\}/s);
