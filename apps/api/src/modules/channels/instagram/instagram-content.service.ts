@@ -819,8 +819,23 @@ export class InstagramContentService {
     // ─── Stage 3: Vision verification ──────────────────────────────
     const customerDataUrl = await this.toBase64DataUrl(customerImageUrl);
     if (!customerDataUrl) {
-      this.logger.warn('matchCustomerPhoto: could not download customer image');
+      this.logger.warn(`matchCustomerPhoto: could not download customer image url=${customerImageUrl.slice(0, 80)}…`);
       return null;
+    }
+    // Diagnostic — prod is rejecting vision matches at 0.98 confidence on
+    // image setups that succeed locally. The remaining environmental gap
+    // is the customer image fetch (lookaside.fbsbx.com signed URL fetched
+    // by toBase64DataUrl at request time vs my local probe using a saved
+    // file). Log image fingerprint so we can compare: a too-small base64
+    // means the fetch returned an error page / empty body / placeholder.
+    {
+      const semiIdx = customerDataUrl.indexOf(',');
+      const mime = customerDataUrl.slice(5, customerDataUrl.indexOf(';'));
+      const b64Len = semiIdx > 0 ? customerDataUrl.length - semiIdx - 1 : 0;
+      const approxBytes = Math.floor(b64Len * 3 / 4);
+      this.logger.log(
+        `Customer photo: customer image fetched mime=${mime} base64Len=${b64Len} approxKB=${(approxBytes / 1024).toFixed(1)} urlHost=${(() => { try { return new URL(customerImageUrl).host; } catch { return 'invalid'; } })()}`,
+      );
     }
 
     const candidateDataUrls = await Promise.all(
