@@ -1446,11 +1446,20 @@ export class ReplyEngineService {
 
       // Only override scenario for selection-type intents.
       // Price / delivery / FAQ intents already work correctly with productData in context.
+      // `ready_to_order` belongs here too: when a customer says "Хочу замовити X"
+      // with a story_reply/media attachment, the engine has resolved the product
+      // but no variant yet. Without this, 5.5m's variant-match block is skipped
+      // and execution falls through to 5.5c with a classifier-leaked color,
+      // producing AI fallback. Cause-of-record: prod conv
+      // `05d802e7-5182-436f-a45e-742e3f9c11b4` (jeans + leaked t-shirt color).
       const isSelectionIntent =
-        ['availability_check', 'product_inquiry', 'general_question'].includes(classification.primaryIntent) ||
+        ['availability_check', 'product_inquiry', 'general_question', 'ready_to_order'].includes(classification.primaryIntent) ||
         classification.recommendedAction === 'show_products';
 
       if (isSelectionIntent) {
+        if (classification.primaryIntent === 'ready_to_order') {
+          ctx.trace.push('5.5m: ready_to_order entered selection block');
+        }
         const userColor = classification.entities.color;
         const userSize = classification.entities.size;
 
@@ -2597,19 +2606,52 @@ export class ReplyEngineService {
               classification.recommendedAction = 'ask_variant_choice';
               ctx.trace.push('5.5c: color-in-title product (no color axis) → ask_variant_choice (sizes only)');
             } else if (userColor && !userSize) {
-              memory.selectedColor = userColor;
-              memory.selectedSize = undefined;
-              memory.variantStep = 'size';
-              classification.primaryIntent = 'ask_size_for_color';
-              classification.recommendedAction = 'ask_size_for_color';
-              ctx.trace.push('5.5c: color matched, size ambiguous → ask_size_for_color');
+              // Sanity check: classifier sometimes leaks `entities.color` from
+              // history (e.g. prior order's color carried forward to a new
+              // product turn — prod conv 05d802e7-…). If userColor doesn't
+              // exist on the resolved product, drop it as noise rather than
+              // narrowing variant_list to zero rows downstream (template
+              // engine would reject and we'd fall to AI fallback).
+              const colorExistsOnProduct = variants.some((v) => this.colorsOverlap(v.color, userColor));
+              if (!colorExistsOnProduct) {
+                memory.variantStep = null;
+                memory.selectedColor = undefined;
+                memory.selectedSize = undefined;
+                classification.primaryIntent = 'ask_variant_choice';
+                classification.recommendedAction = 'ask_variant_choice';
+                ctx.trace.push(`5.5c: userColor "${userColor}" not in variants → ask_variant_choice (leaked entity dropped)`);
+              } else {
+                memory.selectedColor = userColor;
+                memory.selectedSize = undefined;
+                memory.variantStep = 'size';
+                classification.primaryIntent = 'ask_size_for_color';
+                classification.recommendedAction = 'ask_size_for_color';
+                ctx.trace.push('5.5c: color matched, size ambiguous → ask_size_for_color');
+              }
             } else if (userSize && !userColor) {
-              memory.selectedSize = userSize;
-              memory.selectedColor = undefined;
-              memory.variantStep = 'color';
-              classification.primaryIntent = 'ask_color_for_size';
-              classification.recommendedAction = 'ask_color_for_size';
-              ctx.trace.push('5.5c: size matched, color ambiguous → ask_color_for_size');
+              // Mirror of the color sanity-check. Size has no translation
+              // table — case-insensitive equality is enough for showcase-
+              // catalog shapes (uppercase Latin + numeric). Broader size
+              // normalization tracked in CLAUDE.md tech debt.
+              const userSizeLower = userSize.toLowerCase().trim();
+              const sizeExistsOnProduct = variants.some(
+                (v) => v.size && v.size.toLowerCase().trim() === userSizeLower,
+              );
+              if (!sizeExistsOnProduct) {
+                memory.variantStep = null;
+                memory.selectedColor = undefined;
+                memory.selectedSize = undefined;
+                classification.primaryIntent = 'ask_variant_choice';
+                classification.recommendedAction = 'ask_variant_choice';
+                ctx.trace.push(`5.5c: userSize "${userSize}" not in variants → ask_variant_choice (leaked entity dropped)`);
+              } else {
+                memory.selectedSize = userSize;
+                memory.selectedColor = undefined;
+                memory.variantStep = 'color';
+                classification.primaryIntent = 'ask_color_for_size';
+                classification.recommendedAction = 'ask_color_for_size';
+                ctx.trace.push('5.5c: size matched, color ambiguous → ask_color_for_size');
+              }
             } else {
               classification.primaryIntent = 'ask_variant_choice';
               classification.recommendedAction = 'ask_variant_choice';

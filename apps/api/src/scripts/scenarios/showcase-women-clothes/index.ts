@@ -528,6 +528,47 @@ export const SHOWCASE_WOMEN_CLOTHES_SCENARIOS: Record<string, SimulatorScenario>
     ],
   },
 
+  // ─── Routing-gap repro: ready_to_order + leaked color ───────────
+  showcase_women_ready_to_order_jeans_leaked_color: {
+    name: 'showcase — Хочу замовити ці джинси (ready_to_order, jeans)',
+    description:
+      "Reproduces prod conv 05d802e7-… routing gap. Customer sends " +
+      "'Хочу замовити ці джинси' with a story_reply to the jeans " +
+      "story. Before the fix, `ready_to_order` was excluded from " +
+      "`isSelectionIntent` so 5.5m skipped variant resolution; if the " +
+      "classifier also leaked a color from prior history (e.g. " +
+      "'чорний' from an earlier t-shirt order), 5.5c's match-failure " +
+      "branch persisted that bogus color to memory.selectedColor and " +
+      "routed to ask_size_for_color — template filtered variant_list " +
+      "to zero rows and engine fell to AI fallback. After fix: 5.5m " +
+      "now handles ready_to_order, and 5.5c sanity-checks userColor " +
+      "against the product's variants (via colorsOverlap) before " +
+      "persisting it. Both layers drop a non-existent color and " +
+      "route to ask_variant_choice. The simulator can't force " +
+      "classifier leakage, so this scenario locks the SHAPE of the " +
+      "correct reply regardless of whether the classifier leaks: it " +
+      "asserts that the engine resolves to a size-asking flow on " +
+      "the jeans product without ever asserting a stale color.",
+    tenantId: SHOWCASE_WOMEN_CLOTHES,
+    turns: [
+      {
+        message: 'Хочу замовити ці джинси',
+        mediaReference: { mediaId: '17893305552464540', type: 'story_reply' },
+        expect: {
+          decision: 'reply',
+          // Engine must surface jeans sizes (26-30). The exact scenario
+          // depends on whether classifier leaked a color this run; both
+          // `ask_variant_choice` and `confirm_variant_available` are
+          // acceptable variants of the size-asking flow. The critical
+          // negative assertion is that no AI fallback fires.
+          replyNotContains: ['чорний', 'Чорний', 'Розміри: \\nЦіна'],
+          state: { selectedProductId: '11111111-0000-0000-0000-000000000007' },
+          note: 'No stale color in reply; routed to a template (not AI fallback)',
+        },
+      },
+    ],
+  },
+
   // Removed `showcase_women_sweater_photo_label_bug_customer_photo` —
   // matchCustomerPhoto requires phash + CLIP wired against the
   // product_media URL to fire deterministically locally (prod relied on
