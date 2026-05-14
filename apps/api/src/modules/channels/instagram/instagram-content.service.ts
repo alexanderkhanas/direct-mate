@@ -828,12 +828,34 @@ export class InstagramContentService {
     );
     const validIdx: number[] = [];
     const validUrls: string[] = [];
+    const failedCandidates: Array<{ url: string; productId: string; source: string }> = [];
     for (let i = 0; i < allCandidates.length; i++) {
       const dataUrl = candidateDataUrls[i];
       if (dataUrl) {
         validIdx.push(i);
         validUrls.push(dataUrl);
+      } else {
+        const c = allCandidates[i];
+        failedCandidates.push({ url: c.mediaUrl, productId: c.productId, source: c.source });
       }
+    }
+
+    // Diagnostic — partial candidate-fetch failures are invisible to the
+    // acceptance gate. When the right answer's image silently fails to
+    // download (DNS hairpinning, TLS to own host, 403, etc.), vision
+    // receives a candidate list missing the correct match and rejects
+    // at high confidence. Log the per-call download tally so prod log
+    // grep can prove or rule out this mode. Cause-of-record: prod conv
+    // `05d802e7-…` where vision rejected a CLIP=0.98 match three times
+    // and no other diagnostic surfaced the partial-failure shape.
+    if (failedCandidates.length > 0) {
+      this.logger.warn(
+        `Customer photo: ${failedCandidates.length}/${allCandidates.length} candidate images failed to download — ${JSON.stringify(failedCandidates.slice(0, 5))}`,
+      );
+    } else {
+      this.logger.log(
+        `Customer photo: ${validIdx.length}/${allCandidates.length} candidate images downloaded`,
+      );
     }
 
     if (validIdx.length === 0) {

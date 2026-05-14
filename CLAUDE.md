@@ -57,7 +57,7 @@ infra/docker/    — Docker Compose (Postgres on port 5433)
 ### Backend (apps/api)
 - Auth (JWT + passport-jwt), tenant/user model
 - Full database schema (18+ tables) with initial migration
-- Instagram webhook handler with debouncing (10s), message_edit fallback, echo filtering
+- Instagram webhook handler with debouncing (5s), message_edit fallback, echo filtering
 - **Template-based reply engine** with slot-filling flow, AI classification only
 - **Business-type-aware engine routing** — `flow_config.businessType` (`'clothing' | 'cosmetics'`) drives
   per-vertical pre-qualify and template selection. Independent of strategy.
@@ -232,7 +232,7 @@ Templates, phrase blocks, and FAQ items are separate tables per tenant.
 - `external_account_id` = Instagram Business Account ID from webhook entry.id
 - Messages sent via `graph.instagram.com/v21.0/me/messages`
 - Both sender and receiver must be app testers in development mode
-- Message debouncing: 10s window, collects multiple messages before processing
+- Message debouncing: 5s window, collects multiple messages before processing
 
 ## Known Issues / TODOs
 
