@@ -456,6 +456,78 @@ export const SHOWCASE_WOMEN_CLOTHES_SCENARIOS: Record<string, SimulatorScenario>
       },
     ],
   },
+  // ─── Falsifiability probe: bare color reply after downgrade ─────
+  showcase_women_variant_pick_bare_after_downgrade: {
+    name: 'showcase — Bare color reply on awaiting_variant (prod loop)',
+    description:
+      "Reproduces the prod stuck-loop bug. Turn 1 mirrors the " +
+      "empty_caption_downgrade scenario (story + empty caption → " +
+      "ask_variant_choice rendered). Turn 2 sends bare 'Чорний' — " +
+      "matches the prod customer's single-word reply 'Коричневий'. " +
+      "Hypothesis: engine should route to ask_size_for_color (since " +
+      "Чорний has 3 in-stock sizes on the t-shirt) but instead loops " +
+      "show_products because no 5.5* branch covers " +
+      "(awaiting_variant + entities.color + variantStep=null + " +
+      "slotAction=asks_question/new_inquiry).",
+    tenantId: SHOWCASE_WOMEN_CLOTHES,
+    turns: [
+      {
+        message: '',
+        mediaReference: { mediaId: '18018605627836110', type: 'story' },
+        expect: {
+          decision: 'reply',
+          scenario: 'ask_variant_choice',
+          state: { selectionState: 'awaiting_variant' },
+        },
+      },
+      {
+        message: 'Чорний',
+        expect: {
+          decision: 'reply',
+          scenario: 'ask_size_for_color',
+          replyContains: ['Чорний'],
+          // selectedColor is written in user-form (lowercase). Canonicalize-on-write
+          // is a separate F2-deferred PR — see CLAUDE.md tech-debt.
+          state: { selectionState: 'awaiting_variant', selectedColor: 'чорний' },
+          note: 'Bare color word must advance variant flow; today loops show_products',
+        },
+      },
+    ],
+  },
+  // ─── Falsifiability probe: verbose color reply after downgrade ──
+  showcase_women_variant_pick_verbose_after_downgrade: {
+    name: 'showcase — Verbose color reply on awaiting_variant',
+    description:
+      "Same as the bare probe above but turn 2 uses 'хочу Чорний' " +
+      "to bias the classifier toward fills_missing_slot. If this " +
+      "passes while the bare probe fails, the engine's gating gap is " +
+      "narrower (only the asks_question/new_inquiry slotAction shapes " +
+      "miss). Locks in the classifier-vs-engine scope question.",
+    tenantId: SHOWCASE_WOMEN_CLOTHES,
+    turns: [
+      {
+        message: '',
+        mediaReference: { mediaId: '18018605627836110', type: 'story' },
+        expect: {
+          decision: 'reply',
+          scenario: 'ask_variant_choice',
+        },
+      },
+      {
+        message: 'хочу Чорний',
+        expect: {
+          decision: 'reply',
+          scenario: 'ask_size_for_color',
+          replyContains: ['Чорний'],
+          // selectedColor is written in user-form (lowercase). Canonicalize-on-write
+          // is a separate F2-deferred PR — see CLAUDE.md tech-debt.
+          state: { selectionState: 'awaiting_variant', selectedColor: 'чорний' },
+          note: 'Verbose phrasing biases classifier to fills_missing_slot',
+        },
+      },
+    ],
+  },
+
   // Removed `showcase_women_sweater_photo_label_bug_customer_photo` —
   // matchCustomerPhoto requires phash + CLIP wired against the
   // product_media URL to fire deterministically locally (prod relied on

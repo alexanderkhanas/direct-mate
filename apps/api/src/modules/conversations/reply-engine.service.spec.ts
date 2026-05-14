@@ -989,3 +989,61 @@ describe('colorsOverlap', () => {
     expect(sizesForColor.map((v) => v.size)).toEqual(['S', 'M']);
   });
 });
+
+/**
+ * Unit tests for the show_products fallthrough state-hygiene fix
+ * (prod conv 77e61632-…). Two regressions:
+ *  1. `updateMemoryFromAction` case `'show_products'` must preserve
+ *     mid-flow selectionState — only downgrade from undefined or
+ *     already-awaiting_product.
+ *  2. The post-render variant latch must skip `show_products` so a
+ *     fallthrough render doesn't bake the template-engine's
+ *     `matched_variant_id` into memory.
+ */
+describe('show_products fallthrough hygiene', () => {
+  function update(action: string, memory: any): void {
+    const svc = makeService();
+    (svc as any).updateMemoryFromAction(action, memory, {}, { entities: {} }, null);
+  }
+
+  it('preserves awaiting_variant on show_products (the prod loop case)', () => {
+    const memory: any = {
+      selectionState: 'awaiting_variant',
+      selectedProductId: 'p-sweater',
+    };
+    update('show_products', memory);
+    expect(memory.selectionState).toBe('awaiting_variant');
+    expect(memory.lastAction).toBe('presented_product_options');
+  });
+
+  it('preserves awaiting_confirmation on show_products', () => {
+    const memory: any = {
+      selectionState: 'awaiting_confirmation',
+      selectedProductId: 'p-sweater',
+      selectedVariantId: 'v-1',
+    };
+    update('show_products', memory);
+    expect(memory.selectionState).toBe('awaiting_confirmation');
+  });
+
+  it('preserves confirmed on show_products (post-order resets must be explicit)', () => {
+    const memory: any = {
+      selectionState: 'confirmed',
+      orderCreated: true,
+    };
+    update('show_products', memory);
+    expect(memory.selectionState).toBe('confirmed');
+  });
+
+  it('downgrades to awaiting_product when entering state is undefined', () => {
+    const memory: any = {};
+    update('show_products', memory);
+    expect(memory.selectionState).toBe('awaiting_product');
+  });
+
+  it('keeps awaiting_product idempotent on re-render', () => {
+    const memory: any = { selectionState: 'awaiting_product' };
+    update('show_products', memory);
+    expect(memory.selectionState).toBe('awaiting_product');
+  });
+});

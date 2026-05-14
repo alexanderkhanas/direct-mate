@@ -2955,12 +2955,37 @@ export class ReplyEngineService {
     // Update memory based on what ACTUALLY happened, not classifier's recommendation
     this.updateMemoryFromAction(actualAction, memory, templateResult, classification, productData);
 
-    // Update selected variant ID from template variable matching
-    // Skip for variant_not_available / ask_variant_choice — those scenarios explicitly cleared the variant
-    const skipVariantUpdate = ['variant_not_available', 'ask_variant_choice', 'ask_size_for_color', 'ask_color_for_size', 'confirm_color_variant_in_stock'].includes(templateResult?.scenario ?? '');
-    if (templateResult?.matchedVariantId && !skipVariantUpdate) {
-      memory.selectedVariantId = templateResult.matchedVariantId;
-      memory.selectedVariantName = classification.entities.color ?? classification.entities.size ?? memory.selectedVariantName;
+    // Update selected variant ID from template variable matching.
+    // Deny-list: scenarios that explicitly DIDN'T commit to a variant.
+    // `show_products` is here because template-engine populates
+    // `matched_variant_id` from {color}/{size} variable resolution
+    // whenever the user mentioned a color/size — but on a fallthrough
+    // `show_products` render (no 5.5 branch fired), the user hasn't
+    // actually picked the variant; latching corrupts state and stalls
+    // the next turn. Cause of prod conv 77e61632-2505-467a-b619-2d6788792c7c.
+    // The deny-list is brittle by construction (see CLAUDE.md tech-debt
+    // for the recommended promotion to an explicit allow-list of
+    // commit-to-variant scenarios).
+    const skipVariantUpdate = [
+      'variant_not_available',
+      'ask_variant_choice',
+      'ask_size_for_color',
+      'ask_color_for_size',
+      'confirm_color_variant_in_stock',
+      'show_products',
+    ].includes(templateResult?.scenario ?? '');
+    if (templateResult?.matchedVariantId) {
+      if (skipVariantUpdate) {
+        ctx.trace.push(
+          `show_products_latch_skipped: scenario=${templateResult.scenario}`,
+        );
+      } else {
+        ctx.trace.push(
+          `variant_latched: ${templateResult.matchedVariantId.slice(0, 8)}`,
+        );
+        memory.selectedVariantId = templateResult.matchedVariantId;
+        memory.selectedVariantName = classification.entities.color ?? classification.entities.size ?? memory.selectedVariantName;
+      }
     }
 
     // Set product IDs if product search found results — sync to BOTH state and memory
@@ -4296,7 +4321,22 @@ export class ReplyEngineService {
       case 'show_products':
         memory.lastAction = 'presented_product_options';
         memory.awaitingField = 'product_choice_or_recommendation_request';
-        memory.selectionState = 'awaiting_product';
+        // Conditional downgrade: a fallthrough show_products render
+        // (where no 5.5 branch fired — e.g. classifier misclassified a
+        // single-word color reply as `asks_question`) should NOT
+        // downgrade the customer's in-progress selection state. Only
+        // initial product presentation or an already-awaiting_product
+        // turn should land on awaiting_product here. Preserves
+        // awaiting_variant, awaiting_confirmation, and confirmed —
+        // post-order flows that need to restart must do so via their
+        // own explicit reset path, not this fallthrough write. Cause
+        // of prod conv 77e61632-2505-467a-b619-2d6788792c7c.
+        if (
+          memory.selectionState === undefined ||
+          memory.selectionState === 'awaiting_product'
+        ) {
+          memory.selectionState = 'awaiting_product';
+        }
         break;
       case 'show_price':
         memory.lastAction = 'showed_price';
