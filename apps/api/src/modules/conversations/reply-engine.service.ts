@@ -850,6 +850,44 @@ export class ReplyEngineService {
    * forms), NOT raw string equality, so mixed-language catalogs
    * (Cyrillic + English on the same product) still match cleanly.
    */
+  /**
+   * Wipes axis-scoping memory written by handleColorLinkedMedia
+   * (selectedColor, variantStep, mediaLinkSizes, mediaLinkOtherColors).
+   *
+   * Companion to handleColorLinkedMedia: every 5.5m branch that
+   * downgrades routing away from `confirm_color_variant_in_stock` must
+   * call this. Without it, template-engine's `variantStep === 'size'`
+   * branch ([template-engine.service.ts:842-850](apps/api/src/modules/engine/template-engine.service.ts#L842-L850))
+   * keeps filtering `{variant_list}` to a single color's sizes while
+   * the downgraded scenario's body promises "є в кольорах" — the
+   * sweater-photo prod bug. Early-returns on already-cleared state so
+   * call sites in the same turn don't emit duplicate trace lines.
+   *
+   * Sibling class of the documented correction-branch hygiene gap at
+   * reply-engine.service.ts:1056-1060 (`selectedVariantId` /
+   * `selectedVariantName`). Different keys, same shape — both clear
+   * scoping memory at branch points that re-route the engine.
+   */
+  private clearMediaLinkAxisScoping(
+    memory: AssistantMemory,
+    ctx: ProcessingContext,
+    reason: string,
+  ): void {
+    if (
+      memory.selectedColor === undefined &&
+      memory.variantStep === undefined &&
+      memory.mediaLinkSizes === undefined &&
+      memory.mediaLinkOtherColors === undefined
+    ) {
+      return;
+    }
+    memory.selectedColor = undefined;
+    memory.variantStep = undefined;
+    memory.mediaLinkSizes = undefined;
+    memory.mediaLinkOtherColors = undefined;
+    ctx.trace.push(`5.5m: cleared media-link axis-scoping (${reason})`);
+  }
+
   private async handleColorLinkedMedia(
     ctx: ProcessingContext,
     productId: string,
@@ -1394,6 +1432,7 @@ export class ReplyEngineService {
         memory.selectedVariantId = undefined;
         memory.selectedVariantName = undefined;
         memory.selectionState = 'awaiting_product';
+        this.clearMediaLinkAxisScoping(memory, ctx, 'empty-caption coerce');
       }
 
       // Reconcile classifier-extracted productName with media-resolved title.
@@ -1469,6 +1508,7 @@ export class ReplyEngineService {
               memory.selectedVariantName = undefined;
               classification.primaryIntent = 'ask_variant_choice';
               classification.recommendedAction = 'ask_variant_choice';
+              this.clearMediaLinkAxisScoping(memory, ctx, 'dimension-exists → ask_variant_choice');
               ctx.trace.push(`5.5m: "${userSize || userColor}" exists but multiple options → ask_variant_choice`);
               this.logger.log(`5.5m: Story reply — dimension exists, asking for other dimension`);
             } else {
@@ -1479,6 +1519,7 @@ export class ReplyEngineService {
               memory.requestedVariant = userSize || userColor;
               classification.primaryIntent = 'variant_not_available';
               classification.recommendedAction = 'variant_not_available';
+              this.clearMediaLinkAxisScoping(memory, ctx, 'variant_not_available branch');
               ctx.trace.push(`5.5m: "${userSize || userColor}" not available → variant_not_available`);
               this.logger.log(`5.5m: Story reply — variant not available, showing alternatives`);
             }
@@ -1505,12 +1546,19 @@ export class ReplyEngineService {
             classification.primaryIntent = 'confirm_choice'; // no size asked — use generic confirm_selection
             classification.recommendedAction = 'confirm_selection';
           }
+          // Auto-select sets {variant_name} from memory.availableVariants
+          // but {color} in confirm templates would otherwise fall back to
+          // the leaked memory.selectedColor (classification.entities.color
+          // was cleared by the coerce). Clear so the auto-selected variant
+          // is the only color source.
+          this.clearMediaLinkAxisScoping(memory, ctx, 'auto-select single variant');
           this.logger.log(`5.5m: Story reply — single variant auto-selected: ${memory.selectedVariantName} (intent=${classification.primaryIntent})`);
         } else {
           // No specific variant, multiple options → ask which they want
           memory.selectionState = 'awaiting_variant';
           classification.primaryIntent = 'ask_variant_choice';
           classification.recommendedAction = 'ask_variant_choice';
+          this.clearMediaLinkAxisScoping(memory, ctx, 'multi-variant → ask_variant_choice');
           this.logger.log(`5.5m: Story reply — product pre-seeded, no variant → ask_variant_choice`);
         }
       }

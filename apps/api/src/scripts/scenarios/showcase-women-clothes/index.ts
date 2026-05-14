@@ -279,20 +279,20 @@ export const SHOWCASE_WOMEN_CLOTHES_SCENARIOS: Record<string, SimulatorScenario>
   showcase_women_color_link_story: {
     name: 'showcase — Color-linked story reply',
     description:
-      'Customer replies to a story linked to the black tshirt color. ' +
-      'Engine resolves the link → fans out to all in-stock Чорний sizes ' +
-      '→ surfaces confirm_color_variant_in_stock with Білий + Бежевий ' +
-      'as alternative colors. Validates the new color-link routing path ' +
-      'end-to-end on a pre-seeded mapping row.',
+      'Customer replies to the Білий-linked Oversize футболка базова ' +
+      'story. Engine resolves the link → fans out to all in-stock ' +
+      'Білий sizes → surfaces confirm_color_variant_in_stock with ' +
+      'Чорний + Бежевий as alternative colors. Validates the color-' +
+      'link routing path end-to-end against the real prod mapping.',
     tenantId: SHOWCASE_WOMEN_CLOTHES,
     turns: [
       {
         message: 'А таке є?',
-        mediaReference: { mediaId: 'test_story_tshirt_black', type: 'story' },
+        mediaReference: { mediaId: '18018605627836110', type: 'story' },
         expect: {
           decision: 'reply',
           scenario: 'confirm_color_variant_in_stock',
-          replyContains: ['Чорний', 'Розміри', 'інших кольорах'],
+          replyContains: ['Білий', 'Розміри', 'інших кольорах'],
           state: { selectionState: 'awaiting_variant' },
           note: 'Color-link mapping → variantStep=size, lists alts',
         },
@@ -304,16 +304,16 @@ export const SHOWCASE_WOMEN_CLOTHES_SCENARIOS: Record<string, SimulatorScenario>
   showcase_women_color_link_to_checkout: {
     name: 'showcase — Color-link → size pick → checkout',
     description:
-      'Full purchase path off a color-linked story reply: customer ' +
-      "asks about the linked black tshirt, picks size S, confirms, " +
-      'and completes checkout. Validates the new color-link scenario ' +
-      'flows cleanly into the existing 5.5b/5.5c size-narrowing flow ' +
-      'and creates a real `orders` row (is_demo=false).',
+      'Full purchase path off the Білий-linked story reply: customer ' +
+      "asks about the linked Oversize футболка базова, picks size S, " +
+      'confirms, and completes checkout. Validates the color-link ' +
+      'scenario flows cleanly into the existing 5.5b/5.5c size-' +
+      'narrowing flow and creates a real `orders` row (is_demo=false).',
     tenantId: SHOWCASE_WOMEN_CLOTHES,
     turns: [
       {
         message: 'А таке є?',
-        mediaReference: { mediaId: 'test_story_tshirt_black', type: 'story' },
+        mediaReference: { mediaId: '18018605627836110', type: 'story' },
         expect: {
           decision: 'reply',
           scenario: 'confirm_color_variant_in_stock',
@@ -327,7 +327,7 @@ export const SHOWCASE_WOMEN_CLOTHES_SCENARIOS: Record<string, SimulatorScenario>
           scenario: 'confirm_variant_available',
           state: {
             selectionState: 'awaiting_confirmation',
-            selectedColor: 'Чорний',
+            selectedColor: 'Білий',
           },
           note: 'size fills against linked color → awaiting_confirmation',
         },
@@ -340,7 +340,7 @@ export const SHOWCASE_WOMEN_CLOTHES_SCENARIOS: Record<string, SimulatorScenario>
   showcase_women_color_link_asks_other_colors: {
     name: 'showcase — Color-link → user asks for other colors',
     description:
-      'Customer replies to a black-linked story and explicitly asks ' +
+      'Customer replies to the Білий-linked story and explicitly asks ' +
       'what other colors are available. The confirm_color_variant_in_stock ' +
       'template already surfaces other colors in its body, so the first ' +
       'turn answers the question. Validates that the canonical reply ' +
@@ -349,11 +349,11 @@ export const SHOWCASE_WOMEN_CLOTHES_SCENARIOS: Record<string, SimulatorScenario>
     turns: [
       {
         message: 'А інші кольори є?',
-        mediaReference: { mediaId: 'test_story_tshirt_black', type: 'story' },
+        mediaReference: { mediaId: '18018605627836110', type: 'story' },
         expect: {
           decision: 'reply',
           scenario: 'confirm_color_variant_in_stock',
-          replyContains: ['Білий', 'Бежевий'],
+          replyContains: ['Чорний', 'Бежевий'],
           note: 'Other colors listed in the linked-color template body',
         },
       },
@@ -364,34 +364,127 @@ export const SHOWCASE_WOMEN_CLOTHES_SCENARIOS: Record<string, SimulatorScenario>
   showcase_women_color_link_picks_other_color: {
     name: 'showcase — Color-link → user picks different color',
     description:
-      "Story is linked to black, but customer asks for white. Engine " +
+      "Story is linked to Білий, but customer asks for Чорний. Engine " +
       'detects the color switch via 5.5b-2, drops the linked color, ' +
-      "resolves Білий against the product's catalog, and asks for size " +
-      'via ask_size_for_color (multiple in-stock sizes exist for Білий).',
+      "resolves Чорний against the product's catalog, and asks for " +
+      'size via ask_size_for_color (multiple in-stock sizes exist).',
     tenantId: SHOWCASE_WOMEN_CLOTHES,
     turns: [
       {
         message: 'А таке є?',
-        mediaReference: { mediaId: 'test_story_tshirt_black', type: 'story' },
+        mediaReference: { mediaId: '18018605627836110', type: 'story' },
         expect: {
           decision: 'reply',
           scenario: 'confirm_color_variant_in_stock',
         },
       },
       {
-        message: 'хочу Білий',
+        message: 'хочу Чорний',
         expect: {
           decision: 'reply',
           scenario: 'ask_size_for_color',
-          replyContains: 'Білий',
+          replyContains: 'Чорний',
           state: {
             selectionState: 'awaiting_variant',
-            selectedColor: 'Білий',
+            selectedColor: 'Чорний',
           },
-          note: 'Color switch → ask_size_for_color for Білий sizes',
+          note: 'Color switch → ask_size_for_color for Чорний sizes',
         },
       },
     ],
+  },
+
+  // ─── Regression: media-link → 5.5m downgrade → axis-scoping leak ──
+  showcase_women_sweater_photo_label_bug_story: {
+    name: 'showcase — Sweater story-link → "є в кольорах" rendering',
+    description:
+      'Story-link variant of the prod sweater-photo bug. Story ' +
+      '18091760378592338 has product_id=Светр oversize в\'язаний, no ' +
+      'linked_color. Engine resolves the product and falls through to ' +
+      'ask_variant_choice via 5.5m else-branch. Asserts the color-' +
+      'grouped {variant_list} renders both colors instead of bare ' +
+      'sizes. Pairs with _empty_caption_downgrade and the ' +
+      'customer_photo variant to cover the three 5.5m entry paths.',
+    tenantId: SHOWCASE_WOMEN_CLOTHES,
+    turns: [
+      {
+        message: 'А таке є?',
+        mediaReference: { mediaId: '18091760378592338', type: 'story' },
+        expect: {
+          decision: 'reply',
+          scenario: 'ask_variant_choice',
+          replyContains: ['Коричневий', 'Кремовий'],
+          replyNotContains: 'кольорах: S',
+          state: { selectionState: 'awaiting_variant' },
+          note: 'No linked_color path → color-grouped variant_list',
+        },
+      },
+    ],
+  },
+  showcase_women_color_link_empty_caption_downgrade: {
+    name: 'showcase — Color-linked story + empty caption → axis clear',
+    description:
+      'Reproduces the exact prod bug class without needing the ' +
+      'customer_photo matching pipeline. Uses the existing Білий-' +
+      'linked t-shirt story (18018605627836110) so handleColorLinkedMedia ' +
+      'writes selectedColor/variantStep/mediaLinkSizes/mediaLinkOtherColors. ' +
+      'Then sends an empty caption so the 5.5m empty-caption coerce ' +
+      'fires and downgrades routing to ask_variant_choice. Before the ' +
+      'fix, {variant_list} rendered "S, M, L" (Білий sizes filtered ' +
+      'by the leaked variantStep="size"). After the fix, the axis-' +
+      'scoping memory is cleared and the color-grouped fallback ' +
+      'renders all colors.',
+    tenantId: SHOWCASE_WOMEN_CLOTHES,
+    turns: [
+      {
+        message: '',
+        mediaReference: { mediaId: '18018605627836110', type: 'story' },
+        expect: {
+          decision: 'reply',
+          scenario: 'ask_variant_choice',
+          replyContains: ['Білий', 'Чорний'],
+          // Two negatives: 'кольорах: S' is the original wire signature
+          // of the prod bug; 'Розміри' is a label-only sentinel that
+          // catches a future regression where {variant_list} renders
+          // sizes correctly but {variant_type} flips to "Розміри" under
+          // a body that still promises colors.
+          replyNotContains: ['кольорах: S', 'Розміри'],
+          state: { selectionState: 'awaiting_variant' },
+          note: 'Empty caption downgrades routing; axis-scoping must be cleared',
+        },
+      },
+    ],
+  },
+  showcase_women_sweater_photo_label_bug_customer_photo: {
+    name: 'showcase — Sweater customer_photo → "є в кольорах" bug',
+    description:
+      'Customer_photo path variant. The mediaId is the brown sweater ' +
+      'product image URL — matchCustomerPhoto runs pHash/CLIP/vision ' +
+      'and (when phashes are seeded) returns color="Коричневий". ' +
+      'handleColorLinkedMedia then writes axis-scoping memory. Empty ' +
+      'caption hits 5.5m coerce → reroutes to ask_variant_choice. The ' +
+      'fix clears the axis-scoping at the override site so the ' +
+      'color-grouped fallback renders correctly. Marked flaky because ' +
+      'matchCustomerPhoto needs phash + CLIP wiring against the ' +
+      'product_media URL to fire deterministically locally — the ' +
+      '_empty_caption_downgrade scenario above is the real lock for ' +
+      'this bug class.',
+    tenantId: SHOWCASE_WOMEN_CLOTHES,
+    turns: [
+      {
+        message: '',
+        mediaReference: {
+          mediaId: 'https://directmate.app/uploads/05b_sweater_brown.png',
+          type: 'customer_photo',
+        },
+        expect: {
+          decision: 'reply',
+          replyNotContains: 'кольорах: S',
+          note: 'After fix: should not render sizes under "кольорах" label',
+        },
+      },
+    ],
+    flaky: true,
   },
 
   // ─── 1.2 First impression: open-ended discovery ─────────────────
@@ -444,24 +537,21 @@ export const SHOWCASE_WOMEN_CLOTHES_SCENARIOS: Record<string, SimulatorScenario>
   showcase_women_color_link_price_query: {
     name: 'showcase — Story-link → "Скільки коштує?"',
     description:
-      'Story is linked to Бежевий Сукня-комбінація сатинова. ' +
-      'Customer replies with a price question. Engine resolves the ' +
-      'link via handleColorLinkedMedia and renders ' +
-      'confirm_color_variant_in_stock — the same template surfaces ' +
-      'the linked color, sizes, and the price baked into the {sizes} ' +
-      'rendering. #1 wow moment in the sales pitch.',
+      'Story is linked to Білий Oversize футболка базова. Customer ' +
+      'replies with a price question. Engine resolves the link via ' +
+      'handleColorLinkedMedia and renders confirm_color_variant_in_stock ' +
+      '— the same template surfaces the linked color, sizes, and the ' +
+      'price baked into the {sizes} rendering. #1 wow moment in the ' +
+      'sales pitch.',
     tenantId: SHOWCASE_WOMEN_CLOTHES,
     turns: [
       {
         message: 'Скільки коштує?',
-        mediaReference: {
-          mediaId: 'test_story_dress_satin_beige',
-          type: 'story',
-        },
+        mediaReference: { mediaId: '18018605627836110', type: 'story' },
         expect: {
           decision: 'reply',
           scenario: 'confirm_color_variant_in_stock',
-          replyContains: ['Бежевий', 'Розміри'],
+          replyContains: ['Білий', 'Розміри'],
           state: { selectionState: 'awaiting_variant' },
           note: 'Story link + price ask → color-link template',
         },
