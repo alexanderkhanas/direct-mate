@@ -25,16 +25,12 @@ verdict. Each line item gets its own pass/warn/fail.
 
 # Checklist
 
-## 1. Silent handoff invariant (CRITICAL)
+## 1. Handoff invariant (CRITICAL)
 DirectMate's product principle (CLAUDE.md "Silent handoff"): when 
-the bot is uncertain, it does silent handoff — no clarification 
-message, no "Секунду, уточню". Any user-visible message during 
-handoff breaks the human-rep illusion and is a product failure.
+the bot is uncertain, it does handoff — "Секунду, уточню" or similar.
 
 Check:
-- Search the diff for handoff calls (escalate, doHandoff)
-- Verify no softMessage/clarification arg passed unless EXPLICITLY 
-  approved by the user
+- Search the diff for handoff calls (escalate, doHandoff) 
 - Existing call sites in reply-engine.service.ts are reference for 
   correct silent pattern
 

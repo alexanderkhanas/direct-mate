@@ -911,3 +911,81 @@ describe('markRepliedOnResult', () => {
     }
   });
 });
+
+/**
+ * Unit tests for `colorsOverlap` — the canonical color-equality helper.
+ *
+ * Replaces 4 raw `a.toLowerCase() === b.toLowerCase()` compares in 5.5a-pre
+ * and 5.5b-2 that silently failed when (a) a tenant catalog stored colors
+ * in English while classifier emitted Ukrainian (or vice versa), or (b)
+ * `handleColorLinkedMedia` wrote `memory.selectedColor` from a raw
+ * `instagram_media_mappings.linked_color` whose canonical form differed
+ * from the catalog's stored form.
+ */
+describe('colorsOverlap', () => {
+  // Pure decision helper — reuse the test-suite's makeService() rather
+  // than re-spelling the constructor.
+  const svc = makeService();
+  const overlap = (a: string | null | undefined, b: string | null | undefined): boolean =>
+    (svc as any).colorsOverlap(a, b);
+
+  it('matches identical strings case-insensitively', () => {
+    expect(overlap('Чорний', 'чорний')).toBe(true);
+    expect(overlap('Red', 'RED')).toBe(true);
+  });
+
+  it('matches across EN ↔ UA via translation table — the recurring class', () => {
+    // Mixed-language catalog: classifier emits one form, DB stores the other.
+    expect(overlap('червоний', 'Red')).toBe(true);
+    expect(overlap('Red', 'червоний')).toBe(true);
+    expect(overlap('Чорний', 'black')).toBe(true);
+    expect(overlap('white', 'Білий')).toBe(true);
+    expect(overlap('beige', 'бежевий')).toBe(true);
+  });
+
+  it('matches substring forms in both directions (Темно-чорний ↔ чорний)', () => {
+    expect(overlap('Темно-чорний', 'чорний')).toBe(true);
+    expect(overlap('чорний', 'Темно-чорний')).toBe(true);
+  });
+
+  it('returns false for unrelated colors', () => {
+    expect(overlap('Чорний', 'Білий')).toBe(false);
+    expect(overlap('Red', 'Blue')).toBe(false);
+    expect(overlap('червоний', 'синій')).toBe(false);
+  });
+
+  it('returns false on null / empty — color-in-title products carry v.color=null', () => {
+    expect(overlap(null, 'Red')).toBe(false);
+    expect(overlap('Red', null)).toBe(false);
+    expect(overlap(undefined, 'Red')).toBe(false);
+    expect(overlap('', 'Red')).toBe(false);
+    expect(overlap('Red', '')).toBe(false);
+  });
+
+  it('handles whitespace via translateColor.trim()', () => {
+    expect(overlap('  чорний  ', 'Black')).toBe(true);
+    expect(overlap('Чорний', '  black  ')).toBe(true);
+  });
+
+  it('5.5a-pre repro: classifier "червоний" vs DB "Red" → not colorMissing', () => {
+    // Before fix: askedColor.toLowerCase() === v.color.toLowerCase()
+    // → "червоний" !== "red" → colorMissing=true → variant_not_available.
+    const availableColors = ['Red', 'Blue'];
+    const askedColor = 'червоний';
+    const colorMissing = !availableColors.some((c) => overlap(c, askedColor));
+    expect(colorMissing).toBe(false);
+  });
+
+  it('5.5b-2 repro: memory.selectedColor "Червоний" vs DB "Red" → sizesForColor non-empty', () => {
+    // Before fix: filter dropped every variant because of case+language mismatch.
+    const variants = [
+      { color: 'Red', size: 'S' },
+      { color: 'Red', size: 'M' },
+      { color: 'Blue', size: 'S' },
+    ];
+    const selectedColor = 'Червоний';
+    const sizesForColor = variants.filter((v) => overlap(v.color, selectedColor));
+    expect(sizesForColor).toHaveLength(2);
+    expect(sizesForColor.map((v) => v.size)).toEqual(['S', 'M']);
+  });
+});

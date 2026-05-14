@@ -896,19 +896,11 @@ export class ReplyEngineService {
     const productData = ctx.mediaProductData;
     if (!productData || productData.length === 0) return;
     const allVariants = productData[0].variants;
-    const linkedForms = this.translateColor(linkedColor);
-    const colorMatches = (variantColor: string | null): boolean => {
-      if (!variantColor) return false;
-      const variantForms = this.translateColor(variantColor);
-      return linkedForms.some((lf) =>
-        variantForms.some((vf) => vf === lf || vf.includes(lf) || lf.includes(vf)),
-      );
-    };
     const colorMatchedInStock = allVariants.filter(
-      (v) => colorMatches(v.color) && v.effectiveAvailable > 0,
+      (v) => this.colorsOverlap(v.color, linkedColor) && v.effectiveAvailable > 0,
     );
     const otherColorsInStock = allVariants.filter(
-      (v) => !colorMatches(v.color) && v.effectiveAvailable > 0,
+      (v) => !this.colorsOverlap(v.color, linkedColor) && v.effectiveAvailable > 0,
     );
 
     const memory = ctx.memory;
@@ -2208,9 +2200,7 @@ export class ReplyEngineService {
         );
       const colorMissing =
         askedColor &&
-        !available.some(
-          (v) => v.color && v.color.toLowerCase() === askedColor.toLowerCase(),
-        );
+        !available.some((v) => this.colorsOverlap(v.color, askedColor));
       const genericVariantQuery =
         !askedSize &&
         !askedColor &&
@@ -2506,7 +2496,7 @@ export class ReplyEngineService {
         // User picked a size — match it
         const sizeInput = userSize || input.messageText.trim();
         const sizesForColor = variants.filter(
-          (v: any) => v.color && v.color.toLowerCase() === memory.selectedColor!.toLowerCase() && v.size,
+          (v: any) => this.colorsOverlap(v.color, memory.selectedColor) && v.size,
         );
         const uniqueSizes = [...new Set(sizesForColor.map((v: any) => v.size))] as string[];
         const matchedSize = this.matchColorOrSize(sizeInput, uniqueSizes);
@@ -2515,7 +2505,7 @@ export class ReplyEngineService {
           // Find the exact variant by color + size
           const exactVariant = variants.find(
             (v: any) =>
-              v.color && v.color.toLowerCase() === memory.selectedColor!.toLowerCase() &&
+              this.colorsOverlap(v.color, memory.selectedColor) &&
               v.size && v.size.toLowerCase() === matchedSize.toLowerCase(),
           );
           if (exactVariant) {
@@ -3359,6 +3349,33 @@ export class ReplyEngineService {
     const lower = input.toLowerCase().trim();
     const translated = ReplyEngineService.COLOR_TRANSLATIONS[lower];
     return translated ? [lower, translated] : [lower];
+  }
+
+  /**
+   * Canonical color equality — set-overlap over translated forms with
+   * permissive substring matching in both directions. Use this anywhere
+   * the engine compares two color strings whose canonical form is not
+   * guaranteed (classifier output vs DB; `memory.selectedColor` written
+   * from a raw `linked_color` vs DB; mixed-language catalogs).
+   *
+   * Raw `a.toLowerCase() === b.toLowerCase()` silently fails when:
+   *   - Tenants onboard mixed-language catalogs ("Black" + "Чорний"
+   *     on the same product via Torgsoft/Shopify imports).
+   *   - `handleColorLinkedMedia` writes `memory.selectedColor` from
+   *     `instagram_media_mappings.linked_color` (free-form string).
+   *
+   * Returns false when either side is null/empty — color-in-title
+   * products legitimately carry `v.color = null` and downstream code
+   * already tolerates that shape. Mirrors the inlined pattern used
+   * inside handleColorLinkedMedia.
+   */
+  private colorsOverlap(a: string | null | undefined, b: string | null | undefined): boolean {
+    if (!a || !b) return false;
+    const aForms = this.translateColor(a);
+    const bForms = this.translateColor(b);
+    return aForms.some((af) =>
+      bForms.some((bf) => af === bf || af.includes(bf) || bf.includes(af)),
+    );
   }
 
   // ─── Product search helpers ────────────────────────────────────
