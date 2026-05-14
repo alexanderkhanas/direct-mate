@@ -823,18 +823,25 @@ export class InstagramContentService {
       return null;
     }
     // Diagnostic — prod is rejecting vision matches at 0.98 confidence on
-    // image setups that succeed locally. The remaining environmental gap
-    // is the customer image fetch (lookaside.fbsbx.com signed URL fetched
-    // by toBase64DataUrl at request time vs my local probe using a saved
-    // file). Log image fingerprint so we can compare: a too-small base64
-    // means the fetch returned an error page / empty body / placeholder.
+    // image setups that succeed locally. Log image fingerprint + the full
+    // signed URL so the same bytes can be re-fetched from local within
+    // the ~24h Meta lookaside signature validity window. SHA-256 lets us
+    // confirm bit-identical bytes between local and prod fetch attempts.
     {
       const semiIdx = customerDataUrl.indexOf(',');
       const mime = customerDataUrl.slice(5, customerDataUrl.indexOf(';'));
       const b64Len = semiIdx > 0 ? customerDataUrl.length - semiIdx - 1 : 0;
       const approxBytes = Math.floor(b64Len * 3 / 4);
+      const rawB64 = customerDataUrl.slice(semiIdx + 1);
+      const bytes = Buffer.from(rawB64, 'base64');
+      const sha256 = (await import('node:crypto'))
+        .createHash('sha256')
+        .update(bytes)
+        .digest('hex');
+      let assetId = 'unknown';
+      try { assetId = new URL(customerImageUrl).searchParams.get('asset_id') ?? 'unknown'; } catch { /* keep unknown */ }
       this.logger.log(
-        `Customer photo: customer image fetched mime=${mime} base64Len=${b64Len} approxKB=${(approxBytes / 1024).toFixed(1)} urlHost=${(() => { try { return new URL(customerImageUrl).host; } catch { return 'invalid'; } })()}`,
+        `Customer photo: customer image fetched mime=${mime} base64Len=${b64Len} approxKB=${(approxBytes / 1024).toFixed(1)} sha256=${sha256.slice(0, 16)} asset_id=${assetId} url=${customerImageUrl}`,
       );
     }
 
