@@ -62,7 +62,7 @@ export function MessageBubble({ turn, brandName }: MessageBubbleProps) {
             <div className="overflow-hidden rounded-2xl bg-gray-100 border border-gray-100 w-[140px] aspect-[3/4]">
               <img
                 src={igContext.mediaUrl}
-                alt=""
+                alt="Customer Instagram story reference"
                 className="w-full h-full object-cover"
                 loading="lazy"
               />
@@ -95,7 +95,7 @@ export function MessageBubble({ turn, brandName }: MessageBubbleProps) {
               <div className="relative bg-white aspect-[3/4]">
                 <img
                   src={igContext.mediaUrl}
-                  alt=""
+                  alt={`${brandName} Instagram post reference`}
                   className="w-full h-full object-contain"
                   loading="lazy"
                 />
@@ -108,7 +108,7 @@ export function MessageBubble({ turn, brandName }: MessageBubbleProps) {
         {images.length === 1 && (
           <img
             src={images[0]}
-            alt=""
+            alt="Product variant"
             className="rounded-3xl max-w-[220px] w-full h-auto object-cover border border-gray-100 bg-gray-50"
             loading="lazy"
           />
@@ -117,13 +117,13 @@ export function MessageBubble({ turn, brandName }: MessageBubbleProps) {
           <div className="relative w-[240px] h-[300px]">
             <img
               src={images[0]}
-              alt=""
+              alt="Product variant 1 of 2"
               className="absolute top-0 left-0 w-[170px] h-[220px] rounded-3xl object-cover border-2 border-white shadow-md bg-gray-50"
               loading="lazy"
             />
             <img
               src={images[1]}
-              alt=""
+              alt="Product variant 2 of 2"
               className="absolute bottom-0 right-0 w-[170px] h-[220px] rounded-3xl object-cover border-2 border-white shadow-md bg-gray-50"
               loading="lazy"
             />
@@ -135,7 +135,7 @@ export function MessageBubble({ turn, brandName }: MessageBubbleProps) {
               <img
                 key={i}
                 src={src}
-                alt=""
+                alt={`Product variant ${i + 1}`}
                 className="rounded-2xl object-cover w-full h-[140px] border border-gray-100 bg-gray-50"
                 loading="lazy"
               />

@@ -1,0 +1,25 @@
+User-agent: *
+Allow: /welcome
+Allow: /privacy
+Allow: /terms
+Allow: /data-deletion
+Disallow: /login
+Disallow: /register
+Disallow: /onboarding
+Disallow: /api/
+Disallow: /admin/
+Disallow: /dashboard
+Disallow: /conversations
+Disallow: /catalog
+Disallow: /connections
+Disallow: /training
+Disallow: /templates
+Disallow: /testing
+Disallow: /simulator
+Disallow: /content-linking
+Disallow: /size-charts
+Disallow: /settings
+Disallow: /logs
+Disallow: /orders
+
+Sitemap: https://directmate.app/sitemap.xml

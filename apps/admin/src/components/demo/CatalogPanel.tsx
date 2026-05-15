@@ -124,7 +124,7 @@ export function CatalogPanel({ tenantSlug, onClose }: CatalogPanelProps) {
                   {p.imageUrl ? (
                     <img
                       src={p.imageUrl}
-                      alt=""
+                      alt={p.title}
                       className="w-full h-full object-cover"
                       loading="lazy"
                     />

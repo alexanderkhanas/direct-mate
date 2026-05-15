@@ -5,14 +5,32 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "postbuild": "react-snap",
     "preview": "vite preview",
     "lint": "eslint src --ext ts,tsx --max-warnings 0"
+  },
+  "reactSnap": {
+    "source": "dist",
+    "include": [
+      "/welcome",
+      "/privacy",
+      "/terms",
+      "/data-deletion"
+    ],
+    "skipThirdPartyRequests": true,
+    "minifyHtml": {
+      "collapseWhitespace": false,
+      "removeComments": false
+    },
+    "puppeteerArgs": [
+      "--no-sandbox",
+      "--disable-setuid-sandbox"
+    ]
   },
   "dependencies": {
     "@tanstack/react-query": "^5.28.0",
     "axios": "^1.6.8",
     "lucide-react": "^0.368.0",
-    "posthog-js": "^1.372.1",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
     "react-is": "^19.2.4",
@@ -25,6 +43,7 @@
     "@vitejs/plugin-react": "^4.3.0",
     "autoprefixer": "^10.4.19",
     "postcss": "^8.4.38",
+    "react-snap": "^1.23.0",
     "tailwindcss": "^3.4.3",
     "typescript": "^5.4.5",
     "vite": "^5.2.8"

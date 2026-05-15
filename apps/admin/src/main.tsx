@@ -13,10 +13,19 @@ const queryClient = new QueryClient({
 
 initAnalytics();
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
+const container = document.getElementById('root')!;
+const tree = (
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <App />
     </QueryClientProvider>
-  </React.StrictMode>,
+  </React.StrictMode>
 );
+
+// react-snap pre-renders static HTML into #root during build. When that
+// snapshot is served, hydrate it; otherwise mount fresh.
+if (container.hasChildNodes()) {
+  ReactDOM.hydrateRoot(container, tree);
+} else {
+  ReactDOM.createRoot(container).render(tree);
+}

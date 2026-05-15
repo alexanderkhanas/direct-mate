@@ -78,9 +78,6 @@ services:
     build:
       context: ../../
       dockerfile: infra/production/admin.prod.Dockerfile
-      args:
-        VITE_POSTHOG_KEY: ${VITE_POSTHOG_KEY:-}
-        VITE_POSTHOG_HOST: ${VITE_POSTHOG_HOST:-https://eu.i.posthog.com}
     restart: unless-stopped
     networks:
       - internal
@@ -175,6 +172,19 @@ services:
       GENERIC_TIMEZONE: Europe/Kyiv
     volumes:
       - n8n_data:/home/node/.n8n
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+
+  umami:
+    image: ghcr.io/umami-software/umami:postgresql-latest
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/umami
+      DATABASE_TYPE: postgresql
+      APP_SECRET: ${UMAMI_APP_SECRET}
     depends_on:
       postgres:
         condition: service_healthy

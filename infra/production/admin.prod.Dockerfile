@@ -1,14 +1,14 @@
-# Stage 1: Build
-FROM node:20-alpine AS builder
+# Stage 1: Build (Debian-based — react-snap's puppeteer Chromium needs glibc)
+FROM node:20-bookworm-slim AS builder
 WORKDIR /app
 
-# Build-time env vars consumed by Vite. Must be ARG (not ENV-only) because
-# Vite inlines `import.meta.env.VITE_*` at build time. Defaults are empty so
-# the bundle gracefully no-ops PostHog if the build happens without these.
-ARG VITE_POSTHOG_KEY=
-ARG VITE_POSTHOG_HOST=https://eu.i.posthog.com
-ENV VITE_POSTHOG_KEY=$VITE_POSTHOG_KEY
-ENV VITE_POSTHOG_HOST=$VITE_POSTHOG_HOST
+# Chromium for react-snap's prerender pass. Point puppeteer at the apt
+# binary instead of letting it download its own — smaller image, glibc-clean.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends chromium ca-certificates fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+ENV PUPPETEER_SKIP_DOWNLOAD=true \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 COPY package*.json .npmrc ./
 COPY packages/shared/package*.json packages/shared/
