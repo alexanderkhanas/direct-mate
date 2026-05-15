@@ -10,6 +10,7 @@ import { Card } from '../components/ui/Card';
 import { LoadingState } from '../components/ui/Spinner';
 import { Tabs } from '../components/ui/Tabs';
 import { TraceTab } from '../components/conversation/TraceTab';
+import { useTenantContext } from '../contexts/TenantContext';
 import { cn } from '../lib/cn';
 
 type DetailTab = 'messages' | 'trace';
@@ -29,6 +30,7 @@ export default function ConversationDetailPage() {
   const { id } = useParams<{ id: string }>();
   const qc = useQueryClient();
   const bottomRef = useRef<HTMLDivElement>(null);
+  const { isSuperadmin } = useTenantContext();
   const [activeTab, setActiveTab] = useState<DetailTab>('messages');
 
   const { data, isLoading } = useQuery<ConversationDetail>({
@@ -113,25 +115,27 @@ export default function ConversationDetailPage() {
         </div>
       )}
 
-      <Tabs<DetailTab>
-        value={activeTab}
-        onChange={setActiveTab}
-        ariaLabel="Conversation view"
-        options={[
-          {
-            value: 'messages',
-            label: 'Messages',
-            icon: <MessageSquare className="h-3.5 w-3.5" />,
-          },
-          {
-            value: 'trace',
-            label: 'Trace',
-            icon: <Activity className="h-3.5 w-3.5" />,
-          },
-        ]}
-      />
+      {isSuperadmin && (
+        <Tabs<DetailTab>
+          value={activeTab}
+          onChange={setActiveTab}
+          ariaLabel="Conversation view"
+          options={[
+            {
+              value: 'messages',
+              label: 'Messages',
+              icon: <MessageSquare className="h-3.5 w-3.5" />,
+            },
+            {
+              value: 'trace',
+              label: 'Trace',
+              icon: <Activity className="h-3.5 w-3.5" />,
+            },
+          ]}
+        />
+      )}
 
-      {activeTab === 'trace' ? (
+      {isSuperadmin && activeTab === 'trace' ? (
         id ? <TraceTab conversationId={id} /> : null
       ) : (
       <div className="flex gap-4">

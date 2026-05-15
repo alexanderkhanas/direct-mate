@@ -8,7 +8,6 @@ import {
   ScrollText,
   Package,
   LogOut,
-  Zap,
   GraduationCap,
   FileText,
   FlaskConical,
@@ -75,9 +74,11 @@ export default function Layout() {
       <aside className="w-56 bg-white border-r border-gray-200 flex flex-col">
         {/* Logo */}
         <div className="flex items-center gap-2.5 px-5 py-4 border-b border-gray-100">
-          <div className="h-7 w-7 rounded-lg bg-gray-900 flex items-center justify-center">
-            <Zap className="h-4 w-4 text-white" strokeWidth={2.5} />
-          </div>
+          <img
+            src="/logo-square.png"
+            alt="DirectMate"
+            className="h-7 w-7 rounded-lg object-cover"
+          />
           <span className="font-semibold text-gray-900 text-sm tracking-tight">DirectMate</span>
         </div>
 

@@ -80,6 +80,21 @@ export interface ReplyEngineOutput {
 const nonEmptyStr = (v: unknown): v is string =>
   typeof v === 'string' && v.trim().length > 0;
 
+/**
+ * Snapshot a memory object so downstream engine mutations don't leak
+ * into the captured `memory_before`. structuredClone is fine for plain
+ * data; falls back to JSON for older runtimes / non-cloneable types.
+ */
+function safeDeepClone<T>(value: T): T {
+  try {
+    return typeof (globalThis as any).structuredClone === 'function'
+      ? ((globalThis as any).structuredClone(value) as T)
+      : (JSON.parse(JSON.stringify(value)) as T);
+  } catch {
+    return value;
+  }
+}
+
 /** 6 hours in milliseconds — bot-silence threshold after which the
  *  welcome gate re-fires the AI introduction on the next inbound. */
 const DORMANT_MS = 6 * 60 * 60 * 1000;
@@ -209,9 +224,15 @@ export class ReplyEngineService {
     let outputRef: ReplyEngineOutput | null = null;
     let errorRef: Error | null = null;
 
+    // Captured once after loadContext, frozen so engine mutations don't
+    // contaminate the snapshot. Used by persistTrace as memory_before.
+    let memoryBeforeSnapshot: Record<string, unknown> | null = null;
     try {
     const ctx = await this.loadContext(input);
     ctxRef = ctx;
+    memoryBeforeSnapshot = safeDeepClone(
+      ctx.memory as unknown as Record<string, unknown>,
+    );
     // Centralized markReplied: every reply-emitting return path inside
     // `process()` flows through `withTrace`. The exported
     // `markRepliedOnResult` helper guarantees any future code path that
@@ -349,7 +370,15 @@ export class ReplyEngineService {
     } finally {
       // Persist trace row best-effort — engine must not block on this.
       const durationMs = Math.round(performance.now() - startMs);
-      void this.persistTrace(input, ctxRef, outputRef, errorRef, startedAt, durationMs);
+      void this.persistTrace(
+        input,
+        ctxRef,
+        outputRef,
+        errorRef,
+        startedAt,
+        durationMs,
+        memoryBeforeSnapshot,
+      );
     }
   }
 
@@ -361,6 +390,7 @@ export class ReplyEngineService {
     error: Error | null,
     startedAt: Date,
     durationMs: number,
+    memoryBefore: Record<string, unknown> | null,
   ): Promise<void> {
     try {
       const traceId = ctx?.traceId ?? input.traceId ?? randomUUID();
@@ -375,6 +405,32 @@ export class ReplyEngineService {
           : output?.handoff?.required
           ? 'handoff'
           : 'reply';
+
+      // Outbound text: primary reply + any extraReplies joined for easy
+      // grep / copy-paste in admin.
+      const replyParts: string[] = [];
+      if (output?.reply?.text) replyParts.push(output.reply.text);
+      if (output?.extraReplies?.length) {
+        for (const er of output.extraReplies) {
+          if (er.text) replyParts.push(er.text);
+        }
+      }
+      const outboundReply = replyParts.length
+        ? replyParts.join('\n\n---\n\n')
+        : null;
+
+      // memoryAfter: best-effort. Engine writes the final memory state to
+      // `output.stateUpdate.contextJson` on reply-emitting paths. When
+      // missing (handoff/error paths), use ctx.memory which still has the
+      // engine's mutations.
+      const stateUpdate = output?.stateUpdate as
+        | { contextJson?: Record<string, unknown> }
+        | null
+        | undefined;
+      const memoryAfter =
+        (stateUpdate?.contextJson as Record<string, unknown>) ??
+        (ctx?.memory as unknown as Record<string, unknown>) ??
+        null;
 
       await this.tracesService.persist({
         traceId,
@@ -396,6 +452,10 @@ export class ReplyEngineService {
           ? { ...(ctx.classification as unknown as Record<string, unknown>) }
           : null,
         openaiCalls: ctx?.openaiCalls ?? [],
+        memoryBefore,
+        memoryAfter: memoryAfter ? safeDeepClone(memoryAfter) : null,
+        recentMessages: input.recentMessages ?? [],
+        outboundReply,
         error: error
           ? {
               name: error.name,

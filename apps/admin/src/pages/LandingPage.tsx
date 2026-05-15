@@ -110,7 +110,11 @@ export default function LandingPage() {
       <nav className="border-b border-gray-100">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
-            <MessageSquare className="h-5 w-5 sm:h-6 sm:w-6 text-gray-900 shrink-0" />
+            <img
+              src="/logo-square.png"
+              alt="DirectMate"
+              className="h-6 w-6 sm:h-7 sm:w-7 rounded-md object-cover shrink-0"
+            />
             <span className="text-lg sm:text-xl font-bold text-gray-900">DirectMate</span>
           </div>
           <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">

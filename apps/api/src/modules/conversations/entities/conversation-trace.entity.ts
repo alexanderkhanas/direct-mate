@@ -92,6 +92,35 @@ export class ConversationTrace {
   @Column({ type: 'text', array: true, nullable: true })
   openaiRequestIds!: string[] | null;
 
+  /** Full per-call OpenAI usage breakdown. Mirrors `ctx.openaiCalls`
+   *  collected during `process()`. The flatter `openaiRequestIds` column
+   *  stays for quick text-array indexing; the JSONB here is for the
+   *  rich admin UI row-level rendering. */
+  @Column({ type: 'jsonb', nullable: true })
+  openaiCalls!: OpenAiCallRecord[] | null;
+
+  /** Snapshot of `AssistantMemory` at the start of the turn — the inputs
+   *  the engine reasoned over. Used by the admin Trace tab to debug
+   *  why a particular branch fired without re-running the engine. */
+  @Column({ type: 'jsonb', nullable: true })
+  memoryBefore!: Record<string, unknown> | null;
+
+  /** Snapshot of `AssistantMemory` at end of turn (post-state-update). */
+  @Column({ type: 'jsonb', nullable: true })
+  memoryAfter!: Record<string, unknown> | null;
+
+  /** The last-N message window handed to the classifier — same array as
+   *  `ReplyEngineInput.recentMessages`. Lets the admin spot which prior
+   *  turn the classifier leaked an entity from. */
+  @Column({ type: 'jsonb', nullable: true })
+  recentMessages!: Array<{ role: string; text: string | null }> | null;
+
+  /** The rendered reply text the engine returned, including any
+   *  extraReplies joined with `\n\n---\n\n`. Lets the admin sanity-check
+   *  template interpolation. */
+  @Column({ type: 'text', nullable: true })
+  outboundReply!: string | null;
+
   @Column({ type: 'jsonb', nullable: true })
   error!: ConversationTraceError | null;
 

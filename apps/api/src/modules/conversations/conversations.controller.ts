@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Param,
   Post,
@@ -61,15 +62,26 @@ export class ConversationsController {
 
   /**
    * Per-turn trace rows for a conversation, newest first. Each row holds
-   * the `ctx.trace` step list, classifier output, stage timings, and any
-   * captured error from `ReplyEngineService.process()`. Super-admins can
-   * inspect any tenant's conversation by passing `X-Tenant-Id` (handled
-   * by the `CurrentUser` decorator).
+   * the `ctx.trace` step list, classifier output, stage timings, memory
+   * snapshots, recent-message window, and any captured error from
+   * `ReplyEngineService.process()`.
+   *
+   * Restricted to super-admins. Tenant-admins don't need engine internals
+   * for their own conversations — they have the Messages view. The trace
+   * data exposes classifier prompt-engineering details and timings that
+   * are platform-operator concerns, not customer-facing.
+   *
+   * Super-admins inspect any tenant by passing `X-Tenant-Id` (handled by
+   * the `CurrentUser` decorator at common/decorators/current-user.decorator.ts).
    */
   @Get(':id/traces')
   async traces(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
-    // Verifies the conversation belongs to the resolved tenant — also
-    // 404s on cross-tenant access for non-super-admins.
+    if (user.role !== 'superadmin') {
+      throw new ForbiddenException('Trace inspection is super-admin only.');
+    }
+    // Verifies the conversation belongs to the resolved tenant before
+    // returning rows. Defense-in-depth even though the listForConversation
+    // call also filters by tenantId.
     await this.conversationsService.findById(id, user.tenantId);
     return this.tracesService.listForConversation(user.tenantId, id);
   }

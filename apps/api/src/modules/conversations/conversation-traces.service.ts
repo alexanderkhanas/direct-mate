@@ -24,6 +24,14 @@ export interface PersistTraceInput {
   stageTimings: ConversationTraceStageTimings;
   classifierOutput: Record<string, unknown> | null;
   openaiCalls: OpenAiCallRecord[];
+  /** AssistantMemory shape at turn start (engine inputs). */
+  memoryBefore: Record<string, unknown> | null;
+  /** AssistantMemory shape at turn end (engine outputs). */
+  memoryAfter: Record<string, unknown> | null;
+  /** Last-N classifier context window. */
+  recentMessages: Array<{ role: string; text: string | null }>;
+  /** Rendered outbound reply (primary + joined extraReplies). */
+  outboundReply: string | null;
   error: ConversationTraceError | null;
 }
 
@@ -76,6 +84,13 @@ export class ConversationTracesService {
         stageTimings: timings,
         classifierOutput: input.classifierOutput as any,
         openaiRequestIds: requestIds.length ? requestIds : null,
+        openaiCalls: input.openaiCalls.length ? input.openaiCalls : null,
+        memoryBefore: input.memoryBefore as any,
+        memoryAfter: input.memoryAfter as any,
+        recentMessages: input.recentMessages.length
+          ? (input.recentMessages as any)
+          : null,
+        outboundReply: input.outboundReply,
         error: input.error,
       });
     } catch (err) {
