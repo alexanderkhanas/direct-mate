@@ -1,14 +1,18 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, AlertTriangle, MessageSquare, Activity } from 'lucide-react';
 import { api } from '../lib/api';
 import { ConversationDetail } from '../types';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { LoadingState } from '../components/ui/Spinner';
+import { Tabs } from '../components/ui/Tabs';
+import { TraceTab } from '../components/conversation/TraceTab';
 import { cn } from '../lib/cn';
+
+type DetailTab = 'messages' | 'trace';
 
 function statusVariant(status: string): 'active' | 'closed' | 'default' {
   if (status === 'active' || status === 'human_in_control') return 'active';
@@ -25,6 +29,7 @@ export default function ConversationDetailPage() {
   const { id } = useParams<{ id: string }>();
   const qc = useQueryClient();
   const bottomRef = useRef<HTMLDivElement>(null);
+  const [activeTab, setActiveTab] = useState<DetailTab>('messages');
 
   const { data, isLoading } = useQuery<ConversationDetail>({
     queryKey: ['conversations', id],
@@ -108,6 +113,27 @@ export default function ConversationDetailPage() {
         </div>
       )}
 
+      <Tabs<DetailTab>
+        value={activeTab}
+        onChange={setActiveTab}
+        ariaLabel="Conversation view"
+        options={[
+          {
+            value: 'messages',
+            label: 'Messages',
+            icon: <MessageSquare className="h-3.5 w-3.5" />,
+          },
+          {
+            value: 'trace',
+            label: 'Trace',
+            icon: <Activity className="h-3.5 w-3.5" />,
+          },
+        ]}
+      />
+
+      {activeTab === 'trace' ? (
+        id ? <TraceTab conversationId={id} /> : null
+      ) : (
       <div className="flex gap-4">
         {/* Chat thread */}
         <div className="flex-1">
@@ -197,6 +223,7 @@ export default function ConversationDetailPage() {
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }

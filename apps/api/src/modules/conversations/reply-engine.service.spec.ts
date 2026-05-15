@@ -61,6 +61,13 @@ function makeService(
   const config = {
     get: (key: string) => (key === 'openai.apiKey' ? 'test-key' : undefined),
   } as any;
+  const tracesService = {
+    // Engine fires this fire-and-forget; never blocks. Stub never resolves
+    // anything caller cares about.
+    persist: jest.fn().mockResolvedValue(undefined),
+    listForConversation: jest.fn().mockResolvedValue([]),
+    listErrors: jest.fn().mockResolvedValue([]),
+  } as any;
   return new ReplyEngineService(
     null as any, // settingsRepo
     null as any, // examplesRepo
@@ -74,6 +81,7 @@ function makeService(
     null as any, // instagramContentService
     null as any, // subscriptionsService
     sizeChartsService,
+    tracesService,
   );
 }
 

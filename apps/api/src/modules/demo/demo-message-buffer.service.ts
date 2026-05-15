@@ -19,6 +19,7 @@
  */
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { randomUUID } from 'crypto';
 import {
   MessageDirection,
   MessageRole,
@@ -235,6 +236,7 @@ export class DemoMessageBufferService implements OnModuleDestroy {
         messageText: combinedText,
         state,
         recentMessages,
+        traceId: randomUUID(),
       });
 
       // Charge classifier always (it ran). Charge fallback probabilistically

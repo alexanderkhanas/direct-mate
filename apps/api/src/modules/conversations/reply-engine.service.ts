@@ -33,6 +33,9 @@ import {
 import { OrderPayload } from '../orders/interfaces/order-payload.interface';
 import { InstagramContentService } from '../channels/instagram/instagram-content.service';
 import { SizeChartsService } from '../size-charts/size-charts.service';
+import { ConversationTracesService } from './conversation-traces.service';
+import type { OpenAiCallRecord } from './entities/conversation-trace.entity';
+import { randomUUID } from 'crypto';
 
 // ─── Public interfaces ───────────────────────────────────────────
 
@@ -43,6 +46,14 @@ export interface ReplyEngineInput {
   state: ConversationState;
   recentMessages: Array<{ role: string; text: string | null }>;
   mediaReference?: { mediaId: string; type: string };
+  /**
+   * Correlation ID generated at the webhook entry, propagated through
+   * buffer → engine → meta send. When present, the engine persists a
+   * `conversation_traces` row keyed on this value. Optional for back-
+   * compat with the simulator and replay tools (a UUID is auto-generated
+   * inside `process()` if absent).
+   */
+  traceId?: string;
 }
 
 export interface ReplyEngineOutput {
@@ -117,6 +128,13 @@ interface ProcessingContext {
   isFirstProductPresentation: boolean;
   flowConfig: Record<string, unknown> | undefined;
   trace: string[];
+  /** Correlation ID for the trace row; matches ReplyEngineInput.traceId. */
+  traceId: string;
+  /** Per-stage latency accumulator (ms). Populated by `timed()` helper. */
+  timings: Record<string, number>;
+  /** OpenAI calls made during this turn — model, tokens, latency, request-id.
+   *  Populated by classifier + vision call sites via `usageSink`. */
+  openaiCalls: OpenAiCallRecord[];
 }
 
 const LOG_FILE = path.join(process.cwd(), 'conversations.log');
@@ -174,6 +192,7 @@ export class ReplyEngineService {
     @Inject(forwardRef(() => SubscriptionsService))
     private readonly subscriptionsService: SubscriptionsService,
     private readonly sizeChartsService: SizeChartsService,
+    private readonly tracesService: ConversationTracesService,
   ) {
     this.openai = new OpenAI({
       apiKey: this.config.get<string>('openai.apiKey'),
@@ -184,15 +203,26 @@ export class ReplyEngineService {
   // ─── Main entry point ──────────────────────────────────────────
 
   async process(input: ReplyEngineInput): Promise<ReplyEngineOutput> {
+    const startedAt = new Date();
+    const startMs = performance.now();
+    let ctxRef: ProcessingContext | null = null;
+    let outputRef: ReplyEngineOutput | null = null;
+    let errorRef: Error | null = null;
+
+    try {
     const ctx = await this.loadContext(input);
+    ctxRef = ctx;
     // Centralized markReplied: every reply-emitting return path inside
     // `process()` flows through `withTrace`. The exported
     // `markRepliedOnResult` helper guarantees any future code path that
     // emits a reply or handoff updates `lastReplyAt` — without
-    // scattered call sites that drift over time.
+    // scattered call sites that drift over time. Also captures the
+    // outgoing result for the `finally` block so trace persistence
+    // sees what we actually returned.
     const withTrace = (r: ReplyEngineOutput) => {
       r.trace = ctx.trace;
       markRepliedOnResult(ctx.memory, r);
+      outputRef = r;
       return r;
     };
 
@@ -296,6 +326,109 @@ export class ReplyEngineService {
     }
 
     return withTrace(result);
+    } catch (err) {
+      errorRef = err as Error;
+      this.logger.error(
+        `Engine error in conversation ${input.conversationId}: ${errorRef.message}`,
+        errorRef.stack,
+      );
+      // Soft handoff: never let a thrown exception become a 500 to the
+      // webhook. The customer gets a placeholder, a manager gets pinged,
+      // and the trace row records what blew up.
+      outputRef = {
+        decision: ReplyDecision.Reply,
+        reply: {
+          text: 'Невелика затримка, менеджер передзвонить найближчим часом 💛',
+          sendNow: true,
+        },
+        handoff: { required: true, reason: 'internal_error' },
+        stateUpdate: null,
+        trace: ctxRef?.trace,
+      };
+      return outputRef;
+    } finally {
+      // Persist trace row best-effort — engine must not block on this.
+      const durationMs = Math.round(performance.now() - startMs);
+      void this.persistTrace(input, ctxRef, outputRef, errorRef, startedAt, durationMs);
+    }
+  }
+
+  /** Best-effort trace persistence. Wired in `process()`'s finally block. */
+  private async persistTrace(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext | null,
+    output: ReplyEngineOutput | null,
+    error: Error | null,
+    startedAt: Date,
+    durationMs: number,
+  ): Promise<void> {
+    try {
+      const traceId = ctx?.traceId ?? input.traceId ?? randomUUID();
+      const lastStep = ctx?.trace?.length
+        ? ctx.trace[ctx.trace.length - 1]
+        : undefined;
+      const decision: 'reply' | 'handoff' | 'create_draft_order' | 'error' =
+        error
+          ? 'error'
+          : output?.decision === ReplyDecision.CreateDraftOrder
+          ? 'create_draft_order'
+          : output?.handoff?.required
+          ? 'handoff'
+          : 'reply';
+
+      await this.tracesService.persist({
+        traceId,
+        tenantId: input.tenantId,
+        conversationId: input.conversationId,
+        customerId: null,
+        startedAt,
+        durationMs,
+        inboundMessageText: input.messageText ?? null,
+        inboundMediaRef: input.mediaReference
+          ? { ...input.mediaReference }
+          : null,
+        decision,
+        templateScenario: output?.templateScenario ?? null,
+        handoffReason: output?.handoff?.reason ?? null,
+        traceSteps: ctx?.trace ?? [],
+        stageTimings: ctx?.timings ?? {},
+        classifierOutput: ctx?.classification
+          ? { ...(ctx.classification as unknown as Record<string, unknown>) }
+          : null,
+        openaiCalls: ctx?.openaiCalls ?? [],
+        error: error
+          ? {
+              name: error.name,
+              message: error.message,
+              stack: error.stack,
+              stage: lastStep,
+            }
+          : null,
+      });
+    } catch (persistErr) {
+      this.logger.error(
+        `Trace persistence failed for conversation ${input.conversationId}`,
+        (persistErr as Error)?.stack,
+      );
+    }
+  }
+
+  /**
+   * Time an async stage and accumulate ms into `ctx.timings[stage]`.
+   * Use sparingly — wrap only the heavy stages (classify, search,
+   * render) so the timings dict stays readable.
+   */
+  private async timed<T>(
+    ctx: ProcessingContext,
+    stage: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const start = performance.now();
+    try {
+      return await fn();
+    } finally {
+      ctx.timings[stage] = (ctx.timings[stage] ?? 0) + (performance.now() - start);
+    }
   }
 
   // ─── Step 1: Load tenant context ───────────────────────────────
@@ -345,6 +478,9 @@ export class ReplyEngineService {
       isFirstProductPresentation: false,
       flowConfig,
       trace: [],
+      traceId: input.traceId ?? randomUUID(),
+      timings: {},
+      openaiCalls: [],
     };
   }
 
@@ -362,14 +498,17 @@ export class ReplyEngineService {
     // 2. AI Classifier: classify intent + extract entities (NO reply text)
     let classification: ClassificationResult;
     try {
-      classification = await this.classifierService.classify({
-        messageText: input.messageText,
-        recentMessages: input.recentMessages,
-        memory,
-        categories,
-        currentStage: this.getCurrentStage(input.state),
-        tenantBusinessType,
-      });
+      classification = await this.timed(ctx, 'classify_ms', () =>
+        this.classifierService.classify({
+          messageText: input.messageText,
+          recentMessages: input.recentMessages,
+          memory,
+          categories,
+          currentStage: this.getCurrentStage(input.state),
+          tenantBusinessType,
+          usageSink: ctx.openaiCalls,
+        }),
+      );
     } catch (err) {
       this.logger.error('AI classification failed', err);
       ctx.trace.push('classify: ai_failure → handoff');
@@ -421,14 +560,17 @@ export class ReplyEngineService {
       if (fallbackModel) {
         try {
           const secondOpinion =
-            await this.classifierService.classifyWithFallback({
-              messageText: input.messageText,
-              recentMessages: input.recentMessages,
-              memory,
-              categories,
-              currentStage: this.getCurrentStage(input.state),
-              tenantBusinessType,
-            });
+            await this.timed(ctx, 'classify_fallback_ms', () =>
+              this.classifierService.classifyWithFallback({
+                messageText: input.messageText,
+                recentMessages: input.recentMessages,
+                memory,
+                categories,
+                currentStage: this.getCurrentStage(input.state),
+                tenantBusinessType,
+                usageSink: ctx.openaiCalls,
+              }),
+            );
 
           this.logToFile({
             event: 'handoff_verification',

@@ -1,5 +1,6 @@
 import { Body, Controller, Post, UseGuards } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
+import { randomUUID } from 'crypto';
 import { InternalApiKeyGuard } from '../../common/guards/internal-api-key.guard';
 import { ConversationsService } from './conversations.service';
 import { ReplyEngineService } from './reply-engine.service';
@@ -49,6 +50,7 @@ export class ConversationReplyController {
       messageText: dto.messageText,
       state,
       recentMessages,
+      traceId: randomUUID(),
     });
 
     if (result.stateUpdate) {

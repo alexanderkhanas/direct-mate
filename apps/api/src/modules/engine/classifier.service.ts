@@ -336,6 +336,20 @@ export class ClassifierService {
     categories: string[];
     currentStage?: string;
     tenantBusinessType?: 'clothing' | 'cosmetics';
+    /**
+     * Optional usage sink. When provided, the OpenAI token usage + latency
+     * for this call is appended. Used by the reply-engine to populate
+     * `conversation_traces.openai_calls` without changing the public
+     * return type. Caller owns the array; ordering matches call order.
+     */
+    usageSink?: Array<{
+      model: string;
+      promptTokens: number;
+      completionTokens: number;
+      latencyMs: number;
+      requestId?: string | null;
+      source?: string;
+    }>;
   }): Promise<ClassificationResult> {
     const memoryContext = this.buildMemoryContext(params.memory);
 
@@ -488,6 +502,7 @@ export class ClassifierService {
     // Add current message
     messages.push({ role: 'user', content: params.messageText });
 
+    const callStartMs = performance.now();
     const completion = await (this.openai.chat.completions.create as any)({
       model: this.model,
       messages,
@@ -499,6 +514,18 @@ export class ClassifierService {
       max_completion_tokens: 400,
       temperature: 0.1,
     });
+
+    if (params.usageSink) {
+      params.usageSink.push({
+        model: this.model,
+        promptTokens: completion.usage?.prompt_tokens ?? 0,
+        completionTokens: completion.usage?.completion_tokens ?? 0,
+        latencyMs: Math.round(performance.now() - callStartMs),
+        requestId:
+          (completion as { _request_id?: string })?._request_id ?? null,
+        source: 'classifier',
+      });
+    }
 
     const toolCall = completion.choices[0]?.message?.tool_calls?.[0];
     if (!toolCall) {
@@ -552,6 +579,14 @@ export class ClassifierService {
     categories: string[];
     currentStage?: string;
     tenantBusinessType?: 'clothing' | 'cosmetics';
+    usageSink?: Array<{
+      model: string;
+      promptTokens: number;
+      completionTokens: number;
+      latencyMs: number;
+      requestId?: string | null;
+      source?: string;
+    }>;
   }): Promise<ClassificationResult> {
     const fallbackModel = this.config.get<string>('openai.fallbackModel');
     if (!fallbackModel) {
@@ -561,10 +596,18 @@ export class ClassifierService {
     // Temporarily override model
     const origModel = this.model;
     (this as any).model = fallbackModel;
+    // Buffer usage records locally so we can re-stamp `source` to
+    // 'classifier_fallback' before merging into the caller's sink.
+    const localSink = params.usageSink ? [] as NonNullable<typeof params.usageSink> : undefined;
     try {
-      return await this.classify(params);
+      return await this.classify({ ...params, usageSink: localSink });
     } finally {
       (this as any).model = origModel;
+      if (localSink && params.usageSink) {
+        for (const u of localSink) {
+          params.usageSink.push({ ...u, source: 'classifier_fallback' });
+        }
+      }
     }
   }
 

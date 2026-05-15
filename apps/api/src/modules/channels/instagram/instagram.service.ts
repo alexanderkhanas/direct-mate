@@ -641,6 +641,10 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
         .slice(-10)
         .map((m) => ({ role: m.role, text: m.text }));
 
+      // Per-engine-call trace correlation. One debounced batch → one
+      // engine call → one traceId. Threaded into conversation_traces
+      // for end-to-end debugging in the admin UI.
+      const traceId = crypto.randomUUID();
       const result = await this.replyEngineService.process({
         tenantId: params.tenantId,
         conversationId: conversation.id,
@@ -651,6 +655,7 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
           mediaId: params.mediaReference.mediaId,
           type: params.mediaReference.type,
         } : undefined,
+        traceId,
       });
 
       if (result.stateUpdate) {
@@ -807,6 +812,7 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
       messageText,
       state,
       recentMessages,
+      traceId: crypto.randomUUID(),
     });
 
     this.learningObserver.recordBotAnalysis(conversationId, {

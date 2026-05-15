@@ -4,10 +4,12 @@ import { Conversation } from './entities/conversation.entity';
 import { Customer } from './entities/customer.entity';
 import { Message } from './entities/message.entity';
 import { ConversationState } from './entities/conversation-state.entity';
+import { ConversationTrace } from './entities/conversation-trace.entity';
 import { TenantSettings } from '../tenants/entities/tenant-settings.entity';
 import { ManagerExample } from '../settings/entities/manager-example.entity';
 import { StoreConfig } from '../engine/entities/store-config.entity';
 import { ConversationsService } from './conversations.service';
+import { ConversationTracesService } from './conversation-traces.service';
 import { ReplyEngineService } from './reply-engine.service';
 import { ConversationsController } from './conversations.controller';
 import { ConversationReplyController } from './conversation-reply.controller';
@@ -25,6 +27,7 @@ import { SizeChartsModule } from '../size-charts/size-charts.module';
       Customer,
       Message,
       ConversationState,
+      ConversationTrace,
       TenantSettings,
       ManagerExample,
       StoreConfig,
@@ -37,7 +40,7 @@ import { SizeChartsModule } from '../size-charts/size-charts.module';
     SizeChartsModule,
   ],
   controllers: [ConversationsController, ConversationReplyController],
-  providers: [ConversationsService, ReplyEngineService],
-  exports: [ConversationsService, ReplyEngineService],
+  providers: [ConversationsService, ConversationTracesService, ReplyEngineService],
+  exports: [ConversationsService, ConversationTracesService, ReplyEngineService],
 })
 export class ConversationsModule {}
