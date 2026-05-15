@@ -326,7 +326,11 @@ export class ClassifierService {
     this.openai = new OpenAI({
       apiKey: this.config.get<string>('openai.apiKey'),
     });
-    this.model = this.config.get<string>('openai.model') ?? 'gpt-4o';
+    // Classifier-specific model — defaults to gpt-5.4-mini. Vision and
+    // AI-fallback use separate `openai.visionModel` and `openai.model`
+    // configs so the cheap classifier model doesn't bleed into those.
+    this.model =
+      this.config.get<string>('openai.classifierModel') ?? 'gpt-5.4-mini';
   }
 
   async classify(params: {

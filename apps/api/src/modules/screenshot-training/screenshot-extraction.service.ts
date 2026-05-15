@@ -203,7 +203,10 @@ export class ScreenshotExtractionService {
     this.openai = new OpenAI({
       apiKey: this.configService.get<string>('openai.apiKey'),
     });
-    this.model = this.configService.get<string>('openai.model') ?? 'gpt-4o';
+    // Screenshot extraction is a vision task — use the vision model
+    // (defaults to gpt-4o) not the classifier model.
+    this.model =
+      this.configService.get<string>('openai.visionModel') ?? 'gpt-4o';
   }
 
   /**

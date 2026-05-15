@@ -27,7 +27,18 @@ export default () => ({
   },
   openai: {
     apiKey: process.env.OPENAI_API_KEY ?? '',
-    model: process.env.OPENAI_MODEL ?? 'gpt-4o',
+    // Used by ReplyEngineService.aiFallback (free-form reply when no
+    // template matches). Customer-facing text — quality matters more
+    // than latency/cost. Defaults to gpt-5.4.
+    model: process.env.OPENAI_MODEL ?? 'gpt-5.4',
+    // Used by ClassifierService — every turn, entity extraction + intent
+    // routing. Fast and cheap; gpt-5.4-mini handles this well.
+    classifierModel: process.env.OPENAI_CLASSIFIER_MODEL ?? 'gpt-5.4-mini',
+    // Used by InstagramContentService (vision matching) and
+    // ScreenshotExtractionService. Vision tasks need a stronger model.
+    visionModel: process.env.OPENAI_VISION_MODEL ?? 'gpt-4o',
+    // Used by ClassifierService.classifyWithFallback for handoff
+    // verification (second-opinion classifier pass).
     fallbackModel: process.env.OPENAI_FALLBACK_MODEL ?? 'gpt-4.1',
   },
   internal: {

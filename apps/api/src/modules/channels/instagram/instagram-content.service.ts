@@ -941,8 +941,12 @@ export class InstagramContentService {
         },
       ];
 
+      // Vision-specific model (gpt-4o by default). Separate from the
+      // classifier model — vision needs the stronger model for product
+      // matching to avoid the prod gpt-5.4-mini rejection regression
+      // we hit earlier.
       const visionModel =
-        this.config.get<string>('openai.model') ?? 'gpt-5.4-mini';
+        this.config.get<string>('openai.visionModel') ?? 'gpt-4o';
       // Use withResponse() to capture x-request-id from response headers.
       // Local probe with identical input bytes + identical key + identical
       // model name accepts the same match prod rejects; we've ruled out
