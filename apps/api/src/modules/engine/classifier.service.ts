@@ -195,6 +195,11 @@ function buildClassifyTool(
               'category_browse',
               'availability_check',
               'size_chart_request',
+              // Post-selection variant follow-up — bot has a product
+              // selected, customer asks about other sizes/colors of it.
+              // Engine writes this value too (reply-engine.service.ts
+              // L1712, L1762) so it MUST be schema-valid.
+              'ask_variant_choice',
               'unknown',
             ],
           },
@@ -281,6 +286,13 @@ function buildClassifyTool(
               'confirm_selection',
               'show_price',
               'answer_faq',
+              // Paired with primary_intent='ask_variant_choice'. Engine
+              // writes this on overrides; schema enum needs to allow it.
+              'ask_variant_choice',
+              // Paired with primary_intent='size_chart_request'. Mirrors
+              // the engine's routing — `handleSizeChartRequest` reads
+              // primaryIntent but downstream code may look at action.
+              'size_chart_request',
             ],
           },
           slot_action: {
@@ -373,6 +385,70 @@ export class ClassifierService {
         ].join('\n')
       : '';
 
+    // Fires whenever the customer is in the middle of variant selection.
+    // Trigger is OR — `selectionState === 'awaiting_variant'` stays true
+    // across interim turns (e.g. customer asks a question, bot answers,
+    // customer then names the variant) so we coerce bare-color/size
+    // replies even when lastAction has drifted past 'asked_variant'.
+    const awaitingVariantRule =
+      params.memory.lastAction === 'asked_variant' ||
+      params.memory.selectionState === 'awaiting_variant'
+        ? [
+            ``,
+            `AWAITING VARIANT ANSWER (bot has asked "Який обираєте?" — customer is filling the variant slot):`,
+            `- Bare color word ("Білий", "Коричневий", "Чорна") → slot_action='fills_missing_slot' + extract entities.color`,
+            `- Bare size word ("S", "M", "XL", "42") → slot_action='fills_missing_slot' + extract entities.size`,
+            `- Color + size in one message ("Білу S", "Чорна M") → slot_action='fills_missing_slot' + both entities`,
+            `- Indexed pick ("першу", "другу", "цю", "ту що зверху") → slot_action='fills_missing_slot' with empty entities; engine resolves via memory.lastPresentedProducts`,
+            `- Pure decline ("ні", "не треба") → slot_action='rejection'`,
+            `- Genuine question ("а скільки коштує?", "а яка ціна?") → slot_action='asks_question' (only questions get this; bare colors/sizes do NOT)`,
+            `- DO NOT classify a bare color/size word as 'asks_question'. The customer is answering, not asking.`,
+          ].join('\n')
+        : '';
+
+    // Fires only after a product is committed and customer asks about
+    // alternate sizes/colors of it. Outside this state, generic
+    // questions about the catalog stay in their normal intent buckets.
+    const postSelectionRule =
+      !!params.memory.selectedProductId &&
+      params.memory.selectionState === 'awaiting_confirmation'
+        ? [
+            ``,
+            `POST-SELECTION VARIANT FOLLOW-UP:`,
+            `A product is already selected and state is awaiting_confirmation. If customer asks about other sizes/colors of THIS product, classify primary_intent='ask_variant_choice' (NOT 'product_inquiry' or generic 'asks_question'). The engine routes to a "variant not available" reply if the asked size/color is out of stock.`,
+            `  Examples:`,
+            `    "А є в інших розмірах?" → ask_variant_choice`,
+            `    "Чи є L?"               → ask_variant_choice; size: "L"`,
+            `    "А інший колір є?"      → ask_variant_choice`,
+            `    "є в M?"                → ask_variant_choice; size: "M"`,
+          ].join('\n')
+        : '';
+
+    // Fires only for clothing-ish catalogs. Cosmetics tenants don't
+    // need these Ukrainian-accusative + color-normalization rules.
+    // Token check uses substring match against canonical roots so
+    // declined forms ("Сорочки" vs "Сорочка") still hit.
+    const CLOTHING_CATEGORY_TOKENS = [
+      'сорочк', 'сукн', 'штани', 'светр', 'футболк', 'куртк',
+      'юбк', 'спідниц', 'жакет', 'тренч', 'бомбер', 'джинс',
+    ];
+    const isClothingLike = params.categories.some((c) =>
+      CLOTHING_CATEGORY_TOKENS.some((t) => c.toLowerCase().includes(t)),
+    );
+    const productSizeExtractionRule = isClothingLike
+      ? [
+          ``,
+          `PRODUCT + SIZE EXTRACTION (mandatory entity fill):`,
+          `When the customer's message mentions a product NAME plus a size (or color), ALWAYS extract BOTH into entities. Ukrainian accusative forms (Сорочку, Сукню, Куртку, Спідницю) MUST be normalized to nominative (Сорочка, Сукня, Куртка, Спідниця) in productName. The meta-word "розмір"/"розмірі" marks the SIZE that follows — extract the canonical value (XS/S/M/L/XL or numeric like 36/38/40/42), never "розмір" itself.`,
+          `COLOR NORMALIZATION — preserve the actual color the customer said. "бежевий" ≠ "білий"; "блакитний" ≠ "синій"; "кремовий" ≠ "білий". Feminine -а/-я ending (бежева, чорна, блакитна) maps to masculine nominative used in the catalog (бежевий, чорний, блакитний).`,
+          `  Examples (extract ALL listed entities):`,
+          `    "Хочу Сорочку лляну в розмірі M"           → product_inquiry; productName: "Сорочка лляна", size: "M"`,
+          `    "Хочу куртку-бомбер у M, чорну"           → product_inquiry; productName: "Куртка-бомбер", color: "чорний", size: "M"`,
+          `    "Є бежева оверсайз футболка в розмірі S?" → availability_check; productName: "Oversize футболка", color: "бежевий", size: "S"  (NOTE: "бежева" → "бежевий", NOT "білий")`,
+          `    "Покажіть блакитну сорочку M"             → product_inquiry; productName: "Сорочка", color: "блакитний", size: "M"  (NOTE: "блакитна" → "блакитний", NOT "синій")`,
+        ].join('\n')
+      : '';
+
     const pendingOfferRule = params.memory.awaitingPreQualifyAnswer
       ? [
           ``,
@@ -407,6 +483,14 @@ export class ClassifierService {
         ].join('\n')
       : '';
 
+    // Surfaces which conditional blocks fired for this call. Grep
+    // production logs for `[CLASSIFIER_BLOCKS]` to verify the
+    // category-heuristic includes the right tenants and to diagnose
+    // unexpected prompt-token deltas.
+    this.logger.debug(
+      `[CLASSIFIER_BLOCKS] cosmetics=${!!cosmeticsRule} pendingOffer=${!!pendingOfferRule} awaitingVariant=${!!awaitingVariantRule} postSelection=${!!postSelectionRule} productSize=${isClothingLike} categories=${params.categories.join(',')}`,
+    );
+
     const systemPrompt = [
       `You are a message classifier for an online store's Instagram DM assistant.`,
       `Your ONLY job is to classify the customer message. Do NOT generate any reply text.`,
@@ -423,12 +507,16 @@ export class ClassifierService {
       params.categories.length
         ? `Available product categories: ${params.categories.join(', ')}.`
         : '',
-      params.currentStage
-        ? `Current conversation stage: ${params.currentStage}`
-        : '',
+      // Stage is already exposed via buildMemoryContext's CONVERSATION
+      // STATE block (Selection state + Last bot action + Waiting for).
+      // One source of truth; the standalone `Current conversation stage`
+      // line was dropped to avoid drift.
       memoryContext ? `\n${memoryContext}` : '',
       cosmeticsRule,
       pendingOfferRule,
+      awaitingVariantRule,
+      postSelectionRule,
+      productSizeExtractionRule,
       ``,
       `ENTITY SCOPE — CRITICAL:`,
       `Extract entity values ONLY from the customer's CURRENT message text. Never carry a value forward from a prior turn shown in conversation history. If the current message doesn't mention a value, OMIT that entity field — leaving it unset is correct; guessing is wrong.`,
@@ -470,44 +558,13 @@ export class ClassifierService {
       `CRITICAL: Do NOT use 'confirmation' for messages that contain new information. "Ягідно-червоний" is 'fills_missing_slot', not 'confirmation'.`,
       ``,
       `SIZE CHART vs AVAILABILITY vs RECOMMENDATION — critical disambiguation:`,
-      `- 'size_chart_request' ONLY when the customer asks for a sizing TABLE / CHART / measurement guide.`,
-      `  Positive examples (all → size_chart_request):`,
-      `    "розмірна сітка є?"`,
-      `    "покажіть розміри у таблиці"`,
-      `    "як зрозуміти який розмір мій?"`,
-      `    "табличка з розмірами"`,
-      `    "є чарт розмірів?"`,
-      `    "які параметри у розмірів?"`,
-      `  Negative — DO NOT classify as size_chart_request:`,
-      `    "у вас є розмір М?"            → availability_check (wants in-stock status of size M)`,
-      `    "є XL?"                         → availability_check`,
-      `    "який у вас розмірний ряд?"     → availability_check (wants list of in-stock sizes, not a measurement chart)`,
-      `    "що мені підійде? 170см 60кг"  → ask_recommendation (wants judgment from parameters)`,
-      `    "порадьте розмір"               → ask_recommendation`,
-      `    "який розмір брати при зрості 170?" → ask_recommendation (asking bot to choose, not asking for a table)`,
-      ``,
-      `POST-SELECTION VARIANT FOLLOW-UP:`,
-      `When CONVERSATION STATE shows a product is already selected (Selected product != "not selected", Selection state == "awaiting_confirmation"), and the customer asks about other sizes/colors of THIS product, classify as 'ask_variant_choice' — NOT 'ask_question' or 'product_inquiry'. The engine will route to a "variant not available" reply if the asked size/color isn't in stock.`,
-      `  Examples (with a selected product in memory):`,
-      `    "А є в інших розмірах?"          → ask_variant_choice`,
-      `    "Чи є L?"                        → ask_variant_choice (extract size: "L")`,
-      `    "А інший колір є?"               → ask_variant_choice`,
-      `    "є в M?"                         → ask_variant_choice (extract size: "M")`,
-      `    "інші розміри?"                  → ask_variant_choice`,
-      ``,
-      `PRODUCT + SIZE EXTRACTION (mandatory entity fill):`,
-      `When the customer's message mentions a product NAME plus a size (or a color), ALWAYS extract BOTH into entities — do NOT drop one because the other was harder to identify. Ukrainian accusative/genitive forms (Сорочку, Сукню, Куртку, Спідницю) MUST be normalized to nominative (Сорочка, Сукня, Куртка, Спідниця) in productName. The meta-word "розмір"/"розмірі" is a marker for the SIZE that follows — extract the canonical size value (XS/S/M/L/XL or numeric), never "розмір" itself.`,
-      `COLOR NORMALIZATION — preserve the actual color the customer said. Do NOT swap "бежевий" → "білий" or "блакитний" → "синій"; each Ukrainian color word has a distinct canonical form. The feminine adjective form (-а/-я ending: бежева, чорна, біла, блакитна, кремова, хакі) maps to the masculine nominative used in the catalog (бежевий, чорний, білий, блакитний, кремовий, хакі).`,
-      `  Examples (extract ALL listed entities; never return entities: {} on these patterns):`,
-      `    "Хочу Сорочку лляну в розмірі M"              → product_inquiry; productName: "Сорочка лляна", size: "M"`,
-      `    "Сукню міді базову у розмірі L"              → product_inquiry; productName: "Сукня міді базова", size: "L"`,
-      `    "Спідницю плісе в S"                         → product_inquiry; productName: "Спідниця плісе", size: "S"`,
-      `    "є оверсайз футболка в розмірі M?"           → availability_check; productName: "Oversize футболка", size: "M"`,
-      `    "Хочу куртку-бомбер у M, чорну"              → product_inquiry; productName: "Куртка-бомбер", color: "чорний", size: "M"`,
-      `    "є біла сорочка лляна у M?"                  → availability_check; productName: "Сорочка лляна", color: "білий", size: "M"`,
-      `    "Є бежева оверсайз футболка в розмірі S?"    → availability_check; productName: "Oversize футболка", color: "бежевий", size: "S"  (NOTE: "бежева" → "бежевий", NOT "білий")`,
-      `    "Покажіть блакитну сорочку M"                → product_inquiry; productName: "Сорочка", color: "блакитний", size: "M"  (NOTE: "блакитна" → "блакитний", NOT "синій")`,
-      `    "Хочу кремовий светр oversize"               → product_inquiry; productName: "Светр oversize", color: "кремовий"`,
+      `- 'size_chart_request' ONLY when customer asks for a sizing TABLE / CHART / measurement guide:`,
+      `    "розмірна сітка є?", "табличка з розмірами", "як зрозуміти який розмір мій?"`,
+      `- 'availability_check' when customer asks if a specific size is in stock:`,
+      `    "у вас є розмір М?" → availability_check  (asks in-stock status, not measurements)`,
+      `    "є XL?"             → availability_check`,
+      `- 'ask_recommendation' when customer asks the bot to choose a size for them:`,
+      `    "порадьте розмір", "що мені підійде? 170см 60кг" → ask_recommendation`,
       ``,
       `Call classify_message with your analysis.`,
     ]
@@ -538,7 +595,10 @@ export class ClassifierService {
         function: { name: 'classify_message' },
       },
       max_completion_tokens: 400,
-      temperature: 0.1,
+      // Deterministic classification. Same input → same output is more
+      // important than minor variability; we've previously hit
+      // non-determinism bugs from temperature>0.
+      temperature: 0,
     });
 
     if (params.usageSink) {
@@ -553,9 +613,16 @@ export class ClassifierService {
       });
     }
 
+    // Truncate user-visible text in fallback logs so PII doesn't end
+    // up in noisy log retention — first ~100 chars is plenty to
+    // identify the failure case.
+    const truncatedMessage = params.messageText.slice(0, 100);
+
     const toolCall = completion.choices[0]?.message?.tool_calls?.[0];
     if (!toolCall) {
-      this.logger.warn('No tool call in classification response');
+      this.logger.error(
+        `[CLASSIFIER_FALLBACK] reason=no_tool_call model=${this.model} message="${truncatedMessage}"`,
+      );
       return this.defaultClassification();
     }
 
@@ -563,7 +630,9 @@ export class ClassifierService {
     try {
       raw = JSON.parse((toolCall as any).function.arguments);
     } catch (err) {
-      this.logger.error('Failed to parse classification JSON', (err as Error).message);
+      this.logger.error(
+        `[CLASSIFIER_FALLBACK] reason=json_parse_failed model=${this.model} message="${truncatedMessage}" parseError=${(err as Error).message}`,
+      );
       return this.defaultClassification();
     }
 
