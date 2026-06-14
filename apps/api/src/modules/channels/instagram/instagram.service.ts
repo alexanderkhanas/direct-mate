@@ -189,6 +189,33 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
     return base ? `${base}/${clean}` : url;
   }
 
+  /**
+   * Send image attachments best-effort. Images are supplementary to the
+   * text reply, so a failure here is logged at WARN and swallowed — it must
+   * never block the text or escalate the conversation to a human. The retry
+   * wrapper still gives transient Meta hiccups a few attempts before we give
+   * up. Used for both the primary reply images and any extraReplies images.
+   */
+  private async sendImagesBestEffort(
+    recipientId: string,
+    imageUrls: string[],
+    pageAccessToken: string,
+    label: string,
+  ): Promise<void> {
+    try {
+      await withRetry(
+        () => this.sendMetaImages(recipientId, imageUrls, pageAccessToken),
+        { label, maxAttempts: 3, baseDelayMs: 2000 },
+      );
+      this.logger.log(`Sent ${imageUrls.length} image(s) to ${recipientId} [${label}]`);
+    } catch (err) {
+      this.logger.warn(
+        `Image attachment send failed (non-fatal) for ${recipientId} [${label}]: ` +
+          `${(err as Error).message}. Text reply still delivered; conversation not handed off.`,
+      );
+    }
+  }
+
   private async sendMetaImages(
     recipientId: string,
     imageUrls: string[],
@@ -715,15 +742,21 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
       if (encryptedToken) {
         const pageAccessToken = this.cryptoService.decrypt(encryptedToken);
         try {
-          // Send product images as a single batch message before the text
+          // Images are SUPPLEMENTARY (product photos, size charts). A failed
+          // image attachment — broken URL, rotated CDN, Meta "Upload
+          // attachment failure" 400 — must NOT block the text reply or
+          // trigger a handoff. `sendImagesBestEffort` swallows image
+          // failures; only a TEXT-send failure (the essential payload)
+          // reaches the catch below and escalates.
           const replyText = result.reply!.text;
           const replyImages = result.reply!.imageUrls;
           if (replyImages?.length) {
-            await withRetry(
-              () => this.sendMetaImages(params.externalUserId, replyImages!, pageAccessToken),
-              { label: `meta-images-${params.externalUserId}`, maxAttempts: 3, baseDelayMs: 2000 },
+            await this.sendImagesBestEffort(
+              params.externalUserId,
+              replyImages,
+              pageAccessToken,
+              `meta-images-${params.externalUserId}`,
             );
-            this.logger.log(`Sent ${replyImages.length} product image(s) in one message to ${params.externalUserId}`);
           }
 
           await withRetry(
@@ -732,13 +765,16 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
           );
 
           // Iterate any sibling bubbles (size-chart attachment, conversation-
-          // start greeting follow-up, future multi-bubble flows). Each extra is
-          // sent in the same image-then-text shape as the primary.
+          // start greeting follow-up, future multi-bubble flows). Images are
+          // best-effort; extra text is essential (e.g. the welcome-prepend
+          // flow carries the real contextual reply in extraReplies[0].text).
           for (const extra of result.extraReplies ?? []) {
             if (extra.imageUrls?.length) {
-              await withRetry(
-                () => this.sendMetaImages(params.externalUserId, extra.imageUrls!, pageAccessToken),
-                { label: `meta-images-extra-${params.externalUserId}`, maxAttempts: 3, baseDelayMs: 2000 },
+              await this.sendImagesBestEffort(
+                params.externalUserId,
+                extra.imageUrls,
+                pageAccessToken,
+                `meta-images-extra-${params.externalUserId}`,
               );
             }
             if (extra.text) {

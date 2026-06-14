@@ -38,9 +38,17 @@ services:
       INSTAGRAM_OAUTH_REDIRECT_URI: ${INSTAGRAM_OAUTH_REDIRECT_URI}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
-      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
-      OPENAI_FALLBACK_MODEL: ${OPENAI_FALLBACK_MODEL:-gpt-4.1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.4}
+      OPENAI_FALLBACK_MODEL: ${OPENAI_FALLBACK_MODEL:-gpt-5.4}
+      OPENAI_CLASSIFIER_MODEL: ${OPENAI_CLASSIFIER_MODEL:-gpt-5.4-mini}
+      OPENAI_VISION_MODEL: ${OPENAI_VISION_MODEL:-gpt-4o}
       INTERNAL_API_KEY: ${INTERNAL_API_KEY}
+      # Public origin Meta uses to fetch attachment URLs (size charts,
+      # uploads). MUST be the public domain — without it the size-chart
+      # publicUrl() falls back to http://localhost:3000 and Meta returns
+      # "Upload attachment failure" 400. Was missing here, so the value
+      # in .env never reached the container.
+      APP_BASE_URL: https://${DOMAIN}
       ADMIN_BASE_URL: https://${DOMAIN}
       ADMIN_ORIGIN: https://${DOMAIN}
       BACKEND_BASE_URL: http://api:3000
