@@ -15,6 +15,7 @@ import { Conversation } from '../../conversations/entities/conversation.entity';
 import { ConversationState } from '../../conversations/entities/conversation-state.entity';
 import { StoreConfig } from '../../engine/entities/store-config.entity';
 import { LearningObserverService } from '../../screenshot-training/learning-observer.service';
+import { InstagramCommentService } from './instagram-comment.service';
 import { ConnectionType, ConversationStatus, MessageDirection, MessageRole, ReplyDecision } from '@direct-mate/shared';
 import { withRetry } from '../../../common/retry';
 
@@ -40,10 +41,26 @@ interface MetaMessagingEvent {
   timestamp: number;
 }
 
+// Comment webhook payload (field-based change, not a messaging event).
+// Arrives under entry[].changes when someone comments on a post/reel.
+export interface CommentChangeValue {
+  from?: { id: string; username?: string };
+  media?: { id: string; media_product_type?: string };
+  id: string; // the comment id
+  parent_id?: string;
+  text?: string;
+}
+
+interface MetaWebhookChange {
+  field: string;
+  value: CommentChangeValue;
+}
+
 interface MetaMessagingEntry {
   id?: string;
   time?: number;
   messaging?: MetaMessagingEvent[];
+  changes?: MetaWebhookChange[];
 }
 
 interface MetaWebhookPayload {
@@ -79,6 +96,7 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
     @InjectRepository(StoreConfig)
     private readonly storeConfigRepo: Repository<StoreConfig>,
     private readonly learningObserver: LearningObserverService,
+    private readonly commentService: InstagramCommentService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -462,6 +480,18 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
           }
           continue;
         }
+      }
+
+      // Field-based changes (comments). Comments arrive here rather than in
+      // entry.messaging. Fire-and-forget per change, mirroring the DM path —
+      // one bad comment must never abort the rest of the batch.
+      for (const change of entry.changes ?? []) {
+        if (change.field !== 'comments') continue;
+        this.commentService
+          .handleComment(entryId ?? '', change.value)
+          .catch((err) =>
+            this.logger.error('handleComment failed', (err as Error).message),
+          );
       }
     }
   }

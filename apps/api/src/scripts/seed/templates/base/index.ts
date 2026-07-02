@@ -144,4 +144,17 @@ export const BASE_TEMPLATES: TemplateSpec[] = [
     priority: 90,
     active: true,
   },
+  {
+    // Public reply posted under a product-question comment on a FEED post.
+    // The real answer (price / availability / sizes / size chart) is sent
+    // privately via DM; this short public reply just nudges the commenter to
+    // their inbox. Store-configurable — tenants override via the admin panel.
+    scenario: 'comment_public_reply',
+    stage: 'greeting',
+    blocks: ['Відповіли вам у дірект 💛'],
+    requiredVariables: [],
+    toneTags: ['warm'],
+    priority: 90,
+    active: true,
+  },
 ];
