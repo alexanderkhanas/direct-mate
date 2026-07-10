@@ -71,3 +71,7 @@ apps/api/dist-test
 # Uploaded files
 uploads/
 .mcp.json
+
+# Local-only notes (prod access, secrets-adjacent) — never commit
+PROD_ACCESS.local.md
+*.local.md

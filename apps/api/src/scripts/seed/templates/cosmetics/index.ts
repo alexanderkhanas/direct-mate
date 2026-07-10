@@ -33,6 +33,18 @@ export const COSMETICS_TEMPLATES: TemplateSpec[] = [
     active: true,
   },
   {
+    // Price + variant offer in one bubble. See the clothing sibling.
+    scenario: 'show_price_with_variants',
+    stage: 'product_discovery',
+    blocks: [
+      'Ціна на {product_name} — {price} 💛\nВ наявності: {variant_list}\nЩо вам цікаво?',
+    ],
+    requiredVariables: ['product_name', 'price', 'variant_list'],
+    toneTags: ['warm'],
+    priority: 90,
+    active: true,
+  },
+  {
     scenario: 'recommend_product',
     stage: 'product_discovery',
     blocks: ['{product_name} — {reason}. Підходить для {skin_type} шкіри. Ціна {price} 💛'],

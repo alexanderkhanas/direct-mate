@@ -87,6 +87,27 @@ export const CLOTHING_TEMPLATES: TemplateSpec[] = [
     active: true,
   },
   {
+    // Price + variant offer in one bubble. Rendered instead of
+    // `show_price` when the priced product has >1 variant in stock and
+    // the customer hasn't named one.
+    //
+    // Deliberately no {variant_type}: for a two-axis product the list
+    // renders grouped ("Cream: S, M, L") while detectVariantType reports
+    // a single axis ("Розміри"), producing "Розміри в наявності: Cream:
+    // S, M, L". An axis-free lead-in stays correct for one-axis and
+    // two-axis catalogs alike. Same reason the clothing
+    // `ask_variant_choice` copy ("є в кольорах: …") is a known bug.
+    scenario: 'show_price_with_variants',
+    stage: 'product_discovery',
+    blocks: [
+      'Ціна на {product_name} — {price} 💛\nВ наявності: {variant_list}\nЩо вам підходить?',
+    ],
+    requiredVariables: ['product_name', 'price', 'variant_list'],
+    toneTags: ['warm'],
+    priority: 90,
+    active: true,
+  },
+  {
     scenario: 'show_products',
     stage: 'product_discovery',
     blocks: ['В наявності є такі варіанти 💛\n\n{product_list}'],

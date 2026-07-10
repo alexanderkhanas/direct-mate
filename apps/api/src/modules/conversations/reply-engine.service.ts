@@ -740,6 +740,11 @@ export class ReplyEngineService {
         memory.orderCreated = undefined;
         memory.cartItems = undefined;
         memory.variantStep = null;
+        // Survives the reset otherwise, and post-search narrowing then
+        // silently filters the next inquiry to the ordered product's
+        // category. The `adds_to_cart` new-product branch below already
+        // clears it; this path just omitted it.
+        memory.selectedCategory = undefined;
         memory.selectedColor = undefined;
         memory.selectedSize = undefined;
         memory.preQualifyCollected = undefined;
@@ -1596,6 +1601,23 @@ export class ReplyEngineService {
       // Record full catalog variant count for "last in stock" detection in 5.5d.
       memory.totalVariantsForSelectedProduct = first.variants.length;
 
+      // Category follows the product. Leaving the previous product's
+      // category behind makes it a silent post-search filter (the
+      // `selectedCategory` narrow below) on every later turn — e.g. a
+      // story reply about a shirt, after a jeans order, would filter
+      // subsequent searches down to jeans.
+      memory.selectedCategory = first.product.category ?? undefined;
+
+      // Name the selection state. Every gate keyed on `selectionState`
+      // (5.5a-pre, `isNarrowingSlotFill`, `shouldSearchProducts`) misses
+      // when it is undefined, leaving the conversation with a product in
+      // focus but no state — the shape that produced prod trace 37fb5032.
+      // Mirrors `handleColorLinkedMedia`'s write.
+      if (memory.selectionState === undefined) {
+        memory.selectionState =
+          inStock.length === 1 ? 'awaiting_confirmation' : 'awaiting_variant';
+      }
+
       // Photo arrived with no caption text: the photo IS the inquiry. The
       // classifier sees only conversation history, which can produce
       // misleading actions — e.g. on a 2nd/3rd photo the classifier may
@@ -1789,6 +1811,28 @@ export class ReplyEngineService {
         return await this.handleNarrowingNoMatch(input, ctx);
       }
       productData = narrowed;
+    }
+
+    // Focus gate: the customer is asking about the product already in
+    // focus. Hydrate it by id (fresh stock) instead of firing a search
+    // whose query would be empty. Block 5.5 owns variant matching from
+    // here — do NOT pre-filter by the user's size/color, or a request
+    // for an out-of-stock variant collapses to 0 products and lands
+    // back in the not-found handoff this gate exists to prevent.
+    if (!productData && this.isVariantQuestionOnFocusedProduct(classification, memory)) {
+      const focused = await this.availabilityService.findAllByProductId(
+        memory.selectedProductId!,
+      );
+      if (focused.length > 0) {
+        productData = focused;
+        ctx.trace.push(
+          `focus_gate: hydrated "${focused[0].product.title}" from selectedProductId`,
+        );
+      } else {
+        // Product deactivated or deleted since it was selected — fall
+        // through to the normal search path rather than 0-row handoff.
+        ctx.trace.push('focus_gate: selectedProductId no longer active — falling through to search');
+      }
     }
 
     const needsSearch = !productData && this.shouldSearchProducts(classification, memory);
@@ -2024,8 +2068,21 @@ export class ReplyEngineService {
 
       ctx.trace.push(`search: found ${productData?.length ?? 0} products`);
 
-      // Product not found → try product_not_found template, then handoff
+      // Product not found → try product_not_found template, then handoff.
+      //
+      // Suppressed only when this turn is a variant question about the
+      // focused product AND memory still holds that product's variants —
+      // then 5.5 can answer without any productData. An empty search
+      // there is not "we don't sell that", it's a question that produced
+      // no query terms (prod trace 37fb5032). The focus gate above
+      // normally prevents the empty search entirely; this is the second
+      // layer for any future path that reaches one.
+      //
+      // A category/product PIVOT ("А спідниці чорні є?") still escalates:
+      // the predicate is false, so 0 rows means we genuinely don't have
+      // it and a human should take over.
       if ((!productData || productData.length === 0) &&
+          !this.canAnswerFromFocusedProduct(classification, memory) &&
           ['product_inquiry', 'ready_to_order', 'availability_check', 'category_browse'].includes(classification.primaryIntent)) {
         ctx.trace.push('search: product not found → handoff');
         this.logger.log('Product not found — using product_not_found template + handoff');
@@ -2967,6 +3024,72 @@ export class ReplyEngineService {
     }
   }
 
+  /**
+   * Price answers that end in a dead stop ("Ціна — 1599 грн 💛") leave
+   * the customer to volunteer the next move. When the priced product has
+   * more than one variant in stock and none is chosen yet, upgrade to
+   * `show_price_with_variants`, which quotes the price AND offers the
+   * available sizes/colors in one bubble.
+   *
+   * The scenario is optional: tenants that haven't authored copy for it
+   * fall back to plain `show_price` in `renderScenario`. Same opt-in
+   * shape as `confirm_last_in_stock` and `confirm_color_variant_in_stock`.
+   *
+   * Skipped when the customer already named a variant ("скільки коштує
+   * M?") — they asked a narrower question, and 5.5 has already matched.
+   * Skipped for single-variant products, where "which size?" has exactly
+   * one answer and reads as a bot that can't count.
+   */
+  private maybeOfferVariantsWithPrice(ctx: ProcessingContext): void {
+    const { memory, productData } = ctx;
+    const classification = ctx.classification;
+
+    const isPriceTurn =
+      classification.recommendedAction === 'show_price' ||
+      classification.primaryIntent === 'ask_price';
+    if (!isPriceTurn) return;
+    if (!memory.selectedProductId || memory.selectedVariantId) return;
+    if (classification.entities.size || classification.entities.color) return;
+
+    // Prefer the freshly-searched product when it IS the focused one;
+    // otherwise trust memory. Guards against quoting variants of a
+    // different product than the one whose price we just rendered.
+    const focused = productData?.find(
+      (p) => p.product.id === memory.selectedProductId,
+    );
+    // `availableVariants` carries a legacy `string` shape on old
+    // conversations — only the array form is usable here.
+    const memoryVariants = Array.isArray(memory.availableVariants)
+      ? memory.availableVariants
+      : [];
+    const inStock: Array<{ color?: string | null; size?: string | null }> =
+      focused
+        ? focused.variants.filter((v) => v.effectiveAvailable > 0)
+        : memoryVariants;
+    if (inStock.length <= 1) return;
+
+    // No nameable axis (variants distinguished by neither colour nor
+    // size) — there is nothing to put in {variant_list}.
+    if (!inStock.some((v) => !!v.color) && !inStock.some((v) => !!v.size)) return;
+
+    // Route only. Memory stays untouched: the tenant may not have
+    // authored this scenario, in which case `renderScenario` falls back
+    // to plain `show_price` and the post-render hook resolves the state
+    // from the scenario that ACTUALLY rendered (`ask_variant_choice`
+    // side effects on success, `show_price` side effects on fallback).
+    // Mutating `selectionState` here would strand the fallback render in
+    // awaiting_variant after a reply that never asked for a variant.
+    //
+    // `variantStep` is likewise left unset — template-engine's generic
+    // branch already derives {variant_type} + {variant_list} from the
+    // product's own axes (template-engine.service.ts:851-876).
+    classification.primaryIntent = 'show_price_with_variants';
+    classification.recommendedAction = 'show_price_with_variants';
+    ctx.trace.push(
+      `price_offer: ${inStock.length} variants in stock → show_price_with_variants`,
+    );
+  }
+
   // ─── Step 7: Template render + memory update + order decision ──
 
   private async buildResponse(
@@ -2975,6 +3098,8 @@ export class ReplyEngineService {
   ): Promise<ReplyEngineOutput> {
     const { memory, settings, effectiveConfig, examples, categories, productData, isFirstProductPresentation, flowConfig, policy } = ctx;
     const classification = ctx.classification;
+
+    this.maybeOfferVariantsWithPrice(ctx);
 
     // 6. Template Engine: select + render template
     const recentTemplateIds = memory.recentTemplateIds ?? [];
@@ -3116,9 +3241,13 @@ export class ReplyEngineService {
         return this.doHandoff(input, 'Клієнт поставив питання, на яке бот не знає відповіді');
       }
 
-      // Check if product-related intent but no products found → handoff
+      // Check if product-related intent but no products found → handoff.
+      // Same guard as the search-side sibling: don't escalate a variant
+      // question we can still answer from the focused product's memory.
       const productIntents = ['product_inquiry', 'ready_to_order', 'availability_check', 'category_browse', 'ask_price'];
-      if (productIntents.includes(classification.primaryIntent) && (!productData || productData.length === 0)) {
+      if (productIntents.includes(classification.primaryIntent) &&
+          !this.canAnswerFromFocusedProduct(classification, memory) &&
+          (!productData || productData.length === 0)) {
         ctx.trace.push('handoff: product_not_found');
         this.logger.log('No template + no products found for product intent → handoff');
         return this.doHandoff(input, 'product_not_found', 'Секунду, уточню наявність 💛');
@@ -3217,6 +3346,10 @@ export class ReplyEngineService {
       'ask_color_for_size',
       'confirm_color_variant_in_stock',
       'show_products',
+      // Quotes a price and asks which variant — the customer has not
+      // picked one yet, so latching matchedVariantId here would commit
+      // to a variant they never chose.
+      'show_price_with_variants',
     ].includes(templateResult?.scenario ?? '');
     if (templateResult?.matchedVariantId) {
       if (skipVariantUpdate) {
@@ -3474,6 +3607,13 @@ export class ReplyEngineService {
       // confirm_variant_available would force awaiting_confirmation
       // and break the size-fill on the next turn).
       confirm_color_variant_in_stock: 'ask_variant_choice',
+      // Quotes the price AND asks which variant. The post-render hook
+      // must leave the engine in awaiting_variant + variantStep so the
+      // customer's next turn ("M") resolves via 5.5b/5.5c — same reason
+      // confirm_color_variant_in_stock maps here rather than to
+      // show_price (which would set awaitingField='order_decision' and
+      // strand the size reply).
+      show_price_with_variants: 'ask_variant_choice',
       decline_selection: 'decline_selection',
       collect_checkout_info: 'start_checkout',
       order_confirmed_ask_delivery: 'ask_delivery',
@@ -4104,6 +4244,99 @@ export class ReplyEngineService {
     if (nonEmptyStr(productName)) return false;
 
     return true;
+  }
+
+  /**
+   * The customer is asking about the product already in focus.
+   *
+   * A product is selected (from a prior turn, a story/post reply, or a
+   * recommendation) and the classifier surfaces a variant entity
+   * (size/color) with no NEW product identifier. "Є розмір М?", "а в
+   * чорному є?", "скільки коштує M?" — all questions about the SAME
+   * product, not requests to find a different one.
+   *
+   * Without this gate the engine fires a fresh search whose query is
+   * empty (`extractSearchKeywords` reads only productName + color, and
+   * category comes only from `entities.category`), gets 0 rows, and the
+   * not-found branch escalates to a `product_not_found` handoff — while
+   * `memory.availableVariants` held the answer the whole time. Cause of
+   * record: prod trace 37fb5032 ("Є розмір М?" → handoff, M in stock).
+   *
+   * Deliberately keyed on entity shape rather than an intent allowlist:
+   * the same turn classifies as `availability_check`, `product_inquiry`,
+   * `ask_price`, or `confirm_choice` depending on phrasing, and an
+   * allowlist silently regresses whichever we forget.
+   *
+   * Corrections are excluded — "ні, я хочу Rosewood" may pivot to a
+   * different product, and the `needsSearch` branch owns the
+   * `selectedVariantId` clear that lets 5.5c re-match. `adds_to_cart` is
+   * excluded for the same reason: "і ще крем" wants a fresh search.
+   *
+   * Consumed only by `searchAndFilterProducts`, which hydrates
+   * `productData` from `selectedProductId`. That assignment is what
+   * suppresses the search (`needsSearch = !productData && …`), so a
+   * failed hydration correctly falls through to the normal search path
+   * instead of dead-ending at a 0-row handoff.
+   */
+  private isVariantQuestionOnFocusedProduct(
+    classification: ClassificationResult,
+    memory: AssistantMemory,
+  ): boolean {
+    if (!nonEmptyStr(memory.selectedProductId)) return false;
+    if (
+      classification.slotAction === 'correction' ||
+      classification.slotAction === 'adds_to_cart'
+    ) {
+      return false;
+    }
+
+    const { color, size, productName, category } = classification.entities;
+    if (!nonEmptyStr(color) && !nonEmptyStr(size)) return false;
+    if (nonEmptyStr(productName)) return false;
+
+    // A category is only a pivot when it names a DIFFERENT category than
+    // the focused product's. The classifier carries `entities.category`
+    // forward from history on almost every turn — a bare "M" reply comes
+    // back as {category:'Сорочки', size:'M'} — so treating any category
+    // as a pivot would disable this gate for the exact turns it exists
+    // to catch. `memory.selectedCategory` tracks the focused product's
+    // category (refreshed on media resolution and search).
+    if (nonEmptyStr(category)) {
+      const focusedCategory = memory.selectedCategory;
+      if (
+        !nonEmptyStr(focusedCategory) ||
+        category.trim().toLowerCase() !== focusedCategory.trim().toLowerCase()
+      ) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * A 0-row search on this turn is survivable: it's a variant question
+   * about the focused product AND memory still carries that product's
+   * variants, so block 5.5 can answer without any `productData`.
+   *
+   * Gates both `product_not_found` handoffs. Deliberately narrower than
+   * "a product is in focus": a pivot to another category ("А спідниці
+   * чорні є?") that returns 0 rows genuinely means we don't stock it,
+   * and must still escalate to a human. Equally, a focused-product
+   * question whose hydration failed (product deactivated) leaves no
+   * variants in memory and correctly escalates.
+   */
+  private canAnswerFromFocusedProduct(
+    classification: ClassificationResult,
+    memory: AssistantMemory,
+  ): boolean {
+    if (!this.isVariantQuestionOnFocusedProduct(classification, memory)) {
+      return false;
+    }
+    return (
+      Array.isArray(memory.availableVariants) &&
+      memory.availableVariants.length > 0
+    );
   }
 
   /**

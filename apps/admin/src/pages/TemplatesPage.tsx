@@ -22,6 +22,7 @@ const SCENARIO_LABELS: Record<string, string> = {
   // Product discovery
   show_products: 'Показ товарів',
   show_price: 'Показ ціни',
+  show_price_with_variants: 'Показ ціни + варіанти',
   recommend_product: 'Рекомендація товару',
   ask_recommendation_from_shown: 'Рекомендація зі списку',
   // Variant selection
@@ -89,6 +90,7 @@ const SCENARIO_COLORS: Record<string, string> = {
   greeting: 'bg-blue-100 text-blue-700',
   show_products: 'bg-purple-100 text-purple-700',
   show_price: 'bg-green-100 text-green-700',
+  show_price_with_variants: 'bg-green-100 text-green-700',
   recommend_product: 'bg-amber-100 text-amber-700',
   ask_recommendation_from_shown: 'bg-orange-100 text-orange-700',
   confirm_selection: 'bg-cyan-100 text-cyan-700',

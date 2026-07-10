@@ -51,6 +51,7 @@ const INTENT_TO_SCENARIO: Record<string, string> = {
   product_inquiry: 'show_products',
   category_browse: 'show_products',
   ask_price: 'show_price',
+  show_price_with_variants: 'show_price_with_variants',
   ask_recommendation: 'recommend_product',
   ready_to_order: 'collect_checkout_info',
   confirm_choice: 'confirm_selection',
@@ -84,6 +85,7 @@ const ACTION_TO_SCENARIO: Record<string, string> = {
   confirm_color_variant_in_stock: 'confirm_color_variant_in_stock',
   confirm_variant_available: 'confirm_variant_available',
   show_price: 'show_price',
+  show_price_with_variants: 'show_price_with_variants',
   greet: 'greeting',
   ask_variant_choice: 'ask_variant_choice',
   ask_size_for_color: 'ask_size_for_color',
@@ -226,6 +228,23 @@ export class TemplateEngineService {
           flowConfig,
         );
       }
+      // show_price_with_variants: optional, opt-in via authored template.
+      // Falls back to plain show_price so the customer still gets the
+      // price; they just aren't offered the variants in the same bubble.
+      if (scenario === 'show_price_with_variants') {
+        this.logger.log(
+          'show_price_with_variants: no template authored — falling back to show_price',
+        );
+        return this.renderScenario(
+          tenantId,
+          'show_price',
+          classification,
+          productData,
+          memory,
+          recentTemplateIds,
+          flowConfig,
+        );
+      }
       // decline_selection: short hardcoded ack when no template authored.
       // Same architectural pattern as the offer-decline ack noted in
       // CLAUDE.md — response space is tiny, determinism + zero LLM cost
@@ -264,6 +283,14 @@ export class TemplateEngineService {
       if (scenario === 'confirm_selection' && !variables['variant_name']) {
         this.logger.log('confirm_selection missing variant_name — falling back to ask_variant_choice');
         return this.renderScenario(tenantId, 'ask_variant_choice', classification, productData, memory, recentTemplateIds, flowConfig);
+      }
+
+      // Template authored but {variant_list} couldn't be resolved (e.g.
+      // variants carry neither colour nor size). Quote the price alone
+      // rather than dropping to AI fallback.
+      if (scenario === 'show_price_with_variants') {
+        this.logger.log('show_price_with_variants missing variant_list — falling back to show_price');
+        return this.renderScenario(tenantId, 'show_price', classification, productData, memory, recentTemplateIds, flowConfig);
       }
 
       return null;
