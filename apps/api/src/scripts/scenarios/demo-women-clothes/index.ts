@@ -96,6 +96,81 @@ export const DEMO_WOMEN_CLOTHES_SCENARIOS: Record<string, SimulatorScenario> = {
     ],
   },
 
+  // ─── Size help: sizeHelpMode='measurements' → ask height/weight ─
+  demo_women_size_help_asks_measurements: {
+    name: 'demo-women — Size help asks for height/weight',
+    description:
+      'sizeHelpMode=measurements, with preQualify enabled so the numeric ' +
+      'ranges are usable. A mid-flow "допоможіть з розміром" must ask for ' +
+      'measurements rather than answer with a product blurb (prod trace ' +
+      'f73b4cc1 rendered recommend_product). The tenant\'s seeded ' +
+      'preQualify.enabled is false, hence the override.',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    flowConfigOverride: {
+      sizeHelpMode: 'measurements',
+      preQualify: { enabled: true, fields: ['height', 'weight'] },
+    },
+    turns: [
+      {
+        message: 'Хочу замовити сорочку',
+        expect: { decision: 'reply', note: 'Product enters focus' },
+      },
+      {
+        message: 'допоможіть з розміром',
+        expect: {
+          decision: 'reply',
+          replyContains: ['зріст', 'вагу'],
+          state: { awaitingField: 'pre_qualify_data' },
+          note: 'Measurement branch, NOT recommend_product',
+        },
+      },
+    ],
+  },
+
+  // ─── Size help: sizeHelpMode='chart' → send chart, ask which size ─
+  demo_women_size_help_chart_mode: {
+    name: 'demo-women — Size help in chart mode sends the chart and asks',
+    description:
+      'sizeHelpMode=chart. Even with preQualify enabled and numeric ' +
+      'ranges present, the explicit setting wins: send the chart image, ' +
+      'then ask which size, parking the flow in awaiting_variant so the ' +
+      "next turn resolves the size. This is men-demo-store's config.",
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    flowConfigOverride: {
+      sizeHelpMode: 'chart',
+      preQualify: { enabled: true, fields: ['height', 'weight'] },
+    },
+    turns: [
+      {
+        message: 'Хочу замовити сорочку',
+        expect: { decision: 'reply', note: 'Product enters focus' },
+      },
+      {
+        message: 'допоможіть з розміром',
+        expect: {
+          decision: 'reply',
+          scenario: 'show_size_chart',
+          imageCount: 1,
+          replyContains: ['В наявності', 'Який вам підходить?'],
+          state: { selectionState: 'awaiting_variant', variantStep: null },
+          note: 'Chart + ask which size; explicit setting beats inference',
+        },
+      },
+      {
+        message: 'M',
+        expect: {
+          decision: 'reply',
+          state: { selectionState: 'awaiting_confirmation' },
+          note:
+            'Size reply resolves against the focused product. On this ' +
+            'colour+size product 5.5c auto-picks a colour (→ "Білий, M") ' +
+            'rather than asking which colour — pre-existing 5.5c ' +
+            'behaviour, unchanged here; assert the state transition only.',
+        },
+      },
+    ],
+  },
+
   // ─── Category question still searches ───────────────────────────
   demo_women_category_question_still_searches: {
     name: 'demo-women — Category pivot still runs a fresh search',

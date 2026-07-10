@@ -23,7 +23,7 @@ import {
 } from '../engine/template-engine.service';
 import { PolicyEngineService, PolicyEvaluation } from '../engine/policy-engine.service';
 import { localizeColor } from '../engine/color-i18n';
-import { formatCurrency } from '../../common/format';
+import { formatCurrency, sortSizes } from '../../common/format';
 import {
   AuditLogType,
   ConversationStateStatus,
@@ -1259,9 +1259,23 @@ export class ReplyEngineService {
     if (memory.awaitingPreQualifyAnswer) {
       const yesNo = this.classifyOfferAnswer(classification);
       if (yesNo === 'yes') {
-        ctx.trace.push('preQualify: offer accepted → ask height/weight');
         memory.awaitingPreQualifyAnswer = false;
         memory.shouldOfferSizeHelp = false;
+
+        // Accepting the size-help offer must obey the tenant's
+        // `sizeHelpMode` exactly like an unprompted "допоможіть з
+        // розміром" does. Without this, a chart-mode tenant that
+        // appended the offer suffix would still ask for height/weight.
+        if (this.resolveSizeHelpMode(preQualifyFlowConfig).mode === 'chart') {
+          ctx.trace.push('preQualify: offer accepted → chart mode');
+          const chartResult = await this.sendSizeChartAndAskSize(input, ctx);
+          if (chartResult) return chartResult;
+          // No charts authored — fall back to asking for measurements.
+          ctx.trace.push('preQualify: chart mode but no charts → ask height/weight');
+        } else {
+          ctx.trace.push('preQualify: offer accepted → ask height/weight');
+        }
+
         const prompt =
           preQualifyFlowConfig.preQualify?.prompt ||
           'Підкажіть ваш зріст та вагу, щоб підібрати розмір 💛';
@@ -3917,6 +3931,113 @@ export class ReplyEngineService {
   // ─── Pre-qualification helpers ────────────────────────────────
 
   /**
+   * How this tenant answers "допоможіть з розміром".
+   *
+   *   'chart'        — send the size chart image, then ask which size.
+   *   'measurements' — ask for height + weight, recommend a size.
+   *
+   * Set explicitly per tenant via `flow_config.sizeHelpMode`. This is a
+   * product decision, not something to infer from which config fields a
+   * tenant happens to have filled in — a store may hold numeric ranges
+   * and still prefer to show the chart.
+   *
+   * When unset, fall back to the historical behaviour so existing
+   * tenants don't change under them: a tenant that CAN recommend a size
+   * (preQualify enabled + numeric ranges) asked for measurements; every
+   * other tenant did nothing, and now shows its chart.
+   */
+  private resolveSizeHelpMode(
+    flowConfig: any,
+  ): { mode: 'chart' | 'measurements'; canRecommendSize: boolean } {
+    const numericChart = flowConfig?.sizeChart as
+      | Record<string, { heightMin: number; heightMax: number; weightMin: number; weightMax: number }>
+      | undefined;
+    const canRecommendSize =
+      !!flowConfig?.preQualify?.enabled &&
+      !!numericChart &&
+      Object.keys(numericChart).length > 0;
+
+    const configured = flowConfig?.sizeHelpMode as 'chart' | 'measurements' | undefined;
+    if (configured === 'chart' || configured === 'measurements') {
+      // 'measurements' without the data to honour it degrades to 'chart'
+      // rather than asking for a height we can't map to a size.
+      const mode = configured === 'measurements' && !canRecommendSize ? 'chart' : configured;
+      return { mode, canRecommendSize };
+    }
+
+    return { mode: canRecommendSize ? 'measurements' : 'chart', canRecommendSize };
+  }
+
+  /**
+   * Chart-mode size help: send the size chart, then ask which size the
+   * customer wants. Delegates the chart resolution to
+   * `handleSizeChartRequest` by coercing the intent — that handler gates
+   * on `primaryIntent === 'size_chart_request'` and already ran earlier
+   * in `process()` without firing, so re-entering it is side-effect free.
+   *
+   * Returns null (fall through to the recommendation path) when the
+   * tenant authored no charts at all. Without that check the delegate
+   * escalates on `size_chart_not_available`, which would newly hand off
+   * every "порадьте розмір" for tenants that have neither charts nor
+   * ranges.
+   */
+  private async sendSizeChartAndAskSize(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+  ): Promise<ReplyEngineOutput | null> {
+    const { memory } = ctx;
+
+    const charts = await this.sizeChartsService.listForTenant(input.tenantId);
+    if (charts.length === 0) {
+      ctx.trace.push('mid-flow size-help: chart mode but tenant has no charts → fall through');
+      return null;
+    }
+
+    ctx.trace.push('mid-flow size-help: chart mode → delegating to size_chart_request');
+    ctx.classification.primaryIntent = 'size_chart_request';
+    const chartResult = await this.handleSizeChartRequest(input, ctx);
+
+    // Chart resolution failed (brand/category matched nothing) — it
+    // already handed off. Pass that through untouched.
+    if (!chartResult || chartResult.decision !== ReplyDecision.Reply || !chartResult.reply) {
+      return chartResult;
+    }
+
+    // "…and ask what the user wants": name the sizes actually in stock
+    // for the focused product, and park the conversation in
+    // awaiting_variant so their next turn ("M") resolves via 5.5b/5.5c
+    // instead of being read as a fresh inquiry.
+    const inStockSizes = Array.isArray(memory.availableVariants)
+      ? sortSizes([
+          ...new Set(
+            memory.availableVariants
+              .map((v) => v.size)
+              .filter((s): s is string => !!s),
+          ),
+        ])
+      : [];
+
+    if (memory.selectedProductId && inStockSizes.length > 0) {
+      memory.selectionState = 'awaiting_variant';
+      memory.awaitingField = 'size_selection';
+      memory.lastAction = 'asked_variant';
+      // Deliberately NOT setting variantStep='size'. That value asserts
+      // "colour already chosen" — 5.5b-2's size branch requires
+      // `memory.selectedColor` (reply-engine.service.ts:2763) and
+      // template-engine filters {variant_list} to that colour. On a
+      // size-only product there is no colour, so the branch is skipped
+      // and the customer's "M" falls through to ask_variant_choice.
+      // Leaving it null lets 5.5c match the size generically.
+      chartResult.reply.text =
+        `${chartResult.reply.text}\n\nВ наявності: ${inStockSizes.join(', ')}. Який вам підходить?`;
+      chartResult.stateUpdate = { contextJson: memory as any };
+      ctx.trace.push(`mid-flow size-help: asked for size (${inStockSizes.join(', ')})`);
+    }
+
+    return chartResult;
+  }
+
+  /**
    * Mid-flow size-help branch. Fires when the user asks for size advice
    * AFTER product selection has already pinned context — the case the
    * existing pre-qualify gate cannot reach because it requires
@@ -3926,6 +4047,18 @@ export class ReplyEngineService {
    *   - intent='ask_recommendation' + a strict size-context keyword.
    * Generic "що порадите?" without size words deliberately falls
    * through so existing recommendation/AI-fallback path runs.
+   *
+   * Which help the customer gets is a per-tenant product decision, read
+   * from `flow_config.sizeHelpMode` via `resolveSizeHelpMode`:
+   *   - 'chart'        → send the chart image, then ask which size
+   *   - 'measurements' → ask height/weight and recommend a size
+   * The chart branch delegates to `handleSizeChartRequest` (which owns
+   * brand/category resolution, the show_size_chart template, audit and
+   * no-chart handoff) rather than duplicating it. Without that branch a
+   * chart-only tenant — images authored, no height/weight ranges — got
+   * NO size help at all and fell through to `recommend_product`, which
+   * answers a sizing question with a sales blurb. Cause of record: prod
+   * trace f73b4cc1 on `men-demo-store` ("допоможіть з розміром").
    */
   private async maybeMidFlowSizeHelp(
     input: ReplyEngineInput,
@@ -3935,17 +4068,13 @@ export class ReplyEngineService {
     const classification = ctx.classification;
     const flowConfig = effectiveConfig?.flowConfig as any;
 
-    if (!flowConfig?.preQualify?.enabled) return null;
-
-    const numericChart = flowConfig.sizeChart as
+    const { mode, canRecommendSize } = this.resolveSizeHelpMode(flowConfig);
+    const numericChart = flowConfig?.sizeChart as
       | Record<string, { heightMin: number; heightMax: number; weightMin: number; weightMax: number }>
       | undefined;
-    if (!numericChart || Object.keys(numericChart).length === 0) return null;
 
-    // Anti-triggers
-    if (memory.orderCreated) return null;
-    if (memory.cartItems?.length) return null;
-    if (mediaProductData) return null;
+    // Anti-triggers shared by both branches: the customer has already
+    // named a size, or is correcting/confirming a pending choice.
     if (classification.entities.size) return null;
     if (classification.slotAction === 'correction') return null;
     if (
@@ -3956,14 +4085,30 @@ export class ReplyEngineService {
     }
 
     // Trigger: raw measurements OR ask_recommendation + strict size keyword
-    const fields = (flowConfig.preQualify.fields as string[]) ?? ['height', 'weight'];
+    const fields = (flowConfig?.preQualify?.fields as string[]) ?? ['height', 'weight'];
     const hasMeasurements = this.looksLikePreQualifyData(input.messageText, fields);
     const isRecommendation = classification.primaryIntent === 'ask_recommendation';
     const SIZE_KEYWORDS = ['розмір', 'зріст', 'вага'];
     const lowerText = input.messageText.toLowerCase();
     const hasSizeKeyword = SIZE_KEYWORDS.some((k) => lowerText.includes(k));
+    const asksForSizeHelp = isRecommendation && hasSizeKeyword;
 
-    if (!hasMeasurements && !(isRecommendation && hasSizeKeyword)) return null;
+    if (!hasMeasurements && !asksForSizeHelp) return null;
+
+    // Chart mode. Measurements supplied unprompted still route here when
+    // the tenant has no ranges to map them against.
+    if (mode === 'chart') {
+      if (!asksForSizeHelp) return null;
+      return this.sendSizeChartAndAskSize(input, ctx);
+    }
+
+    // Measurement flow anti-triggers — narrower than the chart branch,
+    // because asking a customer mid-checkout for their height is worse
+    // than simply showing them the chart.
+    if (memory.orderCreated) return null;
+    if (memory.cartItems?.length) return null;
+    if (mediaProductData) return null;
+    if (!canRecommendSize || !numericChart) return null; // defensive: resolveSizeHelpMode guarantees this
 
     ctx.trace.push('handlePreQualifyClothing: mid-flow size-help branch fired');
 
@@ -5153,17 +5298,15 @@ export class ReplyEngineService {
     // chart as a secondary bubble so the user can also self-serve).
     const flowConfig = ctx.effectiveConfig?.flowConfig as any;
     const businessType = (flowConfig?.businessType as 'clothing' | 'cosmetics') ?? 'clothing';
-    const numericChart = flowConfig?.sizeChart as
-      | Record<string, { heightMin: number; heightMax: number; weightMin: number; weightMax: number }>
-      | undefined;
+    // `sizeHelpMode` is the tenant's explicit choice; a store set to
+    // 'chart' keeps getting the chart even when it holds numeric ranges.
+    const { mode: sizeHelpMode } = this.resolveSizeHelpMode(flowConfig);
     const askingForHelp = ctx.classification.dialogueAct === 'ask_recommendation';
     if (
       askingForHelp &&
       businessType === 'clothing' &&
-      flowConfig?.preQualify?.enabled &&
-      !memory.preQualifyCollected &&
-      numericChart &&
-      Object.keys(numericChart).length > 0
+      sizeHelpMode === 'measurements' &&
+      !memory.preQualifyCollected
     ) {
       memory.lastAction = 'asked_pre_qualify';
       memory.awaitingField = 'pre_qualify_data';
@@ -5181,12 +5324,8 @@ export class ReplyEngineService {
             imageUrls: [chartUrl],
           },
         ];
-        // Production Instagram replier ignores result.extraReplies (see
-        // CLAUDE.md tech debt at instagram.service.ts:668-674), so this
-        // chart bubble is silently dropped in prod. Trace it so log
-        // analysis can identify the silent-drop case post-fix.
         ctx.trace.push(
-          `size_chart_request: help-style attaching chart as extraReply chartId=${chart.id} (prod Instagram drops extraReplies)`,
+          `size_chart_request: help-style attaching chart as extraReply chartId=${chart.id}`,
         );
       }
       return {
