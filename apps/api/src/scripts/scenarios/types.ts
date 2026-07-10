@@ -100,3 +100,14 @@ export const LUXESPACE = 'luxe-space';
 export const SHOWCASE_WOMEN_CLOTHES = 'showcase-women-clothes';
 export const DEMO_WOMEN_CLOTHES_SLUG = 'demo-women-clothes';
 export const DEMO_COSMETICS_SLUG = 'demo-cosmetics';
+// men-demo-store — is_demo=true clothing tenant that exists ONLY on
+// production; it is not reproducible from this repo's seed builders.
+// Catalog: 4 size-only products (Джинси МОМ світлі, Сорочка з льону,
+// Футболка базова чорна, Шорти джинсові світлі), no colour axis, all
+// variants in stock. `flow_config` is `{}`, so `resolveSizeHelpMode`
+// yields 'chart'; 3 size_charts rows are authored (Верх / Низ / Сукні,
+// category-scoped, no brands).
+//
+// These scenarios therefore FAIL LOCALLY with "tenant not found" and
+// must be run against prod. Same slug-based indirection as LUXESPACE.
+export const MEN_DEMO_STORE = 'men-demo-store';

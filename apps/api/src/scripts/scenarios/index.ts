@@ -11,6 +11,8 @@ import { COSMETICS_SCENARIOS } from './cosmetics';
 import { LUXESPACE_SCENARIOS } from './luxespace';
 import { SHOWCASE_WOMEN_CLOTHES_SCENARIOS } from './showcase-women-clothes';
 import { DEMO_WOMEN_CLOTHES_SCENARIOS } from './demo-women-clothes';
+// Prod-only tenant — these scenarios fail locally at tenant resolution.
+import { MEN_DEMO_STORE_SCENARIOS } from './men-demo-store';
 
 export {
   SimulatorScenario,
@@ -22,6 +24,7 @@ export {
   SHOWCASE_WOMEN_CLOTHES,
   DEMO_WOMEN_CLOTHES_SLUG,
   DEMO_COSMETICS_SLUG,
+  MEN_DEMO_STORE,
 } from './types';
 
 export const SCENARIOS: Record<string, SimulatorScenario> = {
@@ -31,4 +34,5 @@ export const SCENARIOS: Record<string, SimulatorScenario> = {
   ...LUXESPACE_SCENARIOS,
   ...SHOWCASE_WOMEN_CLOTHES_SCENARIOS,
   ...DEMO_WOMEN_CLOTHES_SCENARIOS,
+  ...MEN_DEMO_STORE_SCENARIOS,
 };

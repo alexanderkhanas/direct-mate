@@ -212,6 +212,20 @@ function runAssertions(
 
 // ─── Simulator ───────────────────────────────────────────────────
 
+/**
+ * A scenario's tenant doesn't exist in THIS environment. Some tenants
+ * live only on prod (`men-demo-store`, `showcase-women-clothes`), so a
+ * local `--all` run must skip them rather than abort the whole suite.
+ * A `--scenario <name>` run still fails loudly — you asked for that one
+ * specifically.
+ */
+class TenantNotFoundError extends Error {
+  constructor(readonly tenantIdOrSlug: string) {
+    super(`Scenario tenantId/slug "${tenantIdOrSlug}" not found in tenants table`);
+    this.name = 'TenantNotFoundError';
+  }
+}
+
 class ConversationSimulator {
   private replyEngine: ReplyEngineService;
   private conversationsService: ConversationsService;
@@ -425,7 +439,7 @@ class ConversationSimulator {
       [tenantIdOrSlug],
     );
     if (rows.length === 0) {
-      throw new Error(`Scenario tenantId/slug "${tenantIdOrSlug}" not found in tenants table`);
+      throw new TenantNotFoundError(tenantIdOrSlug);
     }
     return rows[0].id;
   }
@@ -697,8 +711,21 @@ async function main(): Promise<void> {
 
   const jsonOutput: Record<string, unknown>[] = [];
 
+  const skippedForMissingTenant: string[] = [];
+
   for (const [key, scenario] of scenariosToRun) {
-    const turnLogs = await simulator.run(scenario);
+    let turnLogs;
+    try {
+      turnLogs = await simulator.run(scenario);
+    } catch (err) {
+      // Prod-only tenants aren't seeded locally. Skip them in a batch run
+      // instead of aborting the suite; every other error still propagates.
+      if (err instanceof TenantNotFoundError && args.all) {
+        skippedForMissingTenant.push(`${key} (${scenario.tenantId})`);
+        continue;
+      }
+      throw err;
+    }
     jsonOutput.push({
       scenario: key,
       name: scenario.name,
@@ -707,6 +734,14 @@ async function main(): Promise<void> {
       timestamp: new Date().toISOString(),
       turns: turnLogs,
     });
+  }
+
+  // Never let a skip read as a pass.
+  if (skippedForMissingTenant.length > 0) {
+    console.log(
+      `\n${c.yellow}Skipped ${skippedForMissingTenant.length} scenario(s) — tenant not in this environment:${c.reset}`,
+    );
+    for (const s of skippedForMissingTenant) console.log(`  ${c.dim}${s}${c.reset}`);
   }
 
   // Print assertion summary for --all. Flaky scenarios contribute to a
