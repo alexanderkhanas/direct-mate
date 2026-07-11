@@ -15,6 +15,25 @@ const SIM_CUSTOMER_EXTERNAL_ID = 'sim-api-001';
 const SIM_CHANNEL = 'instagram';
 const SIM_CHANNEL_ACCOUNT_ID = 'sim-api-channel';
 
+// Interactive "live DM" identity — separate from the scenario runner so a
+// chat session persists across messages and is NOT wiped when scenarios run.
+const LIVE_CUSTOMER_EXTERNAL_ID = 'sim-live-001';
+const LIVE_CHANNEL_ACCOUNT_ID = 'sim-live-channel';
+
+export interface LiveTurnResult {
+  conversationId: string;
+  message: string;
+  mediaReference?: { mediaId: string; type: string };
+  classification: Record<string, unknown> | null;
+  decision: string;
+  scenario: string | null;
+  replyText: string | null;
+  extraReplies: Array<{ text: string; imageUrls?: string[] }>;
+  imageUrls?: string[];
+  state: Record<string, unknown>;
+  trace: string[];
+}
+
 // ─── Turn log interface ──────────────────────────────────────────
 
 export interface SimulatorTurnLog {
@@ -231,6 +250,199 @@ export class SimulatorService {
     }
   }
 
+  // ─── Interactive "live DM" mode (superadmin console) ────────────
+  //
+  // Drives ReplyEngineService.process exactly like a real inbound
+  // Instagram DM — including media resolution — but NEVER calls the Meta
+  // send API (the outbound send is a webhook-caller concern, not the
+  // engine's). The conversation persists across messages so multi-turn
+  // flows work; `resetLiveConversation` clears it.
+
+  /** Send one ad-hoc message to the persistent live sim conversation. */
+  async sendLiveMessage(
+    tenantId: string,
+    input: { text: string; mediaReference?: { mediaId: string; type: string } },
+  ): Promise<LiveTurnResult> {
+    const customer = await this.conversationsService.findOrCreateCustomer(
+      tenantId,
+      SIM_CHANNEL,
+      LIVE_CUSTOMER_EXTERNAL_ID,
+    );
+    const { conversation } =
+      await this.conversationsService.findOrCreateConversation(
+        tenantId,
+        customer.id,
+        SIM_CHANNEL,
+        LIVE_CHANNEL_ACCOUNT_ID,
+      );
+
+    const text = input.text ?? '';
+    if (text.trim()) {
+      await this.conversationsService.saveMessage(
+        conversation.id,
+        tenantId,
+        MessageDirection.Inbound,
+        MessageRole.User,
+        text,
+      );
+    }
+
+    const fullConversation = await this.conversationsService.findById(
+      conversation.id,
+    );
+    const recentMessages = fullConversation.messages
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+      .slice(-10)
+      .map((m) => ({ role: m.role, text: m.text }));
+
+    const freshState = await this.dataSource
+      .getRepository(ConversationState)
+      .findOne({ where: { conversationId: conversation.id } });
+    if (!freshState) {
+      throw new Error(`No state found for conversation ${conversation.id}`);
+    }
+
+    const result = await this.replyEngine.process({
+      tenantId,
+      conversationId: conversation.id,
+      messageText: text,
+      state: freshState,
+      recentMessages,
+      mediaReference: input.mediaReference,
+    });
+
+    if (result.reply?.text) {
+      await this.conversationsService.saveMessage(
+        conversation.id,
+        tenantId,
+        MessageDirection.Outbound,
+        MessageRole.Assistant,
+        result.reply.text,
+      );
+    }
+    // Persist any follow-up bubbles too, so a page refresh rehydrates the
+    // full visible thread (production sends each as its own DM).
+    for (const extra of result.extraReplies ?? []) {
+      if (extra.text) {
+        await this.conversationsService.saveMessage(
+          conversation.id,
+          tenantId,
+          MessageDirection.Outbound,
+          MessageRole.Assistant,
+          extra.text,
+        );
+      }
+    }
+    if (result.stateUpdate) {
+      await this.conversationsService.updateState(
+        conversation.id,
+        result.stateUpdate,
+      );
+    }
+
+    const updatedState = await this.dataSource
+      .getRepository(ConversationState)
+      .findOne({ where: { conversationId: conversation.id } });
+    const memory = (updatedState?.contextJson ?? {}) as Record<string, unknown>;
+
+    return {
+      conversationId: conversation.id,
+      message: text,
+      mediaReference: input.mediaReference,
+      classification: result.classification
+        ? {
+            primaryIntent: result.classification.primaryIntent,
+            recommendedAction: result.classification.recommendedAction,
+            entities: result.classification.entities,
+            slotAction: (result.classification as any).slotAction,
+            confidence: result.classification.confidence,
+            conversationStage: result.classification.conversationStage,
+            dialogueAct: result.classification.dialogueAct,
+          }
+        : null,
+      decision: result.decision,
+      scenario: result.templateScenario ?? null,
+      replyText: result.reply?.text ?? null,
+      extraReplies: (result.extraReplies ?? []).map((r) => ({
+        text: r.text,
+        imageUrls: r.imageUrls,
+      })),
+      imageUrls: result.reply?.imageUrls,
+      state: this.summarizeState(memory),
+      trace: result.trace ?? [],
+    };
+  }
+
+  /** Wipe the live sim conversation so the next message starts fresh. */
+  async resetLiveConversation(tenantId: string): Promise<void> {
+    await this.cleanupIdentity(tenantId, LIVE_CUSTOMER_EXTERNAL_ID);
+  }
+
+  /** Persisted messages + current memory state, for chat rehydration. */
+  async getLiveConversation(
+    tenantId: string,
+  ): Promise<{
+    conversationId: string | null;
+    messages: Array<{ role: string; text: string | null; createdAt: Date }>;
+    state: Record<string, unknown>;
+  }> {
+    const rows: Array<{ id: string }> = await this.dataSource.query(
+      `SELECT conv.id FROM conversations conv
+       JOIN customers cust ON conv.customer_id = cust.id
+       WHERE cust.external_user_id = $1 AND cust.tenant_id = $2
+       LIMIT 1`,
+      [LIVE_CUSTOMER_EXTERNAL_ID, tenantId],
+    );
+    if (!rows[0]) return { conversationId: null, messages: [], state: {} };
+    const full = await this.conversationsService.findById(rows[0].id);
+    const messages = full.messages
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+      .map((m) => ({ role: m.role, text: m.text, createdAt: m.createdAt }));
+    const state = await this.dataSource
+      .getRepository(ConversationState)
+      .findOne({ where: { conversationId: rows[0].id } });
+    return {
+      conversationId: rows[0].id,
+      messages,
+      state: this.summarizeState((state?.contextJson ?? {}) as Record<string, unknown>),
+    };
+  }
+
+  /** Linked media mappings (product ↔ instagram media id) for the
+   *  story-reply picker. Only rows with a resolved product. */
+  async listLinkedMedia(
+    tenantId: string,
+  ): Promise<Array<{ instagramMediaId: string; mediaType: string; productTitle: string }>> {
+    const rows: Array<{ instagram_media_id: string; media_type: string; title: string }> =
+      await this.dataSource.query(
+        `SELECT m.instagram_media_id, m.media_type, p.title
+         FROM instagram_media_mappings m
+         JOIN products p ON p.id = m.product_id
+         WHERE m.tenant_id = $1 AND m.product_id IS NOT NULL
+         ORDER BY p.title, m.media_type`,
+        [tenantId],
+      );
+    return rows.map((r) => ({
+      instagramMediaId: r.instagram_media_id,
+      mediaType: r.media_type,
+      productTitle: r.title,
+    }));
+  }
+
+  private summarizeState(memory: Record<string, unknown>): Record<string, unknown> {
+    return {
+      selectionState: memory.selectionState,
+      selectedProductId: memory.selectedProductId,
+      selectedVariantId: memory.selectedVariantId,
+      selectedVariantName: memory.selectedVariantName,
+      selectedProductTitle: memory.selectedProductTitle,
+      cartItems: memory.cartItems,
+      lastAction: memory.lastAction,
+      awaitingField: memory.awaitingField,
+      orderCreated: memory.orderCreated,
+    };
+  }
+
   private async resolveTenantId(tenantIdOrSlug: string): Promise<string> {
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (UUID_RE.test(tenantIdOrSlug)) return tenantIdOrSlug;
@@ -360,7 +572,11 @@ export class SimulatorService {
     return out;
   }
 
-  private async cleanup(tenantId: string): Promise<void> {
+  private cleanup(tenantId: string): Promise<void> {
+    return this.cleanupIdentity(tenantId, SIM_CUSTOMER_EXTERNAL_ID);
+  }
+
+  private async cleanupIdentity(tenantId: string, externalId: string): Promise<void> {
     await this.dataSource.query(
       `
       DELETE FROM messages WHERE conversation_id IN (
@@ -369,7 +585,7 @@ export class SimulatorService {
         WHERE cust.external_user_id = $1 AND cust.tenant_id = $2
       )
     `,
-      [SIM_CUSTOMER_EXTERNAL_ID, tenantId],
+      [externalId, tenantId],
     );
 
     await this.dataSource.query(
@@ -380,7 +596,7 @@ export class SimulatorService {
         WHERE cust.external_user_id = $1 AND cust.tenant_id = $2
       )
     `,
-      [SIM_CUSTOMER_EXTERNAL_ID, tenantId],
+      [externalId, tenantId],
     );
 
     await this.dataSource.query(
@@ -389,14 +605,14 @@ export class SimulatorService {
         SELECT id FROM customers WHERE external_user_id = $1 AND tenant_id = $2
       )
     `,
-      [SIM_CUSTOMER_EXTERNAL_ID, tenantId],
+      [externalId, tenantId],
     );
 
     await this.dataSource.query(
       `
       DELETE FROM customers WHERE external_user_id = $1 AND tenant_id = $2
     `,
-      [SIM_CUSTOMER_EXTERNAL_ID, tenantId],
+      [externalId, tenantId],
     );
   }
 }

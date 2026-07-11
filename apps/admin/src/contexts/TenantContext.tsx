@@ -29,7 +29,10 @@ export function useTenantContext() {
 }
 
 export function TenantProvider({ children }: { children: ReactNode }) {
-  const [selectedTenantId, setSelectedTenantIdState] = useState<string | null>(null);
+  // Seed from the persisted override so a reload keeps the picked tenant.
+  const [selectedTenantId, setSelectedTenantIdState] = useState<string | null>(
+    () => localStorage.getItem('overrideTenantId'),
+  );
 
   const hasToken = !!localStorage.getItem('accessToken');
 
@@ -65,6 +68,20 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     setOverrideTenantId(selectedTenantId);
   }, [selectedTenantId]);
+
+  // Drop a persisted selection that's no longer a valid tenant (deleted, or
+  // the current superadmin can't see it), so a stale override can't stick.
+  useEffect(() => {
+    if (
+      selectedTenantId &&
+      tenants &&
+      tenants.length > 0 &&
+      !tenants.some((t) => t.id === selectedTenantId)
+    ) {
+      setSelectedTenantIdState(null);
+      setOverrideTenantId(null);
+    }
+  }, [selectedTenantId, tenants]);
 
   const selectedTenantName = tenants?.find(t => t.id === selectedTenantId)?.name ?? null;
 

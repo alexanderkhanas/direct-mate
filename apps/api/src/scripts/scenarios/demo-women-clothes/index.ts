@@ -196,4 +196,234 @@ export const DEMO_WOMEN_CLOTHES_SCENARIOS: Record<string, SimulatorScenario> = {
       },
     ],
   },
+
+  // ─── Unknown size is reported, never fuzzy-matched to a real one ──
+  demo_women_unknown_size_reported: {
+    name: 'demo-women — Non-existent size → variant_not_available (no XL→L)',
+    description:
+      'Prod trace 764aab8e. "Mango Сукня міді" carries XS/S/M/L, no XL. ' +
+      'Asking for XL must report it as unavailable and list the real ' +
+      'sizes — NOT fuzzy-match XL onto L and latch the wrong SKU ' +
+      '(Part A guard + Part B 5.5o size-existence routing).',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    turns: [
+      {
+        message: 'Покажіть Mango Сукня міді',
+        expect: { decision: 'reply', note: 'Product enters focus' },
+      },
+      {
+        message: 'у вас є XL?',
+        expect: {
+          decision: 'reply',
+          scenario: 'variant_not_available',
+          replyNotContains: 'XL',
+          note: 'XL not carried → variant_not_available listing real sizes, no L-latch',
+        },
+      },
+    ],
+  },
+
+  // ─── Size correction beats the bundled question ──────────────────
+  demo_women_size_correction_beats_question: {
+    name: 'demo-women — Bad size + question → size correction wins',
+    description:
+      'The exact trace 764aab8e shape: "у меня XL, полномерные?" bundles a ' +
+      'non-existent size with a fit question. Size correction takes ' +
+      'precedence (Part B runs before the product-question gate) — the ' +
+      'turn reports XL unavailable rather than answering the fit question.',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    turns: [
+      {
+        message: 'Покажіть Mango Сукня міді',
+        expect: { decision: 'reply', note: 'Product enters focus' },
+      },
+      {
+        message: 'у меня XL размер, они полномерные?',
+        expect: {
+          decision: 'reply',
+          scenario: 'variant_not_available',
+          note: 'Bad size wins over the fit question',
+        },
+      },
+    ],
+  },
+
+  // ─── Product question answered from description (COVERED_FULLY) ───
+  // FLAKY: depends on the classifier emitting recommendedAction=
+  // 'answer_question' and the judge returning COVERED_FULLY. Both are
+  // LLM calls; assert the shape, not exact copy.
+  demo_women_product_question_from_description: {
+    name: 'demo-women — Fit question answered from the description',
+    description:
+      '"H&M Джинси мом-фіт" description is "Висока посадка, вільний крій." ' +
+      'Asking about the fit/rise should be answered from that description ' +
+      '(judge COVERED_FULLY → grounded answer), not a generic blurb and ' +
+      'not a handoff.',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    flaky: true,
+    turns: [
+      {
+        message: 'Покажіть H&M Джинси мом-фіт',
+        expect: { decision: 'reply', note: 'Product enters focus' },
+      },
+      {
+        message: 'яка в них посадка?',
+        expect: {
+          decision: 'reply',
+          replyContains: 'посадка',
+          note: 'Answered from description; COVERED_FULLY path',
+        },
+      },
+    ],
+  },
+
+  // ─── Product question NOT covered → handoff, never invented ───────
+  // FLAKY: same LLM dependence as above.
+  demo_women_product_question_not_covered: {
+    name: 'demo-women — Uncovered product question hands off, never invents',
+    description:
+      '"H&M Джинси мом-фіт" has no material on record and a description ' +
+      'silent on fabric. Asking the fabric must hand off (judge ' +
+      'NOT_COVERED) rather than fabricate a material.',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    flaky: true,
+    turns: [
+      {
+        message: 'Покажіть H&M Джинси мом-фіт',
+        expect: { decision: 'reply', note: 'Product enters focus' },
+      },
+      {
+        message: 'з якої тканини вони пошиті?',
+        expect: {
+          decision: 'handoff',
+          note: 'Fabric not in description/material → handoff, no invention',
+        },
+      },
+    ],
+  },
+
+  // ─── Classifier hardening: "L підійде" family ────────────────────
+  // Setup: "Mango Сукня міді" is size-only XS/S/M/L (no XL). Asking XL
+  // reaches 5.5o → variant_not_available, leaving
+  // lastAction='told_variant_not_available' — the state where the new
+  // `alternativesOfferedRule` fires.
+
+  // Statement pick after alternatives — the exact prod trace 50036bfb bug.
+  demo_women_alt_size_statement_pick: {
+    name: 'demo-women — "L підійде" after alternatives → selects L (not handoff)',
+    description:
+      'Prod trace 50036bfb. After "XL немає, є XS/S/M/L", the customer says ' +
+      '"L підійде" (= I\'ll take L). Must resolve to a pick of L and confirm, ' +
+      'NOT hand off. Gated (not flaky): this is the acceptance criterion for ' +
+      'the alternativesOfferedRule classifier change.',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    turns: [
+      { message: 'Покажіть Mango Сукня міді', expect: { decision: 'reply', note: 'Product enters focus' } },
+      { message: 'у вас є XL?', expect: { decision: 'reply', scenario: 'variant_not_available', note: 'XL not carried → alternatives offered' } },
+      {
+        message: 'L підійде',
+        expect: {
+          decision: 'reply',
+          replyNotContains: ['уточню наявність', 'секунду'],
+          state: { selectedVariantName: 'L' },
+          note: 'Picks L → confirm; NOT product_question handoff',
+        },
+      },
+    ],
+  },
+
+  // Same setup, RU phrasing.
+  demo_women_alt_size_statement_pick_ru: {
+    name: 'demo-women — "L подойдёт" (RU) after alternatives → selects L',
+    description: 'Russian-language robustness of the alternatives pick path.',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    flaky: true,
+    turns: [
+      { message: 'Покажіть Mango Сукня міді', expect: { decision: 'reply' } },
+      { message: 'у вас є XL?', expect: { decision: 'reply' } },
+      {
+        message: 'L подойдёт',
+        expect: { decision: 'reply', state: { selectedVariantName: 'L' }, note: 'RU pick resolves to L' },
+      },
+    ],
+  },
+
+  // "тоді L" — then L.
+  demo_women_alt_size_todi_l: {
+    name: 'demo-women — "тоді L" after alternatives → selects L',
+    description: 'Alternative statement phrasing of a size pick.',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    turns: [
+      { message: 'Покажіть Mango Сукня міді', expect: { decision: 'reply' } },
+      { message: 'у вас є XL?', expect: { decision: 'reply' } },
+      {
+        message: 'тоді L',
+        expect: {
+          decision: 'reply',
+          replyNotContains: ['уточню наявність'],
+          state: { selectedVariantName: 'L' },
+          note: 'Pick resolves to L',
+        },
+      },
+    ],
+  },
+
+  // Fit QUESTION (with "?") must NOT latch a variant.
+  demo_women_alt_size_fit_question: {
+    name: 'demo-women — "L підійде?" after alternatives → fit question, no latch',
+    description:
+      'The genuine ambiguity\'s other reading: "L підійде?" (will L fit me?). ' +
+      'Must NOT be treated as a pick — no variant latched, not confirm_selection. ' +
+      'FLAKY: depends on the classifier reading the interrogative marker.',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    flaky: true,
+    turns: [
+      { message: 'Покажіть Mango Сукня міді', expect: { decision: 'reply' } },
+      { message: 'у вас є XL?', expect: { decision: 'reply' } },
+      {
+        message: 'L підійде?',
+        expect: {
+          decision: 'reply',
+          replyNotContains: ['оформлюємо'],
+          note: 'Fit question → not a confirm (confirm copy says "оформлюємо?")',
+        },
+      },
+    ],
+  },
+
+  // A size NOT in the offered list → availability, not a pick.
+  demo_women_alt_size_new_size_ask: {
+    name: 'demo-women — "а 46 є?" after alternatives → availability, not a pick',
+    description:
+      'A size outside the offered list is a fresh availability question, not a ' +
+      'selection. Must not confirm and must not silently handoff with product_not_found.',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    flaky: true,
+    turns: [
+      { message: 'Покажіть Mango Сукня міді', expect: { decision: 'reply' } },
+      { message: 'у вас є XL?', expect: { decision: 'reply' } },
+      {
+        message: 'а 46 є?',
+        expect: { decision: 'reply', replyNotContains: ['оформлюємо'], note: '46 not carried → variant_not_available/availability' },
+      },
+    ],
+  },
+
+  // Size chart shown, then a fit question → sizeChartJustSent signal.
+  demo_women_chart_then_fit_question: {
+    name: 'demo-women — chart shown, then "L підійде?" → fit answer',
+    description:
+      'After the size chart is sent, "L підійде?" is a fit judgment against it. ' +
+      'Exercises the sizeChartJustSent classifier signal. FLAKY (LLM).',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    flaky: true,
+    turns: [
+      { message: 'Покажіть Mango Сукня міді', expect: { decision: 'reply' } },
+      { message: 'розмірна сітка', expect: { decision: 'reply', scenario: 'show_size_chart', note: 'chart sent → sizeChartJustSent set' } },
+      {
+        message: 'L підійде?',
+        expect: { decision: 'reply', replyNotContains: ['оформлюємо'], note: 'Fit question after chart' },
+      },
+    ],
+  },
 };

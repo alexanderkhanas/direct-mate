@@ -10,6 +10,7 @@ import { TenantSettings } from '../tenants/entities/tenant-settings.entity';
 import { ManagerExample } from '../settings/entities/manager-example.entity';
 import { ConversationState } from './entities/conversation-state.entity';
 import { StoreConfig } from '../engine/entities/store-config.entity';
+import { Product } from '../catalog/entities/product.entity';
 import { AvailabilityService } from '../availability/availability.service';
 import { AuditService } from '../audit/audit.service';
 import {
@@ -197,6 +198,8 @@ export class ReplyEngineService {
     private readonly examplesRepo: Repository<ManagerExample>,
     @InjectRepository(StoreConfig)
     private readonly storeConfigRepo: Repository<StoreConfig>,
+    @InjectRepository(Product)
+    private readonly productRepo: Repository<Product>,
     private readonly availabilityService: AvailabilityService,
     private readonly auditService: AuditService,
     private readonly classifierService: ClassifierService,
@@ -282,6 +285,14 @@ export class ReplyEngineService {
     if (searchResult) return withTrace(searchResult);
 
     await this.handleVariantUnavailable(input, ctx);
+
+    // Free-form product question ("з якої тканини?", "полномерные?") about the
+    // focused product → answer strictly from product data, else handoff. Runs
+    // AFTER handleVariantUnavailable so a named non-existent size (Part B) is
+    // reported first ("size correction wins"), and BEFORE variant resolution /
+    // template render so it pre-empts the generic recommend_product blurb.
+    const productQuestionResult = await this.handleProductQuestion(input, ctx);
+    if (productQuestionResult) return withTrace(productQuestionResult);
 
     this.resolveVariantSelection(input, ctx);
 
@@ -573,6 +584,14 @@ export class ReplyEngineService {
       this.logger.error('AI classification failed', err);
       ctx.trace.push('classify: ai_failure → handoff');
       return this.doHandoff(input, 'ai_failure');
+    }
+
+    // Consume the one-shot "size chart just sent" signal — the classifier
+    // has now read it (via buildMemoryContext + sizeChartJustSentRule), so
+    // clear it on the shared memory object; whatever stateUpdate this turn
+    // persists will drop it, so it can't leak to turn+2.
+    if (memory.sizeChartJustSent) {
+      memory.sizeChartJustSent = undefined;
     }
 
     // 2.5. Short reply resolver: override low-confidence classification using memory context
@@ -2364,6 +2383,42 @@ export class ReplyEngineService {
     const userSize = classification.entities.size;
     if (!userColor && !userSize) return;
 
+    // Size named that this product simply doesn't carry (e.g. customer says
+    // "XL" on an S/M/L shirt). The requested size isn't among ANY of the
+    // product's variants, so the search never narrowed to it and the block
+    // below (which handles "narrowed to the requested combo and it's OOS")
+    // would otherwise early-return past it. Report it as variant_not_available
+    // with the sizes we DO carry — regardless of primaryIntent, so it precedes
+    // the product-question gate ("size correction wins"). Colour is exempt:
+    // colour matching has its own language-aware overlap logic elsewhere.
+    if (userSize) {
+      const wanted = userSize.toLowerCase().trim();
+      const sizeExists = productData[0].variants.some(
+        (v) => v.size && v.size.toLowerCase().trim() === wanted,
+      );
+      if (!sizeExists) {
+        const inStockAlts = productData[0].variants.filter(
+          (v) => v.effectiveAvailable > 0,
+        );
+        if (inStockAlts.length > 0) {
+          memory.requestedVariant =
+            [userColor, userSize].filter(Boolean).join(' ') || undefined;
+          memory.selectedProductId = productData[0].product.id;
+          memory.availableVariants = this.buildAvailableVariantsList(inStockAlts);
+          memory.selectedVariantId = undefined;
+          memory.selectedVariantName = undefined;
+          ctx.isFirstProductPresentation = false;
+          classification.primaryIntent = 'variant_not_available';
+          classification.recommendedAction = 'variant_not_available';
+          memory.lastAction = 'told_variant_not_available';
+          ctx.trace.push(
+            `5.5o: size "${userSize}" not carried → variant_not_available (alts=${inStockAlts.length})`,
+          );
+          return;
+        }
+      }
+    }
+
     const inStockInSearch = productData[0].variants.filter(
       (v) => v.effectiveAvailable > 0,
     );
@@ -3245,11 +3300,21 @@ export class ReplyEngineService {
     } else {
       // 8. No template -> check if AI fallback is allowed
       ctx.trace.push('template: none found');
-      // general_question with no FAQ match → bot doesn't know the answer → handoff
+      // general_question with no FAQ match. If a product is in focus, try to
+      // answer it from that product's data (judge → grounded answer, else
+      // handoff). Runs here, AFTER tryFaqMatch, so tenant FAQ still wins.
+      // Uncovered questions still hand off — same as before, so this only
+      // ADDS answers, never removes an escalation.
       if (
         classification.primaryIntent === 'general_question' ||
         classification.recommendedAction === 'answer_faq'
       ) {
+        const focusedId =
+          memory.selectedProductId ??
+          (productData?.length === 1 ? productData[0].product.id : undefined);
+        if (focusedId && classification.primaryIntent === 'general_question') {
+          return this.answerProductQuestionGrounded(input, ctx, focusedId);
+        }
         ctx.trace.push('handoff: general_question_no_template');
         this.logger.log('general_question with no template → handoff');
         return this.doHandoff(input, 'Клієнт поставив питання, на яке бот не знає відповіді');
@@ -4021,6 +4086,7 @@ export class ReplyEngineService {
       memory.selectionState = 'awaiting_variant';
       memory.awaitingField = 'size_selection';
       memory.lastAction = 'asked_variant';
+      memory.sizeChartJustSent = true;
       // Deliberately NOT setting variantStep='size'. That value asserts
       // "colour already chosen" — 5.5b-2's size branch requires
       // `memory.selectedColor` (reply-engine.service.ts:2763) and
@@ -5093,6 +5159,229 @@ export class ReplyEngineService {
     return statusStageMap[state.stateStatus] ?? 'greeting';
   }
 
+  // ─── Product question: description-grounded answer or handoff ───
+
+  /**
+   * Assemble the ONLY product context the judge/answer calls may see: a
+   * flat set of product attributes, never raw variants / metadata /
+   * conversation history. Loads the Product entity for attributes and
+   * `findAllByProductId` for in-stock size/colour/price aggregates.
+   * Returns null if the product can't be loaded; `hasContent=false` when
+   * there is nothing an attribute question could be answered from
+   * (no description and no attribute columns).
+   */
+  private async buildProductAttributeContext(
+    tenantId: string,
+    productId: string,
+  ): Promise<{ text: string; hasContent: boolean } | null> {
+    const product = await this.productRepo.findOne({
+      where: { id: productId, tenantId },
+    });
+    if (!product) return null;
+
+    const grouped = await this.availabilityService.findAllByProductId(productId);
+    const inStock = grouped[0]?.variants.filter((v) => v.effectiveAvailable > 0) ?? [];
+    const availableSizes = [
+      ...new Set(inStock.map((v) => v.size).filter((s): s is string => !!s)),
+    ];
+    const availableColors = [
+      ...new Set(inStock.map((v) => v.color).filter((c): c is string => !!c)),
+    ];
+    const price = inStock.length
+      ? Math.min(...inStock.map((v) => v.price))
+      : null;
+    const currency = inStock[0]?.currency ?? null;
+
+    let sizeChartUrl: string | null = null;
+    const chart = await this.sizeChartsService.resolveForContext(tenantId, {
+      brand: product.brand,
+      category: product.category,
+    });
+    if (chart) sizeChartUrl = this.sizeChartsService.publicUrl(chart.imagePath);
+
+    // Only non-null fields are rendered; a null column is simply omitted.
+    const lines: string[] = [];
+    const add = (label: string, value: unknown) => {
+      if (value !== null && value !== undefined && String(value).trim() !== '') {
+        lines.push(`${label}: ${value}`);
+      }
+    };
+    add('Назва', product.title);
+    add('Бренд', product.brand);
+    add('Категорія', product.category);
+    add('Модель', product.modelName);
+    add('Матеріал', product.material);
+    add('Стать', product.gender);
+    add('Сезон', product.season);
+    add('Опис', product.description);
+    if (price !== null) add('Ціна', `${price} ${currency ? formatCurrency(currency) : ''}`.trim());
+    add('Ціна зі знижкою', product.salePrice);
+    if (availableSizes.length) add('Доступні розміри', sortSizes(availableSizes).join(', '));
+    if (availableColors.length)
+      add('Доступні кольори', availableColors.map((c) => localizeColor(c)).join(', '));
+    add('Розмірна сітка (URL)', sizeChartUrl);
+
+    // "Answerable content" = anything beyond the bare title/price scaffold.
+    const hasContent = [
+      product.description,
+      product.material,
+      product.gender,
+      product.season,
+      product.modelName,
+      sizeChartUrl,
+    ].some((v) => v !== null && v !== undefined && String(v).trim() !== '');
+
+    return { text: lines.join('\n'), hasContent };
+  }
+
+  /**
+   * Gate for free-form product questions (`recommendedAction='answer_question'`)
+   * about the product already in focus. Delegates to the grounded
+   * judge→answer core. Runs at the process() stage, before variant
+   * resolution / template render, so it pre-empts the generic
+   * `recommend_product` blurb that `ask_recommendation` would otherwise
+   * produce.
+   */
+  private async handleProductQuestion(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+  ): Promise<ReplyEngineOutput | null> {
+    const { memory, productData } = ctx;
+    const classification = ctx.classification;
+
+    if (classification.recommendedAction !== 'answer_question') return null;
+    // Part B may have rerouted this turn to a size correction — that wins.
+    if (
+      classification.primaryIntent === 'variant_not_available' ||
+      classification.primaryIntent === 'out_of_stock'
+    ) {
+      return null;
+    }
+
+    const productId =
+      memory.selectedProductId ??
+      (productData?.length === 1 ? productData[0].product.id : undefined);
+    if (!productId) return null;
+
+    return this.answerProductQuestionGrounded(input, ctx, productId);
+  }
+
+  /**
+   * Two-call judge → grounded answer. Call 1 (gpt-5.4-mini, temp 0) decides
+   * COVERED_FULLY | COVERED_PARTIALLY | NOT_COVERED | UNCERTAIN. Only
+   * COVERED_FULLY proceeds to Call 2 (the answer). Every other verdict —
+   * and an empty product context — hands off. The model never sees more
+   * than the attribute context, so it cannot invent from world knowledge.
+   */
+  private async answerProductQuestionGrounded(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+    productId: string,
+  ): Promise<ReplyEngineOutput> {
+    const classification = ctx.classification;
+    const q = input.messageText.trim();
+    const qShort = q.slice(0, 40);
+    const pid8 = productId.slice(0, 8);
+
+    const attrCtx = await this.buildProductAttributeContext(input.tenantId, productId);
+    if (!attrCtx || !attrCtx.hasContent) {
+      ctx.trace.push(`product_question: no answerable data product=${pid8} → handoff`);
+      return this.doHandoff(input, 'product_question_no_data');
+    }
+
+    const judgeModel =
+      this.config.get<string>('openai.classifierModel') ?? 'gpt-5.4-mini';
+    let verdict = 'UNCERTAIN';
+    try {
+      const judge = await (this.openai.chat.completions.create as any)({
+        model: judgeModel,
+        temperature: 0,
+        max_completion_tokens: 100,
+        messages: [
+          {
+            role: 'system',
+            content: [
+              'You decide whether a customer question about a product can be answered SOLELY from the product info below. Do not use outside knowledge.',
+              'Reply with EXACTLY ONE token:',
+              'COVERED_FULLY — the info explicitly and completely answers the question.',
+              'COVERED_PARTIALLY — the info touches the topic but not at the detail asked.',
+              'NOT_COVERED — the info says nothing about what was asked.',
+              'UNCERTAIN — the question is ambiguous or you cannot decide.',
+              '',
+              'Product info:',
+              attrCtx.text,
+            ].join('\n'),
+          },
+          { role: 'user', content: q },
+        ],
+      });
+      const raw = (judge.choices[0]?.message?.content ?? '').toUpperCase();
+      const found = ['COVERED_FULLY', 'COVERED_PARTIALLY', 'NOT_COVERED', 'UNCERTAIN'].find(
+        (t) => raw.includes(t),
+      );
+      verdict = found ?? 'UNCERTAIN';
+    } catch (err) {
+      this.logger.error('product_question judge call failed', err as Error);
+      verdict = 'UNCERTAIN';
+    }
+
+    ctx.trace.push(`product_question: judge=${verdict} product=${pid8} q="${qShort}"`);
+
+    if (verdict === 'COVERED_PARTIALLY') {
+      ctx.trace.push('product_question: COVERED_PARTIALLY → handoff');
+      return this.doHandoff(
+        input,
+        'product_question_partial',
+        'Маю часткові дані по цьому — уточню з менеджером 💛',
+      );
+    }
+    if (verdict !== 'COVERED_FULLY') {
+      ctx.trace.push(`product_question: ${verdict} → handoff`);
+      return this.doHandoff(input, 'product_question_not_covered');
+    }
+
+    // COVERED_FULLY → answer strictly from the attribute context.
+    let answer: string | undefined;
+    try {
+      const completion = await (this.openai.chat.completions.create as any)({
+        model: this.model,
+        temperature: 0.2,
+        max_completion_tokens: 300,
+        messages: [
+          {
+            role: 'system',
+            content: [
+              'You are a store sales assistant. Answer the customer question using ONLY the product information below.',
+              'Never add facts that are not present here. Reply in the customer\'s language, 1-2 short sentences, warm tone.',
+              '',
+              'Product info:',
+              attrCtx.text,
+            ].join('\n'),
+          },
+          { role: 'user', content: q },
+        ],
+      });
+      answer = completion.choices[0]?.message?.content?.trim();
+    } catch (err) {
+      this.logger.error('product_question answer call failed', err as Error);
+    }
+
+    if (!answer) {
+      ctx.trace.push('product_question: empty answer → handoff');
+      return this.doHandoff(input, 'product_question_answer_empty');
+    }
+
+    ctx.trace.push(`product_question: answer sent (chars=${answer.length})`);
+    ctx.memory.lastAction = 'answered_product_question';
+    return {
+      decision: ReplyDecision.Reply,
+      reply: { text: answer, sendNow: true },
+      handoff: { required: false, reason: null },
+      stateUpdate: { contextJson: ctx.memory as any },
+      templateScenario: 'product_question',
+    };
+  }
+
   // ─── AI fallback reply generation ──────────────────────────────
 
   private buildOrderStateContext(memory: AssistantMemory): string {
@@ -5327,6 +5616,7 @@ export class ReplyEngineService {
         ctx.trace.push(
           `size_chart_request: help-style attaching chart as extraReply chartId=${chart.id}`,
         );
+        memory.sizeChartJustSent = true;
       }
       return {
         decision: ReplyDecision.Reply,
@@ -5387,11 +5677,17 @@ export class ReplyEngineService {
       category,
     });
 
+    // Signal the NEXT turn's classifier that the chart was just shown, so
+    // "L підійде?" / measurements / a size pick are read in that light. A
+    // dedicated flag (not a lastAction overwrite) so it never disables the
+    // alternatives-offered path when the chart accompanies an OOS message.
+    ctx.memory.sizeChartJustSent = true;
+
     return {
       decision: ReplyDecision.Reply,
       reply: { text, sendNow: true, imageUrls: [publicUrl] },
       handoff: { required: false, reason: null },
-      stateUpdate: null,
+      stateUpdate: { contextJson: ctx.memory as any },
       templateScenario: rendered?.scenario ?? 'show_size_chart',
     };
   }

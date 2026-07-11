@@ -38,8 +38,11 @@ export default () => ({
     // ScreenshotExtractionService. Vision tasks need a stronger model.
     visionModel: process.env.OPENAI_VISION_MODEL ?? 'gpt-4o',
     // Used by ClassifierService.classifyWithFallback for handoff
-    // verification (second-opinion classifier pass).
-    fallbackModel: process.env.OPENAI_FALLBACK_MODEL ?? 'gpt-4.1',
+    // verification (second-opinion classifier pass). gpt-4.1 was the
+    // previous default — retired from ChatGPT Feb 2026, 4.1-nano API
+    // shutdown Jul 23 2026; gpt-5.4 (the main model) replaces it before
+    // the API shutdown wave reaches the full 4.1.
+    fallbackModel: process.env.OPENAI_FALLBACK_MODEL ?? 'gpt-5.4',
   },
   internal: {
     apiKey: process.env.INTERNAL_API_KEY ?? '',

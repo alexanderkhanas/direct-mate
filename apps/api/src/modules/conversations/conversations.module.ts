@@ -8,6 +8,7 @@ import { ConversationTrace } from './entities/conversation-trace.entity';
 import { TenantSettings } from '../tenants/entities/tenant-settings.entity';
 import { ManagerExample } from '../settings/entities/manager-example.entity';
 import { StoreConfig } from '../engine/entities/store-config.entity';
+import { Product } from '../catalog/entities/product.entity';
 import { ConversationsService } from './conversations.service';
 import { ConversationTracesService } from './conversation-traces.service';
 import { ReplyEngineService } from './reply-engine.service';
@@ -31,6 +32,7 @@ import { SizeChartsModule } from '../size-charts/size-charts.module';
       TenantSettings,
       ManagerExample,
       StoreConfig,
+      Product,
     ]),
     AvailabilityModule,
     AuditModule,

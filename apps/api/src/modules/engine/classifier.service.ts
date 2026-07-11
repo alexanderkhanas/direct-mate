@@ -101,6 +101,17 @@ export interface AssistantMemory {
    * answer or topic shift.
    */
   awaitingPreQualifyAnswer?: boolean;
+  /**
+   * Transient — set by `handleSizeChartRequest` when the size chart was
+   * sent THIS turn. Signals the classifier that the customer's next
+   * message is likely a fit judgment ("L підійде?"), a measurement
+   * ("зріст 170"), or a size pick made after seeing the chart. A
+   * dedicated flag rather than a `lastAction` overwrite because the chart
+   * is often sent in the same turn as a variant-not-available message,
+   * and clobbering `lastAction` would disable `alternativesOfferedRule`.
+   * Cleared at the start of the next turn after classification.
+   */
+  sizeChartJustSent?: boolean;
   requestedVariant?: string;
   variantStep?: 'color' | 'size' | null;
   selectedColor?: string;
@@ -213,7 +224,11 @@ function buildClassifyTool(
                 description:
                   'Color the customer is asking about. Always emit in masculine nominative form regardless of the case the customer used. Ukrainian: emit "чорний" (not "чорну" / "чорної" / "чорному" / "чорні"), "білий" (not "білу" / "білі"), "червоний" (not "червону"). English: emit lowercase canonical form ("black", "white", "red"). This rule applies even when the customer types accusative, genitive, locative, or plural — strip the case ending and return the masculine nominative.',
               },
-              size: { type: ['string', 'null'] },
+              size: {
+                type: ['string', 'null'],
+                description:
+                  'The size the customer named. Canonical letter sizes: XS, S, M, L, XL, XXL (uppercase Latin). Numeric sizes: 36–50 (and ranges like "44-46"). Normalize Cyrillic size letters to Latin: "ХЛ"/"хл" → "XL", "Л"/"л" → "L", "М"/"м" (when clearly a size, not the word) → "M", "С"/"с" → "S". NEVER extract the meta-word "розмір"/"размер"/"size" itself — it marks that a size follows, it is not a value. Extract the size EVEN when it appears inside a question ("а L мені підійде?" → "L"; "є XL?" → "XL"). If no concrete size value is present, leave null.',
+              },
               skin_type: { type: ['string', 'null'] },
               quantity: { type: ['number', 'null'] },
               customer_name: { type: ['string', 'null'] },
@@ -415,12 +430,13 @@ export class ClassifierService {
         ? [
             ``,
             `POST-SELECTION VARIANT FOLLOW-UP:`,
-            `A product is already selected and state is awaiting_confirmation. If customer asks about other sizes/colors of THIS product, classify primary_intent='ask_variant_choice' (NOT 'product_inquiry' or generic 'asks_question'). The engine routes to a "variant not available" reply if the asked size/color is out of stock.`,
-            `  Examples:`,
-            `    "А є в інших розмірах?" → ask_variant_choice`,
-            `    "Чи є L?"               → ask_variant_choice; size: "L"`,
-            `    "А інший колір є?"      → ask_variant_choice`,
-            `    "є в M?"                → ask_variant_choice; size: "M"`,
+            `A product is already selected and state is awaiting_confirmation. If customer ASKS about other sizes/colors of THIS product, classify primary_intent='ask_variant_choice' with slot_action='asks_question' (NOT 'product_inquiry' or generic 'asks_question' intent). The engine routes to a "variant not available" reply if the asked size/color is out of stock.`,
+            `  Question examples:`,
+            `    "А є в інших розмірах?" → ask_variant_choice; asks_question`,
+            `    "Чи є L?"               → ask_variant_choice; asks_question; size: "L"`,
+            `    "А інший колір є?"      → ask_variant_choice; asks_question`,
+            `    "є в M?"                → ask_variant_choice; asks_question; size: "M"`,
+            `But a STATEMENT picking a size/color (no question — "давайте L", "тоді M", "L підійде") is NOT a question — classify slot_action='fills_missing_slot' + extract the entity (the customer is choosing, not asking).`,
           ].join('\n')
         : '';
 
@@ -483,12 +499,56 @@ export class ClassifierService {
         ].join('\n')
       : '';
 
+    // Fires the turn AFTER the bot said "requested variant is unavailable,
+    // here are the alternatives". Keyed on `lastAction` (written identically
+    // at all 4 variant-not-available sites) rather than `selectionState`
+    // (which the engine writes inconsistently here — sometimes
+    // 'awaiting_confirmation', sometimes downgraded). Without this block the
+    // one rule that resolves a bare-size pick (awaitingVariantRule) is OFF
+    // in this state, and "L підійде" free-associates to ask_recommendation
+    // → an unwanted handoff. Cause-of-record: prod trace 50036bfb.
+    const alternativesOfferedRule =
+      params.memory.lastAction === 'told_variant_not_available'
+        ? [
+            ``,
+            `ALTERNATIVES OFFERED (the bot just said the requested size/color is unavailable and listed the alternatives shown under "Available variants" — the customer's reply is usually a PICK, a FIT QUESTION, or a decline):`,
+            `- STATEMENT naming an offered size/color → slot_action='fills_missing_slot' + extract the entity. The customer is ACCEPTING an offered alternative. NOT ask_recommendation. NOT pure 'confirmation' (the message carries new information — the chosen size):`,
+            `    "L підійде"      → fills_missing_slot; size: "L"`,
+            `    "тоді L"         → fills_missing_slot; size: "L"`,
+            `    "давайте L"      → fills_missing_slot; size: "L"`,
+            `    "ну хай буде S"  → fills_missing_slot; size: "S"`,
+            `    "L подойдёт"     → fills_missing_slot; size: "L"    (Russian)`,
+            `    "тогда возьму M" → fills_missing_slot; size: "M"    (Russian)`,
+            `- QUESTION about fit (has an interrogative marker: "?", "чи", a leading "а …?") → slot_action='asks_question', primary_intent='ask_recommendation', AND STILL extract entities.size. The customer wants a fit check on that size — not a size chart, not stock status:`,
+            `    "L підійде?"              → asks_question; ask_recommendation; size: "L"`,
+            `    "а L мені підійде?"       → asks_question; ask_recommendation; size: "L"`,
+            `    "чи не буде L завеликим?" → asks_question; ask_recommendation; size: "L"`,
+            `    "L подойдёт?"             → asks_question; ask_recommendation; size: "L"   (Russian)`,
+            `    "а L на меня налезет?"    → asks_question; ask_recommendation; size: "L"   (Russian)`,
+            `- No "?" and the named size IS in the Available variants list → treat as the STATEMENT (pick) case. If genuinely uncertain between pick and question, STILL output fills_missing_slot but set confidence ≤ 0.6.`,
+            `- Pure decline ("ні", "не треба", "тоді не треба", "нет, спасибо") → slot_action='rejection'.`,
+            `- A size NOT in the offered list ("а 46 є?", "может XXL есть?") → primary_intent='availability_check' + extract the size.`,
+          ].join('\n')
+        : '';
+
+    // Fires the turn AFTER the size chart image was sent. The customer is
+    // now judging fit against it, giving measurements, or picking a size.
+    const sizeChartJustSentRule = params.memory.sizeChartJustSent
+      ? [
+          ``,
+          `SIZE CHART JUST SHOWN (the bot sent the sizing chart last turn — the customer is reacting to it):`,
+          `- Body measurements ("зріст 170, вага 60", "180 70", "рост 165 вес 55") → primary_intent='ask_recommendation' (fit check against the chart).`,
+          `- Fit question naming a size ("L підійде?", "мій розмір M?", "L подойдёт?") → slot_action='asks_question', primary_intent='ask_recommendation', + extract entities.size.`,
+          `- Statement picking a size ("беру L", "тоді M", "давайте L") → slot_action='fills_missing_slot' + extract entities.size.`,
+        ].join('\n')
+      : '';
+
     // Surfaces which conditional blocks fired for this call. Grep
     // production logs for `[CLASSIFIER_BLOCKS]` to verify the
     // category-heuristic includes the right tenants and to diagnose
     // unexpected prompt-token deltas.
     this.logger.debug(
-      `[CLASSIFIER_BLOCKS] cosmetics=${!!cosmeticsRule} pendingOffer=${!!pendingOfferRule} awaitingVariant=${!!awaitingVariantRule} postSelection=${!!postSelectionRule} productSize=${isClothingLike} categories=${params.categories.join(',')}`,
+      `[CLASSIFIER_BLOCKS] cosmetics=${!!cosmeticsRule} pendingOffer=${!!pendingOfferRule} awaitingVariant=${!!awaitingVariantRule} postSelection=${!!postSelectionRule} altsOffered=${!!alternativesOfferedRule} chartJustSent=${!!params.memory.sizeChartJustSent} productSize=${isClothingLike} categories=${params.categories.join(',')}`,
     );
 
     const systemPrompt = [
@@ -514,6 +574,8 @@ export class ClassifierService {
       memoryContext ? `\n${memoryContext}` : '',
       cosmeticsRule,
       pendingOfferRule,
+      alternativesOfferedRule,
+      sizeChartJustSentRule,
       awaitingVariantRule,
       postSelectionRule,
       productSizeExtractionRule,
@@ -540,6 +602,16 @@ export class ClassifierService {
       `  Current message: "давайте першу"`,
       `    → entities: {} ; slot_action='confirmation' (indexed pick, no axes mentioned)`,
       ``,
+      `  History above mentions category "Сорочки"; bot asked which size.`,
+      `  Current message: "M"`,
+      `    → CORRECT: { size: "M" }                    (category NOT carried from history)`,
+      `    → WRONG:   { category: "Сорочки", size: "M" } (category LEAK)`,
+      ``,
+      `  History above: customer was choosing a white t-shirt (color "білий", size "S").`,
+      `  Current message: "Хочу замовити джинси"`,
+      `    → CORRECT: { productName: "Джинси" }        (new product — NO color/size/name/phone carried)`,
+      `    → WRONG:   { productName: "Джинси", color: "білий", size: "S" }  (LEAK from the prior product)`,
+      ``,
       `IMPORTANT RULES:`,
       `- Short replies ("так", "добре", "давайте", "цей", a color, a size) must be interpreted in context of the last action.`,
       `- If products were shown and user gives a short reply, they are likely selecting or confirming.`,
@@ -547,7 +619,7 @@ export class ClassifierService {
       `- Extract ALL entities that ARE in the current message, but NONE that aren't. (See ENTITY SCOPE above.)`,
       ``,
       `SLOT ACTION RULES:`,
-      `- 'confirmation' ONLY for pure confirmations without new information: "так", "беру", "підходить", "давайте", "добре", "ок"`,
+      `- 'confirmation' ONLY for pure confirmations without new information: "так", "беру", "давайте", "добре", "ок". NOTE: "підходить"/"підійде" is 'confirmation' ONLY when bare — together with a size or color ("L підійде", "чорний підходить") it is 'fills_missing_slot' (a pick) or 'asks_question' (if it ends in "?"), never pure 'confirmation'.`,
       `- 'correction' when user starts with negation AND provides new value: "ні, я хочу Rosewood", "не, краще червону"`,
       `- 'fills_missing_slot' when user provides a value we asked for: a color name after "який відтінок?", a product name after showing options`,
       `- 'rejection' for pure negation without new info: "ні", "не хочу", "не треба"`,
@@ -563,8 +635,11 @@ export class ClassifierService {
       `- 'availability_check' when customer asks if a specific size is in stock:`,
       `    "у вас є розмір М?" → availability_check  (asks in-stock status, not measurements)`,
       `    "є XL?"             → availability_check`,
-      `- 'ask_recommendation' when customer asks the bot to choose a size for them:`,
+      `- 'ask_recommendation' when customer asks the bot to choose a size for them, OR asks whether a NAMED size will fit them:`,
       `    "порадьте розмір", "що мені підійде? 170см 60кг" → ask_recommendation`,
+      `    "L підійде?", "а M мені підійде?", "L подойдёт?" → ask_recommendation + extract entities.size  (fit check on a named size — NOT a size chart, NOT stock status)`,
+      `- A COMPOUND message that states a size AND asks a fit/property question keeps the size entity: "У меня хл размер. Они полномерные?" → availability_check (or ask_variant_choice if a product is selected); slot_action='asks_question'; size: "XL" (normalize "хл" → "XL"). The size half must ALWAYS survive.`,
+      `- PRECEDENCE: when a conditional block above is active (ALTERNATIVES OFFERED, SIZE CHART JUST SHOWN, AWAITING VARIANT ANSWER, POST-SELECTION), its examples take precedence over these generic ones.`,
       ``,
       `Call classify_message with your analysis.`,
     ]
@@ -744,7 +819,11 @@ export class ClassifierService {
     const variantStr = Array.isArray(memory.availableVariants)
       ? memory.availableVariants.map(v => v.name).join(', ')
       : (memory.availableVariants || 'unknown');
-    parts.push(`- Available variants: ${variantStr}`);
+    // Render as MATCHABLE tokens, not a passive display list: if the
+    // current message names one of these, the customer is selecting it.
+    parts.push(
+      `- Available variants (if the current message names one of these — bare or inside a short phrase like "L підійде"/"тоді L" — the customer is SELECTING it → slot_action='fills_missing_slot'): ${variantStr}`,
+    );
     parts.push(`- Last bot action: ${memory.lastAction || 'none'}`);
     parts.push(`- Waiting for: ${memory.awaitingField || 'nothing specific'}`);
     if (memory.cartItems?.length) {
@@ -770,6 +849,9 @@ export class ClassifierService {
     }
     if (memory.awaitingPreQualifyAnswer) {
       parts.push(`- Pending offer: bot asked "Хочете, допоможу з розміром?" — customer's next message is their answer (accept / decline / topic shift)`);
+    }
+    if (memory.sizeChartJustSent) {
+      parts.push(`- Size chart was just sent this turn — the customer's next message is likely a fit judgment, a measurement, or a size pick made after seeing the chart`);
     }
 
     return parts.join('\n');

@@ -23,6 +23,8 @@ import { LoadingState } from '../components/ui/Spinner';
 import { EmptyState } from '../components/ui/EmptyState';
 import { cn } from '../lib/cn';
 import { useT } from '../i18n';
+import { isSuperadmin } from '../lib/auth';
+import LiveDmConsole from './LiveDmConsole';
 
 // --- Types -----------------------------------------------------------
 
@@ -622,6 +624,9 @@ export default function SimulatorPage() {
         </h1>
         <p className="text-sm text-gray-500 mt-1">{t('simulator.subtitle')}</p>
       </div>
+
+      {/* Live Instagram DM console — superadmin only */}
+      {isSuperadmin() && <LiveDmConsole />}
 
       {/* Controls */}
       <Card>

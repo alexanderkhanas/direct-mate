@@ -72,6 +72,7 @@ function makeService(
     null as any, // settingsRepo
     null as any, // examplesRepo
     null as any, // storeConfigRepo
+    null as any, // productRepo
     availabilityService,
     null as any, // auditService
     null as any, // classifierService

@@ -28,6 +28,7 @@
     "seed:showcase:prod:women-clothes": "node dist/scripts/seed-showcase-women-clothes.js",
     "seed:showcase:prod:cosmetics": "node dist/scripts/seed-showcase-cosmetics.js",
     "seed:test-tenant": "ts-node -r tsconfig-paths/register src/scripts/seed-test-tenant.ts",
+    "eval:classifier": "ts-node -r tsconfig-paths/register src/scripts/eval-classifier.ts",
     "backfill:price-variants": "ts-node -r tsconfig-paths/register src/scripts/backfill-show-price-with-variants.ts",
     "backfill:prod:price-variants": "node dist/scripts/backfill-show-price-with-variants.js",
     "reset:test-tenant:conversations": "ts-node -r tsconfig-paths/register src/scripts/reset-test-tenant-conversations.ts",

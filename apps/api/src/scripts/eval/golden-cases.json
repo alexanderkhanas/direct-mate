@@ -1,0 +1,474 @@
+[
+  {
+    "id": "alt_pick_L",
+    "description": "Statement pick after alternatives offered — the prod trace 50036bfb case.",
+    "params": {
+      "messageText": "L підійде",
+      "recentMessages": [
+        { "role": "user", "text": "В мене розмір xl" },
+        { "role": "assistant", "text": "На жаль, XL немає в наявності.\nДоступні варіанти:\nS, M, L 💛" }
+      ],
+      "memory": {
+        "lastAction": "told_variant_not_available",
+        "selectionState": "awaiting_confirmation",
+        "selectedProductId": "e41b4eb1-fb1a-4db2-90d0-7d95067472ad",
+        "selectedProductTitle": "Джинси МОМ світлі",
+        "requestedVariant": "XL",
+        "availableVariants": [
+          { "id": "v-s", "name": "S", "size": "S", "color": null },
+          { "id": "v-m", "name": "M", "size": "M", "color": null },
+          { "id": "v-l", "name": "L", "size": "L", "color": null }
+        ]
+      }
+    },
+    "expect": { "slotAction": "fills_missing_slot", "entities": { "size": "L" } }
+  },
+  {
+    "id": "alt_pick_todi_L",
+    "description": "\"тоді L\" = then L.",
+    "params": {
+      "messageText": "тоді L",
+      "recentMessages": [
+        { "role": "assistant", "text": "На жаль, XL немає. Доступні: S, M, L 💛" }
+      ],
+      "memory": {
+        "lastAction": "told_variant_not_available",
+        "selectionState": "awaiting_confirmation",
+        "selectedProductId": "p1",
+        "selectedProductTitle": "Джинси МОМ світлі",
+        "availableVariants": [
+          { "id": "v-s", "name": "S", "size": "S", "color": null },
+          { "id": "v-m", "name": "M", "size": "M", "color": null },
+          { "id": "v-l", "name": "L", "size": "L", "color": null }
+        ]
+      }
+    },
+    "expect": { "slotAction": "fills_missing_slot", "entities": { "size": "L" } }
+  },
+  {
+    "id": "alt_pick_davayte_L",
+    "description": "\"давайте L\" = give me L.",
+    "params": {
+      "messageText": "давайте L",
+      "recentMessages": [
+        { "role": "assistant", "text": "На жаль, XL немає. Доступні: S, M, L 💛" }
+      ],
+      "memory": {
+        "lastAction": "told_variant_not_available",
+        "selectionState": "awaiting_confirmation",
+        "selectedProductId": "p1",
+        "availableVariants": [
+          { "id": "v-s", "name": "S", "size": "S", "color": null },
+          { "id": "v-l", "name": "L", "size": "L", "color": null }
+        ]
+      }
+    },
+    "expect": { "slotAction": "fills_missing_slot", "entities": { "size": "L" } }
+  },
+  {
+    "id": "alt_pick_hay_bude_S",
+    "description": "\"ну хай буде S\" = fine, let it be S.",
+    "params": {
+      "messageText": "ну хай буде S",
+      "recentMessages": [
+        { "role": "assistant", "text": "На жаль, XL немає. Доступні: S, M, L 💛" }
+      ],
+      "memory": {
+        "lastAction": "told_variant_not_available",
+        "selectionState": "awaiting_confirmation",
+        "selectedProductId": "p1",
+        "availableVariants": [
+          { "id": "v-s", "name": "S", "size": "S", "color": null },
+          { "id": "v-l", "name": "L", "size": "L", "color": null }
+        ]
+      }
+    },
+    "expect": { "slotAction": "fills_missing_slot", "entities": { "size": "S" } }
+  },
+  {
+    "id": "alt_pick_L_ru",
+    "description": "Russian statement pick \"L подойдёт\".",
+    "params": {
+      "messageText": "L подойдёт",
+      "recentMessages": [
+        { "role": "assistant", "text": "На жаль, XL немає. Доступні: S, M, L 💛" }
+      ],
+      "memory": {
+        "lastAction": "told_variant_not_available",
+        "selectionState": "awaiting_confirmation",
+        "selectedProductId": "p1",
+        "availableVariants": [
+          { "id": "v-s", "name": "S", "size": "S", "color": null },
+          { "id": "v-l", "name": "L", "size": "L", "color": null }
+        ]
+      }
+    },
+    "expect": { "slotAction": "fills_missing_slot", "entities": { "size": "L" } }
+  },
+  {
+    "id": "alt_pick_M_ru",
+    "description": "Russian \"тогда возьму M\".",
+    "params": {
+      "messageText": "тогда возьму M",
+      "recentMessages": [
+        { "role": "assistant", "text": "На жаль, XL немає. Доступні: S, M, L 💛" }
+      ],
+      "memory": {
+        "lastAction": "told_variant_not_available",
+        "selectionState": "awaiting_confirmation",
+        "selectedProductId": "p1",
+        "availableVariants": [
+          { "id": "v-m", "name": "M", "size": "M", "color": null },
+          { "id": "v-l", "name": "L", "size": "L", "color": null }
+        ]
+      }
+    },
+    "expect": { "slotAction": "fills_missing_slot", "entities": { "size": "M" } }
+  },
+  {
+    "id": "alt_fit_question_L",
+    "description": "Fit QUESTION with '?' — must NOT be a pick; size still extracted.",
+    "params": {
+      "messageText": "L підійде?",
+      "recentMessages": [
+        { "role": "assistant", "text": "На жаль, XL немає. Доступні: S, M, L 💛" }
+      ],
+      "memory": {
+        "lastAction": "told_variant_not_available",
+        "selectionState": "awaiting_confirmation",
+        "selectedProductId": "p1",
+        "availableVariants": [
+          { "id": "v-l", "name": "L", "size": "L", "color": null }
+        ]
+      }
+    },
+    "expect": { "slotAction": "asks_question", "primaryIntent": "ask_recommendation", "entities": { "size": "L" } }
+  },
+  {
+    "id": "alt_fit_question_a_L",
+    "description": "\"а L мені підійде?\" fit check.",
+    "params": {
+      "messageText": "а L мені підійде?",
+      "recentMessages": [
+        { "role": "assistant", "text": "На жаль, XL немає. Доступні: S, M, L 💛" }
+      ],
+      "memory": {
+        "lastAction": "told_variant_not_available",
+        "selectionState": "awaiting_confirmation",
+        "selectedProductId": "p1",
+        "availableVariants": [{ "id": "v-l", "name": "L", "size": "L", "color": null }]
+      }
+    },
+    "expect": { "slotAction": "asks_question", "primaryIntent": "ask_recommendation", "entities": { "size": "L" } }
+  },
+  {
+    "id": "alt_fit_question_zavelykym",
+    "description": "\"чи не буде L завеликим?\" — will L be too big?",
+    "params": {
+      "messageText": "чи не буде L завеликим?",
+      "recentMessages": [
+        { "role": "assistant", "text": "На жаль, XL немає. Доступні: S, M, L 💛" }
+      ],
+      "memory": {
+        "lastAction": "told_variant_not_available",
+        "selectionState": "awaiting_confirmation",
+        "selectedProductId": "p1",
+        "availableVariants": [{ "id": "v-l", "name": "L", "size": "L", "color": null }]
+      }
+    },
+    "expect": { "slotAction": "asks_question", "primaryIntent": "ask_recommendation", "entities": { "size": "L" } }
+  },
+  {
+    "id": "alt_fit_question_L_ru",
+    "description": "Russian fit question \"L подойдёт?\".",
+    "params": {
+      "messageText": "L подойдёт?",
+      "recentMessages": [
+        { "role": "assistant", "text": "На жаль, XL немає. Доступні: S, M, L 💛" }
+      ],
+      "memory": {
+        "lastAction": "told_variant_not_available",
+        "selectionState": "awaiting_confirmation",
+        "selectedProductId": "p1",
+        "availableVariants": [{ "id": "v-l", "name": "L", "size": "L", "color": null }]
+      }
+    },
+    "expect": { "slotAction": "asks_question", "primaryIntent": "ask_recommendation", "entities": { "size": "L" } }
+  },
+  {
+    "id": "alt_decline",
+    "description": "Pure decline after alternatives.",
+    "params": {
+      "messageText": "ні, не треба",
+      "recentMessages": [
+        { "role": "assistant", "text": "На жаль, XL немає. Доступні: S, M, L 💛" }
+      ],
+      "memory": {
+        "lastAction": "told_variant_not_available",
+        "selectionState": "awaiting_confirmation",
+        "selectedProductId": "p1",
+        "availableVariants": [{ "id": "v-l", "name": "L", "size": "L", "color": null }]
+      }
+    },
+    "expect": { "slotAction": "rejection" }
+  },
+  {
+    "id": "alt_ask_unlisted_size",
+    "description": "Asks for a size NOT in the offered list → availability_check.",
+    "params": {
+      "messageText": "а 46 є?",
+      "recentMessages": [
+        { "role": "assistant", "text": "На жаль, XL немає. Доступні: S, M, L 💛" }
+      ],
+      "memory": {
+        "lastAction": "told_variant_not_available",
+        "selectionState": "awaiting_confirmation",
+        "selectedProductId": "p1",
+        "availableVariants": [{ "id": "v-l", "name": "L", "size": "L", "color": null }]
+      }
+    },
+    "expect": { "primaryIntent": "availability_check", "entities": { "size": "46" } }
+  },
+  {
+    "id": "compound_size_fit_ru",
+    "description": "\"У меня хл размер. Они полномерные?\" — size half must survive, normalized to XL.",
+    "params": {
+      "messageText": "У меня хл размер. Они полномерные?",
+      "recentMessages": [
+        { "role": "assistant", "text": "Ціна на Сорочка з льону — 1599 грн 💛\nВ наявності: S, M, L\nЯкий обираєте?" }
+      ],
+      "memory": {
+        "lastAction": "asked_variant",
+        "selectionState": "awaiting_variant",
+        "selectedProductId": "p2",
+        "selectedProductTitle": "Сорочка з льону",
+        "availableVariants": [
+          { "id": "v-s", "name": "S", "size": "S", "color": null },
+          { "id": "v-m", "name": "M", "size": "M", "color": null },
+          { "id": "v-l", "name": "L", "size": "L", "color": null }
+        ]
+      }
+    },
+    "expect": { "slotAction": "asks_question", "entities": { "size": "XL" } }
+  },
+  {
+    "id": "leak_bare_M_no_category",
+    "description": "Bare M while awaiting variant, history mentions Сорочки — category must NOT leak.",
+    "params": {
+      "messageText": "M",
+      "recentMessages": [
+        { "role": "user", "text": "Покажіть сорочки" },
+        { "role": "assistant", "text": "Ось Сорочка з льону. Який розмір?" }
+      ],
+      "memory": {
+        "lastAction": "asked_variant",
+        "selectionState": "awaiting_variant",
+        "selectedCategory": "Сорочки",
+        "selectedProductId": "p2",
+        "availableVariants": [
+          { "id": "v-s", "name": "S", "size": "S", "color": null },
+          { "id": "v-m", "name": "M", "size": "M", "color": null }
+        ]
+      }
+    },
+    "expect": { "slotAction": "fills_missing_slot", "entities": { "size": "M", "category": null } }
+  },
+  {
+    "id": "leak_product_switch",
+    "description": "New product mid-conversation — prior color/size/name must NOT carry.",
+    "params": {
+      "messageText": "Хочу замовити джинси",
+      "recentMessages": [
+        { "role": "user", "text": "Ханас Олександр, 0991234567, Київ, НП 5" },
+        { "role": "assistant", "text": "Біла футболка (S) — додано 💛" }
+      ],
+      "memory": {
+        "lastAction": "confirmed_product",
+        "selectionState": "awaiting_confirmation",
+        "selectedProductId": "tshirt",
+        "selectedProductTitle": "Футболка базова",
+        "selectedColor": "білий",
+        "selectedSize": "S"
+      }
+    },
+    "expect": { "entities": { "color": null, "size": null, "customerName": null, "phone": null } }
+  },
+  {
+    "id": "offer_accept_help",
+    "description": "Pending offer accept with size-help wording.",
+    "params": {
+      "messageText": "так, допоможіть",
+      "recentMessages": [
+        { "role": "assistant", "text": "Хочете, допоможу з розміром? 💛" }
+      ],
+      "memory": {
+        "lastAction": "show_products",
+        "awaitingPreQualifyAnswer": true,
+        "shouldOfferSizeHelp": true
+      }
+    },
+    "expect": { "slotAction": "confirmation" }
+  },
+  {
+    "id": "offer_decline",
+    "description": "Pending offer decline.",
+    "params": {
+      "messageText": "ні, дякую",
+      "recentMessages": [
+        { "role": "assistant", "text": "Хочете, допоможу з розміром? 💛" }
+      ],
+      "memory": {
+        "lastAction": "show_products",
+        "awaitingPreQualifyAnswer": true,
+        "shouldOfferSizeHelp": true
+      }
+    },
+    "expect": { "slotAction": "rejection" }
+  },
+  {
+    "id": "offer_accept_dopomozhit_rozmirom",
+    "description": "\"допоможіть з розміром\" as an offer accept (not a fresh recommendation).",
+    "params": {
+      "messageText": "допоможіть з розміром",
+      "recentMessages": [
+        { "role": "assistant", "text": "Хочете, допоможу з розміром? 💛" }
+      ],
+      "memory": {
+        "lastAction": "show_products",
+        "awaitingPreQualifyAnswer": true,
+        "shouldOfferSizeHelp": true
+      }
+    },
+    "expect": { "slotAction": "confirmation" }
+  },
+  {
+    "id": "awaiting_variant_bare_color",
+    "description": "Bare color while awaiting variant.",
+    "params": {
+      "messageText": "Білий",
+      "recentMessages": [
+        { "role": "assistant", "text": "Є в кольорах: Білий, Чорний. Який обираєте?" }
+      ],
+      "memory": {
+        "lastAction": "asked_variant",
+        "selectionState": "awaiting_variant",
+        "selectedProductId": "p3",
+        "availableVariants": [
+          { "id": "v-w", "name": "Білий", "size": null, "color": "білий" },
+          { "id": "v-b", "name": "Чорний", "size": null, "color": "чорний" }
+        ]
+      }
+    },
+    "expect": { "slotAction": "fills_missing_slot", "entities": { "color": "білий" } }
+  },
+  {
+    "id": "awaiting_variant_color_accusative",
+    "description": "Accusative color \"чорну\" normalized to nominative \"чорний\".",
+    "params": {
+      "messageText": "чорну",
+      "recentMessages": [
+        { "role": "assistant", "text": "Є в кольорах: Білий, Чорний. Який обираєте?" }
+      ],
+      "memory": {
+        "lastAction": "asked_variant",
+        "selectionState": "awaiting_variant",
+        "selectedProductId": "p3",
+        "availableVariants": [
+          { "id": "v-w", "name": "Білий", "size": null, "color": "білий" },
+          { "id": "v-b", "name": "Чорний", "size": null, "color": "чорний" }
+        ]
+      }
+    },
+    "expect": { "slotAction": "fills_missing_slot", "entities": { "color": "чорний" } }
+  },
+  {
+    "id": "chart_fit_question_L",
+    "description": "Fit question right after the size chart was sent.",
+    "params": {
+      "messageText": "L підійде?",
+      "recentMessages": [
+        { "role": "user", "text": "розмірна сітка" },
+        { "role": "assistant", "text": "Ось наша розмірна сітка 💛" }
+      ],
+      "memory": {
+        "lastAction": "told_variant_not_available",
+        "sizeChartJustSent": true,
+        "selectionState": "awaiting_confirmation",
+        "selectedProductId": "p1",
+        "availableVariants": [{ "id": "v-l", "name": "L", "size": "L", "color": null }]
+      }
+    },
+    "expect": { "slotAction": "asks_question", "primaryIntent": "ask_recommendation", "entities": { "size": "L" } }
+  },
+  {
+    "id": "chart_measurements",
+    "description": "Measurements after chart → recommendation.",
+    "params": {
+      "messageText": "зріст 170, вага 60",
+      "recentMessages": [
+        { "role": "assistant", "text": "Ось наша розмірна сітка 💛" }
+      ],
+      "memory": {
+        "lastAction": "asked_variant",
+        "sizeChartJustSent": true,
+        "selectionState": "awaiting_variant",
+        "selectedProductId": "p1"
+      }
+    },
+    "expect": { "primaryIntent": "ask_recommendation" }
+  },
+  {
+    "id": "chart_then_pick",
+    "description": "Size pick after chart shown.",
+    "params": {
+      "messageText": "беру L",
+      "recentMessages": [
+        { "role": "assistant", "text": "Ось наша розмірна сітка 💛\n\nВ наявності: S, M, L. Який вам підходить?" }
+      ],
+      "memory": {
+        "lastAction": "asked_variant",
+        "sizeChartJustSent": true,
+        "selectionState": "awaiting_variant",
+        "selectedProductId": "p1",
+        "availableVariants": [
+          { "id": "v-s", "name": "S", "size": "S", "color": null },
+          { "id": "v-l", "name": "L", "size": "L", "color": null }
+        ]
+      }
+    },
+    "expect": { "slotAction": "fills_missing_slot", "entities": { "size": "L" } }
+  },
+  {
+    "id": "clean_pure_confirmation",
+    "description": "Regression guard: bare 'так' stays a pure confirmation.",
+    "params": {
+      "messageText": "так",
+      "recentMessages": [
+        { "role": "assistant", "text": "Джинси МОМ світлі (L), 1499 грн — оформлюємо? 💛" }
+      ],
+      "memory": {
+        "lastAction": "confirmed_product",
+        "selectionState": "awaiting_confirmation",
+        "selectedProductId": "p1",
+        "selectedVariantName": "L"
+      }
+    },
+    "expect": { "slotAction": "confirmation" }
+  },
+  {
+    "id": "clean_ask_price",
+    "description": "Regression guard: price question stays a question.",
+    "params": {
+      "messageText": "скільки коштує?",
+      "recentMessages": [
+        { "role": "assistant", "text": "Ось Джинси МОМ світлі 💛" }
+      ],
+      "memory": {
+        "lastAction": "show_products",
+        "selectionState": "awaiting_product",
+        "selectedProductId": "p1"
+      }
+    },
+    "expect": { "slotAction": "asks_question" }
+  }
+]

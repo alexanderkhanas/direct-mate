@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   NotFoundException,
   Param,
@@ -107,6 +108,50 @@ export class TestingController {
       results.push({ scenario: key, name: scenario.name, tenantId: scenario.tenantId, turns });
     }
     return results;
+  }
+
+  // ─── Live DM console (superadmin only) ────────────────────────
+  //
+  // Reproduces Instagram DMs against the logged-in tenant by driving the
+  // reply engine directly — no Meta webhook, no outbound send. Gated to
+  // superadmin because it writes to a real (sim) conversation and exposes
+  // raw engine internals.
+
+  @Post('simulator/live/message')
+  async sendLiveMessage(
+    @Body() body: { text: string; mediaReference?: { mediaId: string; type: string } },
+    @CurrentUser() user: JwtPayload,
+  ) {
+    this.assertSuperadmin(user);
+    return this.simulatorService.sendLiveMessage(user.tenantId, {
+      text: body.text ?? '',
+      mediaReference: body.mediaReference,
+    });
+  }
+
+  @Post('simulator/live/reset')
+  async resetLive(@CurrentUser() user: JwtPayload) {
+    this.assertSuperadmin(user);
+    await this.simulatorService.resetLiveConversation(user.tenantId);
+    return { ok: true };
+  }
+
+  @Get('simulator/live')
+  async getLive(@CurrentUser() user: JwtPayload) {
+    this.assertSuperadmin(user);
+    return this.simulatorService.getLiveConversation(user.tenantId);
+  }
+
+  @Get('simulator/live/media')
+  async getLiveMedia(@CurrentUser() user: JwtPayload) {
+    this.assertSuperadmin(user);
+    return this.simulatorService.listLinkedMedia(user.tenantId);
+  }
+
+  private assertSuperadmin(user: JwtPayload): void {
+    if (user.role !== 'superadmin') {
+      throw new ForbiddenException('Live DM console is superadmin-only');
+    }
   }
 
   /**

@@ -813,7 +813,22 @@ export class TemplateEngineService {
 
       if (!vars['variant_name'] && userVariantInput) {
         const inStockVariants = first.variants.filter((v) => v.effectiveAvailable > 0);
-        const match = this.matchVariant(userVariantInput, inStockVariants);
+        // Size axis is exact-only. `matchVariant`'s contains/word/Levenshtein
+        // strategies would fuzzy "XL" onto "L" (`"xl".includes("l")`,
+        // levenshtein=1) and latch the wrong SKU. A size token must match a
+        // real in-stock size exactly; otherwise leave variant_name unset so
+        // routing falls to variant_not_available / ask_variant_choice.
+        const isSizeInput = !userColor && !!userSize;
+        const sizeInStock =
+          !isSizeInput ||
+          inStockVariants.some(
+            (v) =>
+              v.size &&
+              v.size.toLowerCase().trim() === userSize.toLowerCase().trim(),
+          );
+        const match = sizeInStock
+          ? this.matchVariant(userVariantInput, inStockVariants)
+          : null;
         if (match) {
           const variantDetail = [localizeColor(match.variant.color), match.variant.size].filter(Boolean).join(', ');
           vars['variant_name'] = variantDetail;
