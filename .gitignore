@@ -75,3 +75,6 @@ uploads/
 # Local-only notes (prod access, secrets-adjacent) — never commit
 PROD_ACCESS.local.md
 *.local.md
+
+# Simulator flow_config override backups (crash-recovery; auto-cleared on next run)
+apps/api/.simulator-backups/

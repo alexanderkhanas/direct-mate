@@ -48,6 +48,101 @@ const SIM_CUSTOMER_EXTERNAL_ID = 'sim-customer-001';
 const SIM_CHANNEL = 'instagram';
 const SIM_CHANNEL_ACCOUNT_ID = 'sim-channel';
 
+// ─── flow_config override safety (SIMULATOR-ONLY) ────────────────
+//
+// `flowConfigOverride` mutates a REAL store_configs row for the duration of a
+// scenario. If the process dies before the restore runs, the tenant is left
+// permanently misconfigured and nothing detects it: demo-women-clothes sat with
+// preQualify disabled (and preQualify.fields / .prompt deleted outright by the
+// shallow merge) until a config audit turned it up, and the only symptom was a
+// handful of scenarios failing in ways that looked like classifier noise.
+//
+// A `finally` block cannot fix this — SIGKILL, an OOM kill and a hard crash all
+// skip it. So recovery must not depend on the dying process: the pre-mutation
+// value is written to disk FIRST, and the next simulator boot replays any
+// backup it finds. Everything here is confined to this script; no engine or
+// production code path knows about flow_config overrides.
+
+const FLOW_CONFIG_BACKUP_DIR = path.join(process.cwd(), '.simulator-backups');
+
+const backupPathFor = (tenantId: string): string =>
+  path.join(FLOW_CONFIG_BACKUP_DIR, `flow-config-${tenantId}.json`);
+
+function writeFlowConfigBackup(
+  tenantId: string,
+  original: Record<string, unknown>,
+): void {
+  fs.mkdirSync(FLOW_CONFIG_BACKUP_DIR, { recursive: true });
+  // Write-then-rename so a crash mid-write can't leave a truncated backup that
+  // would then be replayed as if it were the real config.
+  const tmp = `${backupPathFor(tenantId)}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ tenantId, flowConfig: original }, null, 2));
+  fs.renameSync(tmp, backupPathFor(tenantId));
+}
+
+function clearFlowConfigBackup(tenantId: string): void {
+  try {
+    fs.unlinkSync(backupPathFor(tenantId));
+  } catch {
+    /* already gone — nothing to do */
+  }
+}
+
+/**
+ * Self-heal. Runs before any scenario: if a previous run died holding an
+ * override, its backup is still on disk — replay it and clear it. Idempotent,
+ * so a clean run is a no-op.
+ */
+async function restoreLeakedFlowConfigs(dataSource: DataSource): Promise<void> {
+  if (!fs.existsSync(FLOW_CONFIG_BACKUP_DIR)) return;
+  const files = fs
+    .readdirSync(FLOW_CONFIG_BACKUP_DIR)
+    .filter((f) => f.startsWith('flow-config-') && f.endsWith('.json'));
+  if (files.length === 0) return;
+
+  for (const file of files) {
+    const full = path.join(FLOW_CONFIG_BACKUP_DIR, file);
+    try {
+      const { tenantId, flowConfig } = JSON.parse(fs.readFileSync(full, 'utf8'));
+      await dataSource.query(
+        `UPDATE store_configs SET flow_config = $1 WHERE tenant_id = $2`,
+        [JSON.stringify(flowConfig ?? {}), tenantId],
+      );
+      fs.unlinkSync(full);
+      console.log(
+        `${c.yellow}⚠ Recovered leaked flow_config override for tenant ${String(tenantId).slice(0, 8)}… ` +
+          `(a previous run was killed before it could restore). Config reverted.${c.reset}`,
+      );
+    } catch (err) {
+      console.error(
+        `${c.red}Failed to replay flow_config backup ${file}: ${(err as Error).message}${c.reset}`,
+      );
+    }
+  }
+}
+
+/** Deep merge — a shallow spread would replace whole nested objects. */
+function deepMerge(
+  base: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...base };
+  for (const [k, v] of Object.entries(patch)) {
+    const prev = out[k];
+    const bothPlainObjects =
+      v !== null &&
+      typeof v === 'object' &&
+      !Array.isArray(v) &&
+      prev !== null &&
+      typeof prev === 'object' &&
+      !Array.isArray(prev);
+    out[k] = bothPlainObjects
+      ? deepMerge(prev as Record<string, unknown>, v as Record<string, unknown>)
+      : v;
+  }
+  return out;
+}
+
 // ─── CLI args ────────────────────────────────────────────────────
 
 interface CliArgs {
@@ -472,18 +567,44 @@ class ConversationSimulator {
         [scenario.tenantId],
       );
     const original = rows[0]?.flow_config ?? {};
-    const merged = { ...original, ...scenario.flowConfigOverride };
+
+    // Durable backup BEFORE mutating. The in-process `finally` and the signal
+    // handlers both fail on SIGKILL / OOM / power loss, and a lost restore
+    // leaves the tenant permanently misconfigured with NOTHING to detect it —
+    // demo-women-clothes silently ran for weeks with preQualify disabled
+    // because a killed run never restored it, and the only symptom was a
+    // handful of scenarios failing for reasons that looked like model noise.
+    // Recovery therefore must not depend on this process surviving:
+    // `restoreLeakedFlowConfigs()` replays this file on the next boot.
+    writeFlowConfigBackup(scenario.tenantId, original);
+
+    // DEEP merge. A shallow spread replaces whole nested objects: an override
+    // of `{preQualify: {enabled: true}}` silently DELETED preQualify.fields and
+    // preQualify.prompt, which is how the corruption above got its teeth.
+    const merged = deepMerge(original, scenario.flowConfigOverride);
     await this.dataSource.query(
       `UPDATE store_configs SET flow_config = $1 WHERE tenant_id = $2`,
       [JSON.stringify(merged), scenario.tenantId],
     );
-    return async () => {
+
+    const restore = async () => {
       await this.dataSource.query(
         `UPDATE store_configs SET flow_config = $1 WHERE tenant_id = $2`,
         [JSON.stringify(original), scenario.tenantId],
       );
+      clearFlowConfigBackup(scenario.tenantId);
+    };
+    // Ctrl-C / kill: restore before dying. Registered per-scenario and removed
+    // by the `finally`, so a normal run leaves no listeners behind.
+    ConversationSimulator.pendingRestores.add(restore);
+    return async () => {
+      ConversationSimulator.pendingRestores.delete(restore);
+      await restore();
     };
   }
+
+  /** Restores still armed for the scenario in flight; drained on SIGINT/SIGTERM. */
+  static readonly pendingRestores = new Set<() => Promise<void>>();
 
   private printHeader(scenario: SimulatorScenario, conversationId: string): void {
     console.log('');
@@ -696,6 +817,29 @@ async function main(): Promise<void> {
   const replyEngine = app.get(ReplyEngineService);
   const conversationsService = app.get(ConversationsService);
   const dataSource = app.get(DataSource);
+
+  // Self-heal first: a previous run may have been killed while holding a
+  // flow_config override. Replaying its on-disk backup is the only recovery
+  // that survives SIGKILL, so it must happen before any scenario reads config.
+  await restoreLeakedFlowConfigs(dataSource);
+
+  // Ctrl-C / kill -TERM: put the tenant back before dying. This is the polite
+  // path; the backup file above is what covers the impolite ones.
+  let shuttingDown = false;
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.on(signal, () => {
+      if (shuttingDown) return; // a second Ctrl-C should not race the restore
+      shuttingDown = true;
+      const pending = [...ConversationSimulator.pendingRestores];
+      if (pending.length === 0) process.exit(130);
+      console.log(
+        `\n${c.yellow}${signal} — restoring ${pending.length} flow_config override(s) before exit…${c.reset}`,
+      );
+      Promise.allSettled(pending.map((r) => r()))
+        .then(() => process.exit(130))
+        .catch(() => process.exit(130));
+    });
+  }
 
   const simulator = new ConversationSimulator(replyEngine, conversationsService, dataSource);
 
