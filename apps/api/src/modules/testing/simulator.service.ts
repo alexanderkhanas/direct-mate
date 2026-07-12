@@ -156,6 +156,7 @@ export class SimulatorService {
       let result: ReplyEngineOutput;
       try {
         result = await this.replyEngine.process({
+          source: 'simulator_scenario',
           tenantId: scenario.tenantId,
           conversationId: conversation.id,
           messageText: combinedText,
@@ -303,6 +304,7 @@ export class SimulatorService {
     }
 
     const result = await this.replyEngine.process({
+      source: 'live_console',
       tenantId,
       conversationId: conversation.id,
       messageText: text,

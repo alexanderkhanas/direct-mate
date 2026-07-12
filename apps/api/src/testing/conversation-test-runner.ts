@@ -188,6 +188,7 @@ export class ConversationTestRunner {
         let result: ReplyEngineOutput;
         try {
           result = await this.replyEngine.process({
+            source: 'conversation_test',
             tenantId: TEST_TENANT_ID,
             conversationId: conversation.id,
             messageText: msg.customer,
@@ -355,6 +356,7 @@ export class ConversationTestRunner {
         let result: ReplyEngineOutput;
         try {
           result = await this.replyEngine.process({
+            source: 'conversation_test',
             tenantId: TEST_TENANT_ID,
             conversationId: conversation.id,
             messageText: msg.customer,

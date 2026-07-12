@@ -36,6 +36,39 @@ export interface OpenAiCallRecord {
   source?: string;
 }
 
+/**
+ * Where the turn came from. Every caller of `ReplyEngineService.process()`
+ * sets this, so a trace can never be mistaken for one produced by a different
+ * environment.
+ *
+ * This exists because it bit us: the Live DM console's media toggle stayed
+ * armed after each send, so it attached a story reference to EVERY message.
+ * Real Instagram sets `reply_to.story` only on the one message that replies to
+ * a story (`instagram.service.ts` extractMediaReference), so the resulting
+ * traces looked like a production Instagram bug that the webhook cannot
+ * actually produce — and were diagnosed as one. Tag the origin and the
+ * question "could a real DM do this?" is answerable from the row itself.
+ */
+export type TraceSource =
+  /** Real inbound Instagram DM via the webhook. The only production traffic. */
+  | 'instagram'
+  /** Instagram learning-mode dry run — engine ran, nothing was sent. */
+  | 'instagram_dry_run'
+  /** Admin → Simulator page → Live DM console (hand-typed, media optional). */
+  | 'live_console'
+  /** Admin → Simulator page → a predefined scenario run. */
+  | 'simulator_scenario'
+  /** `npm run simulate` from the CLI. */
+  | 'simulator_cli'
+  /** Public marketing demo widget. */
+  | 'demo_widget'
+  /** Conversation-test-runner fixtures. */
+  | 'conversation_test'
+  /** Manual replay/re-drive through the conversations API. */
+  | 'manual_api'
+  /** Caller didn't say — pre-migration rows, or a new call site that forgot. */
+  | 'unknown';
+
 @Entity('conversation_traces')
 export class ConversationTrace {
   @PrimaryGeneratedColumn('uuid')
@@ -44,6 +77,14 @@ export class ConversationTrace {
   @Index()
   @Column({ type: 'uuid' })
   traceId!: string;
+
+  /**
+   * Origin of the turn. Indexed: the first thing you do when triaging a trace
+   * is establish whether it came from real traffic or from a test tool.
+   */
+  @Index()
+  @Column({ type: 'text', default: 'unknown' })
+  source!: TraceSource;
 
   @Index()
   @Column({ type: 'uuid' })

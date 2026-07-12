@@ -703,6 +703,7 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
       // for end-to-end debugging in the admin UI.
       const traceId = crypto.randomUUID();
       const result = await this.replyEngineService.process({
+        source: 'instagram',
         tenantId: params.tenantId,
         conversationId: conversation.id,
         messageText: params.messageText,
@@ -873,6 +874,7 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
       .map((m) => ({ role: m.role, text: m.text }));
 
     const dryRun = await this.replyEngineService.process({
+      source: 'instagram_dry_run',
       tenantId,
       conversationId,
       messageText,

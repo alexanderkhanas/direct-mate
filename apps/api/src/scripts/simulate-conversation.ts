@@ -439,6 +439,7 @@ class ConversationSimulator {
       let result: ReplyEngineOutput;
       try {
         result = await this.replyEngine.process({
+          source: 'simulator_cli',
           tenantId: scenario.tenantId,
           conversationId: conversation.id,
           messageText: combinedText,

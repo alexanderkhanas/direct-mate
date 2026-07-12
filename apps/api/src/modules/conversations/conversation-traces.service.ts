@@ -6,10 +6,13 @@ import {
   ConversationTraceError,
   ConversationTraceStageTimings,
   OpenAiCallRecord,
+  TraceSource,
 } from './entities/conversation-trace.entity';
 
 export interface PersistTraceInput {
   traceId: string;
+  /** Environment that produced this turn. See TraceSource. */
+  source: TraceSource;
   tenantId: string;
   conversationId: string | null;
   customerId: string | null;
@@ -66,6 +69,7 @@ export class ConversationTracesService {
 
       await this.repo.insert({
         traceId: input.traceId,
+        source: input.source,
         tenantId: input.tenantId,
         conversationId: input.conversationId,
         customerId: input.customerId,

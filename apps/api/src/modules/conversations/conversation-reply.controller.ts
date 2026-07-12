@@ -45,6 +45,7 @@ export class ConversationReplyController {
       .map((m) => ({ role: m.role, text: m.text }));
 
     const result = await this.replyEngineService.process({
+      source: 'manual_api',
       tenantId: dto.tenantId,
       conversationId: conversation.id,
       messageText: dto.messageText,

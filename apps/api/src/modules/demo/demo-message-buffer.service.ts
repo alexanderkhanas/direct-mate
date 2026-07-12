@@ -231,6 +231,7 @@ export class DemoMessageBufferService implements OnModuleDestroy {
       }
 
       const result = await this.replyEngineService.process({
+        source: 'demo_widget',
         tenantId: entry.tenantId,
         conversationId: entry.conversationId,
         messageText: combinedText,

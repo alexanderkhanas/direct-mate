@@ -35,7 +35,10 @@ import { OrderPayload } from '../orders/interfaces/order-payload.interface';
 import { InstagramContentService } from '../channels/instagram/instagram-content.service';
 import { SizeChartsService } from '../size-charts/size-charts.service';
 import { ConversationTracesService } from './conversation-traces.service';
-import type { OpenAiCallRecord } from './entities/conversation-trace.entity';
+import type {
+  OpenAiCallRecord,
+  TraceSource,
+} from './entities/conversation-trace.entity';
 import { randomUUID } from 'crypto';
 
 // ─── Public interfaces ───────────────────────────────────────────
@@ -55,6 +58,13 @@ export interface ReplyEngineInput {
    * inside `process()` if absent).
    */
   traceId?: string;
+  /**
+   * Which environment is driving the engine. Persisted on the trace row so a
+   * trace can never be mistaken for production traffic when it came from a
+   * test tool — see `TraceSource`. Every caller should set it; omitting it
+   * records 'unknown' rather than silently claiming to be Instagram.
+   */
+  source?: TraceSource;
 }
 
 export interface ReplyEngineOutput {
@@ -455,6 +465,9 @@ export class ReplyEngineService {
 
       await this.tracesService.persist({
         traceId,
+        // Default to 'unknown', never 'instagram'. A caller that forgets to
+        // identify itself must not have its traces read as production traffic.
+        source: input.source ?? 'unknown',
         tenantId: input.tenantId,
         conversationId: input.conversationId,
         customerId: null,
