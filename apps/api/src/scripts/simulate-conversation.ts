@@ -56,6 +56,7 @@ interface CliArgs {
   all: boolean;
   tenant: string | null;
   message: string | null;
+  out: string | null;
 }
 
 function parseArgs(): CliArgs {
@@ -66,6 +67,7 @@ function parseArgs(): CliArgs {
     all: false,
     tenant: null,
     message: null,
+    out: null,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -81,6 +83,9 @@ function parseArgs(): CliArgs {
       i++;
     } else if (args[i] === '--message' && args[i + 1]) {
       result.message = args[i + 1];
+      i++;
+    } else if (args[i] === '--out' && args[i + 1]) {
+      result.out = args[i + 1];
       i++;
     }
   }
@@ -181,7 +186,13 @@ function runAssertions(
       if (s.selectedProductId === null) push('state.selectedProductId', !memory.selectedProductId, null, memory.selectedProductId);
       else push('state.selectedProductId', memory.selectedProductId === s.selectedProductId, s.selectedProductId, memory.selectedProductId);
     }
-    if (s.selectedVariantName !== undefined) push('state.selectedVariantName', memory.selectedVariantName === s.selectedVariantName, s.selectedVariantName, memory.selectedVariantName);
+    if (s.selectedVariantName !== undefined) {
+      // `null` means "unset" — the engine leaves the field `undefined` rather
+      // than nulling it, so a strict === would fail an assertion that is
+      // actually satisfied. Same semantics as selectedProductId / variantStep.
+      if (s.selectedVariantName === null) push('state.selectedVariantName', !memory.selectedVariantName, null, memory.selectedVariantName);
+      else push('state.selectedVariantName', memory.selectedVariantName === s.selectedVariantName, s.selectedVariantName, memory.selectedVariantName);
+    }
     if (s.selectedColor !== undefined) push('state.selectedColor', memory.selectedColor === s.selectedColor, s.selectedColor, memory.selectedColor);
     if (s.selectedSize !== undefined) push('state.selectedSize', memory.selectedSize === s.selectedSize, s.selectedSize, memory.selectedSize);
     if (s.variantStep !== undefined) {
@@ -748,7 +759,7 @@ async function main(): Promise<void> {
   // separate counter and DO NOT cause non-zero exit — they're best-effort
   // tests of LLM-extraction robustness, not engine-flow correctness.
   let gatingFailingScenarios = 0;
-  if (args.all) {
+  if (args.all || args.tenant) {
     let totalAssertions = 0;
     let gatingFailed = 0;
     let flakyFailed = 0;
@@ -784,8 +795,10 @@ async function main(): Promise<void> {
 
   // Save JSON log
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const scenarioLabel = args.all ? 'all' : args.scenario!;
-  const logFile = path.join(process.cwd(), `simulator-output-${scenarioLabel}-${timestamp}.json`);
+  const scenarioLabel = args.all ? 'all' : (args.scenario ?? args.tenant ?? 'run');
+  const logFile = args.out
+    ? path.resolve(args.out)
+    : path.join(process.cwd(), `simulator-output-${scenarioLabel}-${timestamp}.json`);
   fs.writeFileSync(logFile, JSON.stringify(jsonOutput, null, 2));
   console.log(`\n${c.dim}Log saved: ${logFile}${c.reset}`);
 

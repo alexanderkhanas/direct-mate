@@ -33,7 +33,15 @@ export default () => ({
     model: process.env.OPENAI_MODEL ?? 'gpt-5.4',
     // Used by ClassifierService — every turn, entity extraction + intent
     // routing. Fast and cheap; gpt-5.4-mini handles this well.
-    classifierModel: process.env.OPENAI_CLASSIFIER_MODEL ?? 'gpt-5.4-mini',
+    //
+    // CLASSIFIER_MODEL is the provider-neutral name and wins when set: the
+    // classifier routes by model id, so `claude-*` sends the call to
+    // Anthropic and anything else to OpenAI. OPENAI_CLASSIFIER_MODEL stays
+    // as the legacy alias so existing scripts keep working.
+    classifierModel:
+      process.env.CLASSIFIER_MODEL ??
+      process.env.OPENAI_CLASSIFIER_MODEL ??
+      'gpt-5.4-mini',
     // Used by InstagramContentService (vision matching) and
     // ScreenshotExtractionService. Vision tasks need a stronger model.
     visionModel: process.env.OPENAI_VISION_MODEL ?? 'gpt-4o',
@@ -43,6 +51,12 @@ export default () => ({
     // shutdown Jul 23 2026; gpt-5.4 (the main model) replaces it before
     // the API shutdown wave reaches the full 4.1.
     fallbackModel: process.env.OPENAI_FALLBACK_MODEL ?? 'gpt-5.4',
+  },
+  anthropic: {
+    // Only used when the resolved classifier model is a `claude-*` id.
+    // Absent key + claude model = hard error at call time, by design: a
+    // silent fall back to OpenAI would quietly invalidate an A/B run.
+    apiKey: process.env.ANTHROPIC_API_KEY ?? '',
   },
   internal: {
     apiKey: process.env.INTERNAL_API_KEY ?? '',

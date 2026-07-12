@@ -296,6 +296,16 @@ export class ReplyEngineService {
 
     this.resolveVariantSelection(input, ctx);
 
+    // Recommendation on the product already in focus is size help, never a
+    // re-recommendation of that same product. Runs AFTER 5.5: confident
+    // picks (fills_missing_slot) are already routed to confirm_*, and OOS
+    // sizes to variant_not_available, so only the unsure `ask_recommendation`
+    // residue reaches here → route to the size-help flow instead of the
+    // recommend_product blurb. Cause of record: prod traces 8e716eb1 /
+    // c5935498 ("L підходить думаю", "може L підійде").
+    const recSizeHelp = await this.handleRecommendationForFocusedProduct(input, ctx);
+    if (recSizeHelp) return withTrace(recSizeHelp);
+
     const result = await this.buildResponse(input, ctx);
 
     // Conversation-start greeting: fire when this is a new conversation
@@ -629,6 +639,7 @@ export class ReplyEngineService {
         failedTurns: memory.failedTurns ?? 0,
         maxFailedTurns,
       },
+      hasMediaReference: !!input.mediaReference,
     });
     ctx.policy = policy;
 
@@ -668,6 +679,7 @@ export class ReplyEngineService {
               failedTurns: memory.failedTurns ?? 0,
               maxFailedTurns,
             },
+            hasMediaReference: !!input.mediaReference,
           });
 
           if (fallbackPolicy.action !== 'escalate') {
@@ -1870,6 +1882,9 @@ export class ReplyEngineService {
 
     const needsSearch = !productData && this.shouldSearchProducts(classification, memory);
     ctx.trace.push(`search: needsSearch=${needsSearch}`);
+    if (!needsSearch && this.isCheckoutCommitOnFullCart(classification, memory)) {
+      ctx.trace.push('search: checkout commit on full cart → no search');
+    }
 
     if (needsSearch) {
       // Clear stale variant on correction so 5.5c can re-match the new one
@@ -2114,8 +2129,15 @@ export class ReplyEngineService {
       // A category/product PIVOT ("А спідниці чорні є?") still escalates:
       // the predicate is false, so 0 rows means we genuinely don't have
       // it and a human should take over.
+      //
+      // Also suppressed for a checkout commit on a full cart: 0 rows there
+      // means the search had no keywords, not that we're out of stock, and
+      // escalating drops a sale the customer already agreed to. Safe because
+      // `isCheckoutCommitOnFullCart` is a strict subset of 5.5a-2's trigger —
+      // standing down here always lands on `collect_checkout_info`.
       if ((!productData || productData.length === 0) &&
           !this.canAnswerFromFocusedProduct(classification, memory) &&
+          !this.isCheckoutCommitOnFullCart(classification, memory) &&
           ['product_inquiry', 'ready_to_order', 'availability_check', 'category_browse'].includes(classification.primaryIntent)) {
         ctx.trace.push('search: product not found → handoff');
         this.logger.log('Product not found — using product_not_found template + handoff');
@@ -3321,11 +3343,13 @@ export class ReplyEngineService {
       }
 
       // Check if product-related intent but no products found → handoff.
-      // Same guard as the search-side sibling: don't escalate a variant
-      // question we can still answer from the focused product's memory.
+      // Same guards as the search-side sibling: don't escalate a variant
+      // question we can still answer from the focused product's memory, and
+      // never escalate a customer who is checking out a full cart.
       const productIntents = ['product_inquiry', 'ready_to_order', 'availability_check', 'category_browse', 'ask_price'];
       if (productIntents.includes(classification.primaryIntent) &&
           !this.canAnswerFromFocusedProduct(classification, memory) &&
+          !this.isCheckoutCommitOnFullCart(classification, memory) &&
           (!productData || productData.length === 0)) {
         ctx.trace.push('handoff: product_not_found');
         this.logger.log('No template + no products found for product intent → handoff');
@@ -4046,6 +4070,22 @@ export class ReplyEngineService {
    * every "порадьте розмір" for tenants that have neither charts nor
    * ranges.
    */
+  /**
+   * Measurements-mode size help: ask the customer for height + weight and
+   * park the conversation waiting for them. Their next (numeric) turn is
+   * caught by `maybeMidFlowSizeHelp` → `recommendSize` → confirm.
+   */
+  private askForMeasurements(memory: AssistantMemory): ReplyEngineOutput {
+    memory.lastAction = 'asked_pre_qualify';
+    memory.awaitingField = 'pre_qualify_data';
+    return {
+      decision: ReplyDecision.Reply,
+      reply: { text: ASK_FOR_MEASUREMENTS_HELP, sendNow: true },
+      handoff: { required: false, reason: null },
+      stateUpdate: { contextJson: memory as any },
+    };
+  }
+
   private async sendSizeChartAndAskSize(
     input: ReplyEngineInput,
     ctx: ProcessingContext,
@@ -4101,6 +4141,63 @@ export class ReplyEngineService {
     }
 
     return chartResult;
+  }
+
+  /**
+   * `ask_recommendation` while a product is already in focus is size help,
+   * not a re-recommendation of that product. Runs after 5.5, so confident
+   * picks (routed to confirm_*) and OOS sizes (variant_not_available) have
+   * already left the `ask_recommendation` bucket — only the unsure residue
+   * ("L підходить думаю", "може L підійде", bare "допоможіть з розміром")
+   * reaches here. Routes to the tenant's sizeHelpMode flow instead of the
+   * degenerate `recommend_product` blurb (+ its spurious variant latch).
+   *
+   * Confident picks stay untouched (5.5c already confirmed them). Clothing
+   * only — cosmetics would ask skin type instead (deferred).
+   */
+  private async handleRecommendationForFocusedProduct(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+  ): Promise<ReplyEngineOutput | null> {
+    const { memory, effectiveConfig } = ctx;
+    const classification = ctx.classification;
+
+    if (classification.primaryIntent !== 'ask_recommendation') return null;
+    if (!nonEmptyStr(memory.selectedProductId)) return null;
+
+    // Product pivot ("хочу іншу сукню", a different category) → this is a
+    // real product request, not size help. Structural signals only (there
+    // is no entities.brand and no інше/схоже keyword signal).
+    const { productName, category } = classification.entities;
+    if (nonEmptyStr(productName)) return null;
+    if (nonEmptyStr(category)) {
+      const focused = memory.selectedCategory;
+      if (
+        !nonEmptyStr(focused) ||
+        category.trim().toLowerCase() !== focused.trim().toLowerCase()
+      ) {
+        return null;
+      }
+    }
+
+    const flowConfig = effectiveConfig?.flowConfig as any;
+    const businessType =
+      (flowConfig?.businessType as 'clothing' | 'cosmetics') ?? 'clothing';
+    if (businessType === 'cosmetics') return null;
+
+    const { mode, canRecommendSize } = this.resolveSizeHelpMode(flowConfig);
+    if (mode === 'chart') {
+      const chartResult = await this.sendSizeChartAndAskSize(input, ctx);
+      if (chartResult) {
+        ctx.trace.push('recommend→size-help: chart');
+        return chartResult;
+      }
+      // Tenant has no charts. Fall back to measurements only if it can map
+      // them to a size; otherwise let the existing flow run.
+      if (!canRecommendSize) return null;
+    }
+    ctx.trace.push('recommend→size-help: measurements');
+    return this.askForMeasurements(memory);
   }
 
   /**
@@ -4181,14 +4278,7 @@ export class ReplyEngineService {
     // Keyword-only (no numbers): user asked for size help → confirm and
     // ask for measurements.
     if (!hasMeasurements) {
-      memory.lastAction = 'asked_pre_qualify';
-      memory.awaitingField = 'pre_qualify_data';
-      return {
-        decision: ReplyDecision.Reply,
-        reply: { text: ASK_FOR_MEASUREMENTS_HELP, sendNow: true },
-        handoff: { required: false, reason: null },
-        stateUpdate: { contextJson: memory as any },
-      };
+      return this.askForMeasurements(memory);
     }
 
     const params = this.extractPreQualifyData(input.messageText, fields);
@@ -4369,21 +4459,17 @@ export class ReplyEngineService {
       return false;
     }
 
-    // Cart-aware checkout: when items already in cart and the user signals
-    // start_checkout WITHOUT introducing a new product or category ("оформлюємо",
-    // "ні, давайте оформляти"), there's nothing to search for — the cart is the
-    // payload. Without this gate, the engine fires an empty-keyword search,
-    // gets 0 rows, and falls into the product_not_found handoff branch even
-    // though the customer is just trying to check out. Adds_to_cart with a
-    // new product/category is intentionally NOT excluded here — that case
-    // SHOULD search for the new item.
-    if (
-      memory.selectionState === 'cart_item_added' &&
-      (memory.cartItems?.length ?? 0) > 0 &&
-      classification.recommendedAction === 'start_checkout' &&
-      !classification.entities.productName &&
-      !classification.entities.category
-    ) {
+    // Cart-aware checkout: the customer is committing to check out a cart they
+    // already built ("оформлюємо", "ні, давайте оформляти"). There is nothing to
+    // search for — the cart IS the payload. Without this gate the engine fires an
+    // empty-keyword search, gets 0 rows, and escalates via product_not_found even
+    // though the customer is trying to buy.
+    //
+    // The predicate keys on cart state + the continue-or-checkout context + an
+    // affirmative signal, NOT on `recommendedAction` — see
+    // `isCheckoutCommitOnFullCart`. adds_to_cart with a new product/category is
+    // excluded there, so that case still searches for the new item.
+    if (this.isCheckoutCommitOnFullCart(classification, memory)) {
       return false;
     }
 
@@ -4408,9 +4494,26 @@ export class ReplyEngineService {
     const hasEntities = !!(classification.entities.category || classification.entities.productName || classification.entities.color);
     const noProductsShownYet = !memory.lastPresentedProducts?.length;
 
+    // The customer named a product and we hold no data for it — look it up,
+    // whatever the intent. Without this, a product named AFTER a list was
+    // shown falls through every gate: `isNarrowingSlotFill` declines it (a
+    // productName is a pivot, not a narrow — it defers to "let fresh search
+    // run"), but the intent lists below don't cover intents like
+    // `ask_variant_choice`, so no search runs. The turn then reaches the
+    // template engine with no productData, matches no template, and lands in
+    // AI fallback, which improvises an answer instead of routing to
+    // ask_color_for_size / ask_size_for_color.
+    //
+    // Safe against the focused-product regression (trace 37fb5032): the focus
+    // gate runs earlier and pre-hydrates `productData`, and the caller gates
+    // on `!productData && shouldSearchProducts(...)` — so a question about the
+    // product already in focus never reaches this predicate.
+    const namedAProduct = nonEmptyStr(classification.entities.productName);
+
     return (
       searchActions.includes(classification.recommendedAction) ||
       searchIntents.includes(classification.primaryIntent) ||
+      namedAProduct ||
       (hasEntities && noProductsShownYet)
     );
   }
@@ -4435,6 +4538,73 @@ export class ReplyEngineService {
    * Used by both `shouldSearchProducts` (to skip the fresh-search branch)
    * and `searchAndFilterProducts` (to call `narrowLastPresentedInMemory`).
    */
+  /**
+   * The customer is committing to check out a cart they already built — not
+   * shopping for something new.
+   *
+   * The invariant: the bot asked "додати ще щось чи оформлюємо?", the cart is
+   * non-empty, and the customer answered affirmatively without naming anything
+   * new. Everything else about the turn is noise.
+   *
+   * `recommendedAction` is deliberately NOT a signal. It is the one field that
+   * proved unreliable: the same "оформлюємо" classifies as `start_checkout` on
+   * one run and `ask_delivery` on the next (temperature 0, identical input),
+   * and the old gate here demanded exactly `start_checkout`. When it missed,
+   * `ready_to_order` re-enabled the search via `searchIntents`, the empty
+   * keyword list returned 0 rows, and the `product_not_found` handoff escalated
+   * a customer who was trying to hand us money. The engine already treats the
+   * two actions as equivalent everywhere else — `updateMemoryFromAction` maps
+   * `ask_delivery` and `start_checkout` to the same case.
+   *
+   * INVARIANT — this predicate is a strict SUBSET of 5.5a-2's trigger
+   * (`resolveVariantSelection`, the branch that performs checkout). Every
+   * conjunct below implies one of its conditions, so `true` here guarantees
+   * 5.5a-2 fires and renders `collect_checkout_info`. That is what makes it
+   * safe for the `product_not_found` handoff sites to stand down on this
+   * predicate: suppressing the escalation can never strand the turn without a
+   * routing exit. Asserted in `reply-engine.predicate.spec.ts`; keep the two in
+   * step if 5.5a-2's trigger ever changes.
+   */
+  private isCheckoutCommitOnFullCart(
+    classification: ClassificationResult,
+    memory: AssistantMemory,
+  ): boolean {
+    if (!memory.cartItems?.length) return false;
+    if (memory.selectionState !== 'cart_item_added') return false;
+    // Context anchor: only the turn that ANSWERS the continue-or-checkout
+    // question counts. Without it, any confirmation-shaped turn with a cart
+    // in flight ("так" to a promo or an FAQ) would qualify.
+    if (memory.lastAction !== 'asked_continue_or_checkout') return false;
+
+    const { slotAction, primaryIntent } = classification;
+    // "і ще спідницю" / "ні, ще подивлюсь" are not checkout commits, and
+    // adds_to_cart MUST still reach the search.
+    if (slotAction === 'adds_to_cart' || slotAction === 'rejection') return false;
+
+    const affirms =
+      slotAction === 'confirmation' ||
+      primaryIntent === 'ready_to_order' ||
+      primaryIntent === 'provide_details';
+    if (!affirms) return false;
+
+    // A named product means the customer is shopping, not checking out.
+    const { productName, category } = classification.entities;
+    if (nonEmptyStr(productName)) return false;
+    // A category EQUAL to the one already in focus is the classifier's known
+    // history leak, not a pivot (same treatment as
+    // `isVariantQuestionOnFocusedProduct`). A DIFFERENT category is a real
+    // pivot and must fall through to the search.
+    if (
+      nonEmptyStr(category) &&
+      category.toLowerCase().trim() !==
+        (memory.selectedCategory ?? '').toLowerCase().trim()
+    ) {
+      return false;
+    }
+
+    return true;
+  }
+
   private isNarrowingSlotFill(
     classification: ClassificationResult,
     memory: AssistantMemory,
@@ -5235,12 +5405,37 @@ export class ReplyEngineService {
   }
 
   /**
-   * Gate for free-form product questions (`recommendedAction='answer_question'`)
-   * about the product already in focus. Delegates to the grounded
-   * judge→answer core. Runs at the process() stage, before variant
-   * resolution / template render, so it pre-empts the generic
-   * `recommend_product` blurb that `ask_recommendation` would otherwise
-   * produce.
+   * Intents whose questions are genuinely free-form ATTRIBUTE questions about
+   * the focused product — fabric, care, fit, origin. These are the only turns
+   * the description judge can meaningfully rule on.
+   *
+   * ALLOW-list, not a deny-list, and keyed on `primaryIntent` rather than
+   * `recommendedAction`. Both choices are load-bearing:
+   *
+   * - `recommendedAction` is the field we have repeatedly proved unreliable
+   *   (the start_checkout/ask_delivery flip that dropped carts). Different
+   *   models label the same turn differently. A classifier A/B made this
+   *   undeniable: claude-haiku-4-5 marks far more turns `answer_question`, and
+   *   **27 of 27** turns it routed here fail-closed into a handoff — including
+   *   plain stock questions ("Є розмір М?") and a delivery FAQ ("а як
+   *   доставка?"). gpt-5.4-mini merely happens not to trigger it; the latent
+   *   defect is ours, not the model's.
+   * - A deny-list silently admits every new case. Each intent added to the
+   *   classifier would have to remember to opt OUT of the judge, and the
+   *   failure mode is an escalation to a human — the most expensive one we have.
+   *
+   * Everything else has a better-suited path already: a stock question is
+   * answered from the product's own variants by 5.5, delivery/payment have
+   * their own templates, and size/fit belongs to the size-help gate
+   * (`ask_recommendation`, prod trace 50036bfb).
+   */
+  private static readonly ATTRIBUTE_QUESTION_INTENTS = ['general_question'];
+
+  /**
+   * Gate for free-form attribute questions about the product already in focus.
+   * Delegates to the grounded judge→answer core. Runs at the process() stage,
+   * before variant resolution / template render, so it pre-empts the generic
+   * `recommend_product` blurb that `ask_recommendation` would otherwise produce.
    */
   private async handleProductQuestion(
     input: ReplyEngineInput,
@@ -5249,11 +5444,10 @@ export class ReplyEngineService {
     const { memory, productData } = ctx;
     const classification = ctx.classification;
 
-    if (classification.recommendedAction !== 'answer_question') return null;
-    // Part B may have rerouted this turn to a size correction — that wins.
     if (
-      classification.primaryIntent === 'variant_not_available' ||
-      classification.primaryIntent === 'out_of_stock'
+      !ReplyEngineService.ATTRIBUTE_QUESTION_INTENTS.includes(
+        classification.primaryIntent,
+      )
     ) {
       return null;
     }

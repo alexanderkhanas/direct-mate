@@ -1,7 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
 import { MessageRole } from '@direct-mate/shared';
+import {
+  ClassifierLlm,
+  OpenAiClassifierLlm,
+  AnthropicClassifierLlm,
+  isAnthropicModel,
+} from './llm/classifier-llm';
 
 // ─── Classification result ───────────────────────────────────────
 
@@ -347,17 +354,331 @@ function buildClassifyTool(
 export class ClassifierService {
   private readonly logger = new Logger(ClassifierService.name);
   private readonly openai: OpenAI;
+  private readonly anthropic: Anthropic | null;
   private readonly model: string;
+  /** 'v1' (default) | 'v2' — see classifyV2. Toggled by CLASSIFIER_PROMPT. */
+  private readonly promptVersion: string;
 
   constructor(private readonly config: ConfigService) {
     this.openai = new OpenAI({
       apiKey: this.config.get<string>('openai.apiKey'),
     });
+    // Only constructed when a key is present. A `claude-*` model with no key
+    // throws at call time rather than silently falling back to OpenAI — a
+    // silent fallback would quietly invalidate an A/B run.
+    const anthropicKey = this.config.get<string>('anthropic.apiKey');
+    this.anthropic = anthropicKey
+      ? // logLevel: the SDK defaults to dumping the full request/response
+        // (including the entire system prompt) at debug level, which buries
+        // eval output. 'warn' keeps genuine failures visible.
+        new Anthropic({ apiKey: anthropicKey, logLevel: 'warn' })
+      : null;
     // Classifier-specific model — defaults to gpt-5.4-mini. Vision and
     // AI-fallback use separate `openai.visionModel` and `openai.model`
     // configs so the cheap classifier model doesn't bleed into those.
     this.model =
       this.config.get<string>('openai.classifierModel') ?? 'gpt-5.4-mini';
+    this.promptVersion = process.env.CLASSIFIER_PROMPT ?? 'v1';
+  }
+
+  /**
+   * Classifier prompt v2.
+   *
+   * Structural differences from v1, in order of how much they matter:
+   *
+   * 1. ONE slot_action ladder (first-match-wins) replaces five overlapping
+   *    block-local rule sets. In v1 the pick-vs-question distinction
+   *    ("L підійде" vs "L підійде?") is restated in three conditional blocks
+   *    that can contradict each other, patched over with a PRECEDENCE
+   *    sentence. Here the ladder is authoritative and the state blocks may
+   *    only add `primary_intent` routing — they never touch slot_action.
+   * 2. STATIC sections first, VOLATILE state last, so the long prefix is
+   *    prompt-cacheable. Our input is ~3.6-4.4k tokens against ~106 output —
+   *    the prompt IS the cost.
+   * 3. Enums listed in-prompt. Redundant under OpenAI strict mode, but it
+   *    costs little and removes a whole class of cross-field confusion.
+   * 4. A calibrated confidence rubric. SAFE only because the policy engine no
+   *    longer escalates a low-confidence turn that carries a resolvable slot
+   *    action — otherwise instructing the model to emit ≤0.6 on an ambiguous
+   *    pick would hand off the very turns this prompt gets right.
+   */
+  private async classifyV2(
+    params: Parameters<ClassifierService['classify']>[0],
+    memoryContext: string,
+  ): Promise<ClassificationResult> {
+    const m = params.memory;
+    const isClothingLike = params.tenantBusinessType !== 'cosmetics';
+
+    // ─── Section 5: state-conditional INTENT routing only ─────────
+    const stateBlocks: string[] = [];
+
+    if (m.lastAction === 'told_variant_not_available') {
+      stateBlocks.push(
+        ``,
+        `ALTERNATIVES OFFERED — the bot just said the requested size/color is unavailable and listed the alternatives (see "Available variants" below).`,
+        `In this state the customer's reply is a PICK, a FIT QUESTION, or a decline. The "?" separates the first two — check for it before anything else.`,
+        `- A size the customer names that is NOT in the available list ("а 46 є?", "может XXL есть?") → primary_intent='availability_check', + extract the size.`,
+        // NOTE: this block states slot_action explicitly, unlike the others.
+        // That breaks the "state blocks route intent only" principle on
+        // purpose. Measured: with the pure-intent form, gpt-5.4-mini reads the
+        // RUSSIAN question "L подойдёт?" as a pick (confirm_choice /
+        // fills_missing_slot) on every run, while the Ukrainian twin "L
+        // підійде?" is read correctly — isolated to language, not to memory
+        // state. Three separate RU reminders in the ladder did not fix it; the
+        // model needs the (intent, slot_action) pair stated locally, in the
+        // state where it applies. The ladder remains the general authority.
+        `- A FIT QUESTION on a size — the message has an interrogative marker ("?", leading "чи", leading "а …?"):`,
+        `    UA: "L підійде?" · "а L мені підійде?" · "чи не буде L завеликим?"`,
+        `    RU: "L подойдёт?" · "а L на меня налезет?" · "M не мало будет?"`,
+        `    → slot_action='asks_question', primary_intent='ask_recommendation', AND STILL extract entities.size.`,
+        `- A STATEMENT naming an offered size — NO interrogative marker:`,
+        `    UA: "L підійде" · "тоді L" · "давайте L" · "ну хай буде S"`,
+        `    RU: "L подойдёт" · "тогда возьму M" · "давайте L"`,
+        `    → slot_action='fills_missing_slot', primary_intent='confirm_choice', + extract entities.size. The customer is ACCEPTING an alternative, not asking for advice.`,
+        `Russian and Ukrainian follow the SAME rule. "L подойдёт?" is a question exactly as "L підійде?" is; "L подойдёт" is a pick exactly as "L підійде" is. The "?" is the only signal.`,
+      );
+    }
+    if (m.sizeChartJustSent) {
+      stateBlocks.push(
+        ``,
+        `SIZE CHART JUST SHOWN — the bot sent the sizing chart last turn.`,
+        `- Body measurements ("зріст 170, вага 60", "180 70", "рост 165 вес 55") → primary_intent='ask_recommendation'; size stays null.`,
+        `- A fit question naming a size → primary_intent='ask_recommendation' + extract the size.`,
+      );
+    }
+    if (m.selectedProductId && m.selectionState === 'awaiting_confirmation') {
+      stateBlocks.push(
+        ``,
+        `POST-SELECTION VARIANT FOLLOW-UP — a product is already selected; the customer asks about OTHER sizes/colors OF THAT PRODUCT.`,
+        `- "А є в інших розмірах?" · "Чи є L?" · "А інший колір є?" · "є в M?" → primary_intent='ask_variant_choice' (NOT product_inquiry, NOT availability_check), + extract any named size/color.`,
+      );
+    }
+    if (m.awaitingPreQualifyAnswer) {
+      stateBlocks.push(
+        ``,
+        `PENDING OFFER — the bot just asked "Хочете, допоможу з розміром?".`,
+        `"допоможіть з розміром" / "допоможіть підібрати" / "допоможи з вибором" carry NO size value — they are ladder rule 6 (confirmation), not a slot fill.`,
+      );
+    }
+    if (isClothingLike) {
+      stateBlocks.push(
+        ``,
+        `UKRAINIAN CASE NORMALIZATION for product_name — accusative → nominative:`,
+        `  Сорочку→Сорочка · Сукню→Сукня · Куртку→Куртка · Спідницю→Спідниця`,
+        `  "Хочу Сорочку лляну в розмірі M"  → product_name "Сорочка лляна", size "M"`,
+        `  "Хочу куртку-бомбер у M, чорну"   → product_name "Куртка-бомбер", color "чорний", size "M"`,
+        `  "Є бежева оверсайз футболка в розмірі S?" → product_name "Oversize футболка", color "бежевий" (NOT "білий"), size "S"`,
+      );
+    } else {
+      stateBlocks.push(
+        ``,
+        `SKIN TYPE — extract into skin_type. Canonical: жирна · суха · нормальна · комбінована · чутлива`,
+        `  "шкіра жирна" → жирна · "Т-зона блищить" → комбінована · "схильна до сухості" → суха · "чутлива, з куперозом" → чутлива`,
+        `  If the phrasing doesn't map cleanly to one of the five, leave null.`,
+      );
+    }
+
+    const systemPrompt = [
+      // ─── SECTION 1 — ROLE (static) ──────────────────────────────
+      `You are a message classifier for an online clothing/cosmetics store's Instagram DM assistant.`,
+      `You classify the customer's CURRENT message and call classify_message.`,
+      `You never write reply text — a separate template engine does that.`,
+      ``,
+      `Customers write in Ukrainian, Russian, or a mix (surzhyk). Classify all of them.`,
+      `Entity VALUES you emit are always normalized to the catalog's canonical form, regardless of the language the customer used.`,
+      ``,
+      // ─── SECTION 2 — OUTPUT VOCABULARY (static) ─────────────────
+      `── OUTPUT VOCABULARY ──`,
+      ``,
+      `primary_intent — one of:`,
+      `  greeting | product_inquiry | ask_price | ask_recommendation | ready_to_order | provide_details |`,
+      `  complaint | request_human | delivery_question | payment_question | general_question | thanks |`,
+      `  confirm_choice | category_browse | availability_check | size_chart_request | ask_variant_choice | unknown`,
+      ``,
+      `  Disambiguation for the four that get confused:`,
+      `  - availability_check — "is this size/color IN STOCK?"  ("є XL?", "у вас є розмір М?")`,
+      `  - size_chart_request — "show me the sizing TABLE"      ("розмірна сітка є?", "табличка з розмірами")`,
+      `  - ask_recommendation — "which size fits ME?"           ("порадьте розмір", "L підійде?", "170см 60кг")`,
+      `  - ask_variant_choice — asks about other sizes/colors of the ALREADY-SELECTED product`,
+      `  A "will X fit me?" question is ask_recommendation — never size_chart_request, never availability_check. It is a fit judgment, not a stock lookup.`,
+      ``,
+      `conversation_stage — one of:`,
+      `  greeting | need_discovery | product_discovery | showing_options | selection_help | product_selected |`,
+      `  checkout_started | collecting_customer_info | order_confirmation | post_order_support | handoff_to_manager`,
+      `  Report where the conversation IS after this message, using CURRENT STATE below.`,
+      ``,
+      `sentiment — positive | neutral | negative. negative = frustration, complaint, or a request for a human. Most messages are neutral.`,
+      ``,
+      `dialogue_act — one of:`,
+      `  new_inquiry | short_contextual_reply | confirm_choice | ask_recommendation | provide_details |`,
+      `  ask_about_shown_products | clarification | general_chat`,
+      ``,
+      `recommended_action — one of:`,
+      `  show_products | recommend | start_checkout | ask_delivery | answer_question | escalate | greet |`,
+      `  clarify | confirm_selection | show_price | answer_faq | ask_variant_choice | size_chart_request`,
+      ``,
+      `confidence — 0.0-1.0, calibrated:`,
+      `  0.9-1.0  unambiguous; one reading only`,
+      `  0.7-0.9  clear given CURRENT STATE, but would be ambiguous without it`,
+      `  0.5-0.7  two plausible readings; you picked the likelier (e.g. pick vs fit-question)`,
+      `  < 0.5    you are guessing — the message is off-script, garbled, or out of scope`,
+      `  Do not default to 0.9.`,
+      ``,
+      // ─── SECTION 3 — ENTITY EXTRACTION (static) ─────────────────
+      `── ENTITY EXTRACTION ──`,
+      `Emit null for anything absent.`,
+      ``,
+      `SCOPE — the rule that matters most:`,
+      `Extract values ONLY from the customer's CURRENT message. NEVER carry a value forward from a prior turn in the history. If the current message doesn't say it, emit null. Leaving a field null is CORRECT; guessing is WRONG. Applies to every field: product_name, category, color, size, skin_type, quantity, customer_name, phone, city, delivery_branch.`,
+      ``,
+      `  History: customer said "S" three turns ago; bot then asked color.`,
+      `  Current: "Білу давайте"`,
+      `    CORRECT { color: "білий", size: null }        WRONG { color: "білий", size: "S" }   ← leak`,
+      ``,
+      `  History: customer once gave "Ханас Олександр, 0991234567, Київ, НП 5".`,
+      `  Current: "А є M?"`,
+      `    CORRECT { size: "M" }, all customer fields null`,
+      `    WRONG   echoing the name / phone / city back`,
+      ``,
+      `  History: customer was choosing a white shirt in S.`,
+      `  Current: "Хочу замовити джинси"`,
+      `    CORRECT { product_name: "Джинси" }            WRONG { product_name: "Джинси", color: "білий", size: "S" }`,
+      ``,
+      `  History mentions category "Сорочки"; bot asked which size.`,
+      `  Current: "M"`,
+      `    CORRECT { size: "M", category: null }         WRONG { category: "Сорочки", size: "M" }  ← leak`,
+      ``,
+      `CATEGORY — the one permitted inference:`,
+      `category MAY be inferred from a product noun in the CURRENT message ("Хочу сорочку" → "Сорочки"), because it is constrained to the tenant's catalog. It must be one of the categories listed in CURRENT STATE, or null. Never infer it from history.`,
+      ``,
+      `INDEXED PICKS:`,
+      `"першу", "другу", "цю", "ту що зверху", "цей" are NOT entity values. Emit empty entities; the engine resolves them from the products it last showed.`,
+      ``,
+      `SIZE:`,
+      `Canonical: XS S M L XL XXL (uppercase Latin), or numeric 36-50, or a range ("44-46").`,
+      `Normalize Cyrillic: "ХЛ"/"хл"→XL, "Л"→L, "М"→M, "С"→S.`,
+      `NEVER extract the meta-word "розмір"/"размер"/"size" — it announces a size, it is not one.`,
+      `Extract the size even inside a question: "а L мені підійде?" → "L"; "є XL?" → "XL".`,
+      ``,
+      `COLOR:`,
+      `Emit masculine nominative in the catalog's language (Ukrainian): "чорну"/"чорні" → "чорний"; "білу" → "білий"; "красную" (RU) → "червоний".`,
+      `Preserve the actual shade — do NOT collapse near-colors: "бежевий" ≠ "білий" · "блакитний" ≠ "синій" · "кремовий" ≠ "білий".`,
+      ``,
+      `BRAND NAMES — fix the SCRIPT, never the WORD ORDER:`,
+      `The catalog stores brands in Latin (JACK&JONES, Mango, Zara, Bottega Veneta). Product-name matching is a literal substring test, so a Cyrillic spelling of a Latin brand matches NOTHING — but so does a REORDERED name. Change only the letters of the brand; keep every word where the customer put it.`,
+      `  "є куртка джек енд джонс чорна M?" → product_name "Куртка Jack & Jones"   (brand transliterated; order kept)`,
+      `  "Покажіть Mango Сукня міді"        → product_name "Mango Сукня міді"      (already Latin — copy it VERBATIM, do NOT move "Mango" to the end)`,
+      `  "хочу манго сукню"                 → product_name "Mango сукня"           (brand transliterated in place)`,
+      `Never reorder, never translate the product noun, never drop a word. Transliterate the brand and otherwise reproduce what the customer wrote.`,
+      ``,
+      `EMPTY MESSAGE:`,
+      `Applies ONLY when the current message text is literally empty (zero characters) — a photo or story reply sent with no caption at all.`,
+      `Then: empty entities, slot_action='new_inquiry', primary_intent='unknown', confidence ≤ 0.4. The engine resolves the image separately. Do NOT invent entities from history to fill it.`,
+      `If there is ANY text — even two words like "А таке є?" or "скільки?" — classify it NORMALLY. An attached photo or story does NOT make the message empty, and such a turn is never 'unknown'.`,
+      ``,
+      // ─── SECTION 4 — SLOT ACTION LADDER (static) ────────────────
+      `── SLOT ACTION LADDER ──`,
+      `Apply in order. FIRST MATCH WINS. This ladder overrides every example elsewhere in this prompt — if a state block seems to say otherwise, the ladder is right.`,
+      ``,
+      `1. rejection          — pure negation, no new value.`,
+      `                        "ні" · "не треба" · "не хочу" · "тоді не треба" · "нет, спасибо" · "сама визначусь"`,
+      `2. correction         — negation FOLLOWED BY a new value (replaces an earlier choice).`,
+      `                        "ні, я хочу Rosewood" · "не, краще червону"`,
+      `3. adds_to_cart       — wants an ADDITIONAL product alongside the current one.`,
+      `                        "і ще крем" · "ще хочу футболку"`,
+      `4. asks_question      — the message carries an interrogative marker: "?" · leading "чи" · leading "а …?".`,
+      `                        This BEATS rule 5 even when the message also names a size or color — but you MUST still extract that entity.`,
+      `                        UA: "скільки коштує?" · "L підійде?" · "чи є L?" · "а інший колір є?"`,
+      `                        RU: "L подойдёт?" · "а M мне подойдёт?" · "сколько стоит?" · "а есть L?"`,
+      `                        The "?" rule is IDENTICAL in Russian. A Russian message with "?" is rule 4, never rule 5.`,
+      `5. fills_missing_slot — the message names a value (color, size, product, or an indexed pick) with NO interrogative marker. The customer is CHOOSING.`,
+      `                        This holds even when the phrasing sounds like agreement:`,
+      `                        "давайте L" · "тоді L" · "L підійде" · "ну хай буде S" · "беру червону" ·`,
+      `                        "тогда возьму M" (RU) · "давайте першу" (indexed → empty entities) · bare "L" · bare "Білий"`,
+      `6. confirmation       — a pure accept carrying NO new value at all.`,
+      `                        "так" · "добре" · "ок" · bare "давайте" · bare "беру" · bare "підійде" · "допоможіть з розміром"`,
+      `7. new_inquiry        — anything else: a new topic, a new product, an opening message.`,
+      ``,
+      `CONTRAST — the same words, one character apart. The "?" is the ONLY signal:`,
+      `  "L підійде"   → rule 5 · fills_missing_slot · size "L"   (a PICK — no interrogative marker)`,
+      `  "L підійде?"  → rule 4 · asks_question      · size "L"   (a QUESTION — has "?")`,
+      `  "L подойдёт"  → fills_missing_slot   |   "L подойдёт?" → asks_question   (RU, same rule)`,
+      `  "чорний підходить" → fills_missing_slot   |   "чорний підходить?" → asks_question`,
+      `Do NOT let a phrase that merely SOUNDS like agreement ("підійде", "підходить", "хай буде") pull a question into rule 5, and do NOT let a named size pull a statement into rule 4. Check for the marker, nothing else.`,
+      ``,
+      `The trap: rules 5 and 6 both cover "давайте"/"беру"/"підійде". The ONLY thing separating them is whether the message carries a value. "давайте" → confirmation. "давайте L" → fills_missing_slot. NEVER emit confirmation for a message that carries new information.`,
+      `Uncertain between 4 and 5 (a pick or a question?): choose 5 and set confidence ≤ 0.6.`,
+      `A bare color or size word is NEVER asks_question — the customer is answering, not asking.`,
+      ``,
+      // ─── SECTION 5 — STATE-CONDITIONAL (intent routing only) ────
+      stateBlocks.length
+        ? [`── STATE-CONDITIONAL ROUTING (primary_intent only; never overrides the ladder) ──`, ...stateBlocks].join('\n')
+        : '',
+      ``,
+      // ─── SECTION 6 — CURRENT STATE (volatile — LAST) ────────────
+      `── CURRENT STATE ──`,
+      params.categories.length
+        ? `Available product categories: ${params.categories.join(', ')}.`
+        : `Available product categories: (none configured).`,
+      memoryContext,
+      ``,
+      `Classify the customer's LAST message. Call classify_message.`,
+    ]
+      .filter((s) => s !== undefined && s !== '')
+      .join('\n');
+
+    return this.runClassification(params, systemPrompt);
+  }
+
+  /**
+   * Force the three routing-critical fields onto their schema enums, in place.
+   *
+   * The allowed values are read from the tool schema itself, so there is no
+   * second copy to drift. Fires only for providers that don't enforce enums
+   * (Anthropic); with OpenAI strict mode it is a no-op.
+   */
+  private coerceToSchema(
+    raw: Record<string, any>,
+    schema: Record<string, unknown>,
+    model: string,
+    truncatedMessage: string,
+  ): void {
+    const props = (schema as any)?.properties ?? {};
+    const FIELDS: Array<[string, string]> = [
+      ['primary_intent', 'unknown'],
+      ['recommended_action', 'clarify'],
+      ['slot_action', 'new_inquiry'],
+    ];
+
+    for (const [field, fallback] of FIELDS) {
+      const allowed: string[] | undefined = props[field]?.enum;
+      const value = raw[field];
+      if (!allowed || value == null) continue;
+      if (!allowed.includes(value)) {
+        this.logger.error(
+          `[CLASSIFIER_SCHEMA_VIOLATION] model=${model} field=${field} ` +
+            `value="${value}" → coerced to "${fallback}" message="${truncatedMessage}"`,
+        );
+        raw[field] = fallback;
+      }
+    }
+  }
+
+  /**
+   * Pick the transport for a model id. Routing is per-call and keyed on the id
+   * (not a global provider flag) so `classifyWithFallback` keeps reaching
+   * OpenAI's gpt-5.4 even when the primary classifier is a Claude model.
+   */
+  private llmFor(model: string): ClassifierLlm {
+    if (isAnthropicModel(model)) {
+      if (!this.anthropic) {
+        throw new Error(
+          `Classifier model "${model}" is an Anthropic model but ANTHROPIC_API_KEY is not set.`,
+        );
+      }
+      return new AnthropicClassifierLlm(this.anthropic);
+    }
+    return new OpenAiClassifierLlm(this.openai);
   }
 
   async classify(params: {
@@ -381,8 +702,19 @@ export class ClassifierService {
       requestId?: string | null;
       source?: string;
     }>;
+    /** Offline A/B eval only — override the classifier model for this call
+     *  (e.g. 'gpt-5.6-luna'). Reasoning-model families get reasoning_effort
+     *  and drop the fixed temperature automatically. Never set in prod. */
+    modelOverride?: string;
+    reasoningEffort?: string;
   }): Promise<ClassificationResult> {
     const memoryContext = this.buildMemoryContext(params.memory);
+
+    // v2 prompt, selected by CLASSIFIER_PROMPT=v2. Kept behind a toggle so v1
+    // and v2 can be A/B'd on the same harness with clean attribution.
+    if (this.promptVersion === 'v2') {
+      return this.classifyV2(params, this.buildMemoryContext(params.memory, true));
+    }
 
     const cosmeticsRule = params.tenantBusinessType === 'cosmetics'
       ? [
@@ -528,6 +860,16 @@ export class ClassifierService {
             `- No "?" and the named size IS in the Available variants list → treat as the STATEMENT (pick) case. If genuinely uncertain between pick and question, STILL output fills_missing_slot but set confidence ≤ 0.6.`,
             `- Pure decline ("ні", "не треба", "тоді не треба", "нет, спасибо") → slot_action='rejection'.`,
             `- A size NOT in the offered list ("а 46 є?", "может XXL есть?") → primary_intent='availability_check' + extract the size.`,
+            // TRIED AND REVERTED: adding v2's side-by-side CONTRAST block here
+            // ("L підійде" vs "L підійде?", one character apart). It fixed the
+            // statement-pick family inside v2's single-ladder prompt, but grafted
+            // into this block it did the OPPOSITE — golden went from a stable
+            // 25/25 to 23-25/25, newly failing the PICK cases (alt_pick_L,
+            // alt_pick_davayte_L) because the model started over-applying the
+            // question reading — and it still did not fix
+            // men_demo_fit_statement_picks_size. The v2 win came from the
+            // ladder's structure, not from the contrast text; it does not
+            // transfer. Don't re-add it without re-running the golden set 3x.
           ].join('\n')
         : '';
 
@@ -646,9 +988,24 @@ export class ClassifierService {
       .filter((s) => s !== undefined)
       .join('\n');
 
-    const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-      { role: 'system', content: systemPrompt },
-    ];
+    return this.runClassification(params, systemPrompt);
+  }
+
+  /**
+   * Transport + parse, shared by every prompt version.
+   *
+   * Deliberately identical for v1 and v2: the message list, the tool, the model
+   * routing, the enum coercion and the entity normalization all live here, so a
+   * v1-vs-v2 A/B can only differ by the system prompt itself.
+   */
+  private async runClassification(
+    params: Parameters<ClassifierService['classify']>[0],
+    systemPrompt: string,
+  ): Promise<ClassificationResult> {
+    // Provider-neutral message list. The adapter decides how to carry the
+    // system prompt (OpenAI: first message; Anthropic: top-level param) and
+    // normalizes the turns for its API's constraints.
+    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
 
     // Add recent conversation messages for context
     for (const msg of params.recentMessages) {
@@ -660,30 +1017,34 @@ export class ClassifierService {
     // Add current message
     messages.push({ role: 'user', content: params.messageText });
 
-    const callStartMs = performance.now();
-    const completion = await (this.openai.chat.completions.create as any)({
-      model: this.model,
+    const model = params.modelOverride ?? this.model;
+    // `ChatCompletionTool` is a union (function | custom) in the current SDK;
+    // buildClassifyTool always returns the function variant.
+    const toolFn = (buildClassifyTool(params.categories) as any).function as {
+      name: string;
+      description?: string;
+      parameters: Record<string, unknown>;
+    };
+
+    const result = await this.llmFor(model).call({
+      model,
+      system: systemPrompt,
       messages,
-      tools: [buildClassifyTool(params.categories)],
-      tool_choice: {
-        type: 'function',
-        function: { name: 'classify_message' },
+      tool: {
+        name: toolFn.name,
+        description: toolFn.description ?? '',
+        schema: toolFn.parameters,
       },
-      max_completion_tokens: 400,
-      // Deterministic classification. Same input → same output is more
-      // important than minor variability; we've previously hit
-      // non-determinism bugs from temperature>0.
-      temperature: 0,
+      reasoningEffort: params.reasoningEffort,
     });
 
     if (params.usageSink) {
       params.usageSink.push({
-        model: this.model,
-        promptTokens: completion.usage?.prompt_tokens ?? 0,
-        completionTokens: completion.usage?.completion_tokens ?? 0,
-        latencyMs: Math.round(performance.now() - callStartMs),
-        requestId:
-          (completion as { _request_id?: string })?._request_id ?? null,
+        model,
+        promptTokens: result.usage.promptTokens,
+        completionTokens: result.usage.completionTokens,
+        latencyMs: result.latencyMs,
+        requestId: result.requestId,
         source: 'classifier',
       });
     }
@@ -693,23 +1054,23 @@ export class ClassifierService {
     // identify the failure case.
     const truncatedMessage = params.messageText.slice(0, 100);
 
-    const toolCall = completion.choices[0]?.message?.tool_calls?.[0];
-    if (!toolCall) {
+    const raw = result.args;
+    if (!raw) {
       this.logger.error(
-        `[CLASSIFIER_FALLBACK] reason=no_tool_call model=${this.model} message="${truncatedMessage}"`,
+        `[CLASSIFIER_FALLBACK] reason=no_tool_call model=${model} message="${truncatedMessage}"`,
       );
       return this.defaultClassification();
     }
 
-    let raw: any;
-    try {
-      raw = JSON.parse((toolCall as any).function.arguments);
-    } catch (err) {
-      this.logger.error(
-        `[CLASSIFIER_FALLBACK] reason=json_parse_failed model=${this.model} message="${truncatedMessage}" parseError=${(err as Error).message}`,
-      );
-      return this.defaultClassification();
-    }
+    // Enum enforcement. OpenAI's `strict: true` GUARANTEES the model returns a
+    // schema-valid enum member; Anthropic's `input_schema` treats the enum as
+    // guidance and will happily return something else (observed:
+    // primary_intent='rejection', which is a valid slot_action but NOT a valid
+    // primary_intent). An off-enum value matches none of the engine's routing
+    // lists (INTENT_TO_SCENARIO, searchIntents, the product_not_found intent
+    // lists), so it degrades routing SILENTLY. Coerce to the safe default and
+    // log loudly — the violation rate is itself a model-quality metric.
+    this.coerceToSchema(raw, toolFn.parameters, model, truncatedMessage);
 
     // Strict mode forces every entity field to appear in the response
     // (null for unset). Normalize null → undefined so downstream
@@ -781,7 +1142,19 @@ export class ClassifierService {
     }
   }
 
-  private buildMemoryContext(memory: AssistantMemory): string {
+  /**
+   * @param ladderMode v2 only. The volatile state block is rendered LAST in v2,
+   *   which gives it maximum recency — so it must not carry a slot_action
+   *   instruction of its own. v1's variant line ("…names one of these → the
+   *   customer is SELECTING it → slot_action='fills_missing_slot'") cites
+   *   "L підійде" as a pick, and when placed last it overrode the ladder's
+   *   rule 4 and turned "L підійде?" (a QUESTION) into a pick. In ladder mode
+   *   the line states the qualifier and defers to the ladder instead.
+   */
+  private buildMemoryContext(
+    memory: AssistantMemory,
+    ladderMode = false,
+  ): string {
     if (!memory.lastAction) return '';
 
     const parts = [
@@ -822,7 +1195,9 @@ export class ClassifierService {
     // Render as MATCHABLE tokens, not a passive display list: if the
     // current message names one of these, the customer is selecting it.
     parts.push(
-      `- Available variants (if the current message names one of these — bare or inside a short phrase like "L підійде"/"тоді L" — the customer is SELECTING it → slot_action='fills_missing_slot'): ${variantStr}`,
+      ladderMode
+        ? `- Available variants: ${variantStr}\n  ↑ If the current message names one of these WITHOUT an interrogative marker, the customer is selecting it (ladder rule 5). WITH a "?" it is a question (ladder rule 4) — the ladder decides, not this line.`
+        : `- Available variants (if the current message names one of these — bare or inside a short phrase like "L підійде"/"тоді L" — the customer is SELECTING it → slot_action='fills_missing_slot'): ${variantStr}`,
     );
     parts.push(`- Last bot action: ${memory.lastAction || 'none'}`);
     parts.push(`- Waiting for: ${memory.awaitingField || 'nothing specific'}`);

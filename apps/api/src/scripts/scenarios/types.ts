@@ -100,14 +100,19 @@ export const LUXESPACE = 'luxe-space';
 export const SHOWCASE_WOMEN_CLOTHES = 'showcase-women-clothes';
 export const DEMO_WOMEN_CLOTHES_SLUG = 'demo-women-clothes';
 export const DEMO_COSMETICS_SLUG = 'demo-cosmetics';
-// men-demo-store — is_demo=true clothing tenant that exists ONLY on
-// production; it is not reproducible from this repo's seed builders.
+// men-demo-store — is_demo=true clothing tenant. Originally prod-only; it
+// has since been copied to local (catalog, variants, size charts,
+// templates and media), so these scenarios run in BOTH environments. It is
+// not reproducible from this repo's seed builders, so a reseed will not
+// recreate it — copy it from prod again if a local DB is rebuilt.
+//
 // Catalog: 4 size-only products (Джинси МОМ світлі, Сорочка з льону,
 // Футболка базова чорна, Шорти джинсові світлі), no colour axis, all
-// variants in stock. `flow_config` is `{}`, so `resolveSizeHelpMode`
-// yields 'chart'; 3 size_charts rows are authored (Верх / Низ / Сукні,
-// category-scoped, no brands).
+// variants in stock, NO descriptions. Only the T-shirt has XL.
+// `flow_config` is `{}`, so `resolveSizeHelpMode` yields 'chart'; 3
+// size_charts rows are authored (Верх / Низ / Сукні, category-scoped, no
+// brands). Templates include the full checkout set.
 //
-// These scenarios therefore FAIL LOCALLY with "tenant not found" and
-// must be run against prod. Same slug-based indirection as LUXESPACE.
+// Cleanest tenant we have — used as the measuring instrument for
+// classifier A/B tests. Same slug-based indirection as LUXESPACE.
 export const MEN_DEMO_STORE = 'men-demo-store';

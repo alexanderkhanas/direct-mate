@@ -46,6 +46,8 @@ interface Args {
   save?: string;
   diff?: string;
   limit?: number;
+  ab?: string; // candidate model id to A/B against the current classifier model
+  effort?: string; // reasoning_effort for the candidate model
 }
 
 function parseArgs(argv: string[]): Args {
@@ -57,10 +59,24 @@ function parseArgs(argv: string[]): Args {
     else if (t === '--save') a.save = argv[++i];
     else if (t === '--diff') a.diff = argv[++i];
     else if (t === '--limit') a.limit = Number(argv[++i]);
+    else if (t === '--ab') a.ab = argv[++i];
+    else if (t === '--effort') a.effort = argv[++i];
   }
-  if (!a.golden && !a.traces) a.golden = true; // default
+  if (!a.golden && !a.traces && !a.ab) a.golden = true; // default
   return a;
 }
+
+// Per-1M-token prices (USD), from the model research. Used only for the
+// A/B cost estimate; update if pricing moves.
+const PRICES: Record<string, { in: number; out: number }> = {
+  'gpt-5.4-mini': { in: 0.75, out: 4.5 },
+  'gpt-5.6-luna': { in: 1.0, out: 6.0 },
+  'gpt-5.6-terra': { in: 2.5, out: 15 },
+  'gpt-5.4': { in: 2.5, out: 15 },
+  // Anthropic list prices (USD / 1M tokens).
+  'claude-haiku-4-5': { in: 1.0, out: 5.0 },
+  'claude-sonnet-5': { in: 3.0, out: 15.0 },
+};
 
 const c = {
   reset: '\x1b[0m', red: '\x1b[31m', green: '\x1b[32m',
@@ -159,6 +175,134 @@ async function runGolden(classifier: ClassifierService): Promise<boolean> {
   console.log(`\n${c.bold}Golden: ${passed}/${cases.length} passed${c.reset}`);
   if (failures.length) console.log(`${c.red}Failed: ${failures.join(', ')}${c.reset}`);
   return failures.length === 0;
+}
+
+// ─── A/B mode: current model vs a candidate, over the golden set ─
+
+interface Usage { model: string; promptTokens: number; completionTokens: number; latencyMs: number }
+
+async function classifyGolden(
+  classifier: ClassifierService,
+  gc: GoldenCase,
+  override?: { model: string; effort?: string },
+): Promise<{ out: ClassificationResult; usage: Usage; error?: string }> {
+  const empty = { model: override?.model ?? 'A', promptTokens: 0, completionTokens: 0, latencyMs: 0 };
+  let lastErr = '';
+  // Retry transient failures (the new model 401/429/500s intermittently).
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const sink: Usage[] = [];
+    try {
+      const out = await classifier.classify({
+        messageText: gc.params.messageText,
+        recentMessages: gc.params.recentMessages,
+        memory: gc.params.memory,
+        categories: gc.params.categories ?? [],
+        tenantBusinessType: gc.params.tenantBusinessType ?? 'clothing',
+        usageSink: sink as any,
+        modelOverride: override?.model,
+        reasoningEffort: override?.effort,
+      });
+      return { out, usage: sink[0] ?? empty };
+    } catch (err: any) {
+      lastErr = err?.message ?? String(err);
+    }
+  }
+  return { out: {} as ClassificationResult, usage: empty, error: lastErr };
+}
+
+function goldenVerdict(gc: GoldenCase, out: ClassificationResult): { pass: boolean; problems: string[] } {
+  const problems: string[] = [];
+  for (const f of ROUTING_FIELDS) {
+    const exp = gc.expect[f];
+    if (exp !== undefined && out[f] !== exp) problems.push(`${f}: want ${exp}, got ${out[f] ?? '-'}`);
+  }
+  if (gc.expect.entities) {
+    for (const [k, v] of Object.entries(gc.expect.entities)) {
+      if (!entitiesEqual(out.entities ?? {}, k, v)) {
+        const got = (out.entities as Record<string, unknown> ?? {})[k];
+        problems.push(`entities.${k}: want ${v === null ? 'ABSENT' : v}, got ${got ?? 'ABSENT'}`);
+      }
+    }
+  }
+  return { pass: problems.length === 0, problems };
+}
+
+async function runAB(classifier: ClassifierService, args: Args): Promise<boolean> {
+  const file = path.join(__dirname, 'eval', 'golden-cases.json');
+  const cases: GoldenCase[] = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const modelA = (classifier as any).model as string;
+  const modelB = args.ab!;
+  console.log(`${c.bold}A/B over ${cases.length} golden cases${c.reset}`);
+  console.log(`  A = ${modelA} (current)`);
+  console.log(`  B = ${modelB}${args.effort ? ` (effort=${args.effort})` : ''}\n`);
+
+  let aPass = 0, bPass = 0, aErrors = 0, bErrors = 0;
+  let comparable = 0; // cases where BOTH models answered — the only fair basis
+  const disagree: string[] = [];
+  const bOnlyFail: string[] = [];
+  const bOnlyPass: string[] = [];
+  const usageA: Usage[] = [];
+  const usageB: Usage[] = [];
+  const pause = () => new Promise((r) => setTimeout(r, 400)); // ease rate limits
+
+  for (const gc of cases) {
+    const a = await classifyGolden(classifier, gc);
+    await pause();
+    const b = await classifyGolden(classifier, gc, { model: modelB, effort: args.effort });
+    await pause();
+
+    // Score each model independently — a failure on one side must NEVER
+    // silently suppress the other side's score (the bug in the first run).
+    const va = a.error ? { pass: false, problems: [] } : goldenVerdict(gc, a.out);
+    const vb = b.error ? { pass: false, problems: [] } : goldenVerdict(gc, b.out);
+    if (a.error) { aErrors++; } else { usageA.push(a.usage); if (va.pass) aPass++; }
+    if (b.error) { bErrors++; } else { usageB.push(b.usage); if (vb.pass) bPass++; }
+
+    if (a.error || b.error) {
+      const who = a.error ? `A-ERR ${a.error}` : `B-ERR ${b.error}`;
+      console.log(`  ${c.red}${who.slice(0, 90)}${c.reset}  ${gc.id}`);
+      continue;
+    }
+
+    comparable++;
+    if (va.pass && !vb.pass) bOnlyFail.push(gc.id);
+    if (!va.pass && vb.pass) bOnlyPass.push(gc.id);
+
+    const routingDiff = ROUTING_FIELDS
+      .filter((f) => a.out[f] !== b.out[f])
+      .map((f) => `${f}: A=${a.out[f] ?? '-'} B=${b.out[f] ?? '-'}`);
+    console.log(
+      `  A${va.pass ? c.green + '✓' : c.red + '✗'}${c.reset} B${vb.pass ? c.green + '✓' : c.red + '✗'}${c.reset}  ${gc.id} ${c.dim}"${gc.params.messageText.slice(0, 32)}"${c.reset}`,
+    );
+    if (!va.pass) console.log(`        ${c.red}A: ${va.problems.join('; ')}${c.reset}`);
+    if (!vb.pass) console.log(`        ${c.red}B: ${vb.problems.join('; ')}${c.reset}`);
+    if (routingDiff.length) { disagree.push(gc.id); console.log(`        ${c.yellow}${routingDiff.join(' | ')}${c.reset}`); }
+  }
+
+  const avg = (u: Usage[], k: 'promptTokens' | 'completionTokens' | 'latencyMs') =>
+    u.length ? u.reduce((s, x) => s + x[k], 0) / u.length : 0;
+  const costPer1k = (model: string, u: Usage[]) => {
+    const p = PRICES[model];
+    if (!p) return null;
+    return ((avg(u, 'promptTokens') * p.in + avg(u, 'completionTokens') * p.out) / 1e6) * 1000;
+  };
+
+  console.log(`\n${c.bold}═══ A/B RESULT ═══${c.reset}`);
+  console.log(`Cases: ${cases.length} total | ${comparable} answered by BOTH (fair basis)`);
+  console.log(`Reliability:      A ${aErrors} errors   B ${c.bold}${bErrors} errors${c.reset}`);
+  console.log(`Golden accuracy (all cases; an error counts as a miss):`);
+  console.log(`                  A ${aPass}/${cases.length}   B ${bPass}/${cases.length}`);
+  console.log(`B fixed (A✗→B✓): ${bOnlyPass.length}${bOnlyPass.length ? ' — ' + bOnlyPass.join(', ') : ''}`);
+  console.log(`B broke (A✓→B✗): ${bOnlyFail.length}${bOnlyFail.length ? ' — ' + bOnlyFail.join(', ') : ''}`);
+  console.log(`Routing disagreements: ${disagree.length}/${comparable} of comparable cases`);
+  console.log(`\nLatency (avg ms):  A ${avg(usageA, 'latencyMs').toFixed(0)}   B ${avg(usageB, 'latencyMs').toFixed(0)}`);
+  console.log(`Tokens (avg in+out): A ${avg(usageA, 'promptTokens').toFixed(0)}+${avg(usageA, 'completionTokens').toFixed(0)}   B ${avg(usageB, 'promptTokens').toFixed(0)}+${avg(usageB, 'completionTokens').toFixed(0)}`);
+  const ca = costPer1k(modelA, usageA), cb = costPer1k(modelB, usageB);
+  if (ca != null && cb != null) {
+    console.log(`Cost per 1k calls: A $${ca.toFixed(2)}   B $${cb.toFixed(2)}   (B is ${((cb / ca - 1) * 100).toFixed(0)}% ${cb >= ca ? 'more' : 'less'})`);
+  }
+  console.log(`\n${c.bold}Verdict:${c.reset} B ${bPass > aPass ? c.green + 'MORE accurate' : bPass < aPass ? c.red + 'LESS accurate' : 'EQUAL accuracy'}${c.reset} on the golden set (${bPass} vs ${aPass}).`);
+  return bErrors === 0;
 }
 
 // ─── Trace mode ──────────────────────────────────────────────────
@@ -310,7 +454,8 @@ async function main() {
     const ds = app.get(DataSource);
 
     let ok = true;
-    if (args.golden) ok = (await runGolden(classifier)) && ok;
+    if (args.ab) ok = (await runAB(classifier, args)) && ok;
+    else if (args.golden) ok = (await runGolden(classifier)) && ok;
     if (args.traces) ok = (await runTraces(classifier, availability, ds, args)) && ok;
 
     process.exitCode = ok ? 0 : 1;

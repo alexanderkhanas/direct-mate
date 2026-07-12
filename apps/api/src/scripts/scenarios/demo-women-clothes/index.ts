@@ -426,4 +426,81 @@ export const DEMO_WOMEN_CLOTHES_SCENARIOS: Record<string, SimulatorScenario> = {
       },
     ],
   },
+
+  // ─── ask_recommendation on a focused product → size help, not blurb ──
+  // Prod traces 8e716eb1 / c5935498: a hedged pick with a product in focus
+  // wrongly rendered recommend_product (re-describing the same product) and
+  // latched the variant. It must route to the size-help flow instead.
+
+  demo_women_hedged_pick_size_help: {
+    name: 'demo-women — "L підходить думаю" → size help, not a product blurb',
+    description:
+      'Prod trace c5935498. With the product in focus, a hedged size pick ' +
+      'the classifier reads as ask_recommendation must route to the size ' +
+      'chart (chart-mode tenant), NOT recommend_product ("чудова якість…"). ' +
+      'Gating.',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    turns: [
+      { message: 'Покажіть Mango Сукня міді', expect: { decision: 'reply', note: 'Product enters focus' } },
+      {
+        message: 'L підходить думаю',
+        expect: {
+          decision: 'reply',
+          replyNotContains: ['чудова якість', 'відгуки'],
+          note: 'Size help, not recommend_product blurb; no variant latch',
+        },
+      },
+    ],
+  },
+
+  demo_women_compound_chart_maybe: {
+    name: 'demo-women — "давайте розмірну сітку, може L підійде" → chart',
+    description:
+      'Prod trace 8e716eb1. Compound chart-request + hedged size musing → ' +
+      'send the chart, not a product blurb. FLAKY (LLM phrasing).',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    flaky: true,
+    turns: [
+      { message: 'Покажіть Mango Сукня міді', expect: { decision: 'reply' } },
+      {
+        message: 'давайте розмірну сітку, може L підійде',
+        expect: { decision: 'reply', replyNotContains: ['чудова якість'], note: 'Chart, not blurb' },
+      },
+    ],
+  },
+
+  demo_women_bare_size_help_recommend: {
+    name: 'demo-women — bare "допоможіть з розміром" → size help',
+    description:
+      'Prod trace f73b4cc1 class: ask_recommendation with no size + product ' +
+      'in focus → size help, not recommend_product.',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    flaky: true,
+    turns: [
+      { message: 'Покажіть Mango Сукня міді', expect: { decision: 'reply' } },
+      {
+        message: 'допоможіть з розміром',
+        expect: { decision: 'reply', replyNotContains: ['чудова якість'], note: 'Size help, not blurb' },
+      },
+    ],
+  },
+
+  demo_women_product_recommend_still_works: {
+    name: 'demo-women — "що порадите?" with NO product selected → recommend',
+    description:
+      'Regression guard: the gate bails when no product is in focus, so a ' +
+      'genuine product-recommendation request still recommends a product.',
+    tenantId: DEMO_WOMEN_CLOTHES_SLUG,
+    flaky: true,
+    turns: [
+      {
+        message: 'що порадите з суконь?',
+        expect: {
+          decision: 'reply',
+          replyNotContains: ['розмірна сітка'],
+          note: 'No product in focus → product recommendation, not size help',
+        },
+      },
+    ],
+  },
 };
