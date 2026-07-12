@@ -184,6 +184,17 @@ export default function LiveDmConsole() {
     ]);
     const sentText = text;
     setText('');
+    // Reset the attachment after every send. Real Instagram sets
+    // `reply_to.story` on the ONE message that replies to a story — follow-up
+    // messages in the thread carry no media reference (see
+    // instagram.service.ts extractMediaReference). A sticky toggle silently
+    // re-attached the story to every subsequent message, which is not a state
+    // the webhook can ever produce: the engine then re-entered product
+    // selection on "так" / "оформлюємо" (5.5m treats ready_to_order as a
+    // selection intent when media resolves a product) and the conversation
+    // looped instead of checking out. The console must model one story reply,
+    // then plain messages.
+    setMediaMode('none');
 
     try {
       const { data } = await api.post<LiveResult>('/testing/simulator/live/message', {
