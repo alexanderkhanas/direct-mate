@@ -582,27 +582,28 @@ export const SHOWCASE_WOMEN_CLOTHES_SCENARIOS: Record<string, SimulatorScenario>
 
   // ─── 1.2 First impression: open-ended discovery ─────────────────
   showcase_women_open_ended_discovery: {
-    name: 'showcase — Open-ended "Що у вас є?"',
+    name: 'showcase — Open-ended "Що у вас є?" lists the categories',
     description:
-      'Prospect tests the bot with a fully open question. The engine ' +
-      "doesn't currently have a categorized-overview handler — the " +
-      'classifier returns category_browse with no category entity, ' +
-      'the search step finds 0 products, and the engine hands off. ' +
-      "Today's expected behavior is a soft handoff via " +
-      "product_not_found — not the ideal sales-demo experience. " +
-      'Marked flaky and documented as an engine gap (CLAUDE.md ' +
-      'backlog: "show all categories" handler).',
+      'A prospect testing the bot opens with the most obvious question there ' +
+      'is. This used to assert `decision: handoff` — it documented the engine ' +
+      'gap rather than the desired behavior, and it directly contradicted ' +
+      'men_demo_bare_catalog_browse, which asserts the opposite for the same ' +
+      'sentence.\n' +
+      'The gap is closed: a browse that names nothing gets the category menu ' +
+      '(no search ever ran — with no keywords the query never reaches the DB), ' +
+      'and the customer picks from there.',
     tenantId: SHOWCASE_WOMEN_CLOTHES,
     turns: [
       {
         message: 'Що у вас є?',
         expect: {
-          decision: 'handoff',
-          note: 'No category extracted → search finds 0 → handoff (gap)',
+          decision: 'reply',
+          scenario: 'show_categories',
+          replyNotContains: ['уточню наявність'],
+          note: 'Named nothing → category menu, not a human.',
         },
       },
     ],
-    flaky: true,
   },
 
   // ─── 1.3 First impression: direct price query ───────────────────
@@ -837,7 +838,8 @@ export const SHOWCASE_WOMEN_CLOTHES_SCENARIOS: Record<string, SimulatorScenario>
         message: 'У мене проблема з минулим замовленням',
         expect: {
           decision: 'handoff',
-          note: 'Sensitive query → silent handoff',
+          replyContains: ['менеджер'],
+          note: 'Sensitive query → escalate, and tell the customer a human is taking over',
         },
       },
     ],

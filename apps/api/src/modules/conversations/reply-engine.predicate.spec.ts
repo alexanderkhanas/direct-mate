@@ -234,3 +234,255 @@ describe('isCheckoutCommitOnFullCart', () => {
     });
   });
 });
+
+/**
+ * `isPivotToDifferentProduct` — the single definition of "the customer changed
+ * their mind", and the gate on block 4.6c.
+ *
+ * It has to be exactly as wide as the pivots and no wider. Too narrow and a
+ * cancelled item ships (men_demo_checkout_abandon_pivot) or a new product is
+ * never searched for (men_demo_history_leak_pivot). Too wide and it fires on a
+ * bare "M" or a "так" — wiping the variant mid-flow and breaking the cart add.
+ * The dangerous direction is the second one, so most of these are negatives.
+ */
+const proto = ReplyEngineService.prototype as any;
+const isPivot = (
+  classification: ClassificationResult,
+  memory: AssistantMemory,
+): boolean =>
+  proto.isPivotToDifferentProduct.call(
+    { namesTheSameThing: proto.namesTheSameThing },
+    classification,
+    memory,
+  );
+
+/** Jeans in focus, size M resolved, awaiting the customer's "так". */
+const focusedOnJeans = (over: Partial<AssistantMemory> = {}): AssistantMemory =>
+  ({
+    selectedProductId: 'jeans-1',
+    selectedProductTitle: 'Джинси МОМ світлі',
+    selectedCategory: 'Джинси',
+    selectedVariantId: 'v-m',
+    selectedVariantName: 'M',
+    selectionState: 'awaiting_confirmation',
+    ...over,
+  }) as unknown as AssistantMemory;
+
+describe('isPivotToDifferentProduct', () => {
+  describe('IS a pivot', () => {
+    it('names a different product ("А тепер хочу замовити сорочку")', () => {
+      expect(
+        isPivot(
+          classification({
+            slotAction: 'new_inquiry',
+            entities: { productName: 'Сорочка', category: 'Сорочки' },
+          }),
+          focusedOnJeans(),
+        ),
+      ).toBe(true);
+    });
+
+    it('names only a different CATEGORY — the checkout-abandon shape', () => {
+      // The real recorded classifier output: it hands us the product they
+      // pivoted TO and nothing else. No productName at all.
+      expect(
+        isPivot(
+          classification({ slotAction: 'correction', entities: { category: 'Шорти' } }),
+          focusedOnJeans({ selectionState: 'confirmed' } as Partial<AssistantMemory>),
+        ),
+      ).toBe(true);
+    });
+
+    it('a generic noun that titlesOverlap() would call "the same product"', () => {
+      // titlesOverlap strips TITLE_GENERIC_NOUNS (сорочка, футболка…), leaving
+      // an empty token set, and answers "same" — which is why this predicate
+      // must not use it.
+      expect(
+        isPivot(
+          classification({ slotAction: 'new_inquiry', entities: { productName: 'сорочку' } }),
+          focusedOnJeans(),
+        ),
+      ).toBe(true);
+    });
+
+    it('a different product that merely SHARES a word with the focused one', () => {
+      // clothes-store `adds_to_cart_different_product`. "Color Veil Terracotta"
+      // and "Silk Color Collection Помада" are different lipsticks that both
+      // contain the word "Color". titlesOverlap matches on any shared token and
+      // called them the same, so 4.6 kept the old product locked and never
+      // searched for the new one.
+      expect(
+        isPivot(
+          classification({
+            slotAction: 'new_inquiry',
+            entities: { productName: 'Color Veil Terracotta', category: 'Помада' },
+          }),
+          {
+            selectedProductId: 'p1',
+            selectedProductTitle: 'Silk Color Collection Помада',
+            selectedCategory: 'Помада',
+          } as unknown as AssistantMemory,
+        ),
+      ).toBe(true);
+    });
+  });
+
+  describe('is NOT a pivot — the turns the flow depends on', () => {
+    it('bare "M" reply, with the category leaked forward from history', () => {
+      // The classifier carries entities.category on nearly every turn. If this
+      // counted as a pivot, the variant would be wiped on the very turn that
+      // resolves it.
+      expect(
+        isPivot(
+          classification({
+            slotAction: 'fills_missing_slot',
+            entities: { category: 'Джинси', size: 'M' },
+          }),
+          focusedOnJeans(),
+        ),
+      ).toBe(false);
+    });
+
+    it('the same product named again ("Джинси" vs "Джинси МОМ світлі")', () => {
+      expect(
+        isPivot(
+          classification({ slotAction: 'new_inquiry', entities: { productName: 'Джинси' } }),
+          focusedOnJeans(),
+        ),
+      ).toBe(false);
+    });
+
+    it('"так" with no entities at all', () => {
+      expect(
+        isPivot(classification({ slotAction: 'confirmation', entities: {} }), focusedOnJeans()),
+      ).toBe(false);
+    });
+
+    it('an FAQ detour ("а як доставка?") carrying no product entities', () => {
+      expect(
+        isPivot(
+          classification({ primaryIntent: 'delivery_question', slotAction: 'asks_question', entities: {} }),
+          focusedOnJeans(),
+        ),
+      ).toBe(false);
+    });
+
+    it('nothing in focus yet — a first message can never be a pivot', () => {
+      expect(
+        isPivot(
+          classification({
+            slotAction: 'new_inquiry',
+            entities: { productName: 'Сорочка', category: 'Сорочки' },
+          }),
+          {} as AssistantMemory,
+        ),
+      ).toBe(false);
+    });
+
+    it('the SAME product, worded differently by the classifier', () => {
+      // Recorded from pilot-store `cart_remove_buy_one`: the customer says
+      // «хочу тільки Nude Pink» and the classifier renders the focused product
+      // as "Silk Color Помада" while memory holds "Silk Color Collection
+      // Помада". Plain substring says "different" — a false pivot that emptied
+      // the cart. titlesOverlap (which strips the generic noun "помада") is the
+      // second opinion that catches it.
+      expect(
+        isPivot(
+          classification({
+            slotAction: 'correction',
+            entities: {
+              productName: 'Silk Color Помада',
+              category: 'Помада',
+              color: 'nude pink',
+            },
+          }),
+          {
+            selectedProductId: 'p1',
+            selectedProductTitle: 'Silk Color Collection Помада',
+            selectedCategory: 'Помада',
+          } as unknown as AssistantMemory,
+        ),
+      ).toBe(false);
+    });
+
+    it('a category that is really the focused product NAME (selectedCategory pollution)', () => {
+      // `memory.selectedCategory = entities.category ?? searchKeywords[0]`, so a
+      // productName-only search leaves a product name in the category slot.
+      // Exact equality would call an incoming "Джинси" a pivot away from
+      // "Джинси МОМ світлі" and wipe the selection mid-flow.
+      expect(
+        isPivot(
+          classification({ slotAction: 'new_inquiry', entities: { category: 'Джинси' } }),
+          {
+            selectedProductId: 'p1',
+            selectedProductTitle: 'Джинси МОМ світлі',
+            selectedCategory: 'Джинси МОМ світлі',
+          } as unknown as AssistantMemory,
+        ),
+      ).toBe(false);
+    });
+  });
+});
+
+/**
+ * `matchCartItems` — which cart items a raw message names. Drives 4.6c's
+ * remove-if-named branch and the ask-answer matcher. The safety property is
+ * one-directional: it may return 0 or 2 (→ the engine asks), but it must never
+ * return exactly-one for the WRONG item.
+ */
+const matchCartItems = (
+  cart: NonNullable<AssistantMemory['cartItems']>,
+  rawMessage: string,
+): NonNullable<AssistantMemory['cartItems']> =>
+  (ReplyEngineService.prototype as any).matchCartItems.call(
+    { namesTheSameThing: (ReplyEngineService.prototype as any).namesTheSameThing },
+    cart,
+    rawMessage,
+  );
+
+const cartItem = (title: string, variantName: string) =>
+  ({
+    productId: title,
+    variantId: `${title}-${variantName}`,
+    externalProductId: null,
+    externalVariantId: null,
+    title,
+    variantName,
+    price: 0,
+    currency: 'UAH',
+  }) as NonNullable<AssistantMemory['cartItems']>[number];
+
+describe('matchCartItems', () => {
+  const cart = [
+    cartItem('Джинси МОМ світлі', 'M'),
+    cartItem('Сорочка з льону', 'L'),
+  ];
+
+  it('a bare product word names its cart item', () => {
+    const m = matchCartItems(cart, 'джинси');
+    expect(m.map((i) => i.title)).toEqual(['Джинси МОМ світлі']);
+  });
+
+  it('the removed item inside a full sentence («джинси не треба — покажіть шорти»)', () => {
+    // The pivot target «шорти» is not in the cart, so only the jeans match.
+    const m = matchCartItems(cart, 'стоп, джинси не треба — покажіть краще шорти');
+    expect(m.map((i) => i.title)).toEqual(['Джинси МОМ світлі']);
+  });
+
+  it('names nothing in the cart → no match (the ask path)', () => {
+    expect(matchCartItems(cart, 'стоп, покажіть краще шорти')).toHaveLength(0);
+  });
+
+  it('a pivot target that is not in the cart matches nothing', () => {
+    expect(matchCartItems(cart, 'а краще дайте Zara midi')).toHaveLength(0);
+  });
+
+  it('a token shared by two cart items matches BOTH → never a lone wrong guess', () => {
+    const shared = [
+      cartItem('Джинси МОМ світлі', 'M'),
+      cartItem('Шорти джинсові світлі', 'L'),
+    ];
+    // "світлі" is in both titles; the engine sees 2 and asks rather than guess.
+    expect(matchCartItems(shared, 'світлі').length).toBe(2);
+  });
+});

@@ -157,4 +157,64 @@ export const BASE_TEMPLATES: TemplateSpec[] = [
     priority: 90,
     active: true,
   },
+  {
+    // Opt-in: rendered by the engine's off-topic gate when a turn has no
+    // product focus, no product entities, and no FAQ/template answer
+    // («яка погода?», «ти бот?»). Tenants WITHOUT this template keep the
+    // old behavior (AI fallback or handoff) — authoring it is what turns
+    // the gate on. Keep it a polite steer back to the catalog.
+    scenario: 'off_topic_redirect',
+    stage: 'faq',
+    blocks: [
+      'Я найкраще допоможу з нашими товарами 💛 Підкажіть, що вас цікавить — і я покажу варіанти, ціни та розміри.',
+    ],
+    requiredVariables: [],
+    toneTags: ['warm'],
+    priority: 90,
+    active: true,
+  },
+  {
+    // The escalation notice, appended by `doHandoff` to EVERY handoff — an
+    // explicit "can I talk to a human?", an allergy concern, a question the
+    // catalog can't answer, a product we don't stock. Keep the copy neutral
+    // enough to follow any of those: it may be appended to a context line
+    // ("Секунду, уточню наявність 💛"), or stand alone. Engine falls back to
+    // an identical hardcoded line for tenants that haven't authored one.
+    scenario: 'handoff_ack',
+    stage: 'faq',
+    blocks: [
+      'Передаю розмову менеджеру — він відповість вам тут найближчим часом 💛',
+    ],
+    requiredVariables: [],
+    toneTags: ['warm'],
+    priority: 90,
+    active: true,
+  },
+  {
+    // «Що у вас є?» — a browse that names nothing. Answers with the category
+    // menu; the follow-up («футболки») then shows real product cards through
+    // the normal path. A category list is the only answer that survives a
+    // 282-product catalog, where five arbitrary items would read as broken.
+    // Optional: the engine falls back to identical hardcoded copy.
+    scenario: 'show_categories',
+    stage: 'product_discovery',
+    blocks: ['У нас є: {category_list} 💛 Що вас цікавить?'],
+    requiredVariables: ['category_list'],
+    toneTags: ['warm'],
+    priority: 90,
+    active: true,
+  },
+  {
+    // The customer walked away from something mid-order, but the cart holds
+    // more than one item and the classifier only ever tells us the product they
+    // pivoted TO — never the one they cancelled. Ask rather than guess: deleting
+    // the wrong item is worse than one extra turn.
+    scenario: 'ask_cart_removal',
+    stage: 'order_confirmation',
+    blocks: ['Зараз у вашому замовленні:\n{cart_list}\n\nЩо саме прибрати? 💛'],
+    requiredVariables: ['cart_list'],
+    toneTags: ['warm'],
+    priority: 90,
+    active: true,
+  },
 ];

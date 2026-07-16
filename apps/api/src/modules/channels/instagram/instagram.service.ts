@@ -726,21 +726,40 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
         result.handoff.reason ?? 'unknown',
       );
 
-      // Send a natural "checking" message so client doesn't know about handoff
-      const handoffMessage = 'Секунду, уточню для вас інформацію 🙏';
-      await this.conversationsService.saveMessage(
-        conversation.id,
-        params.tenantId,
-        MessageDirection.Outbound,
-        MessageRole.Assistant,
-        handoffMessage,
-      );
+      // The engine owns handoff copy (doHandoff always emits an announce,
+      // tenant-authorable via the `handoff_ack` template). This used to send a
+      // hardcoded "checking" line and DISCARD result.reply, so the engine's
+      // per-reason copy never reached a customer and the demo widget — which
+      // does pass result.reply through — behaved differently from production.
+      // The fallback only covers an engine path that somehow emits no text.
+      //
+      // extraReplies matter here too, and only started to on a handoff once
+      // doHandoff began emitting text: on a first (or dormant) turn the
+      // conversation-start welcome takes over `result.reply` and pushes the
+      // announce down into extraReplies[0]. Sending only `reply` would hand the
+      // customer "Вітаю, з вами АІ асистент" and nothing else — dead air on the
+      // exact turn the announce exists to prevent.
+      const handoffTexts = [
+        result.reply?.text ?? 'Секунду, уточню для вас інформацію 🙏',
+        ...(result.extraReplies ?? []).map((e) => e.text).filter(Boolean),
+      ];
       const encryptedToken = params.connection.accessTokenEncrypted;
-      if (encryptedToken) {
-        const pageAccessToken = this.cryptoService.decrypt(encryptedToken);
-        await this.sendMetaMessage(params.externalUserId, handoffMessage, pageAccessToken).catch((err) => {
-          this.logger.error('Failed to send handoff message', err);
-        });
+      const pageAccessToken = encryptedToken
+        ? this.cryptoService.decrypt(encryptedToken)
+        : null;
+      for (const text of handoffTexts) {
+        await this.conversationsService.saveMessage(
+          conversation.id,
+          params.tenantId,
+          MessageDirection.Outbound,
+          MessageRole.Assistant,
+          text,
+        );
+        if (pageAccessToken) {
+          await this.sendMetaMessage(params.externalUserId, text, pageAccessToken).catch((err) => {
+            this.logger.error('Failed to send handoff message', err);
+          });
+        }
       }
 
       // Notify manager via Telegram (with retry — critical for handoff awareness)

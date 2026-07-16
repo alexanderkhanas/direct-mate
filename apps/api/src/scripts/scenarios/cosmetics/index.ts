@@ -65,16 +65,24 @@ export const COSMETICS_SCENARIOS: Record<string, SimulatorScenario> = {
   },
 
   cosmetics_handoff_safety: {
-    name: 'Cosmetics — Silent handoff on allergy concern',
+    name: 'Cosmetics — Allergy concern escalates, and the customer is told',
     description:
-      'Customer mentions allergy/safety concern → engine escalates to manager. Silent handoff per CLAUDE.md invariant — bot reply must NOT name the manager transfer.',
+      'A safety/allergy question is never the bot\'s to answer — it escalates ' +
+      'to a human. It must also SAY so.\n' +
+      'This scenario used to assert the opposite (replyNotContains "Передаю ' +
+      'розмову менеджеру"), enforcing the old silent-handoff convention where ' +
+      'the manager slid into the thread unannounced. That is gone: a customer ' +
+      'who raises an allergy and then hears nothing at all has been abandoned ' +
+      'mid-sentence on the one topic where being ignored actually matters. ' +
+      'Handoffs announce now — see CLAUDE.md.',
     tenantId: DEMO_COSMETICS_SLUG,
     turns: [
       {
         message: 'у мене сильна алергія на парабени',
         expect: {
           decision: 'handoff',
-          replyNotContains: ['Передаю розмову менеджеру'],
+          replyContains: ['менеджер'],
+          note: 'Escalates AND tells the customer a human is picking it up.',
         },
       },
     ],

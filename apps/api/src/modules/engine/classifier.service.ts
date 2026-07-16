@@ -89,6 +89,17 @@ export interface AssistantMemory {
     price: number;
     currency: string;
   }>;
+  /**
+   * The product/category the customer pivoted to, parked while we ask which
+   * cart item they want removed (`awaitingField === 'cart_removal_choice'`).
+   * Replayed into `entities` on the next turn so the pivot survives the detour.
+   * Optional — absent on every conversation written by the old engine.
+   */
+  pendingPivot?: { category?: string; productName?: string };
+  /** One-shot guard: `ask_cart_removal` has already been asked for this pivot.
+   *  Without it, an answer that matches no cart item leaves the pivot entities
+   *  on the next turn and 4.6c asks again, forever. */
+  cartRemovalAsked?: boolean;
   preQualifyData?: Record<string, string>;
   preQualifyCollected?: boolean;
   recommendedSize?: string;

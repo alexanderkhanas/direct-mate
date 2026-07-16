@@ -512,17 +512,26 @@ export const CLOTHES_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
   // ─── Size chart scenarios ────────────────────────────────────────
 
   size_chart_request_no_chart: {
-    name: 'Size Chart — Request with no chart configured (silent handoff)',
+    name: 'Size Chart — Request with no chart configured escalates and says so',
     description:
-      'Customer asks for a size chart but tenant has none uploaded → silent handoff (no holding message).',
+      'Customer asks for a size chart the tenant has never uploaded → handoff. ' +
+      'The bot must not improvise a chart or a holding line that promises one.\n' +
+      'Doubles as the production-tenant check for the announce rule: ' +
+      'clothes-store is not a demo tenant, so it has no `handoff_ack` template ' +
+      'and exercises the engine\'s hardcoded fallback copy. (This scenario used ' +
+      'to assert reply.text was null — the old silent-handoff convention. See ' +
+      'CLAUDE.md.)',
     tenantId: CLOTHES_STORE,
     turns: [
       {
         message: 'а розмірна сітка Versace є?',
         expect: {
           decision: 'handoff',
-          replyNotContains: ['Секунду', 'уточню', 'сітка'],
-          note: 'No matching chart → silent handoff (reply.text must be null, not a holding message).',
+          replyContains: ['менеджер'],
+          replyNotContains: ['Секунду', 'сітка'],
+          note:
+            'Escalates, announces the manager, and never claims a chart is ' +
+            'coming — the tenant has none.',
         },
       },
     ],

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { ProductVariant } from '../catalog/entities/product-variant.entity';
@@ -31,6 +31,8 @@ export interface AvailabilityResult {
 
 @Injectable()
 export class AvailabilityService {
+  private readonly logger = new Logger(AvailabilityService.name);
+
   constructor(
     @InjectRepository(ProductVariant)
     private readonly variantRepo: Repository<ProductVariant>,
@@ -257,6 +259,30 @@ export class AvailabilityService {
         dto.category,
         searchTerms,
       );
+
+      // Priority 0b: the AND-narrow above requires EVERY search term to appear
+      // literally in `title` or `search_keywords`. Ukrainian inflection breaks
+      // that on a plain substring match: the customer asks for "футболку", the
+      // classifier normalises it to the category noun "Футболки" (plural), and
+      // the catalog says "Футболка базова чорна" (singular) — `'%футболки%'` is
+      // not a substring of `футболка`, one letter apart. The category match had
+      // ALREADY identified the product correctly; the term then destroyed our
+      // own correct answer, and the turn ended in a product_not_found handoff
+      // with the t-shirt sitting in stock (prod trace 53209bf9).
+      //
+      // So: before widening, retry the category ALONE. Staying inside the
+      // category is strictly better than the unconstrained title/keywords
+      // fallback below, which can match a completely different product type
+      // through the keyword blob.
+      if (!variants.length && searchTerms.length > 0) {
+        variants = await this.searchAllByCategoryName(tenantId, dto.category, []);
+        if (variants.length) {
+          this.logger.log(
+            `checkAll: category="${dto.category}" + terms=[${searchTerms.join(', ')}] → 0; ` +
+              `category-only retry → ${variants.length} variants`,
+          );
+        }
+      }
     }
 
     // Without category and without keywords there's nothing to search.
@@ -273,15 +299,19 @@ export class AvailabilityService {
       }
     }
 
-    // Priority 2: ILIKE on description.
-    if (!variants.length) {
-      variants = await this.searchAllByDescription(tenantId, fullPhrase);
-      if (!variants.length) {
-        for (const t of searchTerms) {
-          variants = await this.searchAllByDescription(tenantId, t);
-          if (variants.length) break;
-        }
-      }
+    // Priority 2: ILIKE on description — require ALL search terms to co-occur in
+    // one description, never a single one. A description is prose: matching one
+    // incidental modifier word makes a query resolve to a product it has nothing
+    // to do with. «худі оверсайз» (a hoodie we don't stock) matched the t-shirt
+    // because its care advice says "Для оверсайз-ефекту беріть на розмір
+    // більше" — turning an honest "we don't sell hoodies" handoff into a wrong
+    // product. Requiring all terms present keeps the legitimate case (a material
+    // mentioned only in the description) while killing the incidental-word class.
+    // Synonym coverage (customer says «кофта», description says «светр») belongs
+    // in `search_keywords`, not in a looser description match.
+    // Cause of record: men_demo_unstocked_product_honest_handoff.
+    if (!variants.length && searchTerms.length > 0) {
+      variants = await this.searchAllByDescription(tenantId, searchTerms);
     }
 
     if (variants.length === 0) return [];
@@ -411,9 +441,17 @@ export class AvailabilityService {
       .getMany();
   }
 
-  private async searchAllByDescription(tenantId: string, term: string): Promise<ProductVariant[]> {
+  private async searchAllByDescription(tenantId: string, terms: string[]): Promise<ProductVariant[]> {
     // Two-step: cap PRODUCTS, then load full variant matrix. See note
-    // on searchAllByTitle.
+    // on searchAllByTitle. Every term must appear in the SAME description
+    // (AND) — see the Priority-2 note in checkAll for why a single-term match
+    // is unsafe.
+    if (terms.length === 0) return [];
+    const conds = terms.map((_, i) => `pp.description ILIKE :dq${i}`).join(' AND ');
+    const params: Record<string, string> = { tenantId };
+    terms.forEach((t, i) => {
+      params[`dq${i}`] = `%${t}%`;
+    });
     return this.variantRepo
       .createQueryBuilder('v')
       .innerJoinAndSelect('v.product', 'p')
@@ -424,11 +462,11 @@ export class AvailabilityService {
            SELECT pp.id FROM products pp
             WHERE pp.tenant_id = :tenantId
               AND pp.status = 'active'
-              AND pp.description ILIKE :q
+              AND ${conds}
             ORDER BY pp.last_synced_at DESC NULLS LAST
             LIMIT 10
          )`,
-        { tenantId, q: `%${term}%` },
+        params,
       )
       .getMany();
   }

@@ -161,6 +161,14 @@ interface ProcessingContext {
   /** OpenAI calls made during this turn — model, tokens, latency, request-id.
    *  Populated by classifier + vision call sites via `usageSink`. */
   openaiCalls: OpenAiCallRecord[];
+  /** Title of a cart item removed by `handleCartRemovalChoice` this turn.
+   *  `buildResponse` prepends an ack so the removal isn't silent. */
+  removedFromCart?: string;
+  /** `primaryIntent` as the CLASSIFIER emitted it, before engine blocks rewrite
+   *  it (pre-qualify coerces to `category_browse`, 5.5 rewrites to
+   *  `variant_not_available`, …). Gates that mean "what did the customer ask
+   *  for" must read this, not the live value. */
+  classifierIntent?: string;
 }
 
 const LOG_FILE = path.join(process.cwd(), 'conversations.log');
@@ -622,6 +630,17 @@ export class ReplyEngineService {
 
     ctx.trace.push(`classify: intent=${classification.primaryIntent} action=${classification.recommendedAction} slot=${classification.slotAction} conf=${classification.confidence}`);
 
+    // What the CLASSIFIER said, before any engine block rewrites it. Several do
+    // — the pre-qualify handlers coerce `primaryIntent` to `category_browse`
+    // when the customer hasn't named a specific product — so a gate that reads
+    // `classification.primaryIntent` late in the turn is not reading the
+    // customer's intent, it's reading the engine's own bookkeeping. Cause of
+    // record: «у мене сильна алергія на парабени» classifies as
+    // `product_inquiry`, gets coerced to `category_browse`, and reached
+    // `maybeShowCategories` — answering an allergy concern with a cheerful
+    // category menu instead of escalating to a human.
+    ctx.classifierIntent = classification.primaryIntent;
+
     this.logger.log(
       `Classification: intent=${classification.primaryIntent} stage=${classification.conversationStage} ` +
         `action=${classification.recommendedAction} confidence=${classification.confidence} sentiment=${classification.sentiment}`,
@@ -715,6 +734,12 @@ export class ReplyEngineService {
       }
     }
 
+    // 4.35. The answer to "which item should I remove?" (asked by 4.6c when the
+    // cart was too ambiguous to guess). Runs first: it rewrites `entities` with
+    // the parked pivot, so every block below sees the turn the customer actually
+    // meant — the removal AND the product they pivoted to.
+    this.handleCartRemovalChoice(input, ctx, classification);
+
     // 4.4. Greeting reset: fresh start when customer greets with stale selection state
     // Guard: only reset if greeting is pure (no product/category entities — "Привіт, є куртки?" should keep entities)
     if (
@@ -802,26 +827,44 @@ export class ReplyEngineService {
       }
     }
 
+    // A REMOVAL cue («джинси не треба») means the customer is ABANDONING an
+    // item, never adding one — but the classifier is non-deterministic here and
+    // labels «джинси не треба — покажіть шорти» as `adds_to_cart` about as often
+    // as `correction`. Left alone, the adds_to_cart path (4.6) keeps the cart
+    // and the cancelled item ships. Coerce it to `correction` up front so a
+    // removal phrasing always reaches 4.6c regardless of the classifier's label.
+    // (4.6b also stands down on this cue; only 4.6c performs the removal.)
+    const REMOVE_CUES = [
+      'не треба',
+      'не потрібно',
+      'не хочу',
+      'прибери',
+      'приберіть',
+      'прибрати',
+      'видали',
+      'видаліть',
+      'убери',
+      'уберіть',
+      'забери',
+      'заберіть',
+    ];
+    const hasRemovalCue = REMOVE_CUES.some((c) =>
+      input.messageText.toLowerCase().includes(c),
+    );
+    if (hasRemovalCue && classification.slotAction === 'adds_to_cart') {
+      classification.slotAction = 'correction';
+      ctx.trace.push('4.6: removal cue → coerced adds_to_cart to correction');
+    }
+
     // 4.6 Handle adds_to_cart: customer wants to add another product to cart
     if (classification.slotAction === 'adds_to_cart' && !memory.orderCreated) {
-      // Category mismatch overrides the productName-absent default. Without
-      // this guard, vague asks like "Ще хочу якусь кофту" (productName=null,
-      // category="Кардигани") fall into the sameProduct branch — keeping the
-      // previously-selected Bag locked in and re-confirming it instead of
-      // showing the requested cardigans. Compare against memory.selectedCategory
-      // (set on every successful search in `searchAndFilterProducts`).
-      const userMentionedDifferentCategory =
-        !!classification.entities.category &&
-        !!memory.selectedCategory &&
-        classification.entities.category.toLowerCase() !==
-          memory.selectedCategory.toLowerCase();
-
+      // "Ще хочу якусь кофту" (productName=null, category="Кардигани") is a
+      // DIFFERENT product even though no product was named — a category
+      // mismatch alone is enough. `isPivotToDifferentProduct` is the shared
+      // definition; see it for why a same category never counts.
       const sameProduct =
-        !userMentionedDifferentCategory &&
-        memory.selectedProductTitle &&
-        (!classification.entities.productName ||
-         memory.selectedProductTitle.toLowerCase().includes(classification.entities.productName.toLowerCase()) ||
-         classification.entities.productName.toLowerCase().includes(memory.selectedProductTitle.toLowerCase()));
+        !!memory.selectedProductTitle &&
+        !this.isPivotToDifferentProduct(classification, memory);
 
       // If the pending variant was already confirmed ("так" → awaiting_confirmation)
       // and the user is pivoting to another variant/product ("і ще Rosewood" / "і ще Color Veil"),
@@ -880,22 +923,8 @@ export class ReplyEngineService {
         this.logger.log('adds_to_cart: same product, clearing variant for new selection');
       } else {
         const priorCategory = memory.selectedCategory;
-        // New product entirely — clear everything
-        memory.selectedProductId = undefined;
-        memory.selectedProductTitle = undefined;
-        memory.selectedVariantId = undefined;
-        memory.selectedVariantName = undefined;
-        memory.selectionState = undefined;
-        memory.availableVariants = undefined;
-        memory.variantStep = null;
-        memory.selectedColor = undefined;
-        memory.selectedSize = undefined;
-        // Also clear selectedCategory so the next search picks up the
-        // NEW category from classification.entities.category rather than
-        // re-using the prior one (which was "Сумки" while the user is
-        // now asking for "Кардигани").
-        memory.selectedCategory = undefined;
-        const why = userMentionedDifferentCategory
+        this.clearSelectionForNewProduct(memory, ctx);
+        const why = classification.entities.category
           ? `different category (${classification.entities.category} vs ${priorCategory ?? '?'})`
           : 'different product';
         ctx.trace.push(`4.6: adds_to_cart new product (${why}), cleared all selection`);
@@ -904,7 +933,24 @@ export class ReplyEngineService {
     }
 
     // 4.6b Cart correction: "хочу тільки X" / "ні, давайте тільки Y"
+    //
+    // Owns the `cart_item_added` state outright, and MUST run before 4.6c.
+    // Its semantic is the mirror image: the customer names what to KEEP, and
+    // everything else goes. 4.6c names what to LEAVE. Both arrive as
+    // slotAction='correction' with a productName, so whichever runs first wins
+    // — and here 4.6b is right: it already handles "хочу тільки Nude Pink"
+    // (keep one of two cart variants) and "ні, давайте тільки Color Veil"
+    // (nothing matches → clear the cart, fresh search). Letting 4.6c see these
+    // first turned "keep Nude Pink" into "which item should I remove?" and
+    // emptied the cart. `cartCorrectionHandled` keeps 4.6c off the turn.
+    // A REMOVAL cue («джинси не треба») is the mirror image of 4.6b's keep-only
+    // contract («хочу тільки джинси») — same slotAction='correction' +
+    // productName='Джинси', opposite meaning. `hasRemovalCue` (computed above
+    // 4.6) stands 4.6b down so 4.6c owns the removal instead of "keeping" the
+    // cancelled item.
+    let cartCorrectionHandled = false;
     if (
+      !hasRemovalCue &&
       classification.slotAction === 'correction' &&
       memory.cartItems?.length &&
       memory.selectionState === 'cart_item_added'
@@ -913,6 +959,7 @@ export class ReplyEngineService {
       const wantedColor = classification.entities.color;
 
       if (wantedProduct || wantedColor) {
+        cartCorrectionHandled = true;
         const before = memory.cartItems.length;
 
         // Filter cart to keep only matching item(s)
@@ -953,6 +1000,112 @@ export class ReplyEngineService {
           classification.recommendedAction = 'ask_continue_or_checkout';
         }
       }
+    }
+
+    // 4.6c Pivot: the customer named a DIFFERENT product or category while a
+    // selection — and possibly a cart — is live. "Ні, джинси не треба, покажіть
+    // шорти." / "А тепер хочу замовити сорочку."
+    //
+    // NOT adds_to_cart: 4.6 owns that, and its contract is the opposite one
+    // ("і ще сорочку" commits the pending item and KEEPS the cart). This is the
+    // customer walking away from what they were buying.
+    //
+    // Two things have to happen here and today neither does:
+    //
+    //   1. The stale selection has to go. Without it the next product inherits
+    //      this one's variant: `selectedVariantId` still points at the jeans' M,
+    //      5.5c is skipped (it requires no variant), the search's upgrade check
+    //      promotes straight to awaiting_confirmation, and the bot offers
+    //      "Сорочка з льону, M — оформлюємо?" carrying a variant id that belongs
+    //      to a different product into buildOrderPayload.
+    //
+    //   2. The item they just cancelled has to leave the cart, or it ships.
+    //      (men_demo_checkout_abandon_pivot: the order went out with the jeans.)
+    //
+    // Clearing selectionState is also what makes `shouldSearchProducts`'s
+    // "awaiting_confirmation → no need to search" short-circuit unreachable on a
+    // pivot — the reason the shirt was never searched for in the first place.
+    //
+    // Gated on slotAction ∈ {new_inquiry, correction}: a pure "так"/"ні" is
+    // never a pivot (a spuriously leaked category on a confirmation turn would
+    // otherwise wipe the variant and break the cart add), and those two are
+    // exactly the actions where a fresh search is right anyway. Media turns are
+    // exempt — classifyMessage runs BEFORE media resolution, so a leaked
+    // category on a story reply would wipe the cart before the photo has even
+    // named its product.
+    if (
+      !memory.orderCreated &&
+      !input.mediaReference &&
+      !cartCorrectionHandled && // 4.6b owns `cart_item_added` corrections
+      memory.selectedProductId &&
+      (classification.slotAction === 'new_inquiry' ||
+        classification.slotAction === 'correction') &&
+      this.isPivotToDifferentProduct(classification, memory)
+    ) {
+      const cart = memory.cartItems ?? [];
+      const abandoned = memory.selectedProductId;
+
+      if (cart.length > 0) {
+        // Did the customer NAME the item to drop? «джинси не треба» names it;
+        // «покажіть шорти» doesn't. Only a name that matches a real cart item
+        // counts — a named PIVOT target that isn't in the cart («дайте Zara»)
+        // matches nothing and falls through to the ask.
+        const namedInCart = this.matchCartItems(cart, input.messageText);
+
+        if (namedInCart.length === 1) {
+          // They told us exactly what to remove. Do it — no needless question.
+          const gone = namedInCart[0];
+          memory.cartItems = cart.filter((it) => it.variantId !== gone.variantId);
+          memory.cartRemovalAsked = undefined;
+          ctx.removedFromCart = gone.title;
+          // The removed product was named THIS turn; it must not also drive the
+          // pivot search (which should follow the category — «Шорти»).
+          if (
+            classification.entities.productName &&
+            this.namesTheSameThing(classification.entities.productName, gone.title)
+          ) {
+            classification.entities.productName = undefined;
+          }
+          ctx.trace.push(
+            `4.6c: pivot — removed named "${gone.title}" (cart=${memory.cartItems.length})`,
+          );
+        } else if (cart.length === 1 && cart[0].productId === abandoned) {
+          // Nothing named, but the single cart item IS what they were looking
+          // at — unambiguous.
+          memory.cartItems = [];
+          memory.cartRemovalAsked = undefined;
+          ctx.trace.push(
+            `4.6c: pivot — removed cancelled "${cart[0].title}" from cart`,
+          );
+        } else if (memory.cartRemovalAsked) {
+          // We already asked once and got no usable answer. Asking again on the
+          // very next turn is an infinite loop (the pivot entities are still on
+          // the turn, so 4.6c would re-fire forever). Proceed with the pivot and
+          // leave the cart alone — a chatty bot is bad, a stuck one is worse.
+          ctx.trace.push(
+            '4.6c: ambiguous cart, already asked once → proceeding without removal',
+          );
+        } else {
+          // 2+ items and nothing named (or a name matching several). Guessing
+          // here risks deleting an item they still want. Ask.
+          return await this.askWhichCartItemToRemove(
+            input,
+            ctx,
+            classification,
+            cart,
+          );
+        }
+      }
+
+      this.clearSelectionForNewProduct(memory, ctx);
+      // Checkout residue: 4.6c fires mid-checkout, where awaitingField is
+      // 'delivery_info'. Nothing gates on it today, but it leaks into the
+      // classifier prompt ("Currently waiting for: delivery_info") on a turn
+      // that is no longer a checkout.
+      memory.awaitingField = undefined;
+      this.dropUnstatedVariantEntities(input, ctx, classification);
+      ctx.trace.push('4.6c: pivot → cleared selection for the new product');
+      this.logger.log('4.6c: pivot to a different product — selection cleared');
     }
 
     ctx.classification = classification;
@@ -2152,6 +2305,13 @@ export class ReplyEngineService {
           !this.canAnswerFromFocusedProduct(classification, memory) &&
           !this.isCheckoutCommitOnFullCart(classification, memory) &&
           ['product_inquiry', 'ready_to_order', 'availability_check', 'category_browse'].includes(classification.primaryIntent)) {
+        // «Що у вас є?» — a browse that named nothing. Not a failed search: no
+        // search ever ran (no keywords ⇒ searchProducts returns before the DB).
+        // Answer with the catalog instead of escalating the customer's opening
+        // message. Named-but-missing products still fall through and escalate.
+        const categoriesReply = await this.maybeShowCategories(input, ctx);
+        if (categoriesReply) return categoriesReply;
+
         ctx.trace.push('search: product not found → handoff');
         this.logger.log('Product not found — using product_not_found template + handoff');
         classification.recommendedAction = 'product_not_found';
@@ -2448,6 +2608,57 @@ export class ReplyEngineService {
           memory.lastAction = 'told_variant_not_available';
           ctx.trace.push(
             `5.5o: size "${userSize}" not carried → variant_not_available (alts=${inStockAlts.length})`,
+          );
+          return;
+        }
+      }
+    }
+
+    // Colour named on a product that has NO colour axis at all (size-only
+    // catalog: variants carry `color: null`). No variant can ever match, so
+    // without this branch the turn falls through to a generic product card
+    // that never addresses the colour ask («а в чорному є?» → silence about
+    // чорний). Deliberately narrower than the size branch above: products
+    // WITH a colour axis keep their existing colour-overlap flows
+    // (5.5b/5.5c + colorsOverlap) untouched. Guard: when the colour is part
+    // of the product's own identity (in the title or search_keywords —
+    // «Футболка базова чорна» asked "в чорному") it is NOT a mismatch;
+    // skip and let the normal flow answer. Only a colour absent from the
+    // product surface gets the honest "not carried" reply.
+    if (userColor && !userSize) {
+      const productHasColorAxis = productData[0].variants.some((v) => v.color);
+      const productSurface = [
+        productData[0].product.title,
+        productData[0].product.searchKeywords ?? '',
+      ]
+        .join(' ')
+        .toLowerCase();
+      const colorForms = [userColor, ...this.translateColor(userColor)];
+      const stemOf = (s: string) =>
+        s
+          .toLowerCase()
+          .replace(/(ими|ому|ого|ій|ий|а|е|і|у|ю)$/u, '')
+          .slice(0, 6);
+      const colorIsProductOwnColor = colorForms.some((form) => {
+        const stem = stemOf(form);
+        return stem.length >= 3 && productSurface.includes(stem);
+      });
+      if (!productHasColorAxis && !colorIsProductOwnColor) {
+        const inStockAlts = productData[0].variants.filter(
+          (v) => v.effectiveAvailable > 0,
+        );
+        if (inStockAlts.length > 0) {
+          memory.requestedVariant = userColor;
+          memory.selectedProductId = productData[0].product.id;
+          memory.availableVariants = this.buildAvailableVariantsList(inStockAlts);
+          memory.selectedVariantId = undefined;
+          memory.selectedVariantName = undefined;
+          ctx.isFirstProductPresentation = false;
+          classification.primaryIntent = 'variant_not_available';
+          classification.recommendedAction = 'variant_not_available';
+          memory.lastAction = 'told_variant_not_available';
+          ctx.trace.push(
+            `5.5o: color "${userColor}" asked on a colorless product → variant_not_available (alts=${inStockAlts.length})`,
           );
           return;
         }
@@ -3364,6 +3575,11 @@ export class ReplyEngineService {
           !this.canAnswerFromFocusedProduct(classification, memory) &&
           !this.isCheckoutCommitOnFullCart(classification, memory) &&
           (!productData || productData.length === 0)) {
+        // Sibling of the search-side gate: a browse that named nothing gets the
+        // catalog, not a human. Reachable when the search never ran at all.
+        const categoriesReply = await this.maybeShowCategories(input, ctx);
+        if (categoriesReply) return categoriesReply;
+
         ctx.trace.push('handoff: product_not_found');
         this.logger.log('No template + no products found for product intent → handoff');
         return this.doHandoff(input, 'product_not_found', 'Секунду, уточню наявність 💛');
@@ -3621,11 +3837,28 @@ export class ReplyEngineService {
     //   AND productData?.length === 1
     //   AND chart resolves for the product's brand/category
     // No-match: silent skip — no extra bubble, no caption.
-    const extraReplies = await this.maybeAttachSizeChart(
+    // The customer just told us which cart item to drop (via 4.6c remove-if-named
+    // or the ask-answer). Acknowledge it — the rest of this reply is about the
+    // product they pivoted TO, so without this the removal happens invisibly.
+    // Placed here, after BOTH the template and AI-fallback branches, so the ack
+    // is present whichever one rendered (the pivot search sometimes lands in AI
+    // fallback, which would otherwise speak its own inconsistent removal wording).
+    if (ctx.removedFromCart) {
+      finalReply = `Прибрала ${ctx.removedFromCart} із замовлення 💛\n\n${finalReply}`;
+    }
+
+    const chartExtras = await this.maybeAttachSizeChart(
       input,
       ctx,
       templateResult?.scenario,
     );
+    const faqExtras = await this.maybeAnswerSecondaryFaq(
+      input,
+      ctx,
+      templateResult?.scenario,
+    );
+    const mergedExtras = [...(chartExtras ?? []), ...(faqExtras ?? [])];
+    const extraReplies = mergedExtras.length > 0 ? mergedExtras : undefined;
 
     return {
       decision: ReplyDecision.Reply,
@@ -3696,6 +3929,72 @@ export class ReplyEngineService {
         imageUrls: [chartImageUrl],
       },
     ];
+  }
+
+  /**
+   * Compound messages («скільки коштує футболка і як з доставкою?») carry a
+   * second, FAQ-shaped question that the single-intent classifier drops — the
+   * primary render answers the product half and the delivery/payment half
+   * silently vanishes, so the customer has to repeat themselves. After the
+   * primary render, scan the raw message for delivery/payment stems and append
+   * the tenant's authored FAQ answer as one follow-up bubble.
+   *
+   * Guards:
+   * - fires only on template-rendered product-ish primaries (the AI-fallback
+   *   path saw the whole message and can answer both halves itself);
+   * - never doubles an answer the primary scenario already gave (a pure
+   *   «а як доставка?» renders answer_delivery as the primary → same-scenario
+   *   guard skips, and it isn't product-ish anyway);
+   * - stems, not full words, so Ukrainian case endings match («з доставкою»);
+   * - one suffix per turn.
+   */
+  private async maybeAnswerSecondaryFaq(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+    primaryScenario: string | undefined,
+  ): Promise<ReplyEngineOutput['extraReplies']> {
+    if (!primaryScenario) return undefined;
+    const PRODUCTISH_PRIMARIES = [
+      'show_price',
+      'show_price_with_variants',
+      'show_products',
+      'recommend_product',
+      'confirm_selection',
+      'confirm_variant_available',
+      'confirm_selection_last_in_stock',
+      'ask_variant_choice',
+      'ask_size_choice',
+      'ask_size_for_color',
+      'ask_color_for_size',
+    ];
+    if (!PRODUCTISH_PRIMARIES.includes(primaryScenario)) return undefined;
+
+    const msg = input.messageText.toLowerCase();
+    const SECONDARY_FAQ_CHECKS: Array<{ scenario: string; stems: string[] }> = [
+      {
+        scenario: 'answer_delivery',
+        stems: ['доставк', 'доставл', 'відправ', 'нова пошта', 'нову пошту', 'новою поштою', 'укрпошт'],
+      },
+      {
+        scenario: 'answer_payment',
+        stems: ['оплат', 'оплач', 'передоплат', 'накладен', 'наложк', 'наложен'],
+      },
+    ];
+
+    for (const check of SECONDARY_FAQ_CHECKS) {
+      if (check.scenario === primaryScenario) continue;
+      if (!check.stems.some((stem) => msg.includes(stem))) continue;
+      const rendered = await this.templateEngine.renderCustomScenario(
+        input.tenantId,
+        check.scenario,
+        {},
+      );
+      if (rendered) {
+        ctx.trace.push(`secondary_faq: appended ${check.scenario} (compound question)`);
+        return [{ text: rendered.text, sendNow: true }];
+      }
+    }
+    return undefined;
   }
 
   // ─── Product search helpers ────────────────────────────────────
@@ -4450,6 +4749,467 @@ export class ReplyEngineService {
 
   // ─── Product search helpers ────────────────────────────────────
 
+  /**
+   * The turn names a product or a category that is NOT the one in focus.
+   *
+   * The single definition of "the customer changed their mind". It was
+   * previously re-derived inline in three places with three different keys
+   * (4.6's `sameProduct`, the focus gate's same-category rule,
+   * `isCheckoutCommitOnFullCart`'s category rule) and was MISSING from the two
+   * gates that most needed it — which is the whole
+   * `men_demo_history_leak_pivot` / `men_demo_checkout_abandon_pivot` bug class.
+   *
+   * Two deliberate choices:
+   *
+   * - Bidirectional substring, NOT `titlesOverlap`. That helper strips
+   *   TITLE_GENERIC_NOUNS (сорочка, футболка, куртка…) and returns true when
+   *   either side tokenizes to empty — it exists to PRESERVE a lock when the
+   *   customer types a bare generic noun. Feeding it «сорочку» would answer
+   *   "same product" and defeat the pivot check on the exact turn it exists for.
+   *
+   * - A category only counts when it DIFFERS from the focused one. The
+   *   classifier carries `entities.category` forward from history on nearly
+   *   every turn — a bare "M" reply comes back as {category:'Джинси', size:'M'}
+   *   — so treating any category as a pivot would fire on the turns the flow
+   *   depends on. Same rule as `isVariantQuestionOnFocusedProduct`.
+   */
+  private isPivotToDifferentProduct(
+    classification: ClassificationResult,
+    memory: AssistantMemory,
+  ): boolean {
+    const { productName, category } = classification.entities;
+
+    // A category is only a pivot when it names something the focused product is
+    // NOT. Uses the same word-subset test as the product, because
+    // `memory.selectedCategory` is `entities.category ?? searchKeywords[0]` and
+    // therefore sometimes holds a product NAME ("Джинси МОМ світлі") — exact
+    // equality would read a plain incoming "Джинси" as a pivot away from it.
+    const namesDifferentCategory =
+      nonEmptyStr(category) &&
+      nonEmptyStr(memory.selectedCategory) &&
+      !this.namesTheSameThing(category, memory.selectedCategory);
+
+    const namesDifferentProduct =
+      nonEmptyStr(productName) &&
+      nonEmptyStr(memory.selectedProductTitle) &&
+      !this.namesTheSameThing(productName, memory.selectedProductTitle);
+
+    return namesDifferentCategory || namesDifferentProduct;
+  }
+
+  /**
+   * Same product when every word of the shorter name appears in the longer one.
+   *
+   * Neither obvious cheaper test survives the real classifier output, and each
+   * one shipped a bug:
+   *
+   *   substring — «Silk Color Помада» vs «Silk Color Collection Помада» are the
+   *   same lipstick worded two ways, and substring says "different". That false
+   *   pivot emptied a customer's cart (pilot-store `cart_remove_buy_one`).
+   *
+   *   `titlesOverlap` — matches on ANY shared token after stripping generic
+   *   nouns, so «Color Veil Terracotta» and «Silk Color Collection Помада» are
+   *   "the same" on the strength of the word *color*. That made 4.6 treat a
+   *   genuinely new product as the current one (`adds_to_cart_different_product`).
+   *   It also answers "same" whenever either side strips to empty, which is why
+   *   a bare «сорочку» reads as the focused jeans.
+   *
+   * The subset test gets all three right: {silk,color,помада} ⊆ {silk,color,
+   * collection,помада} → same. {color,veil,terracotta} ⊄ → different.
+   * {сорочка} ⊄ {джинси,мом,світлі} → different. And {джинси} ⊆ {джинси,мом,
+   * світлі} → same, so naming the focused product loosely still isn't a pivot.
+   */
+  private namesTheSameThing(a: string, b: string): boolean {
+    const words = (s: string): Set<string> =>
+      new Set(
+        s
+          .toLowerCase()
+          .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+          .split(/\s+/)
+          .filter((t) => t.length >= 2),
+      );
+    const A = words(a);
+    const B = words(b);
+    if (A.size === 0 || B.size === 0) return false;
+    const [smaller, larger] = A.size <= B.size ? [A, B] : [B, A];
+    return [...smaller].every((w) => larger.has(w));
+  }
+
+  /**
+   * Drop every trace of the product being left behind, keeping the cart.
+   *
+   * Extracted from 4.6's new-product branch so the pivot block (4.6c) and
+   * `adds_to_cart` clear exactly the same fields — a field that one clears and
+   * the other doesn't is precisely how a variant id from the previous product
+   * survives onto the next one.
+   *
+   * `cartItems` and `lastPresentedProducts` survive on purpose: the cart is the
+   * customer's, and the search overwrites the presented list on the way out.
+   */
+  private clearSelectionForNewProduct(
+    memory: AssistantMemory,
+    ctx: ProcessingContext,
+  ): void {
+    memory.selectedProductId = undefined;
+    memory.selectedProductTitle = undefined;
+    memory.selectedVariantId = undefined;
+    memory.selectedVariantName = undefined;
+    memory.selectionState = undefined;
+    memory.availableVariants = undefined;
+    memory.variantStep = null;
+    memory.selectedColor = undefined;
+    memory.selectedSize = undefined;
+    // Cleared so the next search picks the NEW category out of
+    // classification.entities rather than re-using the one we're leaving.
+    memory.selectedCategory = undefined;
+    // Media-link axis scoping belongs to the product we're leaving. Per the
+    // CLAUDE.md rule, every branch that downgrades routing away from
+    // `confirm_color_variant_in_stock` must clear these, or template-engine
+    // filters {variant_list} to the OLD product's linked colour.
+    this.clearMediaLinkAxisScoping(
+      memory,
+      ctx,
+      'selection cleared for a new product',
+    );
+  }
+
+  /**
+   * True when the (classifier-normalised) entity value is literally present in
+   * the customer's CURRENT message — the deterministic tiebreaker between
+   * "stated this turn" and "carried forward from history".
+   *
+   * The classifier normalises aggressively («ношу М» → size 'M', «чорну» →
+   * color 'чорний'), so this normalises the same way before comparing.
+   *
+   * size:  token-level equality. A token is transliterated Cyrillic→Latin only
+   *        when EVERY character is a size character, so the «м» inside «розмір»
+   *        can never read as a standalone M.
+   * color: stem containment over the entity and its translateColor forms, with
+   *        Ukrainian adjective endings stripped («чорний» matches «чорну»).
+   */
+  private entityEchoedInText(
+    entity: string | undefined,
+    messageText: string,
+    kind: 'size' | 'color',
+  ): boolean {
+    if (!nonEmptyStr(entity)) return false;
+    const msg = messageText.toLowerCase();
+
+    if (kind === 'size') {
+      const SIZE_CYR_TO_LAT: Record<string, string> = { с: 's', м: 'm', х: 'x', л: 'l' };
+      const normalizeSizeToken = (token: string): string => {
+        const chars = [...token];
+        const allSizeChars = chars.every(
+          (ch) => /[0-9smxl]/.test(ch) || SIZE_CYR_TO_LAT[ch] !== undefined,
+        );
+        if (!allSizeChars) return token;
+        return chars.map((ch) => SIZE_CYR_TO_LAT[ch] ?? ch).join('');
+      };
+      const wanted = normalizeSizeToken(entity.toLowerCase().trim());
+      return msg
+        .split(/[^\p{L}\p{N}]+/u)
+        .filter(Boolean)
+        .some((t) => normalizeSizeToken(t) === wanted);
+    }
+
+    const stemOf = (s: string) =>
+      s.toLowerCase().replace(/(ими|ому|ого|ій|ий|а|е|і|у|ю)$/u, '').slice(0, 6);
+    return [entity, ...this.translateColor(entity)].some((form) => {
+      const stem = stemOf(form);
+      return stem.length >= 3 && msg.includes(stem);
+    });
+  }
+
+  /**
+   * On a pivot, drop a size/colour the customer did not actually type THIS turn.
+   *
+   * Clearing memory is not enough. The classifier carries `size: 'M'` forward
+   * from the jeans onto the shirt turn, and because M also exists on the shirt,
+   * 5.5c's match SUCCEEDS and silently pre-selects a size the customer never
+   * asked for. 5.5c's own leak guards only fire when the match FAILS, so a
+   * shared size sails straight through. This is the leak
+   * `men_demo_history_leak_pivot` was written to catch — and it was never
+   * actually reached, because the product_not_found handoff fired first.
+   */
+  private dropUnstatedVariantEntities(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+    classification: ClassificationResult,
+  ): void {
+    // `classification` is passed in, not read off ctx: 4.6c runs inside
+    // classifyMessage, which only publishes ctx.classification on its way out.
+    const entities = classification.entities;
+    const dropped: string[] = [];
+    if (
+      entities.size &&
+      !this.entityEchoedInText(entities.size, input.messageText, 'size')
+    ) {
+      dropped.push(`size="${entities.size}"`);
+      entities.size = undefined;
+    }
+    if (
+      entities.color &&
+      !this.entityEchoedInText(entities.color, input.messageText, 'color')
+    ) {
+      dropped.push(`color="${entities.color}"`);
+      entities.color = undefined;
+    }
+    if (dropped.length) {
+      ctx.trace.push(
+        `4.6c: dropped history-leaked ${dropped.join(', ')} (not stated this turn)`,
+      );
+    }
+  }
+
+  /**
+   * The cart holds more than we can safely reason about, and the customer just
+   * walked away from something. Ask which item goes.
+   *
+   * We know the pivot TARGET ("Шорти") because the classifier gave us that —
+   * but never the item being cancelled, so any automatic removal here is a
+   * guess that can delete an item they still want. Park the pivot in
+   * `pendingPivot` and replay it once they answer, so the pivot itself isn't
+   * lost to the detour.
+   */
+  private async askWhichCartItemToRemove(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+    classification: ClassificationResult,
+    cart: NonNullable<AssistantMemory['cartItems']>,
+  ): Promise<ReplyEngineOutput> {
+    const { memory } = ctx;
+
+    const cartList = cart
+      .map((it, i) => `${i + 1}. ${it.title} (${it.variantName})`)
+      .join('\n');
+
+    // We reached the ask because nothing in the message named a cart item, so a
+    // productName here is a genuine PIVOT target (e.g. «дайте Zara»), not the
+    // item being removed. Belt-and-braces: drop it if it does match a cart item,
+    // so the resumed pivot never searches for something the customer cancelled.
+    const pivotProductName =
+      classification.entities.productName &&
+      this.matchCartItems(cart, classification.entities.productName).length > 0
+        ? undefined
+        : classification.entities.productName;
+
+    memory.pendingPivot = {
+      category: classification.entities.category,
+      productName: pivotProductName,
+    };
+    memory.awaitingField = 'cart_removal_choice';
+    // One-shot. If the answer doesn't identify a cart item, 4.6c re-fires on the
+    // same pivot entities next turn and would ask again, forever.
+    memory.cartRemovalAsked = true;
+
+    const rendered = await this.templateEngine.renderCustomScenario(
+      input.tenantId,
+      'ask_cart_removal',
+      { cart_list: cartList },
+    );
+    const text =
+      rendered?.text ??
+      `Зараз у вашому замовленні:\n${cartList}\n\nЩо саме прибрати? 💛`;
+
+    ctx.trace.push(
+      `4.6c: ambiguous cart (${cart.length} items) → asking which to remove`,
+    );
+
+    const stateUpdate: Partial<ConversationState> = {};
+    stateUpdate.contextJson = memory as any;
+
+    return {
+      decision: ReplyDecision.Reply,
+      reply: { text, sendNow: true },
+      handoff: { required: false, reason: null },
+      stateUpdate,
+      templateScenario: rendered?.scenario ?? 'ask_cart_removal',
+    };
+  }
+
+  /**
+   * Which cart items the customer's message names.
+   *
+   * Match against the RAW MESSAGE, never `entities` — the classifier carries
+   * `entities.category` forward from history on nearly every turn (CLAUDE.md,
+   * focus gate), so trusting it lets a customer who asks «а яка доставка?»
+   * silently lose an item to a leaked `category: 'Джинси'`. The answer to
+   * "what do you mean?" is what they typed.
+   *
+   * Bidirectional `namesTheSameThing` handles a bare «джинси»; the token pass
+   * handles a sentence («джинси не треба, покажіть шорти») that substring-matches
+   * "Джинси МОМ світлі" in neither direction. Two cart items sharing a token
+   * (both "світлі") → both match → caller sees >1 and refuses to guess.
+   */
+  private matchCartItems(
+    cart: NonNullable<AssistantMemory['cartItems']>,
+    rawMessage: string,
+  ): NonNullable<AssistantMemory['cartItems']> {
+    const needle = rawMessage.toLowerCase();
+    return cart.filter(
+      (it) =>
+        this.namesTheSameThing(rawMessage, it.title) ||
+        it.title
+          .toLowerCase()
+          .split(/\s+/)
+          .some((token) => token.length >= 4 && needle.includes(token)),
+    );
+  }
+
+  /**
+   * The answer to `ask_cart_removal` ("джинси"). Remove the named item and
+   * resume the pivot that triggered the question, in the same turn.
+   *
+   * No match → give up quietly: clear the state, keep the cart, let the turn
+   * flow on. Re-asking would risk a loop, and a loop is worse than an
+   * un-removed item the customer can still object to.
+   */
+  private handleCartRemovalChoice(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+    classification: ClassificationResult,
+  ): void {
+    const { memory } = ctx;
+    if (memory.awaitingField !== 'cart_removal_choice') return;
+    if (!memory.cartItems?.length) {
+      memory.awaitingField = undefined;
+      memory.pendingPivot = undefined;
+      return;
+    }
+
+    const named = input.messageText;
+    const matched = this.matchCartItems(memory.cartItems, named);
+
+    const pending = memory.pendingPivot;
+    // Clear the waiting state either way — a second unanswered ask would loop.
+    memory.awaitingField = undefined;
+    memory.pendingPivot = undefined;
+
+    if (matched.length !== 1) {
+      // They didn't answer the question — they changed the subject («а яка
+      // доставка?») or named something ambiguous. Treat the turn as what it
+      // actually is: leave the cart AND the selection alone and let it flow.
+      // Replaying the pivot here would silently wipe a selection on a turn the
+      // customer never meant as a pivot.
+      ctx.trace.push(
+        `cart_removal: "${named}" matched ${matched.length} cart items — cart and selection left intact`,
+      );
+      return;
+    }
+
+    memory.cartItems = memory.cartItems.filter(
+      (it) => it.variantId !== matched[0].variantId,
+    );
+    memory.cartRemovalAsked = undefined; // answered — the one-shot guard resets
+    ctx.removedFromCart = matched[0].title;
+    ctx.trace.push(
+      `cart_removal: removed "${matched[0].title}" (cart=${memory.cartItems.length})`,
+    );
+
+    // Replay the pivot the question interrupted, so «покажіть шорти» still
+    // happens even though the customer's last message only said «джинси».
+    if (pending) {
+      classification.entities.category =
+        classification.entities.category ?? pending.category;
+      classification.entities.productName =
+        classification.entities.productName ?? pending.productName;
+      ctx.trace.push(
+        `cart_removal: resumed pivot (${pending.category ?? pending.productName ?? '?'})`,
+      );
+    }
+    this.clearSelectionForNewProduct(memory, ctx);
+  }
+
+  /**
+   * «Що у вас є?» — a browse that names nothing.
+   *
+   * Today this escalates: with no productName, category or colour there are no
+   * keywords, `searchProducts` returns undefined WITHOUT ever calling the DB,
+   * and the 0-results guard hands the customer's very first message to a human.
+   *
+   * The gate keys on "named nothing", NOT on "found nothing" — that distinction
+   * is load-bearing. «У вас є худі?» names a product, finds none, and must keep
+   * escalating (men_demo_unstocked_product_honest_handoff).
+   *
+   * Answers with the category menu rather than a product sample: `ctx.categories`
+   * is already loaded every turn (zero extra queries), and it is the only answer
+   * that survives a 282-product catalog — five arbitrary items out of 282 reads
+   * as a broken bot. The follow-up («футболки») then shows real product cards
+   * through the normal path.
+   */
+  private async maybeShowCategories(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+  ): Promise<ReplyEngineOutput | null> {
+    const { memory, classification, categories } = ctx;
+    const { productName, category, color, size } = classification.entities;
+
+    if (
+      nonEmptyStr(productName) ||
+      nonEmptyStr(category) ||
+      nonEmptyStr(color) ||
+      nonEmptyStr(size)
+    ) {
+      return null;
+    }
+
+    // `category_browse` ONLY, and read from `ctx.classifierIntent` — what the
+    // CLASSIFIER said, not what the engine has since rewritten.
+    //
+    // Two separate traps here, both of which shipped a wrong answer:
+    //
+    //   1. NOT product_inquiry/availability_check, even though both can arrive
+    //      with empty entities. The empty-entity test above cannot tell "the
+    //      customer named nothing" from "the customer named something we failed
+    //      to extract" — and the second is common for exactly the things we
+    //      don't stock. «У вас є худі оверсайз?» comes back as product_inquiry
+    //      with NO entities, because худі is nowhere in this catalog for the
+    //      classifier to latch onto. A category menu there quietly drops the
+    //      question: they asked if we have hoodies and never got a no.
+    //      (men_demo_unstocked_product_honest_handoff)
+    //
+    //   2. NOT `classification.primaryIntent`, which by this point in the turn
+    //      may be the engine's own bookkeeping. The cosmetics pre-qualify block
+    //      coerces `primaryIntent` to `category_browse` whenever no specific
+    //      product was named — so «у мене сильна алергія на парабени»
+    //      (classified `product_inquiry`) arrived here looking like a browse
+    //      and got answered with a category list instead of being escalated.
+    //      (cosmetics_handoff_safety)
+    if (ctx.classifierIntent !== 'category_browse') return null;
+    if (!categories?.length) return null; // nothing to offer → keep the handoff
+
+    const MAX = 10;
+    const shown = categories.slice(0, MAX);
+    const categoryList =
+      shown.join(', ') + (categories.length > MAX ? ' та інше' : '');
+
+    const rendered = await this.templateEngine.renderCustomScenario(
+      input.tenantId,
+      'show_categories',
+      { category_list: categoryList },
+    );
+    const text =
+      rendered?.text ?? `У нас є: ${categoryList} 💛 Що вас цікавить?`;
+
+    memory.lastAction = 'showed_categories';
+    memory.awaitingField = 'product_choice';
+
+    ctx.trace.push(
+      `catalog_browse: no filter named → show_categories (${categories.length} categories)`,
+    );
+
+    const stateUpdate: Partial<ConversationState> = {};
+    stateUpdate.contextJson = memory as any;
+
+    return {
+      decision: ReplyDecision.Reply,
+      reply: { text, sendNow: true },
+      handoff: { required: false, reason: null },
+      stateUpdate,
+      templateScenario: rendered?.scenario ?? 'show_categories',
+    };
+  }
+
   private shouldSearchProducts(classification: ClassificationResult, memory: AssistantMemory): boolean {
     // Product + variant already confirmed and awaiting customer's "так" — no need to search
     // Exception: correction means user wants to change — must re-search to get productData for 5.5c
@@ -4897,10 +5657,29 @@ export class ReplyEngineService {
     classification: ClassificationResult,
   ): string[] {
     const keywords: string[] = [];
-    if (classification.entities.productName)
-      keywords.push(classification.entities.productName);
-    if (classification.entities.color)
-      keywords.push(classification.entities.color);
+    const { productName, category, color } = classification.entities;
+
+    // Drop a productName that is just the category name again. On a bare
+    // category request ("Хочу ще футболку") the classifier routinely fills BOTH
+    // fields with the same normalised noun — {category: "Футболки",
+    // productName: "Футболки"} — and the duplicate carries no information the
+    // `category` param doesn't already carry exactly.
+    //
+    // Keeping it is actively harmful: `searchAllByCategoryName` AND-narrows on
+    // every keyword, requiring the literal term inside `title` /
+    // `search_keywords`. The catalog stores the SINGULAR ("Футболка базова
+    // чорна") while the category is PLURAL ("Футболки"), so the redundant term
+    // matches nothing, the category match is thrown away, and an in-stock
+    // product ends in a product_not_found handoff (prod trace 53209bf9).
+    // With it dropped, `keywords` is empty and the caller takes the
+    // category-only path — which finds the product immediately.
+    const isCategoryEcho =
+      nonEmptyStr(productName) &&
+      nonEmptyStr(category) &&
+      productName.toLowerCase().trim() === category.toLowerCase().trim();
+
+    if (nonEmptyStr(productName) && !isCategoryEcho) keywords.push(productName);
+    if (nonEmptyStr(color)) keywords.push(color);
     return keywords;
   }
 
@@ -5835,7 +6614,7 @@ export class ReplyEngineService {
     }
 
     if (!chart) {
-      ctx.trace.push('size_chart_request: no chart matched → silent handoff');
+      ctx.trace.push('size_chart_request: no chart matched → handoff');
       this.logToFile({
         event: 'size_chart_no_match',
         conversationId: input.conversationId,
@@ -5952,10 +6731,43 @@ export class ReplyEngineService {
 
   // ─── Handoff helper ────────────────────────────────────────────
 
+  /**
+   * The escalation notice the customer sees. Template-first (`handoff_ack`,
+   * authorable per tenant in the admin panel) with a hardcoded fallback for
+   * tenants that haven't written their own.
+   */
+  private async handoffAnnounce(tenantId: string): Promise<string> {
+    const rendered = await this.templateEngine.renderCustomScenario(
+      tenantId,
+      'handoff_ack',
+      {},
+    );
+    return (
+      rendered?.text ??
+      'Передаю розмову менеджеру — він відповість вам тут найближчим часом 💛'
+    );
+  }
+
+  /**
+   * Escalate to a human, and TELL THE CUSTOMER we are doing it.
+   *
+   * A handoff turn is never silent. `contextMessage` (optional) says what the
+   * bot was doing — "Секунду, уточню наявність" — and the announce line, which
+   * is always appended, says who is picking it up. Callers that pass no
+   * context get the announce alone.
+   *
+   * History: this used to return `reply: null` unless a caller passed a
+   * message, and 15 of 18 call sites didn't — so most escalations produced
+   * dead air. Production papered over it by discarding `result.reply` and
+   * sending its own hardcoded "checking" line from the Instagram sender, which
+   * meant the engine's copy never reached anyone and the two channels
+   * disagreed about what a handoff even looks like. The engine owns the copy
+   * now; senders just deliver it.
+   */
   private async doHandoff(
     input: ReplyEngineInput,
     reason: string,
-    softMessage?: string,
+    contextMessage?: string,
   ): Promise<ReplyEngineOutput> {
     await this.auditService.log({
       tenantId: input.tenantId,
@@ -5963,16 +6775,20 @@ export class ReplyEngineService {
       type: AuditLogType.Handoff,
       details: { reason },
     });
+
+    const announce = await this.handoffAnnounce(input.tenantId);
+    const text = contextMessage ? `${contextMessage}\n\n${announce}` : announce;
+
     this.logToFile({
       event: 'handoff',
       conversationId: input.conversationId,
       inbound: input.messageText,
       reason,
-      softMessage,
+      outbound: text,
     });
     return {
       decision: ReplyDecision.Handoff,
-      reply: softMessage ? { text: softMessage, sendNow: true } : null,
+      reply: { text, sendNow: true },
       handoff: { required: true, reason },
       stateUpdate: null,
     };

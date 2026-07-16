@@ -24,9 +24,13 @@ export function MessageBubble({ turn, brandName }: MessageBubbleProps) {
   // Handoff system card — two lines explaining both that the bot stopped
   // AND that the manager has been notified in Telegram. Demo-only marketing
   // affordance: prospective customer evaluating the bot wants to see how
-  // escalation looks. (Production Instagram silent-handoff invariant is
-  // unaffected — the bot's reply text upstream stays neutral; this card is
-  // a frontend-only system annotation, not part of the engine reply.)
+  // escalation looks.
+  //
+  // It does NOT duplicate the bot's own message. Handoffs now announce
+  // themselves in the reply ("Передаю розмову менеджеру…" — see the handoff
+  // rule in CLAUDE.md), which is what a real Instagram customer would read;
+  // this card is the demo's annotation layer on top, showing the prospect the
+  // part a customer never sees — the Telegram ping reaching a human.
   if (turn.isHandoff) {
     return (
       <div className="flex justify-center demo-msg-in">
