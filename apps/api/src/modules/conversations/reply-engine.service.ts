@@ -3359,7 +3359,16 @@ export class ReplyEngineService {
     const { memory, productData } = ctx;
     const classification = ctx.classification;
 
+    // Read the CLASSIFIER's original intent, not the live one. «Яка ціна?» on a
+    // media-resolved product classifies as ask_price, but the media/5.5 routing
+    // rewrites primaryIntent/recommendedAction to ask_variant_choice before this
+    // runs — so a check on the live values misses, and the customer gets a
+    // variant prompt with no price. `ctx.classifierIntent` is captured right
+    // after classification, before any rewrite. Cause of record:
+    // men_demo_story_price_offers_variants (flaky: fired only when the
+    // classifier happened to emit recommendedAction=show_price).
     const isPriceTurn =
+      ctx.classifierIntent === 'ask_price' ||
       classification.recommendedAction === 'show_price' ||
       classification.primaryIntent === 'ask_price';
     if (!isPriceTurn) return;
