@@ -287,6 +287,16 @@ export class ReplyEngineService {
       return withTrace(await this.doHandoff(input, 'max_failed_turns'));
     }
 
+    // Pasted post link: «https://www.instagram.com/p/DatNLAWgFMB/ Яка ціна?».
+    // The webhook only builds a mediaReference from structured replies/shares,
+    // so a link in the message TEXT is otherwise treated as a keyword search →
+    // 0 rows → handoff (prod trace 151b45cd). Resolve it to the mapped product
+    // and inject a post_reply reference so the existing media flow answers about
+    // that product. Runs BEFORE classify so the URL is stripped from the caption
+    // — «Яка ціна?» then classifies as ask_price, and a bare link becomes an
+    // empty caption (the product presentation the photo-match path already does).
+    input = await this.resolvePastedPostLink(input, ctx);
+
     const classifyResult = await this.classifyMessage(input, ctx);
     if (classifyResult) return withTrace(classifyResult);
 
@@ -1113,6 +1123,52 @@ export class ReplyEngineService {
   }
 
   // ─── Step 3: Media reference resolution (block 4.7) ────────────
+
+  /**
+   * When the customer pastes an Instagram post/reel link in the message text
+   * (no structured attachment), resolve it to the mapped product and return an
+   * `input` carrying a synthetic `post_reply` mediaReference with the URL
+   * stripped from the caption. If there's already a mediaReference, no link, or
+   * the post isn't mapped to a product, returns `input` unchanged so the normal
+   * flow runs (an unmapped link keeps today's plain-text → handoff behavior).
+   */
+  private async resolvePastedPostLink(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+  ): Promise<ReplyEngineInput> {
+    if (input.mediaReference) return input; // a real attachment wins
+    const text = input.messageText ?? '';
+    const urlMatch = text.match(
+      /https?:\/\/(?:www\.)?instagram\.com\/(?:p|reel)\/[A-Za-z0-9_-]+[^\s]*/i,
+    );
+    if (!urlMatch) return input;
+
+    const url = urlMatch[0];
+    let mediaId: string | null = null;
+    try {
+      mediaId = await this.instagramContentService.resolveMediaIdByPostUrl(
+        input.tenantId,
+        url,
+      );
+    } catch (err) {
+      this.logger.warn(`post_link resolution failed (non-fatal): ${err}`);
+      return input;
+    }
+    if (!mediaId) {
+      ctx.trace.push('post_link: url present but not mapped to a product → unchanged');
+      return input;
+    }
+
+    // Strip the URL so the remaining caption drives classification: «Яка ціна?»
+    // → ask_price; a bare link → empty caption → product presentation.
+    const strippedText = text.replace(url, '').replace(/\s{2,}/g, ' ').trim();
+    ctx.trace.push(`post_link: resolved ${url} → mediaId ${mediaId}`);
+    return {
+      ...input,
+      messageText: strippedText,
+      mediaReference: { mediaId, type: 'post_reply' },
+    };
+  }
 
   private async resolveMediaProduct(
     input: ReplyEngineInput,

@@ -1368,4 +1368,39 @@ export const MEN_DEMO_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
       },
     ],
   },
+
+  // ─── Pasted Instagram post link resolves to the product ─────────
+  men_demo_pasted_post_link_price: {
+    name: 'men-demo — A pasted post link + "Яка ціна?" answers about that product',
+    description:
+      'Prod trace 151b45cd: the customer pasted an Instagram post URL in the ' +
+      'message TEXT and asked the price. The webhook only builds a media ' +
+      'reference from structured replies/shares, so a link in the text was ' +
+      'treated as a keyword search → 0 rows → product_not_found handoff — even ' +
+      'though that exact post (/p/DatNLAWgFMB/) is mapped to Сорочка з льону in ' +
+      'instagram_media_mappings.\n' +
+      'The engine now detects the link before classification, resolves it via ' +
+      'the mapping to a post_reply, and strips the URL so «Яка ціна?» classifies ' +
+      'as ask_price → the media flow answers with the price and sizes, no ' +
+      'handoff.\n' +
+      'DATA DEPENDENCY: requires the local men-demo instagram_media_mappings row ' +
+      'with permalink «…/p/DatNLAWgFMB/» → product Сорочка з льону (present in ' +
+      'prod; seed locally if missing).',
+    tenantId: MEN_DEMO_STORE,
+    flaky: true,
+    turns: [
+      {
+        message:
+          'https://www.instagram.com/p/DatNLAWgFMB/?igsh=MXYzN29zNXRkcGloeA==\nЯка ціна ?',
+        expect: {
+          decision: 'reply',
+          replyContains: ['Сорочка з льону', '1599'],
+          replyNotContains: ['уточню наявність', 'менеджеру'],
+          note:
+            'Link resolved to the shirt; price answered instead of the old ' +
+            'product_not_found handoff.',
+        },
+      },
+    ],
+  },
 };

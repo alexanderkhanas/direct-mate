@@ -324,6 +324,45 @@ export class InstagramContentService {
     return { mediaId: null, highlightId: null, type: 'unknown' };
   }
 
+  /**
+   * Resolve a pasted Instagram POST/REEL url («…/p/DatNLAWgFMB/») to the
+   * `instagram_media_id` of the mapping that links it to a product — so the
+   * caller can hand it to the normal media-resolution flow as if it were a
+   * post reply. Returns null when the url isn't a post link or the post isn't
+   * mapped to a product (→ caller keeps today's behavior: plain text → handoff).
+   *
+   * Matched by `permalink` (the shortcode), NOT `instagram_media_id`: a pasted
+   * url gives us the shortcode, while the mapping is keyed by the numeric media
+   * id. This is the same shortcode→product lookup `inheritProductsFromSourcePosts`
+   * already uses for reshared stories.
+   */
+  async resolveMediaIdByPostUrl(
+    tenantId: string,
+    url: string,
+  ): Promise<string | null> {
+    const parsed = this.parseInstagramLink(url);
+    if (parsed.type !== 'post' || !parsed.mediaId) return null;
+    const shortcode = parsed.mediaId;
+
+    const row = await this.mappingRepo
+      .createQueryBuilder('m')
+      .where('m.tenant_id = :tenantId', { tenantId })
+      // Match the shortcode between slashes so it works for both /p/ and /reel/
+      // permalinks. `escapeLike` neutralises `_`/`%` inside shortcodes (SQL LIKE
+      // wildcards) so a shortcode with an underscore can't over-match.
+      .andWhere("m.permalink LIKE :pattern ESCAPE '\\'", {
+        pattern: `%/${this.escapeLike(shortcode)}/%`,
+      })
+      .andWhere('m.product_id IS NOT NULL')
+      .getOne();
+
+    return row?.instagramMediaId ?? null;
+  }
+
+  private escapeLike(value: string): string {
+    return value.replace(/[\\%_]/g, (c) => `\\${c}`);
+  }
+
   async fetchContent(tenantId: string): Promise<{ fetched: number; matched: number }> {
     const connection = await this.connectionRepo.findOne({
       where: { tenantId, type: ConnectionType.Instagram, status: ConnectionStatus.Connected },
