@@ -2623,7 +2623,7 @@ export class ReplyEngineService {
   // extend the trigger to productData.length >= 1 and consolidate
   // alternatives across products.
   private async handleVariantUnavailable(
-    _input: ReplyEngineInput,
+    input: ReplyEngineInput,
     ctx: ProcessingContext,
   ): Promise<void> {
     const { memory, productData } = ctx;
@@ -2633,6 +2633,26 @@ export class ReplyEngineService {
     const userColor = classification.entities.color;
     const userSize = classification.entities.size;
     if (!userColor && !userSize) return;
+
+    // A pure confirmation must not be turned into a variant rejection by a size
+    // the customer never typed this turn. When a variant is already selected
+    // and the classifier merely LEAKED a size (from scrambled/again-classified
+    // history), a bare "Так" would otherwise fall into the size-not-carried
+    // branch below and tell the customer their confirmed size is unavailable —
+    // wiping the sale. This mirrors the confirmation guard 5.5c already carries.
+    // Only skip when the size wasn't actually in this turn's text, so a genuine
+    // "так, а XXL є?"-style typed size still routes correctly.
+    if (
+      classification.slotAction === 'confirmation' &&
+      nonEmptyStr(memory.selectedVariantId) &&
+      !this.entityEchoedInText(userSize, input.messageText, 'size') &&
+      !this.entityEchoedInText(userColor, input.messageText, 'color')
+    ) {
+      ctx.trace.push(
+        '5.5o: bare confirmation on a selected variant, size/color not typed → skip (leaked entity)',
+      );
+      return;
+    }
 
     // Size named that this product simply doesn't carry (e.g. customer says
     // "XL" on an S/M/L shirt). The requested size isn't among ANY of the

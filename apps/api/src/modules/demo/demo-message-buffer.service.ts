@@ -214,12 +214,10 @@ export class DemoMessageBufferService implements OnModuleDestroy {
         return;
       }
 
-      const conversation = await this.conversationsService.findById(
+      const recentMessages = await this.conversationsService.getRecentMessages(
         entry.conversationId,
+        10,
       );
-      const recentMessages = conversation.messages
-        .slice(-10)
-        .map((m) => ({ role: m.role, text: m.text }));
 
       const state = await this.conversationsService.getState(
         entry.conversationId,

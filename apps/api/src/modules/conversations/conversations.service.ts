@@ -143,9 +143,42 @@ export class ConversationsService {
     const conv = await this.conversationRepo.findOne({
       where,
       relations: ['customer', 'messages', 'state'],
+      // The `messages` @OneToMany declares no ordering, so without this the DB
+      // returns rows in UNDEFINED (heap) order. Callers then do
+      // `.messages.slice(-10)` — the last 10 of an unordered array — and fed the
+      // classifier a scrambled transcript (prod conv 3c685eaa: a bare "Так" read
+      // as confirming a joke size, wiping a confirmed XL). `id` is a random v4
+      // UUID and carries no chronology; it is only a tiebreaker to make the
+      // order total and stable, never a chronological signal.
+      order: { messages: { createdAt: 'ASC', id: 'ASC' } },
     });
     if (!conv) throw new NotFoundException(`Conversation ${id} not found`);
     return conv;
+  }
+
+  /**
+   * Last `limit` messages of a conversation, in chronological order.
+   *
+   * Purpose-built for the reply-engine path: `findById` loads EVERY message just
+   * to keep ten, and every production caller then had to `.slice(-10)` an
+   * array whose order was undefined. This does the ordering + capping in SQL —
+   * correctness (guaranteed chronology) and efficiency (10 rows, not the whole
+   * thread) in one query. Fetch newest-first with the LIMIT, then reverse to
+   * chronological for the classifier.
+   */
+  async getRecentMessages(
+    conversationId: string,
+    limit = 10,
+  ): Promise<Array<{ role: MessageRole; text: string | null }>> {
+    const rows = await this.messageRepo.find({
+      where: { conversationId },
+      order: { createdAt: 'DESC', id: 'DESC' },
+      take: limit,
+      select: ['role', 'text', 'createdAt', 'id'],
+    });
+    return rows
+      .reverse()
+      .map((m) => ({ role: m.role, text: m.text }));
   }
 
   async takeover(id: string, tenantId: string | null, managerUserId: string): Promise<Conversation> {

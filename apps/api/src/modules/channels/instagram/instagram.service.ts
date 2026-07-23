@@ -692,11 +692,8 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const recentMessages = (
-        await this.conversationsService.findById(conversation.id)
-      ).messages
-        .slice(-10)
-        .map((m) => ({ role: m.role, text: m.text }));
+      const recentMessages =
+        await this.conversationsService.getRecentMessages(conversation.id, 10);
 
       // Per-engine-call trace correlation. One debounced batch → one
       // engine call → one traceId. Threaded into conversation_traces
@@ -888,9 +885,8 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
     messageText: string,
     state: ConversationState,
   ): Promise<void> {
-    const recentMessages = (await this.conversationsService.findById(conversationId)).messages
-      .slice(-10)
-      .map((m) => ({ role: m.role, text: m.text }));
+    const recentMessages =
+      await this.conversationsService.getRecentMessages(conversationId, 10);
 
     const dryRun = await this.replyEngineService.process({
       source: 'instagram_dry_run',

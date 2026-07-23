@@ -375,6 +375,46 @@ export const MEN_DEMO_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
     ],
   },
 
+  // ─── A bare "Так" must not be hijacked by a leaked size ─────────
+  men_demo_confirm_not_hijacked_by_leaked_size: {
+    name: 'men-demo — Bare confirmation keeps the selected variant',
+    description:
+      'Prod conv 3c685eaa, turn 6. XL is selected and awaiting confirmation. ' +
+      'A pure "Так" must confirm/check out — it must NOT render ' +
+      'variant_not_available. That bug fired because the classifier LEAKED a ' +
+      'size (an out-of-catalog "XXXL", carried from a scrambled history) onto ' +
+      'a confirmation turn, and 5.5o acted on the leaked size with no ' +
+      'slotAction guard, telling the customer their confirmed size was gone.\n' +
+      'The 5.5o guard skips the size-not-carried branch when slotAction=' +
+      'confirmation, a variant is selected, and the size was NOT typed this ' +
+      'turn. Note: this exercises the ENGINE guard; the ORDERING half of the ' +
+      'fix is not simulator-testable (the harness sorts history at the source, ' +
+      'see verify-message-ordering.ts).',
+    tenantId: MEN_DEMO_STORE,
+    flaky: true,
+    turns: [
+      { message: 'Хочу замовити чорну футболку', expect: { decision: 'reply' } },
+      {
+        message: 'XL',
+        expect: {
+          decision: 'reply',
+          state: { selectedVariantName: 'XL', selectionState: 'awaiting_confirmation' },
+          note: 'XL selected and awaiting the customer’s yes',
+        },
+      },
+      {
+        message: 'Так',
+        expect: {
+          decision: 'reply',
+          replyNotContains: ['немає в наявності', 'Доступні варіанти'],
+          note:
+            'Pure confirmation → must NOT render variant_not_available. The ' +
+            'confirmed XL stands.',
+        },
+      },
+    ],
+  },
+
   // ─── A size that does not exist must be named, not fuzzy-matched ─
   men_demo_unknown_size_xl_on_jeans: {
     name: 'men-demo — XL on jeans does not exist → say so, never match L',

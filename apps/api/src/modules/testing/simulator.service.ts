@@ -133,13 +133,12 @@ export class SimulatorService {
       }
 
       // Load recent messages
-      const fullConversation = await this.conversationsService.findById(
-        conversation.id,
-      );
-      const recentMessages = fullConversation.messages
-        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
-        .slice(-10)
-        .map((m) => ({ role: m.role, text: m.text }));
+      // Chronological ordering is now guaranteed at the source
+      // (getRecentMessages), so the old defensive `.sort()` here is gone. That
+      // sort was the exact divergence that hid the prod ordering bug: the
+      // harness repaired an order production shipped broken.
+      const recentMessages =
+        await this.conversationsService.getRecentMessages(conversation.id, 10);
 
       // Reload fresh state
       const freshState = await this.dataSource
@@ -288,13 +287,10 @@ export class SimulatorService {
       );
     }
 
-    const fullConversation = await this.conversationsService.findById(
-      conversation.id,
-    );
-    const recentMessages = fullConversation.messages
-      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
-      .slice(-10)
-      .map((m) => ({ role: m.role, text: m.text }));
+    // Ordering guaranteed at the source; the old compensating `.sort()` (the
+    // production-divergence that masked the ordering bug) is removed.
+    const recentMessages =
+      await this.conversationsService.getRecentMessages(conversation.id, 10);
 
     const freshState = await this.dataSource
       .getRepository(ConversationState)
@@ -397,9 +393,12 @@ export class SimulatorService {
     );
     if (!rows[0]) return { conversationId: null, messages: [], state: {} };
     const full = await this.conversationsService.findById(rows[0].id);
-    const messages = full.messages
-      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
-      .map((m) => ({ role: m.role, text: m.text, createdAt: m.createdAt }));
+    // findById now returns messages in chronological order; no local sort needed.
+    const messages = full.messages.map((m) => ({
+      role: m.role,
+      text: m.text,
+      createdAt: m.createdAt,
+    }));
     const state = await this.dataSource
       .getRepository(ConversationState)
       .findOne({ where: { conversationId: rows[0].id } });

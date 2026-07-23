@@ -169,12 +169,9 @@ export class ConversationTestRunner {
           msg.customer,
         );
 
-        // 3b. Load recent messages for context
-        const fullConversation = await this.conversationsService.findById(conversation.id);
-        const recentMessages = fullConversation.messages
-          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
-          .slice(-10)
-          .map((m) => ({ role: m.role, text: m.text }));
+        // 3b. Load recent messages for context (ordered at the source)
+        const recentMessages =
+          await this.conversationsService.getRecentMessages(conversation.id, 10);
 
         // 3c. Reload current state (may have been updated)
         const freshState = await this.dataSource

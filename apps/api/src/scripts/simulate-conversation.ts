@@ -418,12 +418,11 @@ class ConversationSimulator {
         );
       }
 
-      // Load recent messages
-      const fullConversation = await this.conversationsService.findById(conversation.id);
-      const recentMessages = fullConversation.messages
-        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
-        .slice(-10)
-        .map((m) => ({ role: m.role, text: m.text }));
+      // Load recent messages. Ordering is guaranteed at the source now, so the
+      // old local `.sort()` (which diverged from production and masked the prod
+      // ordering bug) is gone — the harness and prod take the same path.
+      const recentMessages =
+        await this.conversationsService.getRecentMessages(conversation.id, 10);
 
       // Reload fresh state
       const freshState = await this.dataSource

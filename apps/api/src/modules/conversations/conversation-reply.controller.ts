@@ -40,9 +40,8 @@ export class ConversationReplyController {
       dto.messageId,
     );
 
-    const recentMessages = (await this.conversationsService.findById(conversation.id)).messages
-      .slice(-10)
-      .map((m) => ({ role: m.role, text: m.text }));
+    const recentMessages =
+      await this.conversationsService.getRecentMessages(conversation.id, 10);
 
     const result = await this.replyEngineService.process({
       source: 'manual_api',
