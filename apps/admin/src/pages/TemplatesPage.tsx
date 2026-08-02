@@ -21,6 +21,7 @@ const SCENARIO_LABELS: Record<string, string> = {
   conversation_start_greeting: 'Перше привітання в розмові',
   // Product discovery
   show_products: 'Показ товарів',
+  show_products_with_size: 'Показ товарів (розмір відомий)',
   show_price: 'Показ ціни',
   show_price_with_variants: 'Показ ціни + варіанти',
   recommend_product: 'Рекомендація товару',
@@ -89,6 +90,7 @@ const AVAILABLE_VARIABLES =
 const SCENARIO_COLORS: Record<string, string> = {
   greeting: 'bg-blue-100 text-blue-700',
   show_products: 'bg-purple-100 text-purple-700',
+  show_products_with_size: 'bg-purple-100 text-purple-700',
   show_price: 'bg-green-100 text-green-700',
   show_price_with_variants: 'bg-green-100 text-green-700',
   recommend_product: 'bg-amber-100 text-amber-700',

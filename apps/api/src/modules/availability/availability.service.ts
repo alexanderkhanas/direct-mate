@@ -512,6 +512,47 @@ export class AvailabilityService {
     return results;
   }
 
+  /**
+   * `findAllByProductId` for a set of ids, in one query.
+   *
+   * Exists for the reply engine's size-correction narrow. That path must NOT
+   * go through keyword search — a size is not a search keyword, and the
+   * customer's surface form ("чорну") never matches the catalog blob — but it
+   * also cannot use `memory.lastPresentedProducts[].rawVariants`, because on a
+   * tenant that recommends a size those rows were written from an
+   * already-size-filtered `productData` and contain that one size only.
+   * Hydrating the SHOWN ids keeps both guarantees: no keyword search, no
+   * exposure to the classifier's category leak, and a complete variant matrix
+   * with live stock.
+   */
+  async findAllByProductIds(
+    productIds: string[],
+  ): Promise<ReturnType<AvailabilityService['findAllByProductId']>> {
+    if (productIds.length === 0) return [];
+
+    const variants = await this.variantRepo
+      .createQueryBuilder('v')
+      .innerJoinAndSelect('v.product', 'p')
+      .leftJoinAndSelect('v.stockBalance', 's')
+      .where('p.id IN (:...productIds)', { productIds })
+      .andWhere('p.status = :status', { status: 'active' })
+      .andWhere('v.active = true')
+      // Same per-product ceiling as findAllByProductId, applied across the set.
+      .take(20 * productIds.length)
+      .getMany();
+    if (variants.length === 0) return [];
+
+    const results = this.groupVariantsByProduct(variants);
+    await this.loadProductImages(results);
+    // `IN` does not preserve argument order; the caller's list is the order the
+    // customer saw on screen, and the re-show must not reshuffle it.
+    const order = new Map(productIds.map((id, i) => [id, i]));
+    results.sort(
+      (a, b) => (order.get(a.product.id) ?? 0) - (order.get(b.product.id) ?? 0),
+    );
+    return results;
+  }
+
   async getByProductId(
     productId: string,
     variantId?: string,
@@ -618,8 +659,14 @@ export class AvailabilityService {
    * is unused in the seed path. This method mirrors the resolution chain in
    * `catalog.service.ts:107-141` so the reply engine receives the same
    * per-variant URLs that the admin catalog listing does.
+   *
+   * Public because the reply engine's in-memory narrow path
+   * (`narrowLastPresentedInMemory`) rebuilds `ProductSearchResult` rows from
+   * `memory.lastPresentedProducts`, which carries no image data. Two batched
+   * `product_id = ANY($1)` queries beat re-hydrating each product by id.
+   * Side-effect-free apart from mutating the array passed in.
    */
-  private async loadProductImages(
+  async loadProductImages(
     results: Array<{
       product: { id: string; imageUrl?: string | null };
       variants: Array<{ color: string | null; imageUrl: string | null }>;

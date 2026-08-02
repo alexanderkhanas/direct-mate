@@ -11,6 +11,13 @@ export interface SimulatorTurnExpect {
   replyNotContains?: string | string[];
   /** Expected number of image URLs attached */
   imageCount?: number;
+  /**
+   * Lower bound on attached image URLs. Use when the assertion is "images
+   * were attached at all" and the exact count depends on how many products
+   * a search happens to return — `imageCount` would make the test a hostage
+   * to catalog size.
+   */
+  imageCountMin?: number;
   /** Expected number of follow-up replies (extraReplies array length). */
   extraReplyCount?: number;
   /** Substring that at least one extraReplies[*].imageUrls entry must contain. */
@@ -100,6 +107,10 @@ export const LUXESPACE = 'luxe-space';
 export const SHOWCASE_WOMEN_CLOTHES = 'showcase-women-clothes';
 export const DEMO_WOMEN_CLOTHES_SLUG = 'demo-women-clothes';
 export const DEMO_COSMETICS_SLUG = 'demo-cosmetics';
+// demo-altamen — is_demo=true men's clothing tenant seeded from the scraped
+// altamen.com.ua catalog (seed:demo:altamen). Merged multi-color products
+// (color+size variants, per-variant prices — «Сорочка льон» mixes 3300/3900).
+export const DEMO_ALTAMEN_SLUG = 'demo-altamen';
 // men-demo-store — is_demo=true clothing tenant. Originally prod-only; it
 // has since been copied to local (catalog, variants, size charts,
 // templates and media), so these scenarios run in BOTH environments. It is

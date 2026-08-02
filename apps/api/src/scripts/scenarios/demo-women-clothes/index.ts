@@ -446,7 +446,7 @@ export const DEMO_WOMEN_CLOTHES_SCENARIOS: Record<string, SimulatorScenario> = {
         message: 'L підходить думаю',
         expect: {
           decision: 'reply',
-          replyNotContains: ['чудова якість', 'відгуки'],
+          replyNotContains: ['раджу', 'чудова якість', 'відгуки'],
           note: 'Size help, not recommend_product blurb; no variant latch',
         },
       },
@@ -464,7 +464,7 @@ export const DEMO_WOMEN_CLOTHES_SCENARIOS: Record<string, SimulatorScenario> = {
       { message: 'Покажіть Mango Сукня міді', expect: { decision: 'reply' } },
       {
         message: 'давайте розмірну сітку, може L підійде',
-        expect: { decision: 'reply', replyNotContains: ['чудова якість'], note: 'Chart, not blurb' },
+        expect: { decision: 'reply', replyNotContains: ['раджу', 'чудова якість'], note: 'Chart, not blurb' },
       },
     ],
   },
@@ -480,7 +480,7 @@ export const DEMO_WOMEN_CLOTHES_SCENARIOS: Record<string, SimulatorScenario> = {
       { message: 'Покажіть Mango Сукня міді', expect: { decision: 'reply' } },
       {
         message: 'допоможіть з розміром',
-        expect: { decision: 'reply', replyNotContains: ['чудова якість'], note: 'Size help, not blurb' },
+        expect: { decision: 'reply', replyNotContains: ['раджу', 'чудова якість'], note: 'Size help, not blurb' },
       },
     ],
   },

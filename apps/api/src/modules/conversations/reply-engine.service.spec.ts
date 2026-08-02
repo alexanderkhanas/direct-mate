@@ -1056,3 +1056,132 @@ describe('show_products fallthrough hygiene', () => {
     expect(memory.selectionState).toBe('awaiting_product');
   });
 });
+
+// ─── Pre-qualify gate ────────────────────────────────────────────
+//
+// The gate itself (handlePreQualifyClothing / handlePreQualifyCosmetics) had
+// no coverage — every pre-qualify test above targets maybeMidFlowSizeHelp,
+// which runs BEFORE it. These lock in the `before_search` contract:
+// ask in every case except a resolved media reference, a turn that already
+// carries a size, or a turn with no product intent.
+//
+// Cause of record: on demo-altamen, «Хочу замовити футболку» never asked for
+// height/weight because the classifier writes the bare category noun into
+// `entities.productName` ('Футболка'), which used to short-circuit the gate.
+describe('ReplyEngineService pre-qualify gate', () => {
+  const BEFORE_SEARCH = {
+    businessType: 'clothing',
+    preQualifyStrategy: 'before_search',
+    preQualify: { enabled: true, fields: ['height', 'weight'], prompt: 'ASK_HW' },
+    sizeChart: SIZE_CHART,
+  };
+
+  function runClothing(ctxOverrides: Parameters<typeof baseCtx>[0], text = 'хочу футболку') {
+    const svc = makeService();
+    const ctx = baseCtx(ctxOverrides);
+    return {
+      ctx,
+      result: (svc as any).handlePreQualifyClothing(makeInput(text), ctx),
+    };
+  }
+
+  // The regression this suite exists for.
+  it('before_search ASKS even when entities.productName is set', async () => {
+    const { result } = runClothing({
+      flowConfig: BEFORE_SEARCH,
+      classification: {
+        primaryIntent: 'product_inquiry',
+        recommendedAction: 'show_products',
+        slotAction: 'new_inquiry',
+        entities: { productName: 'Футболка', category: 'Футболки' } as any,
+      },
+    });
+    const out = await result;
+    expect(out).not.toBeNull();
+    expect(out.reply.text).toBe('ASK_HW');
+    expect(out.stateUpdate.contextJson.awaitingField).toBe('pre_qualify_data');
+  });
+
+  it('before_search SKIPS when the turn already carries a size', async () => {
+    const { result } = runClothing({
+      flowConfig: BEFORE_SEARCH,
+      classification: {
+        primaryIntent: 'product_inquiry',
+        recommendedAction: 'show_products',
+        slotAction: 'new_inquiry',
+        entities: { productName: 'Сорочка', size: 'L' } as any,
+      },
+    });
+    expect(await result).toBeNull();
+  });
+
+  // The story-reply / screenshot exception: we already know the product.
+  it('before_search SKIPS when a media reference resolved the product', async () => {
+    const svc = makeService();
+    const ctx = baseCtx({
+      flowConfig: BEFORE_SEARCH,
+      classification: {
+        primaryIntent: 'product_inquiry',
+        recommendedAction: 'show_products',
+        slotAction: 'new_inquiry',
+        entities: { category: 'Футболки' } as any,
+      },
+    });
+    (ctx as any).mediaProductData = makeProduct({ variants: [{ size: 'M' }] });
+    expect(await (svc as any).handlePreQualifyClothing(makeInput('це є?'), ctx)).toBeNull();
+  });
+
+  it('before_search SKIPS a bare greeting (no product intent)', async () => {
+    const { result } = runClothing(
+      {
+        flowConfig: BEFORE_SEARCH,
+        classification: {
+          primaryIntent: 'greeting',
+          recommendedAction: 'greeting',
+          dialogueAct: 'greeting',
+          slotAction: 'new_inquiry',
+          entities: {} as any,
+        },
+      },
+      'Привіт',
+    );
+    expect(await result).toBeNull();
+  });
+
+  // Scope guard — after_search_offered must be untouched by the change.
+  it('after_search_offered still SKIPS when entities.productName is set', async () => {
+    const { ctx, result } = runClothing({
+      flowConfig: { ...BEFORE_SEARCH, preQualifyStrategy: 'after_search_offered' },
+      classification: {
+        primaryIntent: 'product_inquiry',
+        recommendedAction: 'show_products',
+        slotAction: 'new_inquiry',
+        entities: { productName: 'Футболка', category: 'Футболки' } as any,
+      },
+    });
+    // Falls through to search (null) rather than returning the prompt, and
+    // must not have taken the before_search branch.
+    expect(await result).toBeNull();
+    expect(ctx.trace.join('|')).not.toContain('before_search');
+  });
+
+  it('cosmetics before_search ASKS even when entities.productName is set', async () => {
+    const svc = makeService();
+    const ctx = baseCtx({
+      flowConfig: {
+        businessType: 'cosmetics',
+        preQualifyStrategy: 'before_search',
+        preQualify: { enabled: true, fields: ['skinType'], prompt: 'ASK_SKIN' },
+      },
+      classification: {
+        primaryIntent: 'product_inquiry',
+        recommendedAction: 'show_products',
+        slotAction: 'new_inquiry',
+        entities: { productName: 'Маска', category: 'Маски' } as any,
+      },
+    });
+    const out = await (svc as any).handlePreQualifyCosmetics(makeInput('хочу маску'), ctx);
+    expect(out).not.toBeNull();
+    expect(out.reply.text).toBe('ASK_SKIN');
+  });
+});

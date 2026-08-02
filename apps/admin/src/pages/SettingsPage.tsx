@@ -109,6 +109,51 @@ function HandoffRulesSection({ settings }: { settings: TenantSettings }) {
   );
 }
 
+/** Size ranges as edited in the form — one row per size, strings so inputs stay controlled. */
+interface SizeRangeRow {
+  size: string;
+  heightMin: string;
+  heightMax: string;
+  weightMin: string;
+  weightMax: string;
+}
+
+/** flow_config keys the form models. Everything else round-trips via the advanced editor. */
+const KNOWN_FLOW_KEYS = [
+  'preQualify',
+  'preQualifyStrategy',
+  'variants',
+  'businessType',
+  'sizeHelpMode',
+  'sizeChart',
+];
+
+function sizeChartToRows(chart: unknown): SizeRangeRow[] {
+  if (!chart || typeof chart !== 'object') return [];
+  return Object.entries(chart as Record<string, any>).map(([size, r]) => ({
+    size,
+    heightMin: r?.heightMin != null ? String(r.heightMin) : '',
+    heightMax: r?.heightMax != null ? String(r.heightMax) : '',
+    weightMin: r?.weightMin != null ? String(r.weightMin) : '',
+    weightMax: r?.weightMax != null ? String(r.weightMax) : '',
+  }));
+}
+
+function rowsToSizeChart(rows: SizeRangeRow[]): Record<string, unknown> | undefined {
+  const chart: Record<string, unknown> = {};
+  for (const r of rows) {
+    const size = r.size.trim();
+    if (!size) continue;
+    chart[size] = {
+      heightMin: Number(r.heightMin) || 0,
+      heightMax: Number(r.heightMax) || 0,
+      weightMin: Number(r.weightMin) || 0,
+      weightMax: Number(r.weightMax) || 0,
+    };
+  }
+  return Object.keys(chart).length > 0 ? chart : undefined;
+}
+
 function FlowConfigSection() {
   const { t } = useT();
   const qc = useQueryClient();
@@ -118,12 +163,16 @@ function FlowConfigSection() {
     queryFn: () => api.get('/engine/config').then(r => r.data),
   });
 
-  const flowConfig = (config?.flowConfig ?? {}) as any;
   const [preQualifyEnabled, setPreQualifyEnabled] = useState(false);
   const [preQualifyPrompt, setPreQualifyPrompt] = useState('');
   const [preQualifyFields, setPreQualifyFields] = useState<string[]>([]);
   const [preQualifyStrategy, setPreQualifyStrategy] = useState<'before_search' | 'after_search_offered'>('after_search_offered');
   const [variantMode, setVariantMode] = useState('single');
+  const [businessType, setBusinessType] = useState('');
+  const [sizeHelpMode, setSizeHelpMode] = useState('');
+  const [sizeRows, setSizeRows] = useState<SizeRangeRow[]>([]);
+  const [advancedJson, setAdvancedJson] = useState('');
+  const [advancedError, setAdvancedError] = useState<string | null>(null);
 
   useEffect(() => {
     if (config) {
@@ -133,27 +182,60 @@ function FlowConfigSection() {
       setPreQualifyFields(fc.preQualify?.fields ?? []);
       setPreQualifyStrategy(fc.preQualifyStrategy ?? 'after_search_offered');
       setVariantMode(fc.variants?.askSequence?.length > 1 ? 'two_step' : 'single');
+      setBusinessType(fc.businessType ?? '');
+      setSizeHelpMode(fc.sizeHelpMode ?? '');
+      setSizeRows(sizeChartToRows(fc.sizeChart));
+      // Keys the form doesn't model (sizeChartMappings, handoff, …) stay
+      // editable as raw JSON so a save can never silently drop them.
+      const rest = Object.fromEntries(
+        Object.entries(fc).filter(([k]) => !KNOWN_FLOW_KEYS.includes(k)),
+      );
+      setAdvancedJson(Object.keys(rest).length > 0 ? JSON.stringify(rest, null, 2) : '');
     }
   }, [config]);
 
   const save = useMutation({
-    mutationFn: () => api.patch('/engine/config', {
-      flowConfig: {
-        preQualify: {
-          enabled: preQualifyEnabled,
-          prompt: preQualifyPrompt || undefined,
-          fields: preQualifyFields.length > 0 ? preQualifyFields : undefined,
+    mutationFn: () => {
+      let advanced: Record<string, unknown> = {};
+      if (advancedJson.trim()) advanced = JSON.parse(advancedJson);
+      return api.patch('/engine/config', {
+        flowConfig: {
+          ...advanced,
+          businessType: businessType || undefined,
+          preQualify: {
+            enabled: preQualifyEnabled,
+            prompt: preQualifyPrompt || undefined,
+            fields: preQualifyFields.length > 0 ? preQualifyFields : undefined,
+          },
+          preQualifyStrategy,
+          sizeHelpMode: sizeHelpMode || undefined,
+          sizeChart: rowsToSizeChart(sizeRows),
+          variants: variantMode === 'two_step' ? {
+            primaryOption: 'color',
+            secondaryOption: 'size',
+            askSequence: ['color', 'size'],
+          } : undefined,
         },
-        preQualifyStrategy,
-        variants: variantMode === 'two_step' ? {
-          primaryOption: 'color',
-          secondaryOption: 'size',
-          askSequence: ['color', 'size'],
-        } : undefined,
-      },
-    }),
+      });
+    },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['store-config'] }),
   });
+
+  const onSave = () => {
+    if (advancedJson.trim()) {
+      try {
+        JSON.parse(advancedJson);
+      } catch (e) {
+        setAdvancedError((e as Error).message);
+        return;
+      }
+    }
+    setAdvancedError(null);
+    save.mutate();
+  };
+
+  const updateRow = (i: number, patch: Partial<SizeRangeRow>) =>
+    setSizeRows(rows => rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
 
   const FIELD_OPTIONS = [
     { value: 'height', label: t('settings_ext.field_height') },
@@ -166,6 +248,21 @@ function FlowConfigSection() {
     <Card>
       <h2 className="text-sm font-semibold text-gray-900 mb-4">{t('settings_ext.conversation_flow')}</h2>
       <div className="space-y-5">
+        {/* Business type — drives vertical routing in the engine */}
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1.5">{t('settings_ext.business_type')}</label>
+          <select
+            value={businessType}
+            onChange={e => setBusinessType(e.target.value)}
+            className="px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 max-w-xs"
+          >
+            <option value="">{t('settings_ext.business_type_unset')}</option>
+            <option value="clothing">{t('settings_ext.business_type_clothing')}</option>
+            <option value="cosmetics">{t('settings_ext.business_type_cosmetics')}</option>
+          </select>
+          <p className="text-xs text-gray-400 mt-1">{t('settings_ext.business_type_desc')}</p>
+        </div>
+
         {/* Pre-qualification */}
         <div>
           <label className="flex items-center gap-2.5 cursor-pointer">
@@ -221,6 +318,100 @@ function FlowConfigSection() {
           )}
         </div>
 
+        {/* Size help mode */}
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1.5">{t('settings_ext.size_help_mode')}</label>
+          <select
+            value={sizeHelpMode}
+            onChange={e => setSizeHelpMode(e.target.value)}
+            className="px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 max-w-xs"
+          >
+            <option value="">{t('settings_ext.size_help_mode_auto')}</option>
+            <option value="chart">{t('settings_ext.size_help_mode_chart')}</option>
+            <option value="measurements">{t('settings_ext.size_help_mode_measurements')}</option>
+          </select>
+          <p className="text-xs text-gray-400 mt-1">{t('settings_ext.size_help_mode_desc')}</p>
+        </div>
+
+        {/* Size ranges (height/weight → size) */}
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1.5">{t('settings_ext.size_chart_ranges')}</label>
+          <p className="text-xs text-gray-400 mb-2">{t('settings_ext.size_chart_ranges_desc')}</p>
+          {sizeRows.length === 0 && (
+            <p className="text-xs text-gray-400 mb-2">{t('settings_ext.size_chart_empty')}</p>
+          )}
+          {sizeRows.length > 0 && (
+            <div className="space-y-2">
+              <div className="grid grid-cols-[4rem_1fr_1fr_1.5rem] gap-2 text-xs text-gray-400">
+                <span>{t('settings_ext.size_chart_size')}</span>
+                <span>{t('settings_ext.size_chart_height')}</span>
+                <span>{t('settings_ext.size_chart_weight')}</span>
+                <span />
+              </div>
+              {sizeRows.map((row, i) => (
+                <div key={i} className="grid grid-cols-[4rem_1fr_1fr_1.5rem] gap-2 items-center">
+                  <input
+                    value={row.size}
+                    onChange={e => updateRow(i, { size: e.target.value })}
+                    placeholder="M"
+                    className="px-2 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 w-full"
+                  />
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      value={row.heightMin}
+                      onChange={e => updateRow(i, { heightMin: e.target.value })}
+                      placeholder={t('settings_ext.size_chart_min')}
+                      className="px-2 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 w-full"
+                    />
+                    <span className="text-gray-300">–</span>
+                    <input
+                      type="number"
+                      value={row.heightMax}
+                      onChange={e => updateRow(i, { heightMax: e.target.value })}
+                      placeholder={t('settings_ext.size_chart_max')}
+                      className="px-2 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 w-full"
+                    />
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      value={row.weightMin}
+                      onChange={e => updateRow(i, { weightMin: e.target.value })}
+                      placeholder={t('settings_ext.size_chart_min')}
+                      className="px-2 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 w-full"
+                    />
+                    <span className="text-gray-300">–</span>
+                    <input
+                      type="number"
+                      value={row.weightMax}
+                      onChange={e => updateRow(i, { weightMax: e.target.value })}
+                      placeholder={t('settings_ext.size_chart_max')}
+                      className="px-2 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 w-full"
+                    />
+                  </div>
+                  <button
+                    onClick={() => setSizeRows(rows => rows.filter((_, idx) => idx !== i))}
+                    className="text-gray-300 hover:text-red-500 transition-colors"
+                    aria-label="remove"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <Button
+            variant="secondary"
+            size="sm"
+            className="mt-2"
+            onClick={() => setSizeRows(rows => [...rows, { size: '', heightMin: '', heightMax: '', weightMin: '', weightMax: '' }])}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {t('settings_ext.size_chart_add_row')}
+          </Button>
+        </div>
+
         {/* Variant selection mode */}
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1.5">{t('settings_ext.variant_selection_mode')}</label>
@@ -234,10 +425,26 @@ function FlowConfigSection() {
           </select>
           <p className="text-xs text-gray-400 mt-1">{t('settings_ext.color_size_desc')}</p>
         </div>
+
+        {/* Advanced: any flow_config key the form above doesn't model */}
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1.5">{t('settings_ext.advanced_engine_config')}</label>
+          <p className="text-xs text-gray-400 mb-2">{t('settings_ext.advanced_engine_config_desc')}</p>
+          <Textarea
+            value={advancedJson}
+            onChange={e => setAdvancedJson(e.target.value)}
+            rows={advancedJson ? 8 : 3}
+            placeholder="{}"
+            className="font-mono text-xs"
+          />
+          {advancedError && (
+            <p className="text-xs text-red-600 mt-1">{advancedError}</p>
+          )}
+        </div>
       </div>
 
       <div className="flex items-center gap-3 mt-4">
-        <Button onClick={() => save.mutate()} loading={save.isPending} size="sm">
+        <Button onClick={onSave} loading={save.isPending} size="sm">
           {t('common.save')}
         </Button>
         {save.isSuccess && <span className="text-xs text-emerald-600">{t('settings.saved')}</span>}

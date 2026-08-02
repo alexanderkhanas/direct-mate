@@ -164,6 +164,15 @@ interface ProcessingContext {
   /** Title of a cart item removed by `handleCartRemovalChoice` this turn.
    *  `buildResponse` prepends an ack so the removal isn't silent. */
   removedFromCart?: string;
+  /** The customer answered "так" to `narrowing_no_match`'s «Пошукати ширше в
+   *  каталозі?». Set by `handleNarrowBroadenChoice` for THIS turn only — never
+   *  persisted, unlike `memory.recommendedSize`, so a one-off "do I have this
+   *  in XL?" can't switch on size-suppressed rendering for the rest of the
+   *  conversation. Consumed in the search path: applies the parked size (which
+   *  is not a search keyword, so the DB can't do it) and suppresses the
+   *  `lastPresentedProducts` re-narrowing, which would otherwise pull the
+   *  result straight back to the products that just failed to match. */
+  broadenNarrowing?: { color?: string; size?: string };
   /** `primaryIntent` as the CLASSIFIER emitted it, before engine blocks rewrite
    *  it (pre-qualify coerces to `category_browse`, 5.5 rewrites to
    *  `variant_not_available`, …). Gates that mean "what did the customer ask
@@ -261,7 +270,16 @@ export class ReplyEngineService {
     // scattered call sites that drift over time. Also captures the
     // outgoing result for the `finally` block so trace persistence
     // sees what we actually returned.
-    const withTrace = (r: ReplyEngineOutput) => {
+    const withTrace = async (r: ReplyEngineOutput) => {
+      // The welcome lives here, not after buildResponse, for the same reason
+      // markReplied does: `process()` has ~15 reply-emitting return paths and
+      // only ONE of them is buildResponse. Anything that answers turn 1 by
+      // returning early — the pre-qualify question, a size chart, a media
+      // match, a 0-row handoff — used to skip the introduction entirely, and
+      // the greeting then landed on top of the bot's SECOND message.
+      // Cause of record: `before_search` asks for height/weight on turn 1, so
+      // «Вітаю, з вами AI-асистент» appeared after it instead of before it.
+      await this.maybePrependWelcome(input, ctx, r);
       r.trace = ctx.trace;
       markRepliedOnResult(ctx.memory, r);
       outputRef = r;
@@ -309,6 +327,11 @@ export class ReplyEngineService {
     const preQualifyResult = await this.handlePreQualify(input, ctx);
     if (preQualifyResult) return withTrace(preQualifyResult);
 
+    // Runs AFTER pre-qualify (which owns the first size the customer gives)
+    // and BEFORE search, so the corrected size reaches the variant filters
+    // that would otherwise still be scoped to the retired one.
+    this.syncRecommendedSizeWithStatedSize(ctx);
+
     const searchResult = await this.searchAndFilterProducts(input, ctx);
     if (searchResult) return withTrace(searchResult);
 
@@ -335,65 +358,6 @@ export class ReplyEngineService {
     if (recSizeHelp) return withTrace(recSizeHelp);
 
     const result = await this.buildResponse(input, ctx);
-
-    // Conversation-start greeting: fire when this is a new conversation
-    // OR the bot has been silent >6h (DORMANT_MS). Skip if classifier
-    // resolved greeting intent (the existing `greeting` scenario covers
-    // that flow on its own — avoid double "Вітаю"). The hardcoded
-    // fallback string fires for tenants without a custom
-    // `conversation_start_greeting` template; tenants can author their
-    // own copy via the admin panel to override.
-    const lastReplyAge = ctx.memory.lastReplyAt
-      ? Date.now() - new Date(ctx.memory.lastReplyAt).getTime()
-      : null;
-    const isDormant =
-      lastReplyAge !== null && lastReplyAge > DORMANT_MS;
-
-    const shouldIntroduce =
-      (!ctx.memory.welcomedAt || isDormant) &&
-      ctx.classification?.primaryIntent !== 'greeting' &&
-      !!result.reply?.text;
-
-    if (shouldIntroduce) {
-      const greeting = await this.templateEngine.renderCustomScenario(
-        input.tenantId,
-        'conversation_start_greeting',
-        {},
-      );
-      const introText =
-        greeting?.text ?? 'Вітаю, з вами АІ асистент @directmate.app';
-
-      ctx.trace.push(
-        isDormant
-          ? `welcome re-prepended (dormant ${Math.round(lastReplyAge! / 60000)}m since ${ctx.memory.lastReplyAt})`
-          : 'first-turn welcome prepended',
-      );
-      ctx.memory.welcomedAt = new Date().toISOString();
-      result.stateUpdate = {
-        ...result.stateUpdate,
-        contextJson: { ...ctx.memory },
-      };
-      const contextualReply = result.reply!;
-      result.reply = { text: introText, sendNow: true };
-      result.extraReplies = [
-        {
-          text: contextualReply.text!,
-          sendNow: true,
-          imageUrls: contextualReply.imageUrls,
-        },
-        ...(result.extraReplies ?? []),
-      ];
-    } else if (ctx.classification?.primaryIntent === 'greeting') {
-      ctx.trace.push('welcome skipped: greeting intent');
-    } else if (ctx.memory.welcomedAt && lastReplyAge !== null && !isDormant) {
-      ctx.trace.push(
-        `welcome skipped: not dormant (last reply ${Math.round(lastReplyAge / 60000)}m ago)`,
-      );
-    } else if (ctx.memory.welcomedAt && lastReplyAge === null) {
-      ctx.trace.push(
-        'welcome skipped: legacy memory (no lastReplyAt) — treated as recent',
-      );
-    }
 
     return withTrace(result);
     } catch (err) {
@@ -749,6 +713,14 @@ export class ReplyEngineService {
     // the parked pivot, so every block below sees the turn the customer actually
     // meant — the removal AND the product they pivoted to.
     this.handleCartRemovalChoice(input, ctx, classification);
+
+    // 4.36. The answer to «Пошукати ширше в каталозі?» (asked by
+    // `narrowing_no_match`). Runs here, with `handleCartRemovalChoice`, and for
+    // the same reason: it either ends the turn or rewrites the turn's intent,
+    // and both must happen before any block reads them. A "так" left to reach
+    // `resolveShortReply` would be read as confirming a product instead.
+    const broadenAnswer = await this.handleNarrowBroadenChoice(input, ctx, classification);
+    if (broadenAnswer) return broadenAnswer;
 
     // 4.4. Greeting reset: fresh start when customer greets with stale selection state
     // Guard: only reset if greeting is pure (no product/category entities — "Привіт, є куртки?" should keep entities)
@@ -1469,6 +1441,104 @@ export class ReplyEngineService {
     );
   }
 
+  /**
+   * A size the customer states out loud always beats the one the size chart
+   * inferred. «Мені потрібен розмір XL, а не L» must retire the recommended
+   * L — otherwise `recommendedSize` stays L and silently drives every later
+   * decision (the 5.5d variant filter, 5.5b-2's early-resolve, the display
+   * suppression), and the customer is confirmed into the very size they
+   * rejected. Cause of record: the correction scenario ordered «Лимонний, L»
+   * after asking for XL.
+   *
+   * Deliberately only UPDATES an existing value, never invents one: creating
+   * `recommendedSize` from any passing size mention («а в XL є?») would turn
+   * on size-suppressed rendering for tenants that never ran pre-qualify.
+   */
+  private syncRecommendedSizeWithStatedSize(ctx: ProcessingContext): void {
+    const stated = ctx.classification?.entities?.size;
+    const current = ctx.memory.recommendedSize;
+    if (!stated || !current) return;
+    if (stated.toLowerCase() === current.toLowerCase()) return;
+    ctx.memory.recommendedSize = stated;
+    ctx.trace.push(
+      `recommendedSize: customer stated "${stated}" → replaces inferred "${current}"`,
+    );
+  }
+
+  /**
+   * Conversation-start greeting: fire when this is a new conversation OR the
+   * bot has been silent >6h (DORMANT_MS), prepending the introduction so it
+   * is the FIRST thing the customer reads on that turn.
+   *
+   * Called from `withTrace`, i.e. on every reply-emitting return path —
+   * whichever block answers turn 1 owns the welcome. Skipped when the
+   * classifier resolved `greeting` intent (the `greeting` scenario covers
+   * that flow on its own — avoid a double «Вітаю») and when the result
+   * carries no text to introduce (e.g. the subscription soft-block).
+   *
+   * The hardcoded fallback fires for tenants without a custom
+   * `conversation_start_greeting` template; tenants override via the panel.
+   */
+  private async maybePrependWelcome(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+    result: ReplyEngineOutput,
+  ): Promise<void> {
+    const lastReplyAge = ctx.memory.lastReplyAt
+      ? Date.now() - new Date(ctx.memory.lastReplyAt).getTime()
+      : null;
+    const isDormant = lastReplyAge !== null && lastReplyAge > DORMANT_MS;
+
+    const shouldIntroduce =
+      (!ctx.memory.welcomedAt || isDormant) &&
+      ctx.classification?.primaryIntent !== 'greeting' &&
+      !!result.reply?.text;
+
+    if (!shouldIntroduce) {
+      if (ctx.classification?.primaryIntent === 'greeting') {
+        ctx.trace.push('welcome skipped: greeting intent');
+      } else if (ctx.memory.welcomedAt && lastReplyAge !== null && !isDormant) {
+        ctx.trace.push(
+          `welcome skipped: not dormant (last reply ${Math.round(lastReplyAge / 60000)}m ago)`,
+        );
+      } else if (ctx.memory.welcomedAt && lastReplyAge === null) {
+        ctx.trace.push(
+          'welcome skipped: legacy memory (no lastReplyAt) — treated as recent',
+        );
+      }
+      return;
+    }
+
+    const greeting = await this.templateEngine.renderCustomScenario(
+      input.tenantId,
+      'conversation_start_greeting',
+      {},
+    );
+    const introText =
+      greeting?.text ?? 'Вітаю, з вами АІ асистент @directmate.app';
+
+    ctx.trace.push(
+      isDormant
+        ? `welcome re-prepended (dormant ${Math.round(lastReplyAge! / 60000)}m since ${ctx.memory.lastReplyAt})`
+        : 'first-turn welcome prepended',
+    );
+    ctx.memory.welcomedAt = new Date().toISOString();
+    result.stateUpdate = {
+      ...result.stateUpdate,
+      contextJson: { ...ctx.memory },
+    };
+    const contextualReply = result.reply!;
+    result.reply = { text: introText, sendNow: true };
+    result.extraReplies = [
+      {
+        text: contextualReply.text!,
+        sendNow: true,
+        imageUrls: contextualReply.imageUrls,
+      },
+      ...(result.extraReplies ?? []),
+    ];
+  }
+
   // ─── Step 4: Pre-qualification gate (block 4.8) ────────────────
 
   private async handlePreQualify(
@@ -1581,8 +1651,19 @@ export class ReplyEngineService {
       memory.selectionState !== 'cart_item_added' &&
       memory.selectionState !== 'awaiting_variant' &&
       memory.selectionState !== 'awaiting_confirmation' &&
-      !classification.entities.size &&        // size already provided → skip
-      !classification.entities.productName && // specific product → skip (NEW short-circuit)
+      // A size in the OPENING turn means we don't need to ask. But once we
+      // HAVE asked, a size is a legitimate answer («У мене розмір L») and
+      // must reach branch (a) — otherwise the turn falls through with the
+      // pre-qualify question still pending and lands in AI fallback.
+      (awaitingPreQualify || !classification.entities.size) &&
+      // `before_search` means "ask before showing anything", so naming a
+      // product must not suppress the question. The classifier writes the
+      // bare category noun into productName («Хочу замовити футболку» →
+      // 'Футболка'), so this term used to disable the setting on every
+      // realistic opener. `after_search_offered` keeps the skip: there the
+      // question is an offer appended after results, and offering size help
+      // to someone who already named a model is noise.
+      (strategy === 'before_search' || !classification.entities.productName) &&
       (awaitingPreQualify || this.shouldSearchProducts(classification, memory))
     ) {
       // Branch (a): user supplied pre-qualify data this turn
@@ -1599,15 +1680,28 @@ export class ReplyEngineService {
         ctx.trace.push(`preQualify: data collected ${JSON.stringify(memory.preQualifyData)}`);
         this.logger.log(`Pre-qualify data collected: ${JSON.stringify(memory.preQualifyData)}`);
 
-        const sizeChart = preQualifyFlowConfig.sizeChart as
-          | Record<string, { heightMin: number; heightMax: number; weightMin: number; weightMax: number }>
-          | undefined;
-        if (sizeChart && memory.preQualifyData) {
-          const recommended = this.recommendSize(memory.preQualifyData, sizeChart);
-          if (recommended) {
-            memory.recommendedSize = recommended;
-            this.logger.log(`Recommended size: ${recommended}`);
-            memory.lastAction = 'recommended_size';
+        // The customer answered the height/weight question with their size
+        // instead («У мене розмір L»). That IS the answer — it is what the
+        // chart was going to infer anyway, stated first-hand. Take it and
+        // skip the recommendation prefix: «За вашими параметрами ваш розмір
+        // — L» reads absurd echoed back at someone who just told us L.
+        if (classification.entities.size) {
+          memory.recommendedSize = classification.entities.size;
+          ctx.trace.push(
+            `preQualify: customer stated size directly → recommendedSize=${classification.entities.size}`,
+          );
+          this.logger.log(`Pre-qualify answered with a size: ${classification.entities.size}`);
+        } else {
+          const sizeChart = preQualifyFlowConfig.sizeChart as
+            | Record<string, { heightMin: number; heightMax: number; weightMin: number; weightMax: number }>
+            | undefined;
+          if (sizeChart && memory.preQualifyData) {
+            const recommended = this.recommendSize(memory.preQualifyData, sizeChart);
+            if (recommended) {
+              memory.recommendedSize = recommended;
+              this.logger.log(`Recommended size: ${recommended}`);
+              memory.lastAction = 'recommended_size';
+            }
           }
         }
         if (!classification.entities.category && memory.selectedCategory) {
@@ -1777,7 +1871,10 @@ export class ReplyEngineService {
       memory.selectionState !== 'cart_item_added' &&
       memory.selectionState !== 'awaiting_variant' &&
       memory.selectionState !== 'awaiting_confirmation' &&
-      !classification.entities.productName &&  // specific product → skip (NEW short-circuit)
+      // See the clothing gate: under `before_search` a named product must not
+      // suppress the question — the classifier puts the category noun in
+      // productName. `after_search_offered` keeps the skip.
+      (strategy === 'before_search' || !classification.entities.productName) &&
       (awaitingPreQualify || this.shouldSearchProducts(classification, memory))
     ) {
       if (strategy === 'before_search') {
@@ -2061,23 +2158,58 @@ export class ReplyEngineService {
     // memory.lastPresentedProducts and skip the DB round-trip. See
     // `isNarrowingSlotFill` for the gate conditions.
     if (!productData && this.isNarrowingSlotFill(classification, memory)) {
-      const narrowed = this.narrowLastPresentedInMemory(
-        memory.lastPresentedProducts!,
-        classification,
-        ctx,
-      );
+      const presented = memory.lastPresentedProducts!;
+      const narrowed =
+        classification.slotAction === 'correction'
+          ? await this.narrowShownProductsBySize(presented, classification, ctx)
+          : this.narrowLastPresentedInMemory(presented, classification, ctx);
       ctx.trace.push(
-        `narrow_gate: fired, ${narrowed.length} products survived (from ${memory.lastPresentedProducts!.length})`,
+        `narrow_gate: fired, ${narrowed.length} products survived (from ${presented.length})`,
       );
+      // Same clear the `needsSearch` branch does below, for the same reason:
+      // a correction means the customer is changing their mind, so 5.5c must
+      // be free to re-match. `isNarrowingSlotFill` requires
+      // `awaiting_product`, where a variant id is normally absent — but
+      // nothing enforces that, and a stale id surviving into 5.5 is exactly
+      // the class of bug the other site exists to prevent.
+      if (classification.slotAction === 'correction') {
+        memory.selectedVariantId = undefined;
+        memory.selectedVariantName = undefined;
+        ctx.trace.push('narrow: correction — cleared selectedVariantId for re-matching');
+      }
       if (narrowed.length === 0) {
         // Empty narrow: customer asked for a color/size none of the
         // shown products satisfy. Render narrowing_no_match template
         // — do NOT fall through to AI fallback, which would see the
         // shown products in memory context and hallucinate one
         // matching the user's criterion.
-        return await this.handleNarrowingNoMatch(input, ctx);
+        //
+        // Unless we already asked once and never got a yes/no: asking
+        // the same question twice is the loop `narrowBroadenAsked`
+        // exists to stop. Do the wider search ourselves instead.
+        if (memory.narrowBroadenAsked) {
+          this.armBroadenSearch(ctx, classification, {
+            color: classification.entities.color,
+            size: classification.entities.size,
+            category: memory.selectedCategory,
+          });
+        } else {
+          return await this.handleNarrowingNoMatch(input, ctx);
+        }
+      } else {
+        // `lastPresentedProducts` carries no image data, so the in-memory
+        // rows come back with `imageUrl: null` at both levels and every image
+        // site in template-engine bottoms out at `product.imageUrl` — a
+        // text-only re-show of a list that had photos. Two batched
+        // `product_id = ANY($1)` queries; the ids come from memory, so the
+        // path stays immune to the classifier's category leak, which is why
+        // it avoids the DB for the SEARCH in the first place.
+        // (`narrowShownProductsBySize` hydrates its own images.)
+        if (classification.slotAction !== 'correction') {
+          await this.availabilityService.loadProductImages(narrowed);
+        }
+        productData = narrowed;
       }
-      productData = narrowed;
     }
 
     // Focus gate: the customer is asking about the product already in
@@ -2102,7 +2234,13 @@ export class ReplyEngineService {
       }
     }
 
-    const needsSearch = !productData && this.shouldSearchProducts(classification, memory);
+    // `ctx.broadenNarrowing` forces the search: the customer explicitly asked
+    // us to look wider, and `shouldSearchProducts` would decline the turn via
+    // `isNarrowingSlotFill` (the narrowing entities are still on the
+    // classification — that is the whole point) and leave it with no data.
+    const needsSearch =
+      !productData &&
+      (!!ctx.broadenNarrowing || this.shouldSearchProducts(classification, memory));
     ctx.trace.push(`search: needsSearch=${needsSearch}`);
     if (!needsSearch && this.isCheckoutCommitOnFullCart(classification, memory)) {
       ctx.trace.push('search: checkout commit on full cart → no search');
@@ -2197,7 +2335,12 @@ export class ReplyEngineService {
       // remain AND any of them was in the just-shown product list, prefer
       // those. Handles "selecting from a shown list" without depending on
       // selectedCategory being populated.
+      // Skipped when broadening: "search wider" means the products we already
+      // showed are precisely the ones that FAILED. Narrowing back to them
+      // would hand the size filter below an empty set and turn an honest
+      // wider search into a product_not_found handoff.
       if (
+        !ctx.broadenNarrowing &&
         Array.isArray(memory.lastPresentedProducts) &&
         memory.lastPresentedProducts.length > 0 &&
         productData &&
@@ -2217,10 +2360,49 @@ export class ReplyEngineService {
         }
       }
 
+      // Broaden path: apply the size the customer narrowed by. The DB could
+      // not — a size is never a search keyword — so it returned the whole
+      // category. Transient (`ctx`, not `memory.recommendedSize`) so a one-off
+      // "have you got this in XL?" can't switch on size-suppressed rendering
+      // for the rest of the conversation.
+      const broadenSize = ctx.broadenNarrowing?.size;
+      if (broadenSize && productData && productData.length > 0) {
+        const wanted = broadenSize.toLowerCase().trim();
+        const sized = productData
+          .map((p) => ({
+            ...p,
+            variants: p.variants.filter(
+              (v) => !!v.size && v.size.toLowerCase().trim() === wanted,
+            ),
+          }))
+          .filter((p) => p.variants.length > 0);
+        ctx.trace.push(
+          `narrow_broaden: size="${broadenSize}" (${productData.length} → ${sized.length})`,
+        );
+        // No guard against emptying the list, unlike the recommendedSize
+        // filter below: here "nothing in XL" is the true answer to a question
+        // the customer explicitly asked, and the not-found path should say so.
+        productData = sized;
+      }
+
       // Filter by recommended size if available (skip on correction or when user explicitly chose a size)
       const isCorrection = classification.slotAction === 'correction';
       const userSpecifiedSize = !!classification.entities.size;
-      if (productData && productData.length > 0 && memory.recommendedSize && !isCorrection && !userSpecifiedSize) {
+      // Never prune a product the customer named. This filter runs BEFORE
+      // `narrowByProductName` below, and its "don't over-prune" guard counts
+      // products, not names — so when the named product lacks the recommended
+      // size it is deleted here and a *different* product that happens to
+      // carry that size gets locked instead. Size filtering stays on for open
+      // browses, where "show me what fits" is the whole point.
+      const namedAProduct = !!classification.entities.productName;
+      if (
+        productData &&
+        productData.length > 0 &&
+        memory.recommendedSize &&
+        !isCorrection &&
+        !userSpecifiedSize &&
+        !namedAProduct
+      ) {
         const recSize = memory.recommendedSize;
         const filtered = productData
           .map(p => ({
@@ -3092,22 +3274,32 @@ export class ReplyEngineService {
           ctx.trace.push(`5.5b-2: color=${matchedColor}`);
           memory.selectedColor = matchedColor;
 
-          // Early-resolve: if size is already known from a prior turn
-          // (ask_color_for_size flow's follow-up), don't transition into a
-          // size step — resolve directly to the exact (color, size) variant.
-          if (memory.selectedSize) {
+          // Early-resolve: if the size is already known, don't transition
+          // into a size step — resolve directly to the exact (color, size)
+          // variant. Three sources, most-specific first:
+          //   1. a size named in THIS message («Темно-сині, розмір L») —
+          //      asking "which size?" right after the customer said one is
+          //      the bug this ordering exists to prevent;
+          //   2. a size chosen on a prior turn (ask_color_for_size follow-up);
+          //   3. the size pre-qualify recommended — under `before_search` we
+          //      asked for height/weight precisely so we wouldn't have to ask
+          //      again.
+          const knownSize =
+            userSize ?? memory.selectedSize ?? memory.recommendedSize;
+          if (knownSize) {
             const exactVariant = variants.find(
               (v: any) =>
                 v.color && v.color.toLowerCase() === matchedColor.toLowerCase() &&
-                v.size && v.size.toLowerCase() === memory!.selectedSize!.toLowerCase(),
+                v.size && v.size.toLowerCase() === knownSize.toLowerCase(),
             );
             if (exactVariant) {
               memory.selectedVariantId = exactVariant.id;
               memory.selectedVariantName = exactVariant.name;
               memory.variantStep = null;
               memory.selectionState = 'awaiting_confirmation';
-              this.setConfirmIntent(classification, matchedColor, memory.selectedSize);
-              ctx.trace.push(`5.5b-2: color+selectedSize matched → resolved`);
+              memory.selectedSize = exactVariant.size ?? knownSize;
+              this.setConfirmIntent(classification, matchedColor, knownSize);
+              ctx.trace.push(`5.5b-2: color+size(${knownSize}) matched → resolved`);
               return;
             }
             // Else fall through — exact (color, size) not in stock; let the
@@ -3273,10 +3465,41 @@ export class ReplyEngineService {
               } else {
                 memory.selectedColor = userColor;
                 memory.selectedSize = undefined;
-                memory.variantStep = 'size';
-                classification.primaryIntent = 'ask_size_for_color';
-                classification.recommendedAction = 'ask_size_for_color';
-                ctx.trace.push('5.5c: color matched, size ambiguous → ask_size_for_color');
+                // The size is only "ambiguous" if we don't already know it.
+                // Pre-qualify exists precisely so we don't ask twice — when
+                // it produced a size that this colour carries in stock,
+                // resolve straight to that variant.
+                const knownSizeVariant = memory.recommendedSize
+                  ? variants.find(
+                      (v) =>
+                        this.colorsOverlap(v.color, userColor) &&
+                        v.size &&
+                        v.size.toLowerCase() === memory.recommendedSize!.toLowerCase(),
+                    )
+                  : undefined;
+                if (knownSizeVariant) {
+                  memory.selectedVariantId = knownSizeVariant.id;
+                  memory.selectedVariantName =
+                    [
+                      ...new Set(
+                        [localizeColor(knownSizeVariant.color), knownSizeVariant.size].filter(
+                          Boolean,
+                        ),
+                      ),
+                    ].join(', ') || 'standard';
+                  memory.selectedSize = knownSizeVariant.size ?? undefined;
+                  memory.variantStep = null;
+                  memory.selectionState = 'awaiting_confirmation';
+                  this.setConfirmIntent(classification, userColor, knownSizeVariant.size ?? undefined);
+                  ctx.trace.push(
+                    `5.5c: color matched + known size ${memory.recommendedSize} → resolved`,
+                  );
+                } else {
+                  memory.variantStep = 'size';
+                  classification.primaryIntent = 'ask_size_for_color';
+                  classification.recommendedAction = 'ask_size_for_color';
+                  ctx.trace.push('5.5c: color matched, size ambiguous → ask_size_for_color');
+                }
               }
             } else if (userSize && !userColor) {
               // Mirror of the color sanity-check. Size has no translation
@@ -3365,8 +3588,14 @@ export class ReplyEngineService {
         // a generic "what's available", so the standard confirm copy
         // is the right fit.
         const isVariantQuery = !!(userColor || userSize);
+        // `variants.length === 1` guards against a recommendedSize-induced
+        // collapse: when the size filter above is what reduced the list to
+        // one, the other sizes ARE in stock and calling it "остання позиція"
+        // is false scarcity. Only claim it when the unfiltered list is
+        // genuinely down to a single variant.
         const isLastInStock =
           !isVariantQuery &&
+          variants.length === 1 &&
           (memory.totalVariantsForSelectedProduct ?? 0) > 1;
         if (isLastInStock) {
           classification.primaryIntent = 'confirm_last_in_stock';
@@ -3535,7 +3764,18 @@ export class ReplyEngineService {
 
       if (buildResponseBusinessType === 'clothing') {
         if (memory.recommendedSize && memory.lastAction === 'recommended_size') {
-          finalReply = `${RECOMMENDED_SIZE_PREFIX(memory.recommendedSize)}\n\n${finalReply}`;
+          // Optional `recommend_size` template — same shape as
+          // `show_categories` / `handoff_ack`: tenants that author it own
+          // the copy (a men's store has no use for the 💛 in the
+          // hardcoded line), everyone else keeps the existing string.
+          const rendered = await this.templateEngine.renderCustomScenario(
+            input.tenantId,
+            'recommend_size',
+            { size: memory.recommendedSize },
+          );
+          const prefix =
+            rendered?.text ?? RECOMMENDED_SIZE_PREFIX(memory.recommendedSize);
+          finalReply = `${prefix}\n\n${finalReply}`;
         }
       }
 
@@ -3763,6 +4003,9 @@ export class ReplyEngineService {
       'ask_color_for_size',
       'confirm_color_variant_in_stock',
       'show_products',
+      // Same render as show_products, different header — same reason for
+      // being here.
+      'show_products_with_size',
       // Quotes a price and asks which variant — the customer has not
       // picked one yet, so latching matchedVariantId here would commit
       // to a variant they never chose.
@@ -4043,6 +4286,7 @@ export class ReplyEngineService {
       'show_price',
       'show_price_with_variants',
       'show_products',
+      'show_products_with_size',
       'recommend_product',
       'confirm_selection',
       'confirm_variant_available',
@@ -4090,6 +4334,9 @@ export class ReplyEngineService {
     const map: Record<string, string> = {
       greeting: 'greet',
       show_products: 'show_products',
+      // Identical post-render side effects to show_products — the header
+      // names the size the list is scoped to, nothing more.
+      show_products_with_size: 'show_products',
       show_price: 'show_price',
       recommend_product: 'recommend',
       ask_recommendation_from_shown: 'recommend',
@@ -5382,7 +5629,10 @@ export class ReplyEngineService {
    *
    * Fires when ALL of:
    *  - classifier said the user is filling a missing slot (not a new
-   *    inquiry, not confirming, not correcting)
+   *    inquiry, not confirming) — OR is CORRECTING with a size and only
+   *    a size, which the DB cannot serve because a size is never a search
+   *    keyword. A colour correction is excluded: colour IS a keyword, so
+   *    it has a working DB path that must not be shadowed.
    *  - the engine is awaiting product selection (already showed a list)
    *  - prior turn captured structured `rawVariants` (legacy conversations
    *    pre-deploy don't have this — fail-closed and let fresh search run)
@@ -5467,7 +5717,22 @@ export class ReplyEngineService {
     classification: ClassificationResult,
     memory: AssistantMemory,
   ): boolean {
-    if (classification.slotAction !== 'fills_missing_slot') return false;
+    const slot = classification.slotAction;
+    if (slot !== 'fills_missing_slot') {
+      // A `correction` belongs on this path for ONE reason: a size is never a
+      // search keyword (`extractSearchKeywords` emits only productName and
+      // color), so «мені потрібен XL, а не L» routed to the DB gets an empty
+      // query, 0 rows, and a product_not_found handoff — while the answer was
+      // sitting in `lastPresentedProducts` all along.
+      //
+      // Scoped to SIZE-ONLY on purpose. A COLOUR correction («ні, краще
+      // чорну») has a working DB path — color IS pushed as a keyword — and
+      // narrowing it in memory would hide black items that weren't in the
+      // shown list. The justification is size-specific, so the term is too.
+      if (slot !== 'correction') return false;
+      if (nonEmptyStr(classification.entities.color)) return false;
+      if (!nonEmptyStr(classification.entities.size)) return false;
+    }
     if (memory.selectionState !== 'awaiting_product') return false;
 
     const presented = memory.lastPresentedProducts;
@@ -5683,6 +5948,60 @@ export class ReplyEngineService {
   }
 
   /**
+   * Re-show the products already on screen, scoped to a size the customer
+   * just corrected to.
+   *
+   * Why this does NOT reuse `narrowLastPresentedInMemory`: that helper filters
+   * `memory.lastPresentedProducts[].rawVariants`, and those rows are written
+   * from `productData` AFTER the `recommendedSize` search filter has pruned it
+   * (`toPresented`, ~:2638, vs the filter ~:2330). On any tenant that
+   * recommends a size — exactly the tenants where a size correction happens —
+   * the stored matrix contains that ONE size, so narrowing it to a different
+   * size matches nothing, every time, and the customer is told «серед
+   * показаних такого немає» about a list where the size is in stock. Cause of
+   * record: `demo_altamen_size_correction_after_recommendation`, where the
+   * correction to XL rendered `narrowing_no_match` against a catalog in which
+   * every shown shirt had XL.
+   *
+   * Hydrating the SHOWN ids keeps everything the in-memory path was protecting:
+   * no keyword search (a size is never a keyword, and the customer's surface
+   * form never matches the catalog blob), no exposure to the classifier's
+   * category leak (the ids come from memory), and it costs one query. It also
+   * gets live stock and images, which memory cannot supply.
+   */
+  private async narrowShownProductsBySize(
+    presented: NonNullable<AssistantMemory['lastPresentedProducts']>,
+    classification: ClassificationResult,
+    ctx: ProcessingContext,
+  ): Promise<ProductSearchResult[]> {
+    const size = classification.entities.size;
+    // `isNarrowingSlotFill` admits a correction only with a size and no
+    // colour, so this is defensive rather than a real branch.
+    if (!nonEmptyStr(size)) return [];
+
+    const ids = presented
+      .map((p) => p.productId)
+      .filter((id): id is string => nonEmptyStr(id));
+    if (ids.length === 0) return [];
+
+    const hydrated = await this.availabilityService.findAllByProductIds(ids);
+    const wanted = size.toLowerCase().trim();
+    const out = hydrated
+      .map((p) => ({
+        ...p,
+        variants: p.variants.filter(
+          (v) => !!v.size && v.size.toLowerCase().trim() === wanted,
+        ),
+      }))
+      .filter((p) => p.variants.length > 0);
+
+    ctx.trace.push(
+      `narrow: size correction "${size}" — re-hydrated ${hydrated.length}/${ids.length} shown products, ${out.length} carry it`,
+    );
+    return out;
+  }
+
+  /**
    * Render the `narrowing_no_match` template scenario when the user's
    * narrowing reply (e.g. "чорну") matches none of the presented
    * products. Soft reply offering a broader catalog search; never
@@ -5706,15 +6025,39 @@ export class ReplyEngineService {
 
     const reply =
       templateResult?.text ??
-      'Серед показаних варіантів немає такого 💛 Пошукати ширше в каталозі?';
+      'Серед показаних варіантів немає такого. Пошукати ширше в каталозі?';
 
     memory.lastAction = 'narrow_no_match';
+    // Park what they narrowed by so «так» can act on it. The copy asks a
+    // question; until this landed nothing read `lastAction='narrow_no_match'`,
+    // so the answer fell through to generic routing and the bot had asked
+    // something it could not do anything about.
+    memory.pendingNarrowBroaden = {
+      color: classification.entities.color,
+      size: classification.entities.size,
+      category: memory.selectedCategory,
+    };
+    memory.awaitingField = 'narrow_broaden_choice';
+    memory.narrowBroadenAsked = true;
+
     const stateUpdate: Partial<ConversationState> = {};
     stateUpdate.contextJson = memory as any;
 
     ctx.trace.push(
       `narrow_no_match: rendered ${templateResult?.scenario ?? 'fallback-string'}`,
     );
+    // This branch returns before `buildResponse`, so without an explicit log
+    // the turn leaves NOTHING in conversations.log between two classifications
+    // — which is how a wrong narrowing_no_match hid in a simulator run.
+    this.logToFile({
+      event: 'reply',
+      conversationId: input.conversationId,
+      inbound: input.messageText,
+      outbound: reply,
+      templateId: templateResult?.templateId ?? 'narrowing_no_match_fallback',
+      templateScenario: templateResult?.scenario ?? 'narrowing_no_match',
+      memory,
+    });
 
     return {
       decision: ReplyDecision.Reply,
@@ -5723,6 +6066,102 @@ export class ReplyEngineService {
       stateUpdate,
       templateScenario: templateResult?.scenario ?? 'narrowing_no_match',
     };
+  }
+
+  /**
+   * The answer to `narrowing_no_match`'s «Пошукати ширше в каталозі?».
+   *
+   * Returns an output only when the turn ENDS here (a "ні"). A "так" returns
+   * null after arming `ctx.broadenNarrowing` and rewriting the intent, so the
+   * turn flows on into the normal search — the wider search is a real search,
+   * not a special case, and it reuses every filter and render path below.
+   *
+   * Anything else is not an answer: clear the waiting state and let the turn be
+   * what it actually is. Same reasoning as `handleCartRemovalChoice` — treating
+   * an unrelated reply as a yes is how you show someone a catalog they never
+   * asked for. The one-shot `narrowBroadenAsked` deliberately stays set in that
+   * case, so a second empty narrow broadens silently instead of re-asking.
+   */
+  private async handleNarrowBroadenChoice(
+    input: ReplyEngineInput,
+    ctx: ProcessingContext,
+    classification: ClassificationResult,
+  ): Promise<ReplyEngineOutput | null> {
+    const { memory } = ctx;
+    if (memory.awaitingField !== 'narrow_broaden_choice') return null;
+
+    const pending = memory.pendingNarrowBroaden;
+    // Clear the waiting state whatever the answer — a second unanswered ask
+    // would loop.
+    memory.awaitingField = undefined;
+    memory.pendingNarrowBroaden = undefined;
+
+    const slot = classification.slotAction;
+
+    if (slot === 'confirmation') {
+      memory.narrowBroadenAsked = undefined; // answered — guard resets
+      this.armBroadenSearch(ctx, classification, pending);
+      return null;
+    }
+
+    if (slot === 'rejection') {
+      memory.narrowBroadenAsked = undefined;
+      memory.lastAction = 'narrow_broaden_declined';
+      const rendered = await this.templateEngine.renderCustomScenario(
+        input.tenantId,
+        'decline_selection',
+        {},
+      );
+      const stateUpdate: Partial<ConversationState> = {};
+      stateUpdate.contextJson = memory as any;
+      ctx.trace.push('narrow_broaden: declined');
+      return {
+        decision: ReplyDecision.Reply,
+        reply: {
+          text: rendered?.text ?? 'Добре. Як щось знадобиться — пишіть.',
+          sendNow: true,
+        },
+        handoff: { required: false, reason: null },
+        stateUpdate,
+        templateScenario: rendered?.scenario ?? 'decline_selection',
+      };
+    }
+
+    ctx.trace.push(
+      `narrow_broaden: "${input.messageText}" answered neither yes nor no — routing normally`,
+    );
+    return null;
+  }
+
+  /**
+   * Turn this turn into the wider catalog search the customer just agreed to
+   * (or that a second empty narrow forces). Shared by the "так" answer and the
+   * already-asked-once path so the two can never drift.
+   *
+   * The size half is why `ctx.broadenNarrowing` exists at all: a size is never
+   * a search keyword, so the DB returns the whole category and the engine has
+   * to apply the size itself. Colour goes into `entities` instead — it IS a
+   * keyword, so the DB can do better than a post-filter.
+   */
+  private armBroadenSearch(
+    ctx: ProcessingContext,
+    classification: ClassificationResult,
+    pending: AssistantMemory['pendingNarrowBroaden'],
+  ): void {
+    ctx.broadenNarrowing = { color: pending?.color, size: pending?.size };
+    if (!nonEmptyStr(classification.entities.category)) {
+      classification.entities.category =
+        pending?.category ?? ctx.memory.selectedCategory;
+    }
+    if (!nonEmptyStr(classification.entities.color) && nonEmptyStr(pending?.color)) {
+      classification.entities.color = pending!.color;
+    }
+    classification.primaryIntent = 'category_browse';
+    classification.recommendedAction = 'show_products';
+    ctx.trace.push(
+      `narrow_broaden: widening to category="${classification.entities.category ?? '-'}" ` +
+        `color="${pending?.color ?? '-'}" size="${pending?.size ?? '-'}"`,
+    );
   }
 
   /**

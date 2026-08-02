@@ -343,7 +343,9 @@ export const MEN_DEMO_STORE_SCENARIOS: Record<string, SimulatorScenario> = {
         expect: {
           decision: 'reply',
           scenario: 'show_size_chart',
-          replyNotContains: ['відгуки', 'чудова якість'],
+          // `{reason}` is gone from the code packs, so the old markers no
+          // longer identify a recommendation render. «раджу» does.
+          replyNotContains: ['раджу', 'відгуки', 'чудова якість'],
           note:
             'Fit question → size help (chart), NOT a product blurb and NOT a ' +
             'silent latch of L as the chosen variant.',

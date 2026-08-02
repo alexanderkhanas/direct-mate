@@ -66,7 +66,10 @@ export async function buildCosmeticsTenant(
     fallbackConfig: { mode: 'template_first_with_safe_fallback' },
     operatingMode: 'active',
   });
-  console.log(`  store_config: ✓ (businessType=cosmetics, preQualifyStrategy=after_search_offered)`);
+  console.log(
+    `  store_config: ✓ (businessType=cosmetics, ` +
+      `preQualifyStrategy=${COSMETICS_FLOW_CONFIG.preQualifyStrategy})`,
+  );
 
   const catalog = await seedCatalog(ds, tenantId, COSMETICS_PRODUCTS);
   console.log(

@@ -62,20 +62,30 @@ export class StoreConfigController {
     if (!config) {
       config = this.configRepo.create({ tenantId: user.tenantId });
     }
+    // Shallow-merge jsonb configs instead of replacing them. Admin forms
+    // model only a subset of each blob's keys (e.g. FlowConfigSection knows
+    // preQualify but not businessType/sizeChart) — a replace would silently
+    // destroy every key the form doesn't send. To clear a key, clients send
+    // it explicitly with null; omitted keys always survive.
+    const mergeJsonb = (
+      current: Record<string, unknown> | null | undefined,
+      patch: unknown,
+    ) => ({ ...(current ?? {}), ...(patch as Record<string, unknown>) });
+
     if (body.brandConfig !== undefined)
-      config.brandConfig = body.brandConfig as any;
+      config.brandConfig = mergeJsonb(config.brandConfig, body.brandConfig) as any;
     if (body.flowConfig !== undefined)
-      config.flowConfig = body.flowConfig as any;
+      config.flowConfig = mergeJsonb(config.flowConfig, body.flowConfig) as any;
     if (body.checkoutConfig !== undefined)
-      config.checkoutConfig = body.checkoutConfig as any;
+      config.checkoutConfig = mergeJsonb(config.checkoutConfig, body.checkoutConfig) as any;
     if (body.escalationConfig !== undefined)
-      config.escalationConfig = body.escalationConfig as any;
+      config.escalationConfig = mergeJsonb(config.escalationConfig, body.escalationConfig) as any;
     if (body.recommendationConfig !== undefined)
-      config.recommendationConfig = body.recommendationConfig as any;
+      config.recommendationConfig = mergeJsonb(config.recommendationConfig, body.recommendationConfig) as any;
     if (body.handoffConfig !== undefined)
-      config.handoffConfig = body.handoffConfig as any;
+      config.handoffConfig = mergeJsonb(config.handoffConfig, body.handoffConfig) as any;
     if (body.fallbackConfig !== undefined)
-      config.fallbackConfig = body.fallbackConfig as any;
+      config.fallbackConfig = mergeJsonb(config.fallbackConfig, body.fallbackConfig) as any;
     if (body.operatingMode !== undefined) {
       config.operatingMode = body.operatingMode;
       if (body.operatingMode === 'learning' && !config.learningStartedAt) {

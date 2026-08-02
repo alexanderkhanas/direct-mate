@@ -8,6 +8,23 @@ import { ClassificationResult, AssistantMemory } from './classifier.service';
 import { formatCurrency, sortSizes } from '../../common/format';
 import { localizeColor, localizeColorList } from './color-i18n';
 
+/**
+ * Same product? Used to keep `{product_name}` and `{price}` on one source.
+ *
+ * Deliberately exact (trimmed, case-folded) rather than the engine's fuzzier
+ * `namesTheSameThing` / `titlesOverlap`: both sides here are catalog titles
+ * that originate from the same `products.title` column, so anything looser
+ * would only ever produce false positives — and a false positive here quotes
+ * the wrong price.
+ */
+function titlesEqual(a?: string, b?: string): boolean {
+  return !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+function nonEmptyString(v?: string | null): v is string {
+  return typeof v === 'string' && v.trim().length > 0;
+}
+
 // ─── Interfaces ──────────────────────────────────────────────────
 
 export interface ProductSearchResult {
@@ -170,6 +187,36 @@ export class TemplateEngineService {
   ): Promise<TemplateRenderResult | null> {
     this.logger.debug(`renderScenario: scenario=${scenario} tenantId=${tenantId?.slice(0, 8)}`);
 
+    // `show_products_with_size`: optional richer variant of the product list,
+    // for when the customer's size is already known. The list is ALREADY
+    // scoped to that size by the time it renders (the search filters
+    // `productData` by `recommendedSize`, and `formatProductList` suppresses
+    // the size column), so without this the header silently drops the one
+    // fact that explains why the list looks the way it does.
+    //
+    // Hooked here rather than routed by `recommendedAction` so it covers every
+    // path that reaches `show_products` — including the first-presentation
+    // force at :152 and the several `pickScenario` returns. Unauthored → the
+    // recursive call returns null and the plain list renders, so this is
+    // opt-in per tenant with no configuration.
+    //
+    // NOT a second `show_products` template at a higher priority: the
+    // anti-repetition filter drops recently-used templates BEFORE priority is
+    // read, so a P95 sized template used last turn silently demotes the next
+    // turn to the P90 plain one — the header would flip on and off mid-browse.
+    if (scenario === 'show_products' && nonEmptyString(memory?.recommendedSize)) {
+      const sized = await this.renderScenario(
+        tenantId,
+        'show_products_with_size',
+        classification,
+        productData,
+        memory,
+        recentTemplateIds,
+        flowConfig,
+      );
+      if (sized) return sized;
+    }
+
     const templates = await this.templateRepo.find({
       where: { tenantId, scenario, active: true },
       order: { priority: 'DESC' },
@@ -260,11 +307,33 @@ export class TemplateEngineService {
           scenario: 'decline_selection',
         };
       }
+      // Optional scenarios: an absent template is the NORMAL case — the tenant
+      // simply hasn't opted in — and the caller falls back. Warning here would
+      // fire on every qualifying turn for every tenant that never opted in.
+      // The other optional scenarios (confirm_last_in_stock,
+      // confirm_color_variant_in_stock, show_price_with_variants) return from
+      // their own branches above and never reach this line.
+      if (scenario === 'show_products_with_size') {
+        this.logger.debug(
+          `${scenario}: no template authored — rendering the plain list`,
+        );
+        return null;
+      }
       this.logger.warn(`No active templates for scenario=${scenario}`);
       return null;
     }
 
     const variables = this.buildVariableMap(classification, productData, memory, flowConfig);
+    // `{size}` normally means "the size of the variant under discussion"
+    // (entities → selectedSize → the auto-selected variant). On a product LIST
+    // there is no such variant — the only size in play is the one the list is
+    // scoped to. Scoped to this scenario rather than added as a general
+    // `{size}` fallback: `ask_color_for_size` and `recommend_size` both
+    // REQUIRE `size`, so a global fallback would make them viable on turns
+    // where they are not today, changing routing rather than just wording.
+    if (scenario === 'show_products_with_size' && !variables['size']) {
+      variables['size'] = memory?.recommendedSize ?? '';
+    }
     if (scenario === 'ask_variant_choice' && variables['variant_type']) {
       variables['variant_type'] = variables['variant_type'].toLowerCase();
     }
@@ -308,7 +377,7 @@ export class TemplateEngineService {
     const text = this.interpolateTemplate(selected, variables);
 
     // Collect product image URLs for scenarios that show products
-    const allProductScenarios = ['show_products'];
+    const allProductScenarios = ['show_products', 'show_products_with_size'];
     const singleProductScenarios = ['confirm_selection', 'confirm_variant_available', 'confirm_selection_last_in_stock', 'recommend_product', 'ask_recommendation_from_shown'];
     const variantChoiceScenarios = ['ask_variant_choice', 'ask_size_for_color', 'ask_color_for_size'];
     const imageUrls: string[] = [];
@@ -759,40 +828,79 @@ export class TemplateEngineService {
       vars['other_colors_variants'] = memory.mediaLinkOtherColors;
     }
 
-    // From memory (fallback for recommendation scenarios)
-    if (!vars['product_name'] && memory?.selectedProductTitle) {
-      vars['product_name'] = memory.selectedProductTitle;
+    // ── {product_name} and {price} must describe the SAME product ──
+    //
+    // `price` used to be assigned unconditionally from productData[0] while
+    // `product_name` fell back to memory a few lines earlier — so a
+    // recommendation rendered from `memory.selectedProductTitle` could quote
+    // that product's name at whatever the current search happened to return.
+    // Resolve the pair together.
+    //
+    // Name precedence is UNCHANGED (memory lock → last shown → current
+    // search); only the price now follows the name instead of ignoring it.
+    const presentedList = memory?.lastPresentedProducts ?? [];
+    const dataFirst = productData && productData.length > 0 ? productData[0] : undefined;
+    const dataPrice = dataFirst
+      ? [
+          ...new Set(
+            dataFirst.variants.map((v) => `${v.price} ${formatCurrency(v.currency)}`),
+          ),
+        ].join(' / ')
+      : undefined;
+
+    if (!vars['product_name']) {
+      const name =
+        memory?.selectedProductTitle ??
+        presentedList[0]?.title ??
+        dataFirst?.product.title;
+      if (name) vars['product_name'] = name;
     }
-    if (!vars['product_name'] && memory?.lastPresentedProducts?.length) {
-      vars['product_name'] = memory.lastPresentedProducts[0].title;
+
+    if (!vars['price']) {
+      const name = vars['product_name'];
+      if (!name && dataPrice) {
+        vars['price'] = dataPrice;
+      } else if (titlesEqual(name, dataFirst?.product.title) && dataPrice) {
+        // Same product AND live stock — the best price source available.
+        vars['price'] = dataPrice;
+      } else {
+        const fromPresented = presentedList.find((p) =>
+          titlesEqual(p.title, name),
+        )?.price;
+        if (fromPresented) {
+          vars['price'] = fromPresented;
+        } else if (dataPrice) {
+          // Nothing can price the product we're about to name. Leaving
+          // {price} unresolved renders '' — visibly odd, but a wrong number
+          // on a product the customer is being asked to buy is worse.
+          this.logger.warn(
+            `price/name source mismatch: naming "${name}" but the only price ` +
+              `available is for "${dataFirst?.product.title}" — leaving {price} unresolved`,
+          );
+        }
+      }
     }
+
     if (!vars['reason']) {
       vars['reason'] = 'чудова якість та гарні відгуки';
-    }
-    // Price from memory (for recommendations when no product data in current turn)
-    if (!vars['price'] && memory?.lastPresentedProducts?.length) {
-      vars['price'] = memory.lastPresentedProducts[0].price;
     }
 
     // From product data
     if (productData && productData.length > 0) {
       const first = productData[0];
-      if (!vars['product_name']) vars['product_name'] = first.product.title;
-
-      // Build price string
-      const prices = [
-        ...new Set(
-          first.variants.map((v) => `${v.price} ${formatCurrency(v.currency)}`),
-        ),
-      ];
-      vars['price'] = prices.join(' / ');
 
       // Build smart product list for show_products scenario
       vars['product_list'] = this.formatProductList(productData, memory?.recommendedSize);
 
       // Build variants string for single product (deduplicated)
-      // When recommendedSize is set, only show colors (sizes already determined)
-      const suppressSizes = !!memory?.recommendedSize;
+      // When recommendedSize is set, only show colors (sizes already
+      // determined) — but ONLY when the product actually has a color axis.
+      // On a size-only product, suppressing sizes leaves every entry empty,
+      // the variable resolves to '' and `hasRequiredVariables` then rejects
+      // the template, dropping the turn into AI fallback / handoff.
+      const suppressSizes =
+        !!memory?.recommendedSize &&
+        first.variants.some((v) => v.effectiveAvailable > 0 && v.color);
       const allVariants = first.variants
         .filter((v) => v.effectiveAvailable > 0)
         .map((v) => suppressSizes
@@ -965,7 +1073,14 @@ export class TemplateEngineService {
     }
 
     // From memory: variant_list fallback (if not built from productData)
-    const suppressSizesFromMemory = !!memory?.recommendedSize;
+    // Same color-axis guard as the productData path above: suppressing sizes
+    // on a size-only product yields an empty variant_list, which
+    // `hasRequiredVariables` rejects.
+    const suppressSizesFromMemory =
+      !!memory?.recommendedSize &&
+      (memory?.availableVariants as Array<{ color?: string | null }> | undefined)?.some(
+        (v) => v.color,
+      ) === true;
     if (!vars['variant_list'] && Array.isArray(memory?.availableVariants) && memory.availableVariants.length > 0) {
       if (suppressSizesFromMemory) {
         const colors = [...new Set(memory.availableVariants.map((v: any) => v.color).filter(Boolean))] as string[];
@@ -1017,13 +1132,16 @@ export class TemplateEngineService {
       }
     }
 
-    // From memory
+    // From memory. Both fields come from the SAME entry — but only when the
+    // name we're rendering is that entry's, otherwise this is the same
+    // name-here/price-there mismatch the pairing above exists to prevent.
     if (memory?.lastPresentedProducts?.length) {
+      const firstPresented = memory.lastPresentedProducts[0];
       if (!vars['product_name']) {
-        vars['product_name'] = memory.lastPresentedProducts[0].title;
+        vars['product_name'] = firstPresented.title;
       }
-      if (!vars['price']) {
-        vars['price'] = memory.lastPresentedProducts[0].price;
+      if (!vars['price'] && titlesEqual(vars['product_name'], firstPresented.title)) {
+        vars['price'] = firstPresented.price;
       }
     }
     if (memory?.selectedCategory && !vars['category']) {
@@ -1095,8 +1213,15 @@ export class TemplateEngineService {
   private formatProductList(productData: ProductSearchResult[], recommendedSize?: string): string {
     if (!productData || productData.length === 0) return '';
 
-    // When recommendedSize is set, sizes are already determined by pre-qualify — hide them from display
-    const suppressSizes = !!recommendedSize;
+    // When recommendedSize is set, sizes are already determined by pre-qualify
+    // — hide them from display. Only when a color axis exists, though:
+    // suppressing sizes on a size-only catalog renders each product as a bare
+    // title with no variant information at all.
+    const suppressSizes =
+      !!recommendedSize &&
+      productData.some((p) =>
+        p.variants.some((v) => v.effectiveAvailable > 0 && v.color),
+      );
 
     // Collect all prices to check if they're the same
     const allPrices: number[] = [];

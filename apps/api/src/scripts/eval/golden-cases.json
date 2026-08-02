@@ -470,5 +470,452 @@
       }
     },
     "expect": { "slotAction": "asks_question" }
+  },
+  {
+    "id": "size_correction_statement",
+    "description": "SIZE ALREADY ESTABLISHED. The customer rejects the chart-inferred size out loud. Must be a correction that re-scopes the LIST — not ask_recommendation, which made the engine pre-select lastPresentedProducts[0], so the next 'так' bought a product they never chose.",
+    "params": {
+      "messageText": "Мені потрібен розмір XL, а не L",
+      "categories": [
+        "Сорочки",
+        "Футболки / Поло",
+        "Шорти",
+        "Штани"
+      ],
+      "recentMessages": [
+        {
+          "role": "user",
+          "text": "Хочу замовити сорочку"
+        },
+        {
+          "role": "assistant",
+          "text": "Підкажіть ваш зріст та вагу — підберу розмір 👌"
+        },
+        {
+          "role": "user",
+          "text": "Зріст 182, вага 78"
+        },
+        {
+          "role": "assistant",
+          "text": "За вашими параметрами ваш розмір — L.\n1. Сорочка льон — 3300 грн\n2. Сорочка льон Premium — 3900 грн"
+        }
+      ],
+      "memory": {
+        "lastAction": "presented_product_options",
+        "recommendedSize": "L",
+        "preQualifyCollected": true,
+        "selectionState": "awaiting_product",
+        "selectedCategory": "Сорочки",
+        "lastPresentedProducts": [
+          {
+            "title": "Сорочка льон",
+            "variants": [
+              "Чорний, L"
+            ],
+            "price": "3300 UAH",
+            "productId": "p1",
+            "rawVariants": [
+              {
+                "id": "v1",
+                "color": "Чорний",
+                "size": "L",
+                "price": 3300,
+                "salePrice": null,
+                "available": true
+              },
+              {
+                "id": "v2",
+                "color": "Чорний",
+                "size": "XL",
+                "price": 3300,
+                "salePrice": null,
+                "available": true
+              }
+            ]
+          },
+          {
+            "title": "Сорочка льон Premium",
+            "variants": [
+              "Білий, L"
+            ],
+            "price": "3900 UAH",
+            "productId": "p2",
+            "rawVariants": [
+              {
+                "id": "v3",
+                "color": "Білий",
+                "size": "L",
+                "price": 3900,
+                "salePrice": null,
+                "available": true
+              },
+              {
+                "id": "v4",
+                "color": "Білий",
+                "size": "XL",
+                "price": 3900,
+                "salePrice": null,
+                "available": true
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "expect": {
+      "primaryIntent": "category_browse",
+      "slotAction": "correction",
+      "entities": {
+        "size": "XL"
+      }
+    }
+  },
+  {
+    "id": "size_correction_short",
+    "description": "The same correction with no contrast clause to lean on — 'краще XL' must route exactly as the explicit 'XL, а не L' does.",
+    "params": {
+      "messageText": "краще XL",
+      "categories": [
+        "Сорочки",
+        "Футболки / Поло",
+        "Шорти",
+        "Штани"
+      ],
+      "recentMessages": [
+        {
+          "role": "user",
+          "text": "Хочу замовити сорочку"
+        },
+        {
+          "role": "assistant",
+          "text": "Підкажіть ваш зріст та вагу — підберу розмір 👌"
+        },
+        {
+          "role": "user",
+          "text": "Зріст 182, вага 78"
+        },
+        {
+          "role": "assistant",
+          "text": "За вашими параметрами ваш розмір — L.\n1. Сорочка льон — 3300 грн\n2. Сорочка льон Premium — 3900 грн"
+        }
+      ],
+      "memory": {
+        "lastAction": "presented_product_options",
+        "recommendedSize": "L",
+        "preQualifyCollected": true,
+        "selectionState": "awaiting_product",
+        "selectedCategory": "Сорочки",
+        "lastPresentedProducts": [
+          {
+            "title": "Сорочка льон",
+            "variants": [
+              "Чорний, L"
+            ],
+            "price": "3300 UAH",
+            "productId": "p1",
+            "rawVariants": [
+              {
+                "id": "v1",
+                "color": "Чорний",
+                "size": "L",
+                "price": 3300,
+                "salePrice": null,
+                "available": true
+              },
+              {
+                "id": "v2",
+                "color": "Чорний",
+                "size": "XL",
+                "price": 3300,
+                "salePrice": null,
+                "available": true
+              }
+            ]
+          },
+          {
+            "title": "Сорочка льон Premium",
+            "variants": [
+              "Білий, L"
+            ],
+            "price": "3900 UAH",
+            "productId": "p2",
+            "rawVariants": [
+              {
+                "id": "v3",
+                "color": "Білий",
+                "size": "L",
+                "price": 3900,
+                "salePrice": null,
+                "available": true
+              },
+              {
+                "id": "v4",
+                "color": "Білий",
+                "size": "XL",
+                "price": 3900,
+                "salePrice": null,
+                "available": true
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "expect": {
+      "primaryIntent": "category_browse",
+      "slotAction": "correction",
+      "entities": {
+        "size": "XL"
+      }
+    }
+  },
+  {
+    "id": "size_fit_question_with_recommendation",
+    "description": "ANTI-REGRESSION for the block above, one character apart from a correction: a fit QUESTION stays ask_recommendation. The block must not drag every size mention into category_browse.",
+    "params": {
+      "messageText": "а XL підійде?",
+      "categories": [
+        "Сорочки",
+        "Футболки / Поло",
+        "Шорти",
+        "Штани"
+      ],
+      "recentMessages": [
+        {
+          "role": "user",
+          "text": "Хочу замовити сорочку"
+        },
+        {
+          "role": "assistant",
+          "text": "Підкажіть ваш зріст та вагу — підберу розмір 👌"
+        },
+        {
+          "role": "user",
+          "text": "Зріст 182, вага 78"
+        },
+        {
+          "role": "assistant",
+          "text": "За вашими параметрами ваш розмір — L.\n1. Сорочка льон — 3300 грн\n2. Сорочка льон Premium — 3900 грн"
+        }
+      ],
+      "memory": {
+        "lastAction": "presented_product_options",
+        "recommendedSize": "L",
+        "preQualifyCollected": true,
+        "selectionState": "awaiting_product",
+        "selectedCategory": "Сорочки",
+        "lastPresentedProducts": [
+          {
+            "title": "Сорочка льон",
+            "variants": [
+              "Чорний, L"
+            ],
+            "price": "3300 UAH",
+            "productId": "p1",
+            "rawVariants": [
+              {
+                "id": "v1",
+                "color": "Чорний",
+                "size": "L",
+                "price": 3300,
+                "salePrice": null,
+                "available": true
+              },
+              {
+                "id": "v2",
+                "color": "Чорний",
+                "size": "XL",
+                "price": 3300,
+                "salePrice": null,
+                "available": true
+              }
+            ]
+          },
+          {
+            "title": "Сорочка льон Premium",
+            "variants": [
+              "Білий, L"
+            ],
+            "price": "3900 UAH",
+            "productId": "p2",
+            "rawVariants": [
+              {
+                "id": "v3",
+                "color": "Білий",
+                "size": "L",
+                "price": 3900,
+                "salePrice": null,
+                "available": true
+              },
+              {
+                "id": "v4",
+                "color": "Білий",
+                "size": "XL",
+                "price": 3900,
+                "salePrice": null,
+                "available": true
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "expect": {
+      "primaryIntent": "ask_recommendation",
+      "slotAction": "asks_question",
+      "entities": {
+        "size": "XL"
+      }
+    }
+  },
+  {
+    "id": "size_pick_after_alternatives",
+    "description": "PRECEDENCE. Both SIZE ALREADY ESTABLISHED and ALTERNATIVES OFFERED are live — recommendedSize is sticky, so on a before_search tenant they co-fire from turn 2 on. After an out-of-stock list a bare size is a PICK: the alternatives rule wins.",
+    "params": {
+      "messageText": "тоді XL",
+      "categories": [
+        "Сорочки",
+        "Футболки / Поло",
+        "Шорти",
+        "Штани"
+      ],
+      "recentMessages": [
+        {
+          "role": "user",
+          "text": "Сорочка льон чорна, розмір L"
+        },
+        {
+          "role": "assistant",
+          "text": "На жаль, L немає в наявності.\nДоступні варіанти: M, XL"
+        }
+      ],
+      "memory": {
+        "lastAction": "told_variant_not_available",
+        "recommendedSize": "L",
+        "selectionState": "awaiting_confirmation",
+        "selectedProductId": "p1",
+        "selectedProductTitle": "Сорочка льон",
+        "requestedVariant": "L",
+        "availableVariants": [
+          {
+            "id": "v-m",
+            "name": "M",
+            "size": "M",
+            "color": "Чорний"
+          },
+          {
+            "id": "v-xl",
+            "name": "XL",
+            "size": "XL",
+            "color": "Чорний"
+          }
+        ]
+      }
+    },
+    "expect": {
+      "slotAction": "fills_missing_slot",
+      "entities": {
+        "size": "XL"
+      }
+    }
+  },
+  {
+    "id": "colour_correction_stays_correction",
+    "description": "The size block must not touch COLOUR corrections. The engine sends those to the DB on purpose (a colour IS a search keyword, a size never is), so re-routing one to category_browse/show_products would hide black items that were not in the shown list.",
+    "params": {
+      "messageText": "ні, краще чорну",
+      "categories": [
+        "Сорочки",
+        "Футболки / Поло",
+        "Шорти",
+        "Штани"
+      ],
+      "recentMessages": [
+        {
+          "role": "user",
+          "text": "Хочу замовити сорочку"
+        },
+        {
+          "role": "assistant",
+          "text": "Підкажіть ваш зріст та вагу — підберу розмір 👌"
+        },
+        {
+          "role": "user",
+          "text": "Зріст 182, вага 78"
+        },
+        {
+          "role": "assistant",
+          "text": "За вашими параметрами ваш розмір — L.\n1. Сорочка льон — 3300 грн\n2. Сорочка льон Premium — 3900 грн"
+        }
+      ],
+      "memory": {
+        "lastAction": "presented_product_options",
+        "recommendedSize": "L",
+        "preQualifyCollected": true,
+        "selectionState": "awaiting_product",
+        "selectedCategory": "Сорочки",
+        "lastPresentedProducts": [
+          {
+            "title": "Сорочка льон",
+            "variants": [
+              "Чорний, L"
+            ],
+            "price": "3300 UAH",
+            "productId": "p1",
+            "rawVariants": [
+              {
+                "id": "v1",
+                "color": "Чорний",
+                "size": "L",
+                "price": 3300,
+                "salePrice": null,
+                "available": true
+              },
+              {
+                "id": "v2",
+                "color": "Чорний",
+                "size": "XL",
+                "price": 3300,
+                "salePrice": null,
+                "available": true
+              }
+            ]
+          },
+          {
+            "title": "Сорочка льон Premium",
+            "variants": [
+              "Білий, L"
+            ],
+            "price": "3900 UAH",
+            "productId": "p2",
+            "rawVariants": [
+              {
+                "id": "v3",
+                "color": "Білий",
+                "size": "L",
+                "price": 3900,
+                "salePrice": null,
+                "available": true
+              },
+              {
+                "id": "v4",
+                "color": "Білий",
+                "size": "XL",
+                "price": 3900,
+                "salePrice": null,
+                "available": true
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "expect": {
+      "slotAction": "correction",
+      "entities": {
+        "color": "чорний",
+        "size": null
+      }
+    }
   }
 ]

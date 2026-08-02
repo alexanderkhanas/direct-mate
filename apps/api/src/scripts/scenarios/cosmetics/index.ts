@@ -52,11 +52,24 @@ export const COSMETICS_SCENARIOS: Record<string, SimulatorScenario> = {
   },
 
   cosmetics_mask_variant_choice: {
-    name: 'Cosmetics — Multi-variant mask selection (productName short-circuit)',
+    name: 'Cosmetics — Multi-variant mask selection after skin-type pre-qualify',
     description:
-      'User asks for specific variant → productName short-circuits gate → variant resolved → confirm → checkout',
+      'Naming a product no longer short-circuits the gate under ' +
+      'before_search — the classifier writes the bare category noun into ' +
+      'entities.productName, so that skip silently disabled the setting for ' +
+      'every realistic opener. Skin type is asked first, then the variant ' +
+      'resolves → confirm → checkout.',
     tenantId: DEMO_COSMETICS_SLUG,
     turns: [
+      {
+        message: 'хочу маску зволожуючу',
+        expect: {
+          decision: 'reply',
+          replyContains: 'шкіри',
+          note: 'before_search asks skin type before showing anything',
+        },
+      },
+      { message: 'жирна', expect: { state: { recommendedSkinType: 'жирна' } } },
       { message: 'хочу маску зволожуючу' },
       { message: 'так' },
       { message: 'оформлюємо' },

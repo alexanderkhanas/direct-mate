@@ -117,9 +117,28 @@ export const CLOTHING_TEMPLATES: TemplateSpec[] = [
     active: true,
   },
   {
+    // Optional variant of show_products, rendered instead of it whenever
+    // `memory.recommendedSize` is set. The list is ALREADY scoped to that size
+    // by then — the search prunes variants to it and the size column is
+    // suppressed — so the plain header dropped the one fact that explains why
+    // the list looks the way it does. Unauthored → the plain list renders.
+    scenario: 'show_products_with_size',
+    stage: 'product_discovery',
+    blocks: ['Ось що є в наявності для розміру {size} 💛\n\n{product_list}'],
+    requiredVariables: ['size', 'product_list'],
+    toneTags: ['warm'],
+    priority: 90,
+    active: true,
+  },
+  {
     scenario: 'recommend_product',
     stage: 'product_discovery',
-    blocks: ['{product_name} — {reason}. Ціна {price} 💛'],
+    // A QUESTION, not a statement. The engine pre-selects the recommended
+    // product (`updateMemoryFromAction` case 'recommend'), so a statement made
+    // the customer's next "так" a confirmation of something they never chose.
+    // `{reason}` is dropped: nothing ever wrote it — it always rendered the
+    // same hardcoded «чудова якість та гарні відгуки».
+    blocks: ['Раджу {product_name}. Ціна {price} 💛\nОформлюємо його?'],
     requiredVariables: ['product_name', 'price'],
     toneTags: ['warm'],
     priority: 90,
@@ -146,7 +165,10 @@ export const CLOTHING_TEMPLATES: TemplateSpec[] = [
   {
     scenario: 'ask_recommendation_from_shown',
     stage: 'product_discovery',
-    blocks: ['З цих варіантів раджу {product_name} — {reason} 💛'],
+    // Question form — see `recommend_product` above for why. Price sits on its
+    // own segment so an unresolved `{price}` (which interpolates to '') can't
+    // leave a dangling "— " mid-sentence.
+    blocks: ['З цих раджу {product_name}. Ціна {price} 💛\nОформлюємо його?'],
     requiredVariables: ['product_name'],
     toneTags: ['warm'],
     priority: 90,

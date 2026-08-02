@@ -258,6 +258,10 @@ function runAssertions(
     const actual = result.reply?.imageUrls?.length ?? 0;
     push('imageCount', actual === expect.imageCount, expect.imageCount, actual);
   }
+  if (expect.imageCountMin !== undefined) {
+    const actual = result.reply?.imageUrls?.length ?? 0;
+    push('imageCountMin', actual >= expect.imageCountMin, `>= ${expect.imageCountMin}`, actual);
+  }
   if (expect.extraReplyCount !== undefined) {
     const actual = result.extraReplies?.length ?? 0;
     push('extraReplyCount', actual === expect.extraReplyCount, expect.extraReplyCount, actual);
@@ -855,11 +859,12 @@ async function main(): Promise<void> {
       await app.close();
       process.exit(1);
     }
+    // `||` splits the ad-hoc message into sequential turns.
     const adHoc: SimulatorScenario = {
       name: `ad-hoc (${slug})`,
-      description: `one-turn message: "${message}"`,
+      description: `ad-hoc message: "${message}"`,
       tenantId: rows[0].id,
-      turns: [{ message }],
+      turns: message.split('||').map((m) => ({ message: m.trim() })),
     };
     scenariosToRun = [['__ad_hoc__', adHoc]];
   }

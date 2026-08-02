@@ -176,6 +176,7 @@ Available variables:
 greeting                      — Привітання
 show_products                 — Показ товарів
 show_price                    — Показ ціни
+show_products_with_size       — Показ товарів (розмір відомий) (опц., fallback → show_products)
 show_price_with_variants      — Показ ціни + варіанти (опц., fallback → show_price)
 recommend_product             — Рекомендація товару
 ask_recommendation_from_shown — Рекомендація зі списку
@@ -243,6 +244,85 @@ Templates, phrase blocks, and FAQ items are separate tables per tenant.
 - **Manager reply detection** — detect is_echo from manager, pause bot
 
 ### Shipped
+- **A SIZE-only correction re-scopes the list on screen; a COLOUR correction searches the DB.**
+  `isNarrowingSlotFill` (`reply-engine.service.ts`) admits `slotAction='correction'` only when the
+  turn carries a size and **no** colour. The asymmetry is the whole point: `extractSearchKeywords`
+  emits `productName` and `color` — **a size is never a keyword** — so «мені потрібен XL, а не L»
+  routed to the DB gets an empty query, 0 rows, and a `product_not_found` handoff, while the answer
+  sat in `lastPresentedProducts` the whole time. Colour has a working DB path, and narrowing it in
+  memory would hide black items that weren't in the shown list.
+  - **The engine gate is inert without the classifier block.** It fires only on `correction`; that
+    is what `SIZE ALREADY ESTABLISHED` (gated on `memory.lastAction && memory.recommendedSize`)
+    pins. Ship prompt and gate together. Its PRECEDENCE line hands a bare size to
+    `alternativesOfferedRule` — both blocks are live from turn 2 on any `before_search` +
+    measurements tenant, because `recommendedSize` is sticky.
+  - Cause of record: the correction rendered `ask_recommendation_from_shown`, which **pre-selects**
+    `lastPresentedProducts[0]` (`updateMemoryFromAction` case `recommend`), so the next «так» bought
+    a shirt the customer never chose. Recommendation copy in all three packs is a **question** now,
+    and `{reason}` is gone — nothing ever wrote it, so it always rendered the same hardcoded
+    «чудова якість та гарні відгуки». Scenario coverage: `..._size_correction_after_recommendation`
+    (rewritten from turn 3 on), `demo_altamen_recommendation_is_a_question`, and 8 deterministic
+    `isNarrowingSlotFill` cases in `reply-engine.predicate.spec.ts`.
+  - **`lastPresentedProducts[].rawVariants` is SIZE-SCOPED whenever the tenant recommends a size**,
+    so a size correction must NOT be answered from it. `toPresented` (`~:2638`) writes it from
+    `productData` *after* the `recommendedSize` search filter (`~:2330`) has pruned it — the stored
+    matrix holds that one size only, and narrowing it to a different size matches nothing, every
+    time, on exactly the tenants where size corrections happen. `narrowShownProductsBySize`
+    hydrates the SHOWN ids instead (`availabilityService.findAllByProductIds`, one query): no
+    keyword search, no exposure to the category leak, plus live stock and images. The colour /
+    `fills_missing_slot` path still filters in memory — its substrate is fine, and changing it
+    would perturb tenants that work today. Cause of record: the correction to XL rendered
+    `narrowing_no_match` against a catalog where every shown shirt had XL.
+  - **The in-memory narrow must re-hydrate images.** `narrowLastPresentedInMemory` rebuilds
+    `ProductSearchResult` rows from memory, which carries no image data, so both levels come back
+    `imageUrl: null` and every template-engine image site bottoms out at `product.imageUrl` → a
+    text-only re-show. `AvailabilityService.loadProductImages` is public for this: two batched
+    `product_id = ANY($1)` queries, ids from memory.
+  - `handleNarrowingNoMatch` returns before `buildResponse`, so it logs its own `reply` event. An
+    early-returning branch that doesn't leaves NOTHING in `conversations.log` between two
+    classifications, which is how a wrong `narrowing_no_match` hid inside a green-looking run. Any
+    new early return that emits a customer-visible reply should do the same.
+  - **`narrowing_no_match` asks a question, so something must answer it.** «Пошукати ширше в
+    каталозі?» was unanswerable — nothing read `lastAction='narrow_no_match'`. Now
+    `handleNarrowingNoMatch` parks `memory.pendingNarrowBroaden` + the one-shot `narrowBroadenAsked`,
+    and `handleNarrowBroadenChoice` (block 4.36, beside `handleCartRemovalChoice` and for the same
+    reason — a bare «так» left to reach `resolveShortReply` reads as confirming a product) turns a
+    yes into a real search via `armBroadenSearch`. A reply that answers neither yes nor no clears the
+    wait and routes normally but LEAVES the guard set, so a second empty narrow broadens silently
+    instead of re-asking.
+  - `ctx.broadenNarrowing` is deliberately **transient**. Writing the size to `memory.recommendedSize`
+    instead would switch on size-suppressed rendering for the rest of the conversation off the back
+    of a one-off "have you got this in XL?". It also suppresses the `lastPresentedProducts`
+    re-narrowing in the search path — "search wider" means the shown products are exactly the ones
+    that failed, and narrowing back to them hands the size filter an empty set.
+- **`show_products_with_size` is an optional variant of `show_products`, hooked inside
+  `renderScenario`, not routed by action.** When `memory.recommendedSize` is set, `renderScenario`
+  tries it first and falls back to the plain list if the tenant hasn't authored it. Hooked at the
+  render layer so it covers every path that reaches `show_products` — the first-presentation force
+  and the several `pickScenario` returns included. Copy: «Ось що є в наявності для розміру {size}:».
+  - **Not a second `show_products` template at a higher priority.** The anti-repetition filter drops
+    recently-used templates *before* priority is read (`:314-318`), so a P95 sized template used on
+    one turn silently demotes the next turn to the P90 plain one and the header flips on and off
+    mid-browse. Worth knowing generally: **priority does not reliably win over recency today.**
+  - `{size}` is filled from `recommendedSize` **only for this scenario** (`:281`-style scoped
+    tweak). A general `{size}` fallback would change ROUTING, not just wording: `ask_color_for_size`
+    and `recommend_size` both list `size` in `required_variables`, so they would become viable on
+    turns where they are not today.
+  - Checklist for any future `show_products` sibling — miss one and it fails silently:
+    `allProductScenarios` (images), `skipVariantUpdate` (or it latches a variant the customer never
+    picked), `scenarioToAction`, `PRODUCTISH_PRIMARIES`, and the admin's `SCENARIO_LABELS` /
+    `SCENARIO_COLORS`. The `after_search_offered` offer-suffix gate needs no entry: it requires
+    `!memory.recommendedSize`, so it and the sized variant are mutually exclusive by construction.
+  - Cosmetics deliberately has no sized template — that vertical sets `recommendedSkinType`, never
+    `recommendedSize`, so the scenario can never fire there.
+- **`{product_name}` and `{price}` must come from the same product.** `buildVariableMap` resolved the
+  name from memory (`selectedProductTitle` → `lastPresentedProducts[0]`) and then assigned the price
+  **unconditionally** from `productData[0]`, so a recommendation could quote one product's name at
+  another product's price. Name precedence is unchanged; the price now follows the name (same product
+  + live stock → `productData`, else the matching `lastPresentedProducts` entry, else unresolved with
+  a warn-level log). Comparison goes through the module-level `titlesEqual` — exact, not
+  `namesTheSameThing`/`titlesOverlap`: both sides are `products.title`, so anything looser only
+  produces false positives, and a false positive here quotes the wrong price.
 - **`isPivotToDifferentProduct` is the single definition of "the customer changed their mind."** A pivot = the turn names a product whose title doesn't bidirectionally-substring-match `memory.selectedProductTitle`, OR a category that differs from `memory.selectedCategory`. Block **4.6c** (`reply-engine.service.ts`, right after 4.6) acts on it: clear the selection via `clearSelectionForNewProduct` (the same field list `adds_to_cart` uses), drop the cart item they walked away from, and drop size/colour entities the customer didn't actually type this turn (`entityEchoedInText`).
   - **Do NOT use `titlesOverlap` for this.** That helper strips `TITLE_GENERIC_NOUNS` (сорочка, футболка, куртка…) and returns true when either side tokenizes to empty — it exists to *preserve* a lock when the customer types a bare generic noun. Feeding it «сорочку» answers "same product" and defeats the pivot check on the exact turn it exists for.
   - **Gated on `slotAction ∈ {new_inquiry, correction}`** and `!input.mediaReference`. A pure "так"/"ні" is never a pivot — a spuriously leaked category on a confirmation turn would otherwise wipe `selectedVariantId` and break the cart add. `classifyMessage` runs *before* media resolution, so a story reply must not be able to wipe the cart before the photo has named its product.
@@ -254,6 +334,68 @@ Templates, phrase blocks, and FAQ items are separate tables per tenant.
   - The engine owns handoff copy. **Senders must not author their own.** `instagram.service.ts` used to discard `result.reply` and send a hardcoded "checking" line, so the engine's per-reason copy never reached a customer and production disagreed with the demo widget (which does pass `result.reply` through, and therefore showed the dead air). It now sends `result.reply.text`.
   - Product position: the bot discloses it is an AI assistant (`conversation_start_greeting` already says so), and human managers take over when it escalates. Telling the customer that transfer is happening is honest, and in the demo it *is* the pitch — a prospect watching the escalation fire is watching the headline feature work.
   - Note the AI-fallback system prompt still carries `NEVER say "contact manager"` (rule 5). That stays: the fallback is supposed to ANSWER. A fallback reply that deflects to a manager is a *fake* handoff — no escalation recorded, no Telegram ping. Real escalation goes through `doHandoff`, which announces.
+- **The conversation-start greeting is prepended in `withTrace`, not after `buildResponse`.** It must
+  lead the bot's FIRST message of a conversation, whichever block produces it. `process()` has ~15
+  reply-emitting return paths and only one is `buildResponse`, so while the welcome lived at the bottom
+  of `process()` every early return on turn 1 — the pre-qualify question, a size chart, a media match, a
+  0-row handoff — skipped it, and the greeting then landed on top of the bot's *second* message.
+  Centralized in `maybePrependWelcome`, called from `withTrace` for the same reason `markReplied` is:
+  one funnel, no per-call-site drift. Cause of record: `before_search` asks height/weight on turn 1, so
+  «Вітаю, з вами AI-асистент» surfaced *after* it. Keeps both existing skips — `greeting` intent (the
+  `greeting` scenario owns that flow; avoids a double «Вітаю») and results with no reply text.
+- **`before_search` pre-qualify asks in EVERY case except a resolved media reference.** The gate
+  (`reply-engine.service.ts` ~1575, clothing; ~1780, cosmetics) skips only on: `!mediaProductData`
+  (story/post reply or screenshot whose product we resolved — we already know what they want),
+  `entities.size` present (they told us their size), no product intent (a bare «Привіт» gets a
+  greeting), and the usual mid-flow guards (cart, orderCreated, awaiting_variant/confirmation).
+  - **`entities.productName` must NOT suppress it under `before_search`.** The classifier writes the
+    bare *category noun* into `productName` — «Хочу замовити футболку» → `'Футболка'` — so that
+    short-circuit silently disabled the setting for every realistic opener, and non-deterministically
+    (the field is sometimes omitted), which made it look random rather than off. `after_search_offered`
+    keeps the skip: there the question is an offer appended *after* results, and offering size help to
+    someone who already named a model is noise. This is why the term is
+    `(strategy === 'before_search' || !entities.productName)` and not a flat removal.
+  - Cause-of-record: `demo-altamen` configured `before_search` and never once asked for height/weight.
+    Guarded by the `pre-qualify gate` unit suite in `reply-engine.service.spec.ts` (6 cases incl. the
+    `after_search_offered` scope guard) — the gate had **zero** coverage before; every older
+    pre-qualify test targets `maybeMidFlowSizeHelp`, which runs *before* it.
+- **A size the customer STATES beats the size the chart inferred.** `recommendedSize` is sticky
+  (cleared only by the greeting / post-order resets) and silently drives the 5.5d variant filter,
+  5.5b-2 + 5.5c early-resolve and the size-suppressed rendering — so a stale value quietly decides the
+  whole order. Three places now honour a stated size:
+  - **Answering the question with a size.** The gate's size term is `(awaitingPreQualify ||
+    !entities.size)`: a size in the OPENING turn means we needn't ask, but once we HAVE asked,
+    «У мене розмір L» is a legitimate answer and must reach branch (a). Previously it was blocked, so
+    pre-qualify stayed pending, the size was dropped and the turn fell to AI fallback — which also
+    leaked a hardcoded 💛 into a men's store. Branch (a) takes `entities.size` as `recommendedSize`
+    and deliberately does NOT set `lastAction='recommended_size'`: echoing «За вашими параметрами ваш
+    розмір — L» at someone who just said L is absurd.
+  - **Correcting it later** («мені потрібен XL, а не L») — `syncRecommendedSizeWithStatedSize`, called
+    between pre-qualify and search so the new size reaches the filters. It only ever UPDATES an
+    existing value, never invents one: creating `recommendedSize` from a passing mention («а в XL є?»)
+    would switch on size-suppressed rendering for tenants that never ran pre-qualify.
+  - **Not re-asking for it.** 5.5c's colour-matched branch resolves straight to the known size when
+    that colour carries it, instead of routing to `ask_size_for_color`. Companion to the 5.5b-2
+    `userSize ?? selectedSize ?? recommendedSize` chain — same rule, different entry point.
+  - Guards: `demo_altamen_size_correction_after_recommendation` (ordered the rejected size before the
+    fix) and `demo_altamen_states_size_instead_of_measurements`.
+  - Still open: a size correction while a colour is already locked (Чорний, L → «а можна XL?») drops
+    the colour and re-asks it — the documented `slotAction='correction'` state-hygiene debt below.
+- **`memory.recommendedSize` must never prune a product the customer NAMED.** The search-path filter
+  (`reply-engine.service.ts` ~2220) runs *before* `narrowByProductName`, and its "don't over-prune"
+  guard counts **products, not names** — so a named product lacking the recommended size is deleted and
+  a *different* product that happens to carry that size gets locked instead. Guarded by
+  `!entities.productName`. Size filtering stays on for open browses, where "show me what fits" is the
+  point. Collecting measurements on nearly every conversation (above) made this go from rare to default.
+  - Companion: 5.5d's `confirm_last_in_stock` now also requires the **unfiltered** variant list to be a
+    single variant, otherwise a size-filtered collapse told customers «остання позиція в наявності»
+    while every other size was in stock.
+  - Companion: 5.5b-2's early-resolve reads `userSize ?? memory.selectedSize ?? memory.recommendedSize`
+    (was `memory.selectedSize` only). A colour+size message («Темно-сині, розмір L») was resolving the
+    colour and then *asking* for the size the customer had just given.
+  - Companion: template-engine's `suppressSizes` (3 sites) now requires a colour axis to actually exist.
+    On a size-only product it collapsed `{variant_list}` to `''`, `hasRequiredVariables` rejected the
+    template, and the turn fell through to AI fallback / handoff.
 - **Telegram handoff notifications** — wired and live. Manager gets a Telegram message when the bot escalates a conversation. Channel + behavior configured per-tenant via `flow_config.handoff` (notification channel, pause-on-handoff, summary template).
 - **Customer photo matching via pHash** — when a customer attaches an image in DM, [`InstagramContentService.matchCustomerPhoto`](apps/api/src/modules/channels/instagram/instagram-content.service.ts) first tries a 64-bit dHash lookup against `product_media.phash`. Hamming distance ≤ 5 → resolve product (deterministic, no LLM cost, no false positives on visually similar items). Tied minimums or above-threshold → fall through to the existing GPT-4o-mini vision flow against linked instagram_media_mappings, then to handoff. Hashes are computed at sync time in [`catalog.service.ts`](apps/api/src/modules/catalog/catalog.service.ts) when product_media rows are inserted.
 
@@ -265,6 +407,20 @@ Templates, phrase blocks, and FAQ items are separate tables per tenant.
 - Admin panel analytics dashboard (conversion, automation rate, response time)
 
 ### Technical Debt
+- **`entities.productName` holds a category noun, not a product name.** «Хочу замовити футболку» →
+  `productName: 'Футболка'`; «шорти» → `'Шорти'`. Every engine gate that reads this field as "did the
+  customer name a *specific* model?" is answering "did they mention clothing at all?". The pre-qualify
+  gate is defended (see Shipped), but the same field is trusted by `isPivotToDifferentProduct`, the
+  focus gate, `narrowByProductName` and `shouldSearchProducts`. Proper fix is a classifier rule
+  ("a bare category noun is a category, not a productName") — deferred because it needs
+  `npm run eval:classifier` and stays probabilistic, whereas engine gates are deterministic and
+  traceable. Add a few-shot before trusting the field in any new gate.
+- **Naming a model inside a generic-token category resolves the wrong product.** In «Футболки / Поло»
+  every title contains «футболка», so post-search narrowing (recency + `lastPresentedProducts`) picks by
+  overlap instead of honouring the model name: «Футболка двобортна хакі розмір L» came back as
+  «ВʼЯЗАНА СОРОЧКА-ФУТБОЛКА БЕЖЕВА». The structural fix is running `narrowByProductName` *ahead* of the
+  category/recency narrowings, which changes search identity for every tenant — not attempted. Standing
+  red bug guard: `demo_altamen_tshirt_order`.
 - **Cart abandon = 4.6c, and it is remove-if-named, else ask.** «джинси не треба — покажіть шорти» abandons the jeans and pivots to shorts. Handling:
   - **Removal cue** (`не треба`/`не хочу`/`прибери`/…, the `REMOVE_CUES` list computed above 4.6): a removal phrasing is never an *add*, but the classifier labels it `adds_to_cart` about as often as `correction`. Coerce `adds_to_cart → correction` on a cue up front, and stand 4.6b (keep-only) down on it, so it always reaches 4.6c. Deliberately NOT bare «ні» — «ні, давайте тільки Color Veil» is keep-only (`cart_abandon_pick_new`).
   - **remove-if-named** (`matchCartItems(cart, rawMessage)`, matched against the RAW message never `entities` — the classifier leaks `entities.category` from history): exactly one cart item named → remove it and consume its `productName` so the pivot searches the *category*, not the removed product. A named PIVOT target not in the cart matches nothing → falls through. Two items sharing a token → matches both → refuses to guess → ask.

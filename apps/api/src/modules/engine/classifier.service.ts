@@ -100,6 +100,19 @@ export interface AssistantMemory {
    *  Without it, an answer that matches no cart item leaves the pivot entities
    *  on the next turn and 4.6c asks again, forever. */
   cartRemovalAsked?: boolean;
+  /**
+   * The colour/size the customer narrowed by when NO shown product matched,
+   * parked while `narrowing_no_match` asks «Пошукати ширше в каталозі?»
+   * (`awaitingField === 'narrow_broaden_choice'`). Replayed on the answer so
+   * the wider search still knows what they were looking for — the size half
+   * especially, since a size is never a search keyword and the DB cannot
+   * apply it.
+   */
+  pendingNarrowBroaden?: { color?: string; size?: string; category?: string };
+  /** One-shot guard: the broaden question has already been asked. Without it a
+   *  reply that answers neither yes nor no leaves the same entities in play and
+   *  the next narrow asks again. Mirrors `cartRemovalAsked`. */
+  narrowBroadenAsked?: boolean;
   preQualifyData?: Record<string, string>;
   preQualifyCollected?: boolean;
   recommendedSize?: string;
@@ -423,6 +436,25 @@ export class ClassifierService {
     // ─── Section 5: state-conditional INTENT routing only ─────────
     const stateBlocks: string[] = [];
 
+    if (m.lastAction && m.recommendedSize) {
+      // Intent-only, per this prompt's rule that state blocks never touch
+      // slot_action — the ladder's `correction` rule ("ні, я хочу X") already
+      // covers "мені потрібен XL, а не L". The engine's narrowing gate needs
+      // slot_action='correction' to fire, so if the eval shows the ladder
+      // reading these as ask_recommendation or confirmation, this block has to
+      // state the pair locally the way ALTERNATIVES OFFERED does — that block
+      // is the precedent for breaking the rule when a case needs it.
+      //
+      // Pushed BEFORE the alternatives block so that one reads as the later,
+      // more specific instruction: they disagree about a bare size, and there
+      // the customer is picking from a list we just offered, not correcting.
+      stateBlocks.push(
+        ``,
+        `SIZE ALREADY ESTABLISHED — the size on file for this customer is ${m.recommendedSize}.`,
+        `- A STATEMENT naming a DIFFERENT size ("мені потрібен XL", "мені потрібен розмір XL, а не L", "давайте XL", "краще XL") → primary_intent='category_browse', recommended_action='show_products', + extract the NEW size. The customer is TELLING you their size, not asking which product to buy — NEVER 'ask_recommendation'.`,
+        `- A fit QUESTION about a size ("XL підійде?", "чи не буде XL завеликим?") → primary_intent='ask_recommendation' (unchanged).`,
+      );
+    }
     if (m.lastAction === 'told_variant_not_available') {
       stateBlocks.push(
         ``,
@@ -842,6 +874,31 @@ export class ClassifierService {
         ].join('\n')
       : '';
 
+    // A size is already on file for this customer (chart recommendation or a
+    // size they stated) and the conversation is under way. Without this block
+    // "мені потрібен розмір XL, а не L" free-associates to ask_recommendation,
+    // the engine pre-selects lastPresentedProducts[0], and the next "так" buys
+    // a product the customer never chose.
+    //
+    // Gated on `lastAction` as well as `recommendedSize` so it stays a
+    // mid-conversation rule — and so the golden cases, which set both, exercise
+    // the same prompt production does.
+    const sizeEstablishedRule =
+      params.memory.lastAction && params.memory.recommendedSize
+        ? [
+            ``,
+            `SIZE ALREADY ESTABLISHED (current size for this customer: ${params.memory.recommendedSize}):`,
+            `- Customer STATES a different size ("мені потрібен XL", "мені потрібен розмір XL, а не L", "давайте XL", "краще XL", "у мене XL"):`,
+            `    → primary_intent='category_browse', recommended_action='show_products'`,
+            `    → slot_action='correction', entities.size = the NEW size`,
+            `    → they are TELLING you their size, not asking which product to buy. NEVER 'ask_recommendation'.`,
+            `- Customer ASKS whether a size fits ("XL підійде?", "чи не буде XL завеликим?"):`,
+            `    → slot_action='asks_question', primary_intent='ask_recommendation'   (unchanged)`,
+            `- A COLOR correction ("ні, краще чорну") stays slot_action='correction' with entities.color — this rule is about SIZE only and does not change how colors are classified.`,
+            `- PRECEDENCE: if ALTERNATIVES OFFERED is also active below, ITS rule wins — a bare size after an out-of-stock list is a pick (fills_missing_slot), not a correction.`,
+          ].join('\n')
+        : '';
+
     // Fires the turn AFTER the bot said "requested variant is unavailable,
     // here are the alternatives". Keyed on `lastAction` (written identically
     // at all 4 variant-not-available sites) rather than `selectionState`
@@ -901,7 +958,7 @@ export class ClassifierService {
     // category-heuristic includes the right tenants and to diagnose
     // unexpected prompt-token deltas.
     this.logger.debug(
-      `[CLASSIFIER_BLOCKS] cosmetics=${!!cosmeticsRule} pendingOffer=${!!pendingOfferRule} awaitingVariant=${!!awaitingVariantRule} postSelection=${!!postSelectionRule} altsOffered=${!!alternativesOfferedRule} chartJustSent=${!!params.memory.sizeChartJustSent} productSize=${isClothingLike} categories=${params.categories.join(',')}`,
+      `[CLASSIFIER_BLOCKS] cosmetics=${!!cosmeticsRule} pendingOffer=${!!pendingOfferRule} awaitingVariant=${!!awaitingVariantRule} postSelection=${!!postSelectionRule} altsOffered=${!!alternativesOfferedRule} sizeEstablished=${!!sizeEstablishedRule} chartJustSent=${!!params.memory.sizeChartJustSent} productSize=${isClothingLike} categories=${params.categories.join(',')}`,
     );
 
     const systemPrompt = [
@@ -927,6 +984,11 @@ export class ClassifierService {
       memoryContext ? `\n${memoryContext}` : '',
       cosmeticsRule,
       pendingOfferRule,
+      // Before alternativesOfferedRule on purpose: the two disagree about a
+      // bare size, and the PRECEDENCE line inside sizeEstablishedRule hands
+      // that case to the alternatives block, which now reads as the later,
+      // more specific instruction.
+      sizeEstablishedRule,
       alternativesOfferedRule,
       sizeChartJustSentRule,
       awaitingVariantRule,

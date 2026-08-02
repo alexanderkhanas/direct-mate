@@ -47,8 +47,27 @@ export const COSMETICS_TEMPLATES: TemplateSpec[] = [
   {
     scenario: 'recommend_product',
     stage: 'product_discovery',
-    blocks: ['{product_name} — {reason}. Підходить для {skin_type} шкіри. Ціна {price} 💛'],
+    // A QUESTION, not a statement. The engine pre-selects the recommended
+    // product (`updateMemoryFromAction` case 'recommend'), so a statement made
+    // the customer's next "так" a confirmation of something they never chose.
+    // `{reason}` is dropped: nothing ever wrote it — it always rendered the
+    // same hardcoded «чудова якість та гарні відгуки».
+    blocks: ['Раджу {product_name}. Підходить для {skin_type} шкіри. Ціна {price} 💛\nОформлюємо його?'],
     requiredVariables: ['product_name', 'price'],
+    toneTags: ['warm'],
+    priority: 90,
+    active: true,
+  },
+  {
+    // Cosmetics had NO template for this scenario: the router picked it,
+    // `renderScenario` returned null, and the turn fell into AI fallback.
+    // Deliberately does not mention skin type — this fires when the customer
+    // asks "which of these?" about an already-shown list, where the skin-type
+    // framing has usually been said once already.
+    scenario: 'ask_recommendation_from_shown',
+    stage: 'product_discovery',
+    blocks: ['З цих раджу {product_name}. Ціна {price} 💛\nОформлюємо його?'],
+    requiredVariables: ['product_name'],
     toneTags: ['warm'],
     priority: 90,
     active: true,

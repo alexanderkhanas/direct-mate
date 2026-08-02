@@ -486,3 +486,101 @@ describe('matchCartItems', () => {
     expect(matchCartItems(shared, 'світлі').length).toBe(2);
   });
 });
+
+/**
+ * `isNarrowingSlotFill` — which turns re-scope the list already on screen
+ * instead of firing a fresh DB search.
+ *
+ * The interesting case is `correction`, admitted for SIZE ONLY. The
+ * justification is asymmetric and the simulator cannot pin it: a size is never
+ * a search keyword (`extractSearchKeywords` emits productName and color), so
+ * «мені потрібен XL, а не L» sent to the DB gets an empty query and 0 rows —
+ * while a COLOUR correction has a perfectly good DB path that must not be
+ * shadowed, or the customer stops seeing black items that weren't in the list.
+ */
+describe('isNarrowingSlotFill', () => {
+  const narrows = (
+    classification: ClassificationResult,
+    memory: AssistantMemory,
+  ): boolean =>
+    (ReplyEngineService.prototype as any).isNarrowingSlotFill.call(
+      {},
+      classification,
+      memory,
+    );
+
+  /** A list is on screen and its variant matrix was captured. */
+  const browsing = (over: Partial<AssistantMemory> = {}): AssistantMemory =>
+    ({
+      selectionState: 'awaiting_product',
+      lastPresentedProducts: [
+        {
+          title: 'Сорочка льон',
+          variants: ['Чорний, L'],
+          price: '3300 UAH',
+          productId: 'p1',
+          rawVariants: [
+            { id: 'v1', color: 'Чорний', size: 'L', price: 3300, salePrice: null, available: true },
+            { id: 'v2', color: 'Чорний', size: 'XL', price: 3300, salePrice: null, available: true },
+          ],
+        },
+      ],
+      ...over,
+    }) as unknown as AssistantMemory;
+
+  const turn = (
+    slotAction: string,
+    entities: Record<string, unknown>,
+  ): ClassificationResult =>
+    classification({ slotAction, entities } as any);
+
+  it('size-only correction narrows in memory — the DB cannot serve it', () => {
+    expect(narrows(turn('correction', { size: 'XL' }), browsing())).toBe(true);
+  });
+
+  it('colour correction still goes to the DB — colour IS a search keyword', () => {
+    expect(narrows(turn('correction', { color: 'чорний' }), browsing())).toBe(false);
+  });
+
+  it('colour + size correction goes to the DB — the colour half is searchable', () => {
+    expect(
+      narrows(turn('correction', { color: 'чорний', size: 'XL' }), browsing()),
+    ).toBe(false);
+  });
+
+  it('a correction naming a product is a pivot, not a narrow', () => {
+    expect(
+      narrows(turn('correction', { size: 'XL', productName: 'Шорти льон' }), browsing()),
+    ).toBe(false);
+  });
+
+  it('fills_missing_slot is unchanged — colour still narrows', () => {
+    expect(narrows(turn('fills_missing_slot', { color: 'чорний' }), browsing())).toBe(true);
+  });
+
+  it('a bare confirmation never narrows', () => {
+    expect(narrows(turn('confirmation', { size: 'XL' }), browsing())).toBe(false);
+  });
+
+  it('mid-selection (not awaiting_product) never narrows', () => {
+    expect(
+      narrows(
+        turn('correction', { size: 'XL' }),
+        browsing({ selectionState: 'awaiting_confirmation' }),
+      ),
+    ).toBe(false);
+  });
+
+  it('legacy conversation without rawVariants fails closed to a fresh search', () => {
+    expect(
+      narrows(
+        turn('correction', { size: 'XL' }),
+        browsing({
+          lastPresentedProducts: [
+            { title: 'Сорочка льон', variants: ['L'], price: '3300 UAH' },
+          ] as any,
+        }),
+      ),
+    ).toBe(false);
+  });
+});
