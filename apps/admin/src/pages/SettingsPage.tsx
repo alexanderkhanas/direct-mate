@@ -198,23 +198,37 @@ function FlowConfigSection() {
     mutationFn: () => {
       let advanced: Record<string, unknown> = {};
       if (advancedJson.trim()) advanced = JSON.parse(advancedJson);
+      // A key DELETED from the advanced textarea has to be sent as an explicit
+      // null, or the merge on the API side just keeps the stored value and the
+      // deletion looks like it worked until the next reload.
+      const storedFlow = (config?.flowConfig ?? {}) as Record<string, unknown>;
+      for (const k of Object.keys(storedFlow)) {
+        if (KNOWN_FLOW_KEYS.includes(k)) continue;
+        if (!(k in advanced)) advanced[k] = null;
+      }
+      // `null`, never `undefined`, for a cleared value. The API shallow-merges
+      // flowConfig (so a form that models a subset of the keys can't destroy
+      // the rest), and `JSON.stringify` drops undefined — so an undefined here
+      // means "key absent from the patch", which the merge reads as "leave it
+      // alone". Blanking a field in the UI would silently no-op. `null` is the
+      // documented clear signal and the API deletes the key.
       return api.patch('/engine/config', {
         flowConfig: {
           ...advanced,
-          businessType: businessType || undefined,
+          businessType: businessType || null,
           preQualify: {
             enabled: preQualifyEnabled,
-            prompt: preQualifyPrompt || undefined,
-            fields: preQualifyFields.length > 0 ? preQualifyFields : undefined,
+            prompt: preQualifyPrompt || null,
+            fields: preQualifyFields.length > 0 ? preQualifyFields : null,
           },
           preQualifyStrategy,
-          sizeHelpMode: sizeHelpMode || undefined,
-          sizeChart: rowsToSizeChart(sizeRows),
+          sizeHelpMode: sizeHelpMode || null,
+          sizeChart: rowsToSizeChart(sizeRows) ?? null,
           variants: variantMode === 'two_step' ? {
             primaryOption: 'color',
             secondaryOption: 'size',
             askSequence: ['color', 'size'],
-          } : undefined,
+          } : null,
         },
       });
     },

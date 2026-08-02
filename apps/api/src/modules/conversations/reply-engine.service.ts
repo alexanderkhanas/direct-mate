@@ -330,7 +330,7 @@ export class ReplyEngineService {
     // Runs AFTER pre-qualify (which owns the first size the customer gives)
     // and BEFORE search, so the corrected size reaches the variant filters
     // that would otherwise still be scoped to the retired one.
-    this.syncRecommendedSizeWithStatedSize(ctx);
+    this.syncRecommendedSizeWithStatedSize(ctx, input.messageText);
 
     const searchResult = await this.searchAndFilterProducts(input, ctx);
     if (searchResult) return withTrace(searchResult);
@@ -752,6 +752,11 @@ export class ReplyEngineService {
       memory.recommendedSkinType = undefined;
       memory.shouldOfferSizeHelp = undefined;
       memory.awaitingPreQualifyAnswer = undefined;
+      // Both belong to the broaden episode, which `lastPresentedProducts`
+      // being cleared has just ended — leaving the one-shot guard set would
+      // suppress the question for the whole of the NEXT conversation.
+      memory.narrowBroadenAsked = undefined;
+      memory.pendingNarrowBroaden = undefined;
     }
 
     // 4.5. Post-order state management
@@ -1453,12 +1458,43 @@ export class ReplyEngineService {
    * Deliberately only UPDATES an existing value, never invents one: creating
    * `recommendedSize` from any passing size mention («а в XL є?») would turn
    * on size-suppressed rendering for tenants that never ran pre-qualify.
+   *
+   * Three things must ALL hold, because this field is sticky (only a greeting
+   * or post-order reset clears it) and silently steers the rest of the
+   * conversation:
+   *   - the turn must be a STATEMENT of the customer's own size. A fit
+   *     question («а в XL є, для брата?» → `asks_question`) asks about a size,
+   *     it does not adopt one.
+   *   - the size must appear in what the customer actually TYPED. The
+   *     classifier carries `entities.size` forward from history on nearly
+   *     every turn (see the focus gate), so without this a leaked entity
+   *     rewrites the customer's size on a turn about something else. Same
+   *     defence, same helper, as 4.6c's history-leak drop.
+   *   - it must differ from what we already hold.
    */
-  private syncRecommendedSizeWithStatedSize(ctx: ProcessingContext): void {
+  private syncRecommendedSizeWithStatedSize(
+    ctx: ProcessingContext,
+    messageText: string,
+  ): void {
     const stated = ctx.classification?.entities?.size;
     const current = ctx.memory.recommendedSize;
     if (!stated || !current) return;
     if (stated.toLowerCase() === current.toLowerCase()) return;
+
+    const slot = ctx.classification?.slotAction;
+    if (slot === 'asks_question') {
+      ctx.trace.push(
+        `recommendedSize: "${stated}" is a question, not a statement — kept "${current}"`,
+      );
+      return;
+    }
+    if (!this.entityEchoedInText(stated, messageText, 'size')) {
+      ctx.trace.push(
+        `recommendedSize: "${stated}" not typed this turn (history leak) — kept "${current}"`,
+      );
+      return;
+    }
+
     ctx.memory.recommendedSize = stated;
     ctx.trace.push(
       `recommendedSize: customer stated "${stated}" → replaces inferred "${current}"`,
@@ -2164,7 +2200,7 @@ export class ReplyEngineService {
           ? await this.narrowShownProductsBySize(presented, classification, ctx)
           : this.narrowLastPresentedInMemory(presented, classification, ctx);
       ctx.trace.push(
-        `narrow_gate: fired, ${narrowed.length} products survived (from ${presented.length})`,
+        `narrow_gate: fired, ${narrowed === null ? 'cannot narrow' : `${narrowed.length} products survived`} (from ${presented.length})`,
       );
       // Same clear the `needsSearch` branch does below, for the same reason:
       // a correction means the customer is changing their mind, so 5.5c must
@@ -2177,7 +2213,10 @@ export class ReplyEngineService {
         memory.selectedVariantName = undefined;
         ctx.trace.push('narrow: correction — cleared selectedVariantId for re-matching');
       }
-      if (narrowed.length === 0) {
+      if (narrowed === null) {
+        // Cannot narrow (not "nothing matched") — leave `productData` unset
+        // and let the normal search path own the turn.
+      } else if (narrowed.length === 0) {
         // Empty narrow: customer asked for a color/size none of the
         // shown products satisfy. Render narrowing_no_match template
         // — do NOT fall through to AI fallback, which would see the
@@ -2197,6 +2236,12 @@ export class ReplyEngineService {
           return await this.handleNarrowingNoMatch(input, ctx);
         }
       } else {
+        // A narrow that found something ends the broaden episode: the guard
+        // exists to stop the SAME unanswered question repeating, not to
+        // disable the question for the rest of the conversation. Without this
+        // it is only ever cleared by an explicit yes/no, so one ignored ask
+        // makes every later empty narrow silently dump a wide catalog search.
+        memory.narrowBroadenAsked = undefined;
         // `lastPresentedProducts` carries no image data, so the in-memory
         // rows come back with `imageUrl: null` at both levels and every image
         // site in template-engine bottoms out at `product.imageUrl` — a
@@ -5973,16 +6018,24 @@ export class ReplyEngineService {
     presented: NonNullable<AssistantMemory['lastPresentedProducts']>,
     classification: ClassificationResult,
     ctx: ProcessingContext,
-  ): Promise<ProductSearchResult[]> {
+  ): Promise<ProductSearchResult[] | null> {
     const size = classification.entities.size;
     // `isNarrowingSlotFill` admits a correction only with a size and no
     // colour, so this is defensive rather than a real branch.
-    if (!nonEmptyStr(size)) return [];
+    if (!nonEmptyStr(size)) return null;
 
     const ids = presented
       .map((p) => p.productId)
       .filter((id): id is string => nonEmptyStr(id));
-    if (ids.length === 0) return [];
+    // `null` (cannot narrow), NOT `[]` (nothing carries that size). Legacy
+    // conversations predate `productId` and `lastPresentedProducts` documents
+    // readers as fail-closed — falling through to a fresh search. Returning
+    // `[]` would tell the customer «серед показаних такого немає» on the
+    // strength of an empty id list.
+    if (ids.length === 0) {
+      ctx.trace.push('narrow: shown products carry no productId — falling through to search');
+      return null;
+    }
 
     const hydrated = await this.availabilityService.findAllByProductIds(ids);
     const wanted = size.toLowerCase().trim();

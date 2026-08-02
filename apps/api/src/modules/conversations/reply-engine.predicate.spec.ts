@@ -584,3 +584,62 @@ describe('isNarrowingSlotFill', () => {
     ).toBe(false);
   });
 });
+
+/**
+ * `syncRecommendedSizeWithStatedSize` — when a size the customer mentions is
+ * allowed to REPLACE the one on file.
+ *
+ * `recommendedSize` is sticky (only a greeting or post-order reset clears it)
+ * and silently drives the 5.5d variant filter, 5.5b-2/5.5c early-resolve, the
+ * size-suppressed rendering and the sized product-list header. So a size that
+ * was merely asked ABOUT, or one the classifier carried forward from history,
+ * must not overwrite it.
+ */
+describe('syncRecommendedSizeWithStatedSize', () => {
+  const sync = (
+    entities: Record<string, unknown>,
+    slotAction: string,
+    messageText: string,
+    // `null` means "nothing on file" — a default of `undefined` would be
+    // re-filled by the default parameter.
+    current: string | null = 'L',
+  ): string | undefined => {
+    const ctx: any = {
+      classification: classification({ slotAction, entities } as any),
+      memory: { recommendedSize: current ?? undefined } as AssistantMemory,
+      trace: [],
+    };
+    (ReplyEngineService.prototype as any).syncRecommendedSizeWithStatedSize.call(
+      ReplyEngineService.prototype,
+      ctx,
+      messageText,
+    );
+    return ctx.memory.recommendedSize;
+  };
+
+  it('a stated correction replaces the inferred size', () => {
+    expect(sync({ size: 'XL' }, 'correction', 'Мені потрібен розмір XL, а не L')).toBe('XL');
+  });
+
+  it('a fit QUESTION about another size does not adopt it', () => {
+    // "for my brother" — the size is asked about, not claimed.
+    expect(sync({ size: 'XL' }, 'asks_question', 'а в XL є, для брата?')).toBe('L');
+  });
+
+  it('a size the customer never typed is a history leak, not a statement', () => {
+    // The classifier carries entities.size forward on nearly every turn.
+    expect(sync({ size: 'XL' }, 'fills_missing_slot', 'давайте чорну')).toBe('L');
+  });
+
+  it('accepts a Cyrillic-typed size (the echo check normalises it)', () => {
+    expect(sync({ size: 'XL' }, 'correction', 'мені потрібен розмір хл')).toBe('XL');
+  });
+
+  it('never invents a size when none is on file', () => {
+    expect(sync({ size: 'XL' }, 'correction', 'а в XL є?', null)).toBeUndefined();
+  });
+
+  it('a restatement of the same size is a no-op', () => {
+    expect(sync({ size: 'L' }, 'correction', 'у мене L')).toBe('L');
+  });
+});

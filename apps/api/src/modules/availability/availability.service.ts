@@ -7,6 +7,9 @@ import { ProductMedia } from '../catalog/entities/product-media.entity';
 import { CheckAvailabilityDto } from './dto/check-availability.dto';
 
 const FRESHNESS_MINUTES = 10;
+/** Backstop for `findAllByProductIds`. Callers pass the products already on
+ *  screen, so real lists are far smaller than this. */
+const MAX_HYDRATED_PRODUCTS = 25;
 
 export interface AvailabilityResult {
   matchType: 'exact' | 'partial' | 'none';
@@ -530,15 +533,32 @@ export class AvailabilityService {
   ): Promise<ReturnType<AvailabilityService['findAllByProductId']>> {
     if (productIds.length === 0) return [];
 
+    // Bound the PRODUCT count, not the row count. A `take()` here would be one
+    // global LIMIT over the joined rows, so a single variant-heavy product
+    // (demo-altamen's «Сорочка льон» alone is 11 colours × 6 sizes = 66) could
+    // consume the whole budget and leave the rest of the list partial or
+    // absent — and the caller would report those products as not carrying the
+    // size, non-deterministically. The list this hydrates is what the customer
+    // just saw on screen, so it is small by construction; the slice is a
+    // backstop, not a working limit.
+    const ids = productIds.slice(0, MAX_HYDRATED_PRODUCTS);
+    if (ids.length < productIds.length) {
+      this.logger.warn(
+        `findAllByProductIds: ${productIds.length} ids requested, hydrating the first ${ids.length}`,
+      );
+    }
+
     const variants = await this.variantRepo
       .createQueryBuilder('v')
       .innerJoinAndSelect('v.product', 'p')
       .leftJoinAndSelect('v.stockBalance', 's')
-      .where('p.id IN (:...productIds)', { productIds })
+      .where('p.id IN (:...ids)', { ids })
       .andWhere('p.status = :status', { status: 'active' })
       .andWhere('v.active = true')
-      // Same per-product ceiling as findAllByProductId, applied across the set.
-      .take(20 * productIds.length)
+      // Deterministic row order: without it the same call can group variants
+      // differently between runs, which is how a flaky "no match" hides.
+      .orderBy('p.id', 'ASC')
+      .addOrderBy('v.id', 'ASC')
       .getMany();
     if (variants.length === 0) return [];
 
@@ -546,7 +566,7 @@ export class AvailabilityService {
     await this.loadProductImages(results);
     // `IN` does not preserve argument order; the caller's list is the order the
     // customer saw on screen, and the re-show must not reshuffle it.
-    const order = new Map(productIds.map((id, i) => [id, i]));
+    const order = new Map(ids.map((id, i) => [id, i]));
     results.sort(
       (a, b) => (order.get(a.product.id) ?? 0) - (order.get(b.product.id) ?? 0),
     );

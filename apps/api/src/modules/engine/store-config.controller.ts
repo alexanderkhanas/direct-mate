@@ -70,7 +70,22 @@ export class StoreConfigController {
     const mergeJsonb = (
       current: Record<string, unknown> | null | undefined,
       patch: unknown,
-    ) => ({ ...(current ?? {}), ...(patch as Record<string, unknown>) });
+    ) => {
+      const merged = {
+        ...(current ?? {}),
+        ...(patch as Record<string, unknown>),
+      };
+      // An explicit null means "clear this key" — drop it rather than storing
+      // `null`, so readers doing `'key' in flowConfig` and `?? default` agree.
+      // Note this is the ONLY way a client can remove a key: `undefined` never
+      // survives JSON serialisation, so a form that omits a field is
+      // indistinguishable from one that never knew about it. That is the point
+      // of the merge, and it is why clearing has to be explicit.
+      for (const [k, v] of Object.entries(patch as Record<string, unknown>)) {
+        if (v === null) delete merged[k];
+      }
+      return merged;
+    };
 
     if (body.brandConfig !== undefined)
       config.brandConfig = mergeJsonb(config.brandConfig, body.brandConfig) as any;

@@ -25,6 +25,34 @@ function nonEmptyString(v?: string | null): v is string {
   return typeof v === 'string' && v.trim().length > 0;
 }
 
+/**
+ * Is this product list ACTUALLY scoped to `size`?
+ *
+ * `memory.recommendedSize` being set is not the same thing. The search-path
+ * size filter (`reply-engine.service.ts` ~:2397) stands down whenever
+ * `entities.productName` is present — and the classifier writes the bare
+ * category noun into that field, so «Покажіть сорочки» produces an UNFILTERED
+ * list while a size sits in memory. Rendering that list under «для розміру L»
+ * with the size column suppressed tells the customer two things that aren't
+ * true.
+ *
+ * Answer it from the data instead of from the flag: every in-stock variant
+ * still on the list carries that size (size-less variants don't contradict —
+ * a product with no size axis is neither in nor out of scope).
+ */
+function listIsScopedToSize(
+  productData: ProductSearchResult[] | undefined,
+  size?: string,
+): boolean {
+  if (!nonEmptyString(size) || !productData?.length) return false;
+  const wanted = size.trim().toLowerCase();
+  return productData.every((p) =>
+    p.variants
+      .filter((v) => v.effectiveAvailable > 0 && !!v.size)
+      .every((v) => v.size!.trim().toLowerCase() === wanted),
+  );
+}
+
 // ─── Interfaces ──────────────────────────────────────────────────
 
 export interface ProductSearchResult {
@@ -204,7 +232,10 @@ export class TemplateEngineService {
     // anti-repetition filter drops recently-used templates BEFORE priority is
     // read, so a P95 sized template used last turn silently demotes the next
     // turn to the P90 plain one — the header would flip on and off mid-browse.
-    if (scenario === 'show_products' && nonEmptyString(memory?.recommendedSize)) {
+    if (
+      scenario === 'show_products' &&
+      listIsScopedToSize(productData, memory?.recommendedSize)
+    ) {
       const sized = await this.renderScenario(
         tenantId,
         'show_products_with_size',
@@ -1213,12 +1244,19 @@ export class TemplateEngineService {
   private formatProductList(productData: ProductSearchResult[], recommendedSize?: string): string {
     if (!productData || productData.length === 0) return '';
 
-    // When recommendedSize is set, sizes are already determined by pre-qualify
-    // — hide them from display. Only when a color axis exists, though:
-    // suppressing sizes on a size-only catalog renders each product as a bare
-    // title with no variant information at all.
+    // When the list is scoped to the customer's size, sizes are already
+    // determined — hide them from display. Two guards:
+    //   - a colour axis must exist, or suppressing sizes on a size-only
+    //     catalog renders each product as a bare title with no variant
+    //     information at all;
+    //   - the list must ACTUALLY be scoped to that size. `recommendedSize`
+    //     alone is not evidence of that: the search-path filter stands down on
+    //     `entities.productName`, which the classifier fills with the bare
+    //     category noun, so «Покажіть сорочки» yields a full list. Suppressing
+    //     the size column there hides every size the customer could pick from
+    //     and tells them nothing about why.
     const suppressSizes =
-      !!recommendedSize &&
+      listIsScopedToSize(productData, recommendedSize) &&
       productData.some((p) =>
         p.variants.some((v) => v.effectiveAvailable > 0 && v.color),
       );
