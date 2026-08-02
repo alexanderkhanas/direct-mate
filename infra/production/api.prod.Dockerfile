@@ -9,6 +9,20 @@
 FROM node:20-slim AS builder
 WORKDIR /app
 
+# Toolchain for node-gyp. `bcrypt` downloads a prebuilt binary from GitHub
+# releases and node-pre-gyp falls back to compiling from source when that
+# download fails — but node:20-slim ships no Python and no compiler, so the
+# fallback dead-ends and `npm ci` exits 1. A single GitHub 503 then takes the
+# whole deploy down (2026-08-02: exactly that, on
+# bcrypt_lib-v5.1.1-napi-v3-linux-x64-glibc.tar.gz).
+#
+# Builder stage only — stage 2 copies node_modules and never sees these, so
+# the runtime image is unchanged. Costs ~30s of build time for a deploy that
+# survives the CDN being down.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY package*.json .npmrc ./
 COPY packages/shared/package*.json packages/shared/
 COPY apps/api/package*.json apps/api/
