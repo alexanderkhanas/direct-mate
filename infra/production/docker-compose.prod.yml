@@ -105,6 +105,9 @@ services:
       # CDN — read-only access to FTP-uploaded product images.
       # Served by cdn.directmate.app vhost (see nginx/conf.d/cdn.conf).
       - /srv/directmate-ftp:/srv/directmate-ftp:ro
+      # VinLinkAuto project documents (spec + design mockups).
+      # Served by vinlinkauto.directmate.app vhost (see nginx/conf.d/vinlinkauto.conf).
+      - /srv/vinlinkauto:/srv/vinlinkauto:ro
     depends_on:
       - api
       - admin
