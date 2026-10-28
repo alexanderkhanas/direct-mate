@@ -108,6 +108,9 @@ services:
       # VinLinkAuto project documents (spec + design mockups).
       # Served by vinlinkauto.directmate.app vhost (see nginx/conf.d/vinlinkauto.conf).
       - /srv/vinlinkauto:/srv/vinlinkauto:ro
+      # GTA Sunrise design presentation for the client.
+      # Served at gtasunrise.directmate.app/design/ (see nginx/conf.d/gtasunrise.conf).
+      - /srv/gtasunrise-docs:/srv/gtasunrise-docs:ro
     depends_on:
       - api
       - admin
