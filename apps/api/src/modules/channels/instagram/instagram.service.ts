@@ -69,6 +69,10 @@ interface MetaWebhookPayload {
 }
 
 const DEBOUNCE_MS = 5_000; // 5 seconds
+/** Images per turn sent to Instagram. Each is its own DM, so an uncapped
+ *  product list would arrive as N notifications. Mirrors the demo widget,
+ *  which renders at most 4 (`MessageBubble.tsx`). */
+const MAX_IG_IMAGES_PER_TURN = 4;
 
 
 @Injectable()
@@ -203,7 +207,13 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
   private toPublicImageUrl(url: string): string {
     if (/^https?:\/\//i.test(url)) return url;
     const base = (this.config.get<string>('app.baseUrl') ?? '').replace(/\/$/, '');
-    const clean = url.replace(/^\//, '');
+    // Percent-encode the path. Seeded filenames carry non-ASCII characters the
+    // scraper preserved from the source titles — `v´yazana-…` (U+00B4 ACUTE
+    // ACCENT) and `vʼyazana-…` (U+02BC MODIFIER LETTER APOSTROPHE) are both in
+    // the altamen catalog. curl and nginx cope with the raw bytes; Meta's
+    // fetcher is not a browser and should not be handed a non-ASCII URL.
+    // `encodeURI` leaves `/` and already-escaped `%XX` alone.
+    const clean = encodeURI(url.replace(/^\//, ''));
     return base ? `${base}/${clean}` : url;
   }
 
@@ -220,31 +230,58 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
     pageAccessToken: string,
     label: string,
   ): Promise<void> {
-    try {
-      await withRetry(
-        () => this.sendMetaImages(recipientId, imageUrls, pageAccessToken),
-        { label, maxAttempts: 3, baseDelayMs: 2000 },
+    // ONE image per message, sequentially — not one request carrying all of
+    // them. The old batched form put an `attachments` ARRAY inside `message`,
+    // and Meta rejected every single attempt with 400 / subcode 2018007
+    // ("upload attachment failure"): zero successful image sends in the whole
+    // retained production log. The singular `attachment` shape is the one form
+    // the Send API documents unambiguously.
+    //
+    // Per-image sends also isolate failures: one unfetchable URL costs that
+    // image, not the customer's whole product grid.
+    const capped = imageUrls.slice(0, MAX_IG_IMAGES_PER_TURN);
+    if (capped.length < imageUrls.length) {
+      this.logger.log(
+        `[${label}] ${imageUrls.length} images → sending first ${capped.length} ` +
+          `(cap: a product list should not arrive as N separate DMs)`,
       );
-      this.logger.log(`Sent ${imageUrls.length} image(s) to ${recipientId} [${label}]`);
-    } catch (err) {
+    }
+
+    let sent = 0;
+    for (const url of capped) {
+      try {
+        await withRetry(
+          () => this.sendMetaImage(recipientId, url, pageAccessToken),
+          { label, maxAttempts: 3, baseDelayMs: 2000 },
+        );
+        sent++;
+      } catch (err) {
+        this.logger.warn(
+          `Image attachment send failed (non-fatal) for ${recipientId} [${label}] ` +
+            `url=${url}: ${(err as Error).message}. Continuing with the rest.`,
+        );
+      }
+    }
+    if (sent > 0) {
+      this.logger.log(`Sent ${sent}/${capped.length} image(s) to ${recipientId} [${label}]`);
+    } else if (capped.length > 0) {
       this.logger.warn(
-        `Image attachment send failed (non-fatal) for ${recipientId} [${label}]: ` +
-          `${(err as Error).message}. Text reply still delivered; conversation not handed off.`,
+        `No images delivered to ${recipientId} [${label}]. ` +
+          `Text reply still delivered; conversation not handed off.`,
       );
     }
   }
 
-  private async sendMetaImages(
+  private async sendMetaImage(
     recipientId: string,
-    imageUrls: string[],
+    imageUrl: string,
     pageAccessToken: string,
   ): Promise<void> {
     this.recentSendByRecipient.set(recipientId, Date.now());
 
     // Pre-flight: Meta cannot fetch from localhost/unset hosts. Surface this
     // before burning 3 retries × ~6s of confusing 400s.
-    const hasRelative = imageUrls.some((u) => !/^https?:\/\//i.test(u));
-    if (hasRelative) {
+    if (!/^https?:\/\//i.test(imageUrl)) {
       const base = this.config.get<string>('app.baseUrl') ?? '';
       if (!base || /^https?:\/\/localhost/i.test(base)) {
         this.logger.warn(
@@ -254,7 +291,7 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    const absoluteUrls = imageUrls.map((u) => this.toPublicImageUrl(u));
+    const url = this.toPublicImageUrl(imageUrl);
     const res = await fetch('https://graph.instagram.com/v21.0/me/messages', {
       method: 'POST',
       headers: {
@@ -264,10 +301,10 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
       body: JSON.stringify({
         recipient: { id: recipientId },
         message: {
-          attachments: absoluteUrls.map((url) => ({
+          attachment: {
             type: 'image',
             payload: { url },
-          })),
+          },
         },
       }),
     });

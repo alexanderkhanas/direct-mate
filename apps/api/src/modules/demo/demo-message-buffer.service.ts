@@ -19,14 +19,13 @@
  */
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { randomUUID } from 'crypto';
 import {
   MessageDirection,
   MessageRole,
   ReplyDecision,
 } from '@direct-mate/shared';
 import { ConversationsService } from '../conversations/conversations.service';
-import { ReplyEngineService } from '../conversations/reply-engine.service';
+import { TurnRunner, TurnRunResult } from '../conversations/turn-runner.service';
 import { DemoBudgetService } from './demo-budget.service';
 
 export type DemoDecision = ReplyDecision | 'budget_exceeded';
@@ -53,7 +52,11 @@ const BUDGET_EXCEEDED_PAYLOAD: DemoReplyPayload = {
   handoff: { required: false, reason: null },
 };
 
-const FALLBACK_CHARGE_PROBABILITY = 0.2;
+/** Cached input tokens cost about a tenth of uncached ones. */
+const CACHED_INPUT_WEIGHT = 0.1;
+/** A second flush can find the first still running (it holds the lease); it waits its turn. */
+const BUSY_RETRY_MS = 1000;
+const BUSY_RETRIES = 60;
 
 interface BufferEntry {
   sessionKey: string;
@@ -79,28 +82,26 @@ export class DemoMessageBufferService implements OnModuleDestroy {
   private readonly buffers = new Map<string, BufferEntry>();
   private readonly janitor: NodeJS.Timeout;
 
-  private readonly classifierModel: string;
-  private readonly fallbackModel: string;
-  private readonly classifierCapCents: number;
-  private readonly fallbackCapCents: number;
+  private readonly agentModel: string;
+  // Daily caps are per model (demo_spend_daily is keyed by model).
+  private readonly capCentsByModel: Record<string, number>;
 
   constructor(
     private readonly configService: ConfigService,
     private readonly conversationsService: ConversationsService,
-    private readonly replyEngineService: ReplyEngineService,
+    private readonly turnRunner: TurnRunner,
     private readonly budgetService: DemoBudgetService,
   ) {
     this.debounceMs =
       this.configService.get<number>('demo.debounceMs') ?? 1500;
-    this.classifierModel =
-      this.configService.get<string>('openai.model') ?? 'gpt-5.4-mini';
-    this.fallbackModel =
-      this.configService.get<string>('openai.fallbackModel') ?? 'gpt-5.4';
-    this.classifierCapCents =
-      this.configService.get<number>('demo.budget.classifierCentsPerDay') ??
-      1500;
-    this.fallbackCapCents =
-      this.configService.get<number>('demo.budget.fallbackCentsPerDay') ?? 500;
+    this.agentModel =
+      this.configService.get<string>('agent.model') ?? 'gpt-5.4-mini';
+    this.capCentsByModel = {
+      'gpt-5.4-mini':
+        this.configService.get<number>('demo.budget.classifierCentsPerDay') ?? 1500,
+      'gpt-5.4':
+        this.configService.get<number>('demo.budget.fallbackCentsPerDay') ?? 500,
+    };
     this.janitor = setInterval(
       () => this.sweepIdleEntries(),
       JANITOR_INTERVAL_MS,
@@ -187,130 +188,52 @@ export class DemoMessageBufferService implements OnModuleDestroy {
     // findOrCreateConversation, which is the desired behaviour.
     this.buffers.delete(sessionKey);
 
-    const combinedText = entry.texts.join('\n');
     const isAggregated = entry.texts.length > 1;
 
     try {
-      // Pre-check budget on BOTH classifier and fallback caps. canSpend
-      // returns false for unknown models (fail-closed), so a misconfigured
-      // OPENAI_MODEL trips this rather than running unbounded calls.
-      const [canClassifier, canFallback] = await Promise.all([
-        this.budgetService.canSpend(
-          this.classifierModel,
-          this.classifierCapCents,
-        ),
-        this.budgetService.canSpend(
-          this.fallbackModel,
-          this.fallbackCapCents,
-        ),
-      ]);
-      if (!canClassifier || !canFallback) {
-        this.logger.warn(
-          `Demo budget exceeded — skipping engine for ${sessionKey} (classifier=${canClassifier}, fallback=${canFallback})`,
-        );
+      // canSpend is fail-closed for models it has no price for, so a
+      // misconfigured AGENT_MODEL stops the demo rather than spending blind.
+      // A priced model without its own cap gets the agent's daily cap.
+      const cap = this.capCentsByModel[this.agentModel] ?? this.capCentsByModel['gpt-5.4-mini'];
+      if (!(await this.budgetService.canSpend(this.agentModel, cap))) {
+        this.logger.warn(`Demo budget exceeded for ${this.agentModel} — skipping the agent for ${sessionKey}`);
         for (const resolve of entry.pendingResolvers) {
           resolve({ ...BUDGET_EXCEEDED_PAYLOAD, isAggregated });
         }
         return;
       }
 
-      const recentMessages = await this.conversationsService.getRecentMessages(
-        entry.conversationId,
-        10,
-      );
+      // Demo mode: orders are placed and payment details claimed in the
+      // database so the conversation stays truthful, but nothing leaves the
+      // system — no Telegram, no n8n — and a handoff doesn't pause the chat,
+      // because no manager is coming.
+      const result = await this.runWhenFree(entry);
 
-      const state = await this.conversationsService.getState(
-        entry.conversationId,
-      );
-      if (!state) {
-        throw new Error(
-          `ConversationState missing for ${entry.conversationId}`,
-        );
+      if (result.agent) {
+        const u = result.agent.usage;
+        const input = u.inputTokens - u.cachedInputTokens + u.cachedInputTokens * CACHED_INPUT_WEIGHT;
+        await this.budgetService.chargeEstimate(result.agent.model, Math.ceil(input), u.outputTokens);
       }
 
-      const result = await this.replyEngineService.process({
-        source: 'demo_widget',
-        tenantId: entry.tenantId,
-        conversationId: entry.conversationId,
-        messageText: combinedText,
-        state,
-        recentMessages,
-        traceId: randomUUID(),
-      });
-
-      // Charge classifier always (it ran). Charge fallback probabilistically
-      // because we can't observe whether it ran without instrumenting the
-      // engine. p=0.20 overcounts by ~2× in expectation — a deliberate
-      // conservative bias.
-      const inputTokens = Math.max(1, Math.ceil(combinedText.length / 3));
-      const primaryOutputChars = result.reply?.text?.length ?? 0;
-      const extraOutputChars = (result.extraReplies ?? []).reduce(
-        (sum, r) => sum + (r.text?.length ?? 0),
-        0,
-      );
-      const totalOutputChars = primaryOutputChars + extraOutputChars;
-      const outputTokens = totalOutputChars > 0
-        ? Math.max(1, Math.ceil(totalOutputChars / 3))
-        : 200;
-      await this.budgetService.chargeEstimate(
-        this.classifierModel,
-        inputTokens,
-        outputTokens,
-      );
-      if (Math.random() < FALLBACK_CHARGE_PROBABILITY) {
-        await this.budgetService.chargeEstimate(
-          this.fallbackModel,
-          inputTokens,
-          outputTokens,
-        );
-      }
-
-      if (result.stateUpdate) {
-        await this.conversationsService.updateState(
-          entry.conversationId,
-          result.stateUpdate,
-        );
-      }
-
-      if (result.reply?.text) {
-        await this.conversationsService.saveMessage(
-          entry.conversationId,
-          entry.tenantId,
-          MessageDirection.Outbound,
-          MessageRole.Assistant,
-          result.reply.text,
-        );
-      }
-      // Persist follow-up bubbles as separate messages so the conversation
-      // log mirrors what the customer sees.
-      for (const extra of result.extraReplies ?? []) {
-        if (!extra.text) continue;
-        await this.conversationsService.saveMessage(
-          entry.conversationId,
-          entry.tenantId,
-          MessageDirection.Outbound,
-          MessageRole.Assistant,
-          extra.text,
-        );
-      }
-
-      // Demo intentionally skips ordersService.createFromConversation()
-      // and conversationsService.escalate() / Telegram notify. The reply
-      // text alone communicates the outcome to the visitor.
-
+      const [first, ...rest] = result.messages;
+      const toolNames = [
+        ...new Set((result.agent?.steps ?? []).flatMap((s) => s.toolCalls.map((c) => c.toolName))),
+      ];
       const payload: DemoReplyPayload = {
-        reply: result.reply
-          ? { text: result.reply.text, imageUrls: result.reply.imageUrls }
-          : null,
-        extraReplies: result.extraReplies?.length
-          ? result.extraReplies.map((r) => ({ text: r.text, imageUrls: r.imageUrls }))
+        reply: first ? { text: first.text, imageUrls: first.imageUrls } : null,
+        extraReplies: rest.length
+          ? rest.map((m) => ({ text: m.text, imageUrls: m.imageUrls }))
           : undefined,
-        decision: result.decision,
-        scenario: result.templateScenario ?? null,
+        decision: result.handoff
+          ? ReplyDecision.Handoff
+          : result.committed.orderId
+            ? ReplyDecision.CreateDraftOrder
+            : ReplyDecision.Reply,
+        scenario: toolNames.length ? toolNames.join(', ') : null,
         isAggregated,
         handoff: {
-          required: result.handoff.required,
-          reason: result.handoff.reason,
+          required: !!result.handoff,
+          reason: result.handoff?.reason ?? null,
         },
       };
 
@@ -326,6 +249,24 @@ export class DemoMessageBufferService implements OnModuleDestroy {
       for (const reject of entry.pendingRejecters) {
         reject(error);
       }
+    }
+  }
+
+  /**
+   * A message sent while the previous one is still being answered starts its
+   * own flush; that one finds the conversation leased and waits, then answers
+   * everything the visitor has written since.
+   */
+  private async runWhenFree(entry: BufferEntry): Promise<TurnRunResult> {
+    for (let attempt = 0; ; attempt++) {
+      const result = await this.turnRunner.run({
+        tenantId: entry.tenantId,
+        conversationId: entry.conversationId,
+        mode: 'demo',
+        source: 'demo_widget',
+      });
+      if (result.status !== 'busy' || attempt >= BUSY_RETRIES) return result;
+      await new Promise((r) => setTimeout(r, BUSY_RETRY_MS));
     }
   }
 

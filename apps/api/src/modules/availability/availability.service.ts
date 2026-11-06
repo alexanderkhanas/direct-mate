@@ -489,6 +489,7 @@ export class AvailabilityService {
         size: string | null;
         color: string | null;
         price: number;
+        salePrice: number | null;
         currency: string;
         effectiveAvailable: number;
         imageUrl: string | null;
@@ -530,6 +531,7 @@ export class AvailabilityService {
    */
   async findAllByProductIds(
     productIds: string[],
+    opts: { tenantId?: string } = {},
   ): Promise<ReturnType<AvailabilityService['findAllByProductId']>> {
     if (productIds.length === 0) return [];
 
@@ -548,13 +550,18 @@ export class AvailabilityService {
       );
     }
 
-    const variants = await this.variantRepo
+    const qb = this.variantRepo
       .createQueryBuilder('v')
       .innerJoinAndSelect('v.product', 'p')
       .leftJoinAndSelect('v.stockBalance', 's')
       .where('p.id IN (:...ids)', { ids })
       .andWhere('p.status = :status', { status: 'active' })
-      .andWhere('v.active = true')
+      .andWhere('v.active = true');
+    // Callers holding ids that came from a model (the v2 agent's tools) pass
+    // the tenant, so an id from another store returns nothing.
+    if (opts.tenantId) qb.andWhere('p.tenantId = :tenantId', { tenantId: opts.tenantId });
+
+    const variants = await qb
       // Deterministic row order: without it the same call can group variants
       // differently between runs, which is how a flaky "no match" hides.
       .orderBy('p.id', 'ASC')
@@ -620,6 +627,7 @@ export class AvailabilityService {
       size: string | null;
       color: string | null;
       price: number;
+      salePrice: number | null;
       currency: string;
       effectiveAvailable: number;
       imageUrl: string | null;
@@ -632,6 +640,7 @@ export class AvailabilityService {
         size: string | null;
         color: string | null;
         price: number;
+        salePrice: number | null;
         currency: string;
         effectiveAvailable: number;
         imageUrl: string | null;
@@ -661,6 +670,7 @@ export class AvailabilityService {
         size: v.size,
         color: v.color,
         price: Number(v.price),
+        salePrice: v.salePrice != null ? Number(v.salePrice) : null,
         currency: v.currency,
         effectiveAvailable,
         imageUrl: v.imageUrl ?? null,

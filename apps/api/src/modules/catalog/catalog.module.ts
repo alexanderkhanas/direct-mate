@@ -10,6 +10,8 @@ import { CatalogController } from './catalog.controller';
 import { ImageHashService } from './image-hash.service';
 import { ImageEmbeddingService } from './image-embedding.service';
 import { ProductMediaEmbedderService } from './product-media-embedder.service';
+import { ProductAttributesService } from './attributes/product-attributes.service';
+import { AttributesExtractionWorker } from './attributes/attributes-extraction.worker';
 
 @Module({
   imports: [
@@ -27,9 +29,12 @@ import { ProductMediaEmbedderService } from './product-media-embedder.service';
     ImageHashService,
     ImageEmbeddingService,
     ProductMediaEmbedderService,
+    ProductAttributesService,
+    AttributesExtractionWorker,
   ],
   exports: [
     CatalogService,
+    ProductAttributesService,
     ImageHashService,
     ImageEmbeddingService,
     TypeOrmModule,

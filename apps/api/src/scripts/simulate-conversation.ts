@@ -1,12 +1,23 @@
 #!/usr/bin/env ts-node
 /**
- * Conversation Simulator — runs multi-turn conversations through the real
- * ReplyEngineService without needing Instagram or webhooks.
+ * Conversation simulator — runs scenarios through the same turn runner real
+ * messages use (v2 agent), in demo mode, without Instagram. Orders are really
+ * placed and payment details really claimed in the local DB, so assertions
+ * check outcomes: the reply, the handoff, the order draft, the placed order.
  *
  * Usage:
- *   npx ts-node src/scripts/simulate-conversation.ts --scenario story_reply_clothing
- *   npx ts-node src/scripts/simulate-conversation.ts --list
- *   npx ts-node src/scripts/simulate-conversation.ts --all
+ *   npm run simulate -- --scenario demo_altamen_shirt_measurements_order
+ *   npm run simulate -- --tenant demo-altamen
+ *   npm run simulate -- --tenant demo-altamen --message "Привіт || а чорна є?"
+ *   npm run simulate -- --tenant demo-altamen --image photos/delivery-details.png --message "ось дані"
+ *       (--image: a file under test-assets/ or a URL, sent as a photo before the first message)
+ *   npm run simulate -- --all --out agent-run.json
+ *   npm run simulate -- --list
+ *   ... --model gpt-5.4          run every turn on another model
+ *
+ * Costs real model calls. Scenarios written for the classifier engine still
+ * run: their route-only assertions are dropped and listed per turn (see
+ * modules/testing/scenario-assertions.ts).
  */
 
 import 'reflect-metadata';
@@ -16,13 +27,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AppModule } from '../app.module';
 import {
-  ReplyEngineService,
-  ReplyEngineOutput,
-} from '../modules/conversations/reply-engine.service';
-import { ConversationsService } from '../modules/conversations/conversations.service';
-import { ConversationState } from '../modules/conversations/entities/conversation-state.entity';
-import { MessageDirection, MessageRole, ReplyDecision } from '@direct-mate/shared';
-import { SCENARIOS, SimulatorScenario, SimulatorTurnExpect } from './scenarios';
+  ScenarioIdentity,
+  ScenarioRunner,
+  ScenarioTurnLog,
+  TenantNotFoundError,
+} from '../modules/testing/scenario-runner.service';
+import { deepMerge } from '../common/deep-merge';
+import { describeLook } from '../modules/catalog/attributes/product-attributes';
+import { SCENARIOS, SimulatorScenario } from './scenarios';
 
 // ─── Colors ──────────────────────────────────────────────────────
 
@@ -44,9 +56,11 @@ const c = {
 
 // ─── Constants ───────────────────────────────────────────────────
 
-const SIM_CUSTOMER_EXTERNAL_ID = 'sim-customer-001';
-const SIM_CHANNEL = 'instagram';
-const SIM_CHANNEL_ACCOUNT_ID = 'sim-channel';
+const IDENTITY: ScenarioIdentity = {
+  externalUserId: 'sim-customer-001',
+  channel: 'instagram',
+  channelAccountId: 'sim-channel',
+};
 
 // ─── flow_config override safety (SIMULATOR-ONLY) ────────────────
 //
@@ -121,28 +135,6 @@ async function restoreLeakedFlowConfigs(dataSource: DataSource): Promise<void> {
   }
 }
 
-/** Deep merge — a shallow spread would replace whole nested objects. */
-function deepMerge(
-  base: Record<string, unknown>,
-  patch: Record<string, unknown>,
-): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...base };
-  for (const [k, v] of Object.entries(patch)) {
-    const prev = out[k];
-    const bothPlainObjects =
-      v !== null &&
-      typeof v === 'object' &&
-      !Array.isArray(v) &&
-      prev !== null &&
-      typeof prev === 'object' &&
-      !Array.isArray(prev);
-    out[k] = bothPlainObjects
-      ? deepMerge(prev as Record<string, unknown>, v as Record<string, unknown>)
-      : v;
-  }
-  return out;
-}
-
 // ─── CLI args ────────────────────────────────────────────────────
 
 interface CliArgs {
@@ -151,7 +143,9 @@ interface CliArgs {
   all: boolean;
   tenant: string | null;
   message: string | null;
+  image: string | null;
   out: string | null;
+  model: string | null;
 }
 
 function parseArgs(): CliArgs {
@@ -162,801 +156,346 @@ function parseArgs(): CliArgs {
     all: false,
     tenant: null,
     message: null,
+    image: null,
     out: null,
+    model: null,
   };
-
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--scenario' && args[i + 1]) {
-      result.scenario = args[i + 1];
-      i++;
-    } else if (args[i] === '--list') {
-      result.list = true;
-    } else if (args[i] === '--all') {
-      result.all = true;
-    } else if (args[i] === '--tenant' && args[i + 1]) {
-      result.tenant = args[i + 1];
-      i++;
-    } else if (args[i] === '--message' && args[i + 1]) {
-      result.message = args[i + 1];
-      i++;
-    } else if (args[i] === '--out' && args[i + 1]) {
-      result.out = args[i + 1];
-      i++;
-    }
+    const next = args[i + 1];
+    if (args[i] === '--scenario' && next) result.scenario = args[++i];
+    else if (args[i] === '--list') result.list = true;
+    else if (args[i] === '--all') result.all = true;
+    else if (args[i] === '--tenant' && next) result.tenant = args[++i];
+    else if (args[i] === '--message' && next) result.message = args[++i];
+    else if (args[i] === '--image' && next) result.image = args[++i];
+    else if (args[i] === '--out' && next) result.out = args[++i];
+    else if (args[i] === '--model' && next) result.model = args[++i];
   }
-
   return result;
 }
 
-// ─── Turn log entry (for JSON output) ───────────────────────────
+// ─── Flow config override ────────────────────────────────────────
 
-interface AssertionResult {
-  field: string;
-  pass: boolean;
-  expected: unknown;
-  actual: unknown;
-  message?: string;
-}
-
-interface TurnLog {
-  turnIndex: number;
-  message: string;
-  mediaReference?: { mediaId: string; type: string };
-  classification: Record<string, unknown> | null;
-  decision: string;
-  scenario: string | null;
-  replyText: string | null;
-  imageUrls: string[] | undefined;
-  extraReplies: Array<{ text: string; imageUrls?: string[] }> | null;
-  state: Record<string, unknown>;
-  assertions: AssertionResult[];
-  trace: string[];
-}
-
-// ─── Assertions ─────────────────────────────────────────────────
-
-function runAssertions(
-  expect: SimulatorTurnExpect,
-  result: ReplyEngineOutput,
-  memory: Record<string, unknown>,
-): AssertionResult[] {
-  const out: AssertionResult[] = [];
-  const arr = (v: string | string[] | undefined) => (v === undefined ? [] : Array.isArray(v) ? v : [v]);
-
-  const push = (field: string, pass: boolean, expected: unknown, actual: unknown, message?: string) => {
-    out.push({ field, pass, expected, actual, message });
-  };
-
-  if (expect.decision !== undefined) {
-    push('decision', result.decision === expect.decision, expect.decision, result.decision);
-  }
-  if (expect.scenario !== undefined) {
-    const actual = result.templateScenario ?? null;
-    push('scenario', actual === expect.scenario, expect.scenario, actual);
-  }
-  // Check across primary reply AND extraReplies — the AI-introduction
-  // welcome promotes itself to primary and demotes contextual reply to
-  // extraReplies[0]. Substring assertions should pass when the target
-  // text is anywhere in the user-visible bubble stack.
-  const allReplyTexts = [
-    result.reply?.text ?? '',
-    ...(result.extraReplies ?? []).map((r) => r.text ?? ''),
-  ]
-    .filter(Boolean)
-    .map((t) => t.toLowerCase());
-  const anyReplyIncludes = (sub: string) =>
-    allReplyTexts.some((t) => t.includes(sub.toLowerCase()));
-  const previewReplies = () =>
-    allReplyTexts.map((t) => t.slice(0, 80)).join(' ‖ ');
-  for (const sub of arr(expect.replyContains)) {
-    push('replyContains', anyReplyIncludes(sub), sub, previewReplies());
-  }
-  for (const sub of arr(expect.replyNotContains)) {
-    push('replyNotContains', !anyReplyIncludes(sub), `NOT ${sub}`, previewReplies());
-  }
-  if (expect.imageCount !== undefined) {
-    const actual = result.reply?.imageUrls?.length ?? 0;
-    push('imageCount', actual === expect.imageCount, expect.imageCount, actual);
-  }
-  if (expect.imageCountMin !== undefined) {
-    const actual = result.reply?.imageUrls?.length ?? 0;
-    push('imageCountMin', actual >= expect.imageCountMin, `>= ${expect.imageCountMin}`, actual);
-  }
-  if (expect.extraReplyCount !== undefined) {
-    const actual = result.extraReplies?.length ?? 0;
-    push('extraReplyCount', actual === expect.extraReplyCount, expect.extraReplyCount, actual);
-  }
-  if (expect.extraReplyImageContains !== undefined) {
-    const sub = expect.extraReplyImageContains.toLowerCase();
-    const allUrls = (result.extraReplies ?? []).flatMap((r) => r.imageUrls ?? []);
-    const found = allUrls.some((u) => u.toLowerCase().includes(sub));
-    push(
-      'extraReplyImageContains',
-      found,
-      sub,
-      allUrls.length ? allUrls : '(no extra image urls)',
-    );
-  }
-
-  if (expect.state) {
-    const s = expect.state;
-    if (s.selectionState !== undefined) push('state.selectionState', memory.selectionState === s.selectionState, s.selectionState, memory.selectionState);
-    if (s.selectedProductId !== undefined) {
-      if (s.selectedProductId === null) push('state.selectedProductId', !memory.selectedProductId, null, memory.selectedProductId);
-      else push('state.selectedProductId', memory.selectedProductId === s.selectedProductId, s.selectedProductId, memory.selectedProductId);
-    }
-    if (s.selectedVariantName !== undefined) {
-      // `null` means "unset" — the engine leaves the field `undefined` rather
-      // than nulling it, so a strict === would fail an assertion that is
-      // actually satisfied. Same semantics as selectedProductId / variantStep.
-      if (s.selectedVariantName === null) push('state.selectedVariantName', !memory.selectedVariantName, null, memory.selectedVariantName);
-      else push('state.selectedVariantName', memory.selectedVariantName === s.selectedVariantName, s.selectedVariantName, memory.selectedVariantName);
-    }
-    if (s.selectedColor !== undefined) push('state.selectedColor', memory.selectedColor === s.selectedColor, s.selectedColor, memory.selectedColor);
-    if (s.selectedSize !== undefined) push('state.selectedSize', memory.selectedSize === s.selectedSize, s.selectedSize, memory.selectedSize);
-    if (s.variantStep !== undefined) {
-      if (s.variantStep === null) push('state.variantStep', !memory.variantStep, null, memory.variantStep);
-      else push('state.variantStep', memory.variantStep === s.variantStep, s.variantStep, memory.variantStep);
-    }
-    if (s.cartLength !== undefined) {
-      const actual = Array.isArray(memory.cartItems) ? memory.cartItems.length : 0;
-      push('state.cartLength', actual === s.cartLength, s.cartLength, actual);
-    }
-    if (s.cartHasVariant !== undefined) {
-      const items = Array.isArray(memory.cartItems) ? memory.cartItems as any[] : [];
-      const found = items.some(it => it.variantName === s.cartHasVariant);
-      push('state.cartHasVariant', found, s.cartHasVariant, items.map(it => it.variantName));
-    }
-    if (s.lastAction !== undefined) push('state.lastAction', memory.lastAction === s.lastAction, s.lastAction, memory.lastAction);
-    if (s.awaitingField !== undefined) push('state.awaitingField', memory.awaitingField === s.awaitingField, s.awaitingField, memory.awaitingField);
-    if (s.preQualifyCollected !== undefined) push('state.preQualifyCollected', memory.preQualifyCollected === s.preQualifyCollected, s.preQualifyCollected, memory.preQualifyCollected);
-    if (s.recommendedSize !== undefined) push('state.recommendedSize', memory.recommendedSize === s.recommendedSize, s.recommendedSize, memory.recommendedSize);
-    if (s.recommendedSkinType !== undefined) push('state.recommendedSkinType', memory.recommendedSkinType === s.recommendedSkinType, s.recommendedSkinType, memory.recommendedSkinType);
-    if (s.shouldOfferSizeHelp !== undefined) push('state.shouldOfferSizeHelp', !!memory.shouldOfferSizeHelp === s.shouldOfferSizeHelp, s.shouldOfferSizeHelp, !!memory.shouldOfferSizeHelp);
-    if (s.awaitingPreQualifyAnswer !== undefined) push('state.awaitingPreQualifyAnswer', !!memory.awaitingPreQualifyAnswer === s.awaitingPreQualifyAnswer, s.awaitingPreQualifyAnswer, !!memory.awaitingPreQualifyAnswer);
-    if (s.orderCreated !== undefined) push('state.orderCreated', memory.orderCreated === s.orderCreated, s.orderCreated, memory.orderCreated);
-  }
-
-  return out;
-}
-
-// ─── Simulator ───────────────────────────────────────────────────
+/** Restores still armed for the scenario in flight; drained on SIGINT/SIGTERM. */
+const pendingRestores = new Set<() => Promise<void>>();
 
 /**
- * A scenario's tenant doesn't exist in THIS environment. Some tenants
- * live only on prod (`men-demo-store`, `showcase-women-clothes`), so a
- * local `--all` run must skip them rather than abort the whole suite.
- * A `--scenario <name>` run still fails loudly — you asked for that one
- * specifically.
+ * Deep-merge `scenario.flowConfigOverride` onto the tenant's flow_config and
+ * return the restore. The original is backed up to disk first, so a killed
+ * run is repaired on the next boot (`restoreLeakedFlowConfigs`).
  */
-class TenantNotFoundError extends Error {
-  constructor(readonly tenantIdOrSlug: string) {
-    super(`Scenario tenantId/slug "${tenantIdOrSlug}" not found in tenants table`);
-    this.name = 'TenantNotFoundError';
-  }
+async function applyFlowConfigOverride(
+  dataSource: DataSource,
+  scenario: SimulatorScenario,
+): Promise<() => Promise<void>> {
+  if (!scenario.flowConfigOverride) return async () => {};
+  const rows: Array<{ flow_config: Record<string, unknown> | null }> = await dataSource.query(
+    `SELECT flow_config FROM store_configs WHERE tenant_id = $1 LIMIT 1`,
+    [scenario.tenantId],
+  );
+  const original = rows[0]?.flow_config ?? {};
+  writeFlowConfigBackup(scenario.tenantId, original);
+  await dataSource.query(`UPDATE store_configs SET flow_config = $1 WHERE tenant_id = $2`, [
+    JSON.stringify(deepMerge(original, scenario.flowConfigOverride)),
+    scenario.tenantId,
+  ]);
+  const restore = async () => {
+    await dataSource.query(`UPDATE store_configs SET flow_config = $1 WHERE tenant_id = $2`, [
+      JSON.stringify(original),
+      scenario.tenantId,
+    ]);
+    clearFlowConfigBackup(scenario.tenantId);
+  };
+  pendingRestores.add(restore);
+  return async () => {
+    pendingRestores.delete(restore);
+    await restore();
+  };
 }
 
-class ConversationSimulator {
-  private replyEngine: ReplyEngineService;
-  private conversationsService: ConversationsService;
-  private dataSource: DataSource;
+// ─── Printing ────────────────────────────────────────────────────
 
-  constructor(
-    replyEngine: ReplyEngineService,
-    conversationsService: ConversationsService,
-    dataSource: DataSource,
-  ) {
-    this.replyEngine = replyEngine;
-    this.conversationsService = conversationsService;
-    this.dataSource = dataSource;
+function truncate(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+function printHeader(scenario: SimulatorScenario): void {
+  console.log('');
+  console.log(`${c.bold}${c.blue}${'═'.repeat(65)}${c.reset}`);
+  console.log(`${c.bold}${c.blue}  ${scenario.name}${c.reset}`);
+  console.log(`${c.dim}  ${scenario.description}${c.reset}`);
+  if (scenario.expectedFailure) console.log(`${c.yellow}  expected to fail: ${scenario.expectedFailure}${c.reset}`);
+  console.log(`${c.bold}${c.blue}${'═'.repeat(65)}${c.reset}`);
+}
+
+const KIND_COLOR: Record<string, string> = {
+  welcome: c.dim,
+  reply: c.green,
+  payment_details: c.cyan,
+  handoff_announce: c.red,
+};
+
+function printTurn(log: ScenarioTurnLog): void {
+  const media = log.mediaReference ? ` ${c.magenta}[${log.mediaReference.type}]${c.reset}` : '';
+  const later = log.advanceHours ? ` ${c.yellow}[+${log.advanceHours}h]${c.reset}` : '';
+  console.log('');
+  console.log(`${c.cyan}${'─'.repeat(65)}${c.reset}`);
+  console.log(`${c.bold}${c.cyan} Turn ${log.turnIndex + 1}: "${log.message}"${c.reset}${media}${later}`);
+  console.log(`${c.cyan}${'─'.repeat(65)}${c.reset}`);
+
+  for (const call of log.toolCalls) {
+    console.log(`  ${c.dim}[${call.attempt}]${c.reset} → ${call.toolName}${c.dim}(${truncate(JSON.stringify(call.input), 160)})${c.reset}`);
+  }
+  log.attempts.slice(0, -1).forEach((a, i) => {
+    const problems = [...a.grounding.map((g) => `${g.kind} «${g.value}»`), ...a.style.map((s) => `«${s.match}»`)];
+    console.log(`  ${c.yellow}⚠ attempt ${i + 1} retried: ${problems.join(', ')}${c.reset}`);
+  });
+  if (log.status !== 'replied' && log.status !== 'handed_off') console.log(`  ${c.red}status: ${log.status}${c.reset}`);
+
+  for (const m of log.messages) {
+    const color = KIND_COLOR[m.kind] ?? '';
+    const [first, ...more] = m.text.split('\n');
+    console.log(`  ${color}${m.kind.padEnd(16)} "${first}"${c.reset}`);
+    for (const line of more) console.log(`  ${color}${' '.repeat(17)}"${line}"${c.reset}`);
+    if (m.imageUrls?.length) console.log(`  ${c.dim}${' '.repeat(17)}${m.imageUrls.length} image(s)${c.reset}`);
+  }
+  if (log.handoff) {
+    console.log(`  ${c.red}handoff: ${log.handoff.reason}${log.handoff.summaryForManager ? ` — ${log.handoff.summaryForManager}` : ''}${c.reset}`);
   }
 
-  async run(scenario: SimulatorScenario): Promise<TurnLog[]> {
-    // Resolve `tenantId` if it's a slug instead of a UUID. Slug form lets
-    // vertical scenarios (cosmetics) avoid hardcoding env-specific UUIDs.
-    // Shadow the param so all downstream refs to `scenario.tenantId` use
-    // the resolved value without further renaming.
-    const resolvedTenantId = await this.resolveTenantId(scenario.tenantId);
-    scenario = { ...scenario, tenantId: resolvedTenantId };
+  if (log.draft) {
+    const items = log.draft.items.map((i) => `${i.title} (${[i.color, i.size].filter(Boolean).join(', ')}) ×${i.quantity}`);
+    const missing = log.draft.missingFields.length ? `missing: ${log.draft.missingFields.join(', ')}` : 'complete';
+    console.log(`  ${c.yellow}draft: ${log.draft.status} — ${items.join('; ') || 'no items'} — ${missing}${c.reset}`);
+  }
+  if (log.orderPlaced) console.log(`  ${c.yellow}order placed${log.paymentDetailsSent ? ', payment details sent' : ''}${c.reset}`);
+  for (const item of log.shortlist) {
+    const look = describeLook(item.attributes, { withColour: true }) ?? 'no look yet';
+    console.log(`  ${c.dim}offered: ${item.title} [${look}] (${item.via})${c.reset}`);
+  }
 
-    const turnLogs: TurnLog[] = [];
-
-    // Clean up previous sim data for this tenant
-    await this.cleanup(scenario.tenantId);
-
-    // Apply flowConfigOverride if present; restore in finally so a thrown
-    // assertion still reverts the temporary config change.
-    const restoreFlowConfig = await this.applyFlowConfigOverride(scenario);
-
-    try {
-    // Create customer + conversation
-    const customer = await this.conversationsService.findOrCreateCustomer(
-      scenario.tenantId,
-      SIM_CHANNEL,
-      SIM_CUSTOMER_EXTERNAL_ID,
+  const failed = log.assertions.filter((a) => !a.pass);
+  const explicit = log.assertions.filter((a) => !a.field.startsWith('implicit.'));
+  if (failed.length === 0) {
+    console.log(`  ${c.green}✓ ${explicit.length} assertion(s) + implicit checks passed${c.reset}`);
+  } else {
+    console.log(`  ${c.red}✗ ${failed.length}/${log.assertions.length} failed${c.reset}`);
+    for (const a of failed) {
+      console.log(`    ${c.red}✗ ${a.field}: expected ${JSON.stringify(a.expected)}, got ${truncate(JSON.stringify(a.actual) ?? 'undefined', 200)}${c.reset}`);
+    }
+  }
+  if (log.legacyDropped.length) console.log(`  ${c.dim}legacy route checks dropped: ${log.legacyDropped.join(', ')}${c.reset}`);
+  if (log.usage) {
+    console.log(
+      `  ${c.dim}${log.model}, ${log.durationMs}ms, tokens in ${log.usage.inputTokens} (cached ${log.usage.cachedInputTokens}) / out ${log.usage.outputTokens}${c.reset}`,
     );
-
-    const { conversation } =
-      await this.conversationsService.findOrCreateConversation(
-        scenario.tenantId,
-        customer.id,
-        SIM_CHANNEL,
-        SIM_CHANNEL_ACCOUNT_ID,
-      );
-
-    this.printHeader(scenario, conversation.id);
-
-    for (let i = 0; i < scenario.turns.length; i++) {
-      const turn = scenario.turns[i];
-
-      // Normalize turn.message to array so we can simulate Instagram's
-      // 5-second debounce window that merges multiple messages into one
-      // engine call. Production code: instagram.service.ts flushPending().
-      const inboundMessages = Array.isArray(turn.message) ? turn.message : [turn.message];
-      const combinedText = inboundMessages.join('\n');
-
-      // Resolve customer_photo URL at runtime to a fresh linked media_url
-      // so vision matching compares the same image against itself. Mirrors
-      // simulator.service.ts so CLI + API simulators behave identically.
-      let mediaReference = turn.mediaReference;
-      if ((turn as any).resolveMediaFromLinkedProduct && mediaReference?.type === 'customer_photo') {
-        const rows: Array<{ media_url: string }> = await this.dataSource.query(
-          `SELECT media_url FROM instagram_media_mappings
-           WHERE tenant_id = $1 AND product_id IS NOT NULL AND media_url IS NOT NULL
-           ORDER BY created_at DESC LIMIT 1`,
-          [scenario.tenantId],
-        );
-        if (rows[0]?.media_url) {
-          mediaReference = { ...mediaReference, mediaId: rows[0].media_url };
-        }
-      }
-
-      // Save each inbound message row separately (matches production)
-      for (const msg of inboundMessages) {
-        await this.conversationsService.saveMessage(
-          conversation.id,
-          scenario.tenantId,
-          MessageDirection.Inbound,
-          MessageRole.User,
-          msg,
-        );
-      }
-
-      // Load recent messages. Ordering is guaranteed at the source now, so the
-      // old local `.sort()` (which diverged from production and masked the prod
-      // ordering bug) is gone — the harness and prod take the same path.
-      const recentMessages =
-        await this.conversationsService.getRecentMessages(conversation.id, 10);
-
-      // Reload fresh state
-      const freshState = await this.dataSource
-        .getRepository(ConversationState)
-        .findOne({ where: { conversationId: conversation.id } });
-
-      if (!freshState) {
-        console.error(`${c.red}ERROR: No state found for conversation ${conversation.id}${c.reset}`);
-        break;
-      }
-
-      // Call reply engine
-      let result: ReplyEngineOutput;
-      try {
-        result = await this.replyEngine.process({
-          source: 'simulator_cli',
-          tenantId: scenario.tenantId,
-          conversationId: conversation.id,
-          messageText: combinedText,
-          state: freshState,
-          recentMessages,
-          mediaReference,
-        });
-      } catch (err) {
-        console.error(`${c.red}ERROR on turn ${i + 1}: ${(err as Error).message}${c.reset}`);
-        break;
-      }
-
-      // Save outbound message
-      if (result.reply?.text) {
-        await this.conversationsService.saveMessage(
-          conversation.id,
-          scenario.tenantId,
-          MessageDirection.Outbound,
-          MessageRole.Assistant,
-          result.reply.text,
-        );
-      }
-
-      // Apply state update
-      if (result.stateUpdate) {
-        await this.conversationsService.updateState(
-          conversation.id,
-          result.stateUpdate,
-        );
-      }
-
-      // Read updated state for display
-      const updatedState = await this.dataSource
-        .getRepository(ConversationState)
-        .findOne({ where: { conversationId: conversation.id } });
-
-      const memory = (updatedState?.contextJson ?? {}) as Record<string, unknown>;
-
-      // Run assertions
-      const assertions = turn.expect ? runAssertions(turn.expect, result, memory) : [];
-
-      // Print turn (collapsed message for display)
-      this.printTurn(
-        i + 1,
-        { message: combinedText, mediaReference },
-        result,
-        memory,
-        assertions,
-      );
-
-      // Build log entry
-      turnLogs.push({
-        turnIndex: i,
-        message: combinedText,
-        mediaReference,
-        classification: result.classification
-          ? {
-              primaryIntent: result.classification.primaryIntent,
-              recommendedAction: result.classification.recommendedAction,
-              entities: result.classification.entities,
-              slotAction: (result.classification as any).slotAction,
-              confidence: result.classification.confidence,
-              conversationStage: result.classification.conversationStage,
-              dialogueAct: result.classification.dialogueAct,
-            }
-          : null,
-        decision: result.decision,
-        scenario: result.templateScenario ?? null,
-        replyText: result.reply?.text ?? null,
-        imageUrls: result.reply?.imageUrls,
-        extraReplies: result.extraReplies ?? null,
-        state: {
-          selectionState: memory.selectionState,
-          selectedProductId: memory.selectedProductId,
-          selectedVariantId: memory.selectedVariantId,
-          selectedVariantName: memory.selectedVariantName,
-          cartItems: memory.cartItems,
-          lastAction: memory.lastAction,
-          awaitingField: memory.awaitingField,
-          preQualifyCollected: memory.preQualifyCollected,
-          recommendedSize: memory.recommendedSize,
-          orderCreated: memory.orderCreated,
-        },
-        assertions,
-        trace: result.trace ?? [],
-      });
-    }
-
-    return turnLogs;
-    } finally {
-      await restoreFlowConfig();
-    }
-  }
-
-  /**
-   * If `tenantId` is already a UUID, return as-is. Otherwise treat it as a
-   * tenant slug and look up the UUID. Throws if the slug resolves to nothing.
-   */
-  private async resolveTenantId(tenantIdOrSlug: string): Promise<string> {
-    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (UUID_RE.test(tenantIdOrSlug)) return tenantIdOrSlug;
-    const rows: Array<{ id: string }> = await this.dataSource.query(
-      `SELECT id FROM tenants WHERE slug = $1 LIMIT 1`,
-      [tenantIdOrSlug],
-    );
-    if (rows.length === 0) {
-      throw new TenantNotFoundError(tenantIdOrSlug);
-    }
-    return rows[0].id;
-  }
-
-  /**
-   * Apply scenario.flowConfigOverride as a shallow merge onto the tenant's
-   * current store_configs.flow_config. Returns a function that restores the
-   * original value. Both apply and restore are no-ops when override is unset.
-   */
-  private async applyFlowConfigOverride(
-    scenario: SimulatorScenario,
-  ): Promise<() => Promise<void>> {
-    if (!scenario.flowConfigOverride) {
-      return async () => {};
-    }
-    const rows: Array<{ flow_config: Record<string, unknown> | null }> =
-      await this.dataSource.query(
-        `SELECT flow_config FROM store_configs WHERE tenant_id = $1 LIMIT 1`,
-        [scenario.tenantId],
-      );
-    const original = rows[0]?.flow_config ?? {};
-
-    // Durable backup BEFORE mutating. The in-process `finally` and the signal
-    // handlers both fail on SIGKILL / OOM / power loss, and a lost restore
-    // leaves the tenant permanently misconfigured with NOTHING to detect it —
-    // demo-women-clothes silently ran for weeks with preQualify disabled
-    // because a killed run never restored it, and the only symptom was a
-    // handful of scenarios failing for reasons that looked like model noise.
-    // Recovery therefore must not depend on this process surviving:
-    // `restoreLeakedFlowConfigs()` replays this file on the next boot.
-    writeFlowConfigBackup(scenario.tenantId, original);
-
-    // DEEP merge. A shallow spread replaces whole nested objects: an override
-    // of `{preQualify: {enabled: true}}` silently DELETED preQualify.fields and
-    // preQualify.prompt, which is how the corruption above got its teeth.
-    const merged = deepMerge(original, scenario.flowConfigOverride);
-    await this.dataSource.query(
-      `UPDATE store_configs SET flow_config = $1 WHERE tenant_id = $2`,
-      [JSON.stringify(merged), scenario.tenantId],
-    );
-
-    const restore = async () => {
-      await this.dataSource.query(
-        `UPDATE store_configs SET flow_config = $1 WHERE tenant_id = $2`,
-        [JSON.stringify(original), scenario.tenantId],
-      );
-      clearFlowConfigBackup(scenario.tenantId);
-    };
-    // Ctrl-C / kill: restore before dying. Registered per-scenario and removed
-    // by the `finally`, so a normal run leaves no listeners behind.
-    ConversationSimulator.pendingRestores.add(restore);
-    return async () => {
-      ConversationSimulator.pendingRestores.delete(restore);
-      await restore();
-    };
-  }
-
-  /** Restores still armed for the scenario in flight; drained on SIGINT/SIGTERM. */
-  static readonly pendingRestores = new Set<() => Promise<void>>();
-
-  private printHeader(scenario: SimulatorScenario, conversationId: string): void {
-    console.log('');
-    console.log(`${c.bold}${c.blue}${'═'.repeat(65)}${c.reset}`);
-    console.log(`${c.bold}${c.blue}  ${scenario.name}${c.reset}`);
-    console.log(`${c.dim}  ${scenario.description}${c.reset}`);
-    console.log(`${c.dim}  tenant: ${scenario.tenantId.slice(0, 8)}...  conversation: ${conversationId.slice(0, 8)}...${c.reset}`);
-    console.log(`${c.bold}${c.blue}${'═'.repeat(65)}${c.reset}`);
-  }
-
-  private printTurn(
-    turnNum: number,
-    turn: { message: string; mediaReference?: { mediaId: string; type: string } },
-    result: ReplyEngineOutput,
-    memory: Record<string, unknown>,
-    assertions: AssertionResult[] = [],
-  ): void {
-    const mediaTag = turn.mediaReference ? ` ${c.magenta}[${turn.mediaReference.type}]${c.reset}` : '';
-    console.log('');
-    console.log(`${c.cyan}${'─'.repeat(65)}${c.reset}`);
-    console.log(`${c.bold}${c.cyan} Turn ${turnNum}: "${turn.message}"${mediaTag}${c.reset}`);
-    console.log(`${c.cyan}${'─'.repeat(65)}${c.reset}`);
-
-    // Classification
-    if (result.classification) {
-      const cl = result.classification;
-      console.log('');
-      console.log(`  ${c.bold}Classification:${c.reset}`);
-      console.log(`    intent:     ${c.cyan}${cl.primaryIntent}${c.reset}`);
-      console.log(`    action:     ${cl.recommendedAction}`);
-      console.log(`    entities:   ${c.yellow}${JSON.stringify(cl.entities)}${c.reset}`);
-      console.log(`    slotAction: ${(cl as any).slotAction ?? '-'}`);
-      console.log(`    confidence: ${cl.confidence >= 0.9 ? c.green : cl.confidence >= 0.7 ? c.yellow : c.red}${cl.confidence}${c.reset}`);
-    }
-
-    // Reply
-    console.log('');
-    const isHandoff = result.decision === ReplyDecision.Handoff;
-    const decisionColor = isHandoff ? c.red : c.green;
-    console.log(`  ${c.bold}Reply Engine:${c.reset}`);
-    console.log(`    decision: ${decisionColor}${result.decision}${c.reset}`);
-    console.log(`    scenario: ${c.bold}${result.templateScenario ?? '-'}${c.reset}`);
-
-    if (result.reply?.text) {
-      const lines = result.reply.text.split('\n');
-      console.log(`    reply:    ${c.green}"${lines[0]}"${c.reset}`);
-      for (let j = 1; j < lines.length; j++) {
-        console.log(`              ${c.green}"${lines[j]}"${c.reset}`);
-      }
-    }
-    if (result.reply?.imageUrls?.length) {
-      console.log(`    images:   ${c.dim}${result.reply.imageUrls.length} image(s)${c.reset}`);
-    }
-    if (result.handoff?.required) {
-      console.log(`    ${c.red}handoff:  ${result.handoff.reason}${c.reset}`);
-    }
-
-    // State
-    console.log('');
-    console.log(`  ${c.bold}${c.yellow}State:${c.reset}`);
-    const stateFields: [string, unknown][] = [
-      ['selectionState', memory.selectionState],
-      ['selectedProductId', memory.selectedProductId ? String(memory.selectedProductId).slice(0, 8) + '...' : undefined],
-      ['selectedVariantId', memory.selectedVariantId ? String(memory.selectedVariantId).slice(0, 8) + '...' : undefined],
-      ['selectedVariantName', memory.selectedVariantName],
-      ['cartItems', Array.isArray(memory.cartItems) ? `[${(memory.cartItems as any[]).map((it: any) => `${it.title} (${it.variantName})`).join(', ')}]` : '[]'],
-      ['lastAction', memory.lastAction],
-      ['preQualifyCollected', memory.preQualifyCollected],
-      ['recommendedSize', memory.recommendedSize],
-      ['orderCreated', memory.orderCreated],
-    ];
-
-    for (const [key, val] of stateFields) {
-      if (val !== undefined && val !== null) {
-        console.log(`    ${c.yellow}${key.padEnd(22)}${c.reset} ${val}`);
-      }
-    }
-
-    if (assertions.length > 0) {
-      console.log('');
-      const failed = assertions.filter(a => !a.pass);
-      const passCount = assertions.length - failed.length;
-      if (failed.length === 0) {
-        console.log(`  ${c.green}✓ Assertions: ${passCount}/${assertions.length} passed${c.reset}`);
-      } else {
-        console.log(`  ${c.red}✗ Assertions: ${passCount}/${assertions.length} passed${c.reset}`);
-        for (const a of failed) {
-          const exp = JSON.stringify(a.expected) ?? 'undefined';
-          const act = JSON.stringify(a.actual) ?? 'undefined';
-          console.log(`    ${c.red}✗ ${a.field}: expected ${exp}, got ${act}${c.reset}`);
-        }
-      }
-    }
-
-    // Trace
-    if (result.trace?.length) {
-      console.log('');
-      console.log(`  ${c.bold}${c.dim}Trace:${c.reset}`);
-      for (const t of result.trace) {
-        console.log(`    ${c.dim}→ ${t}${c.reset}`);
-      }
-    }
-  }
-
-  private async cleanup(tenantId: string): Promise<void> {
-    // Find and delete conversations for the sim customer
-    await this.dataSource.query(`
-      DELETE FROM messages WHERE conversation_id IN (
-        SELECT conv.id FROM conversations conv
-        JOIN customers cust ON conv.customer_id = cust.id
-        WHERE cust.external_user_id = $1 AND cust.tenant_id = $2
-      )
-    `, [SIM_CUSTOMER_EXTERNAL_ID, tenantId]);
-
-    await this.dataSource.query(`
-      DELETE FROM conversation_state WHERE conversation_id IN (
-        SELECT conv.id FROM conversations conv
-        JOIN customers cust ON conv.customer_id = cust.id
-        WHERE cust.external_user_id = $1 AND cust.tenant_id = $2
-      )
-    `, [SIM_CUSTOMER_EXTERNAL_ID, tenantId]);
-
-    await this.dataSource.query(`
-      DELETE FROM conversations WHERE customer_id IN (
-        SELECT id FROM customers WHERE external_user_id = $1 AND tenant_id = $2
-      )
-    `, [SIM_CUSTOMER_EXTERNAL_ID, tenantId]);
-
-    await this.dataSource.query(`
-      DELETE FROM customers WHERE external_user_id = $1 AND tenant_id = $2
-    `, [SIM_CUSTOMER_EXTERNAL_ID, tenantId]);
   }
 }
 
 // ─── Main ────────────────────────────────────────────────────────
 
-async function main(): Promise<void> {
-  const args = parseArgs();
+interface ScenarioRunLog {
+  scenario: string;
+  name: string;
+  tenantId: string;
+  flaky: boolean;
+  expectedFailure: string | null;
+  timestamp: string;
+  turns: ScenarioTurnLog[];
+}
 
-  // --list: show available scenarios and exit
-  if (args.list) {
-    console.log(`\n${c.bold}Available scenarios:${c.reset}\n`);
-    for (const [key, s] of Object.entries(SCENARIOS)) {
-      console.log(`  ${c.cyan}${key.padEnd(25)}${c.reset} ${s.name}`);
-      console.log(`  ${' '.repeat(25)} ${c.dim}${s.description}${c.reset}`);
-      console.log(`  ${' '.repeat(25)} ${c.dim}tenant: ${s.tenantId.slice(0, 8)}...  turns: ${s.turns.length}${c.reset}`);
-      console.log('');
-    }
-    return;
-  }
+function failed(run: ScenarioRunLog): boolean {
+  return run.turns.some((t) => t.assertions.some((a) => !a.pass));
+}
 
-  // Determine which scenarios to run
-  let scenariosToRun: Array<[string, SimulatorScenario]>;
-
-  // --tenant + --message: ad-hoc one-turn scenario against a tenant by slug.
-  // Requires DB lookup, so we resolve the slug against the running DataSource below.
-  // --tenant alone (no --message): filter the registry to scenarios pinned to that tenant slug/UUID.
-  let adHocFromTenantMessage: { slug: string; message: string } | null = null;
+function selectScenarios(args: CliArgs): Array<[string, SimulatorScenario]> | 'ad-hoc' | null {
   if (args.message && !args.tenant) {
     console.error(`${c.red}--message requires --tenant.${c.reset}`);
     process.exit(1);
   }
-  if (args.tenant && args.message) {
-    adHocFromTenantMessage = { slug: args.tenant, message: args.message };
-  }
-
-  if (args.all) {
-    scenariosToRun = Object.entries(SCENARIOS);
-  } else if (args.scenario) {
+  if (args.tenant && args.message) return 'ad-hoc';
+  if (args.all) return Object.entries(SCENARIOS);
+  if (args.scenario) {
     const s = SCENARIOS[args.scenario];
     if (!s) {
       console.error(`${c.red}Unknown scenario: "${args.scenario}". Use --list to see available scenarios.${c.reset}`);
       process.exit(1);
     }
-    scenariosToRun = [[args.scenario, s]];
-  } else if (adHocFromTenantMessage) {
-    scenariosToRun = [];  // filled after DataSource boots
-  } else if (args.tenant) {
-    // --tenant alone: run all registry scenarios whose tenantId matches.
-    // Match against the literal tenantId string (slug or UUID) — scenarios authored
-    // with DEMO_WOMEN_CLOTHES_SLUG / DEMO_COSMETICS_SLUG resolve at boot time, but
-    // the registry stores the slug literal, so direct equality works for slug-form.
-    scenariosToRun = Object.entries(SCENARIOS).filter(
-      ([, s]) => s.tenantId === args.tenant,
-    );
-    if (scenariosToRun.length === 0) {
-      console.error(`${c.red}No scenarios found for tenant="${args.tenant}". Pass --message to run an ad-hoc message instead, or --list to see registered scenarios.${c.reset}`);
+    return [[args.scenario, s]];
+  }
+  if (args.tenant) {
+    const matching = Object.entries(SCENARIOS).filter(([, s]) => s.tenantId === args.tenant);
+    if (matching.length === 0) {
+      console.error(`${c.red}No scenarios for tenant "${args.tenant}". Pass --message for an ad-hoc run, or --list.${c.reset}`);
       process.exit(1);
     }
-    console.log(`${c.dim}Tenant filter: ${args.tenant} → ${scenariosToRun.length} scenario(s)${c.reset}`);
-  } else {
-    // No args — show usage + available scenarios and exit cleanly
-    console.log(`Usage: npm run simulate -- --scenario <name> | --all | --list | --tenant <slug> [--message <text>]\n`);
-    console.log(`  --tenant <slug>           Run all scenarios pinned to that tenant`);
-    console.log(`  --tenant <slug> --message Run an ad-hoc one-turn message against that tenant\n`);
-    console.log(`${c.bold}Available scenarios:${c.reset}\n`);
+    console.log(`${c.dim}Tenant filter: ${args.tenant} → ${matching.length} scenario(s)${c.reset}`);
+    return matching;
+  }
+  return null;
+}
+
+function printSummary(runs: ScenarioRunLog[]): number {
+  const gatingFailures = runs.filter((r) => failed(r) && !r.flaky && !r.expectedFailure);
+  const flakyFailures = runs.filter((r) => failed(r) && r.flaky && !r.expectedFailure);
+  const stillExpected = runs.filter((r) => failed(r) && r.expectedFailure);
+  const nowPassing = runs.filter((r) => !failed(r) && r.expectedFailure);
+  const turns = runs.flatMap((r) => r.turns);
+  const assertions = turns.flatMap((t) => t.assertions);
+  const explicit = assertions.filter((a) => !a.field.startsWith('implicit.'));
+  const implicit = assertions.filter((a) => a.field.startsWith('implicit.'));
+  const uncheckedTurns = turns.filter(
+    (t) => t.legacyDropped.length > 0 && t.assertions.every((a) => a.field.startsWith('implicit.')),
+  );
+  const tokens = turns.reduce(
+    (sum, t) => ({
+      input: sum.input + (t.usage?.inputTokens ?? 0),
+      cached: sum.cached + (t.usage?.cachedInputTokens ?? 0),
+      output: sum.output + (t.usage?.outputTokens ?? 0),
+    }),
+    { input: 0, cached: 0, output: 0 },
+  );
+  const durations = turns.map((t) => t.durationMs).sort((a, b) => a - b);
+  const p = (q: number) => durations[Math.min(durations.length - 1, Math.floor(q * durations.length))] ?? 0;
+
+  console.log('');
+  console.log(`${c.bold}${'═'.repeat(65)}${c.reset}`);
+  console.log(`${c.bold}  Summary${c.reset}`);
+  console.log(`${c.bold}${'═'.repeat(65)}${c.reset}`);
+  console.log(`  Scenarios: ${runs.length - runs.filter(failed).length}/${runs.length} passing`);
+  console.log(`  ${gatingFailures.length ? c.red : c.green}Failing (gating): ${gatingFailures.length}${c.reset}`);
+  for (const r of gatingFailures) console.log(`    ${c.red}${r.scenario}${c.reset}`);
+  console.log(`  ${c.dim}Failing (flaky, non-gating): ${flakyFailures.length}${c.reset}`);
+  if (stillExpected.length) console.log(`  ${c.dim}Expected failures still failing: ${stillExpected.length}${c.reset}`);
+  for (const r of nowPassing) {
+    console.log(`  ${c.green}Now passing — remove expectedFailure from ${r.scenario}${c.reset}`);
+  }
+  console.log(
+    `  Assertions: ${explicit.filter((a) => a.pass).length}/${explicit.length} explicit, ` +
+      `${implicit.filter((a) => a.pass).length}/${implicit.length} implicit`,
+  );
+  if (uncheckedTurns.length) {
+    console.log(
+      `  ${c.yellow}${uncheckedTurns.length} turn(s) had only legacy route checks, so only implicit checks ran (see legacyDropped in the log)${c.reset}`,
+    );
+  }
+  console.log(
+    `  ${c.dim}Tokens: in ${tokens.input} (cached ${tokens.cached}) / out ${tokens.output} · turn time p50 ${p(0.5)}ms, p95 ${p(0.95)}ms${c.reset}`,
+  );
+  return gatingFailures.length;
+}
+
+async function main(): Promise<void> {
+  const args = parseArgs();
+
+  if (args.list) {
+    console.log(`\n${c.bold}Available scenarios:${c.reset}\n`);
     for (const [key, s] of Object.entries(SCENARIOS)) {
-      console.log(`  ${c.cyan}${key.padEnd(25)}${c.reset} ${s.name} ${c.dim}(${s.turns.length} turns)${c.reset}`);
+      console.log(`  ${c.cyan}${key}${c.reset} ${c.dim}(${s.tenantId}, ${s.turns.length} turns)${c.reset}`);
+      console.log(`    ${s.name}`);
     }
-    console.log('');
     return;
   }
 
-  // Bootstrap NestJS
-  console.log(`${c.dim}Bootstrapping NestJS app...${c.reset}`);
-  const app = await NestFactory.createApplicationContext(AppModule, {
-    logger: ['error'],
-  });
+  const selection = selectScenarios(args);
+  if (!selection) {
+    console.log(`Usage: npm run simulate -- --scenario <name> | --all | --list | --tenant <slug> [--message <text> [--image <file|url>]] [--model <id>] [--out <file>]`);
+    return;
+  }
 
-  const replyEngine = app.get(ReplyEngineService);
-  const conversationsService = app.get(ConversationsService);
+  console.log(`${c.dim}Bootstrapping NestJS app...${c.reset}`);
+  const app = await NestFactory.createApplicationContext(AppModule, { logger: ['error'] });
+  const runner = app.get(ScenarioRunner);
   const dataSource = app.get(DataSource);
 
-  // Self-heal first: a previous run may have been killed while holding a
-  // flow_config override. Replaying its on-disk backup is the only recovery
-  // that survives SIGKILL, so it must happen before any scenario reads config.
+  // A killed run may have left a flow_config override behind; repair it first.
   await restoreLeakedFlowConfigs(dataSource);
-
-  // Ctrl-C / kill -TERM: put the tenant back before dying. This is the polite
-  // path; the backup file above is what covers the impolite ones.
   let shuttingDown = false;
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => {
-      if (shuttingDown) return; // a second Ctrl-C should not race the restore
+      if (shuttingDown) return;
       shuttingDown = true;
-      const pending = [...ConversationSimulator.pendingRestores];
+      const pending = [...pendingRestores];
       if (pending.length === 0) process.exit(130);
-      console.log(
-        `\n${c.yellow}${signal} — restoring ${pending.length} flow_config override(s) before exit…${c.reset}`,
-      );
-      Promise.allSettled(pending.map((r) => r()))
-        .then(() => process.exit(130))
-        .catch(() => process.exit(130));
+      console.log(`\n${c.yellow}${signal} — restoring ${pending.length} flow_config override(s) before exit…${c.reset}`);
+      Promise.allSettled(pending.map((r) => r())).finally(() => process.exit(130));
     });
   }
 
-  const simulator = new ConversationSimulator(replyEngine, conversationsService, dataSource);
-
-  // Resolve ad-hoc --tenant/--message into a one-turn scenario now that the DB is up.
-  if (adHocFromTenantMessage) {
-    const { slug, message } = adHocFromTenantMessage;
-    const rows = await dataSource.query(
-      `SELECT id FROM tenants WHERE slug = $1 LIMIT 1`,
-      [slug],
-    );
-    if (rows.length === 0) {
-      console.error(`${c.red}Tenant not found: slug="${slug}"${c.reset}`);
-      await app.close();
-      process.exit(1);
-    }
-    // `||` splits the ad-hoc message into sequential turns.
-    const adHoc: SimulatorScenario = {
-      name: `ad-hoc (${slug})`,
-      description: `ad-hoc message: "${message}"`,
-      tenantId: rows[0].id,
-      turns: message.split('||').map((m) => ({ message: m.trim() })),
-    };
-    scenariosToRun = [['__ad_hoc__', adHoc]];
+  let scenarios: Array<[string, SimulatorScenario]>;
+  if (selection === 'ad-hoc') {
+    // `||` splits the message into sequential turns.
+    scenarios = [
+      [
+        '__ad_hoc__',
+        {
+          name: `ad-hoc (${args.tenant})`,
+          description: `ad-hoc message: "${args.message}"`,
+          tenantId: args.tenant!,
+          turns: args.message!.split('||').map((m, i) => ({
+      message: m.trim(),
+      ...(i === 0 && args.image && { image: args.image }),
+    })),
+        },
+      ],
+    ];
+  } else {
+    scenarios = selection;
   }
 
-  const jsonOutput: Record<string, unknown>[] = [];
-
-  const skippedForMissingTenant: string[] = [];
-
-  for (const [key, scenario] of scenariosToRun) {
-    let turnLogs;
+  const runs: ScenarioRunLog[] = [];
+  const skipped: string[] = [];
+  for (const [key, original] of scenarios) {
+    let scenario: SimulatorScenario;
     try {
-      turnLogs = await simulator.run(scenario);
+      scenario = { ...original, tenantId: await runner.resolveTenantId(original.tenantId) };
     } catch (err) {
-      // Prod-only tenants aren't seeded locally. Skip them in a batch run
-      // instead of aborting the suite; every other error still propagates.
-      if (err instanceof TenantNotFoundError && args.all) {
-        skippedForMissingTenant.push(`${key} (${scenario.tenantId})`);
+      // Tenants that exist only on prod are skipped in batch runs, not fatal.
+      if (err instanceof TenantNotFoundError && (args.all || args.tenant) && selection !== 'ad-hoc') {
+        skipped.push(`${key} (${original.tenantId})`);
         continue;
       }
       throw err;
     }
-    jsonOutput.push({
+    printHeader(scenario);
+    const restore = await applyFlowConfigOverride(dataSource, scenario);
+    let turns: ScenarioTurnLog[];
+    try {
+      turns = await runner.run(scenario, IDENTITY, {
+        source: 'simulator_cli',
+        modelOverride: args.model ?? undefined,
+        onTurn: printTurn,
+      });
+    } finally {
+      await restore();
+    }
+    runs.push({
       scenario: key,
       name: scenario.name,
       tenantId: scenario.tenantId,
       flaky: scenario.flaky === true,
+      expectedFailure: scenario.expectedFailure ?? null,
       timestamp: new Date().toISOString(),
-      turns: turnLogs,
+      turns,
     });
   }
 
-  // Never let a skip read as a pass.
-  if (skippedForMissingTenant.length > 0) {
-    console.log(
-      `\n${c.yellow}Skipped ${skippedForMissingTenant.length} scenario(s) — tenant not in this environment:${c.reset}`,
-    );
-    for (const s of skippedForMissingTenant) console.log(`  ${c.dim}${s}${c.reset}`);
+  if (skipped.length) {
+    console.log(`\n${c.yellow}Skipped ${skipped.length} scenario(s) — tenant not in this environment:${c.reset}`);
+    for (const s of skipped) console.log(`  ${c.dim}${s}${c.reset}`);
   }
+  const gatingFailures = printSummary(runs);
 
-  // Print assertion summary for --all. Flaky scenarios contribute to a
-  // separate counter and DO NOT cause non-zero exit — they're best-effort
-  // tests of LLM-extraction robustness, not engine-flow correctness.
-  let gatingFailingScenarios = 0;
-  if (args.all || args.tenant) {
-    let totalAssertions = 0;
-    let gatingFailed = 0;
-    let flakyFailed = 0;
-    let flakyFailingScenarios = 0;
-    for (const entry of jsonOutput) {
-      const turns = (entry as any).turns as any[];
-      const isFlaky = (entry as any).flaky === true;
-      let scenarioFailed = false;
-      for (const t of turns) {
-        if (t.assertions?.length) {
-          totalAssertions += t.assertions.length;
-          const failed = t.assertions.filter((a: any) => !a.pass).length;
-          if (isFlaky) flakyFailed += failed;
-          else gatingFailed += failed;
-          if (failed > 0) scenarioFailed = true;
-        }
-      }
-      if (scenarioFailed) {
-        if (isFlaky) flakyFailingScenarios++;
-        else gatingFailingScenarios++;
-      }
-    }
-    console.log('');
-    console.log(`${c.bold}${'═'.repeat(65)}${c.reset}`);
-    console.log(`${c.bold}  Assertion Summary${c.reset}`);
-    console.log(`${c.bold}${'═'.repeat(65)}${c.reset}`);
-    console.log(`  Total assertions: ${totalAssertions}`);
-    console.log(`  ${gatingFailed === 0 ? c.green : c.red}Failed (gating): ${gatingFailed}${c.reset}`);
-    console.log(`  ${c.dim}Failed (flaky, non-gating): ${flakyFailed}${c.reset}`);
-    console.log(`  ${gatingFailingScenarios === 0 ? c.green : c.red}Failing scenarios (gating): ${gatingFailingScenarios}/${jsonOutput.length}${c.reset}`);
-    console.log(`  ${c.dim}Failing scenarios (flaky): ${flakyFailingScenarios}/${jsonOutput.length}${c.reset}`);
-  }
-
-  // Save JSON log
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const scenarioLabel = args.all ? 'all' : (args.scenario ?? args.tenant ?? 'run');
+  const label = args.all ? 'all' : (args.scenario ?? args.tenant ?? 'run');
   const logFile = args.out
     ? path.resolve(args.out)
-    : path.join(process.cwd(), `simulator-output-${scenarioLabel}-${timestamp}.json`);
-  fs.writeFileSync(logFile, JSON.stringify(jsonOutput, null, 2));
+    : path.join(process.cwd(), `simulator-output-${label}-${timestamp}.json`);
+  fs.writeFileSync(logFile, JSON.stringify(runs, null, 2));
   console.log(`\n${c.dim}Log saved: ${logFile}${c.reset}`);
 
   await app.close();
-
-  // Non-zero exit ONLY on gating failures (flaky scenarios are warnings).
-  if (gatingFailingScenarios > 0) {
-    process.exit(1);
-  }
+  if (gatingFailures > 0) process.exit(1);
 }
 
 main().catch((err) => {

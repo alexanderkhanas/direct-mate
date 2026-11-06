@@ -18,7 +18,7 @@ describe('demo budget cap', () => {
 
   beforeEach(async () => {
     await resetDemoSpend(ctx.dataSource);
-    ctx.replyEngineMock.mockClear();
+    ctx.turnRunnerMock.mockClear();
   });
 
   it("returns budget_exceeded and skips the engine when today's classifier spend is over the cap", async () => {
@@ -43,7 +43,7 @@ describe('demo budget cap', () => {
       handoff: { required: false, reason: null },
     });
     // Engine must NOT have been called once the cap was hit.
-    expect(ctx.replyEngineMock).not.toHaveBeenCalled();
+    expect(ctx.turnRunnerMock).not.toHaveBeenCalled();
   });
 
   it('lets traffic through when spend is under the cap', async () => {
@@ -54,6 +54,6 @@ describe('demo budget cap', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.decision).not.toBe('budget_exceeded');
-    expect(ctx.replyEngineMock).toHaveBeenCalledTimes(1);
+    expect(ctx.turnRunnerMock).toHaveBeenCalledTimes(1);
   });
 });

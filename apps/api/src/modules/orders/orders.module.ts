@@ -11,6 +11,7 @@ import { TenantSettings } from '../tenants/entities/tenant-settings.entity';
 import { Connection } from '../integrations/entities/connection.entity';
 import { OrdersService } from './orders.service';
 import { CheckoutService } from './checkout.service';
+import { OrderDraftService } from './order-draft.service';
 import { OrdersController } from './orders.controller';
 
 @Module({
@@ -28,7 +29,7 @@ import { OrdersController } from './orders.controller';
     ]),
   ],
   controllers: [OrdersController],
-  providers: [OrdersService, CheckoutService],
-  exports: [OrdersService, CheckoutService],
+  providers: [OrdersService, CheckoutService, OrderDraftService],
+  exports: [OrdersService, CheckoutService, OrderDraftService],
 })
 export class OrdersModule {}

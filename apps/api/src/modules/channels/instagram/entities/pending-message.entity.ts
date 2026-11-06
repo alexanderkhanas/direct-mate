@@ -1,6 +1,7 @@
-import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
 
 @Entity('pending_messages')
+@Index(['tenantId', 'messageId'], { unique: true })
 export class PendingMessage {
   @PrimaryGeneratedColumn('uuid')
   id!: string;

@@ -36,6 +36,12 @@
     "backfill:demo-hardening": "ts-node -r tsconfig-paths/register src/scripts/backfill-demo-hardening.ts",
     "backfill:altamen-templates": "ts-node -r tsconfig-paths/register src/scripts/backfill-altamen-templates.ts",
     "backfill:prod:altamen-templates": "node dist/scripts/backfill-altamen-templates.js",
+    "backfill:altamen-titles": "ts-node -r tsconfig-paths/register src/scripts/backfill-altamen-titles.ts",
+    "backfill:prod:altamen-titles": "node dist/scripts/backfill-altamen-titles.js",
+    "backfill:altamen-descriptions": "ts-node -r tsconfig-paths/register src/scripts/backfill-altamen-descriptions.ts",
+    "backfill:prod:altamen-descriptions": "node dist/scripts/backfill-altamen-descriptions.js",
+    "backfill:media-phash": "ts-node -r tsconfig-paths/register src/scripts/backfill-media-phash.ts",
+    "backfill:prod:media-phash": "node dist/scripts/backfill-media-phash.js",
     "backfill:prod:demo-hardening": "node dist/scripts/backfill-demo-hardening.js",
     "snapshot:men-demo": "ts-node -r tsconfig-paths/register src/scripts/snapshot-demo-tenant.ts --slug men-demo-store --export",
     "verify:men-demo": "ts-node -r tsconfig-paths/register src/scripts/snapshot-demo-tenant.ts --slug men-demo-store --check",
@@ -43,9 +49,13 @@
     "reset:test-tenant:conversations": "ts-node -r tsconfig-paths/register src/scripts/reset-test-tenant-conversations.ts",
     "replay": "ts-node src/testing/replay.ts",
     "test:conversations": "ts-node -r tsconfig-paths/register src/testing/run-conversation-tests.ts",
-    "simulate": "ts-node -r tsconfig-paths/register src/scripts/simulate-conversation.ts"
+    "simulate": "ts-node -r tsconfig-paths/register src/scripts/simulate-conversation.ts",
+    "agent:spike": "ts-node -r tsconfig-paths/register src/scripts/agent-spike.ts",
+    "agent:try": "ts-node -r tsconfig-paths/register src/scripts/agent-try.ts",
+    "attributes:extract": "ts-node -r tsconfig-paths/register src/scripts/extract-attributes.ts"
   },
   "dependencies": {
+    "@ai-sdk/openai": "^4.0.108",
     "@anthropic-ai/sdk": "^0.111.0",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^3.3.0",
@@ -56,6 +66,7 @@
     "@nestjs/schedule": "^6.1.1",
     "@nestjs/swagger": "^8.1.0",
     "@nestjs/typeorm": "^11.0.0",
+    "ai": "^7.0.162",
     "bcrypt": "^5.1.1",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
@@ -70,7 +81,8 @@
     "rxjs": "^7.8.1",
     "sharp": "^0.33.5",
     "typeorm": "^0.3.21",
-    "typeorm-naming-strategies": "^4.1.0"
+    "typeorm-naming-strategies": "^4.1.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@nestjs/cli": "^11.0.0",
@@ -101,12 +113,24 @@
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
-      "^.+\\.(t|j)s$": "ts-jest"
+      "^.+\\.ts$": "ts-jest",
+      "^.+\\.js$": [
+        "ts-jest",
+        {
+          "tsconfig": {
+            "allowJs": true,
+            "isolatedModules": true
+          }
+        }
+      ]
     },
     "collectCoverageFrom": [
       "**/*.(t|j)s"
     ],
     "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
+    "testEnvironment": "node",
+    "transformIgnorePatterns": [
+      "/node_modules/(?!(ai|@ai-sdk|@workflow)/)"
+    ]
   }
 }

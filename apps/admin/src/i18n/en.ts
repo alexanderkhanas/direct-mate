@@ -533,6 +533,23 @@ export const en = {
   // Catalog (extended)
   catalog_ext: {
     updated_date: 'Updated',
+    look_title: 'Look',
+    look_hint: 'The bot sees these when it recommends products. They were read from the photo; correct any of them and it stays as you set it.',
+    look_not_read: 'Not read from the photo yet',
+    look_read_at: 'Read from the photo {date}',
+    look_error: 'Could not read the photo: {error}',
+    attr_formality: 'Formality',
+    attr_pattern: 'Pattern',
+    attr_colour: 'Colour',
+    attr_fabricLook: 'Fabric',
+    attr_collar: 'Collar',
+    attr_fit: 'Fit',
+    source_ai: 'AI',
+    source_manual: 'Edited',
+    save: 'Save',
+    reread: 'Read from photo again',
+    reading: 'Reading the photo…',
+    reread_confirm: 'This also replaces your edits with what the photo shows. Continue?',
   },
 
   // Simulator

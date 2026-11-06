@@ -4,6 +4,8 @@ import { Injectable, Logger } from '@nestjs/common';
 // 'sharp'` would compile to `sharp_1.default(...)` and fail at
 // runtime under our tsconfig (esModuleInterop off).
 import sharp = require('sharp');
+import { readFile } from 'fs/promises';
+import { uploadPath } from '../../common/uploads';
 
 /**
  * Computes a 64-bit dHash (difference hash) from images. Used to detect
@@ -28,9 +30,11 @@ export class ImageHashService {
   /** Hamming-distance threshold below which two hashes count as the same image. */
   static readonly MATCH_THRESHOLD = 5;
 
-  /** Compute dHash from a remote URL. Returns null on any failure. */
+  /** Compute dHash from a remote URL, or from disk for an `/uploads/…` path. Returns null on any failure. */
   async hashFromUrl(url: string): Promise<string | null> {
     try {
+      const local = uploadPath(url);
+      if (local) return await this.hashFromBuffer(await readFile(local));
       const res = await fetch(url);
       if (!res.ok) {
         this.logger.warn(`hashFromUrl: ${url} → HTTP ${res.status}`);

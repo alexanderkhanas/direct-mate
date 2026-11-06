@@ -85,6 +85,14 @@ export class Product {
   @Column({ type: 'jsonb', nullable: true })
   metadata!: Record<string, unknown> | null;
 
+  /** Visual attributes the agent sees; see `catalog/attributes/product-attributes.ts`. */
+  @Column({ type: 'jsonb', default: () => "'{}'::jsonb" })
+  attributes!: Record<string, string>;
+
+  /** Where each attribute came from (ai / manual) and what the extraction read. */
+  @Column({ type: 'jsonb', nullable: true })
+  attributesMeta!: Record<string, unknown> | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt!: Date;
 

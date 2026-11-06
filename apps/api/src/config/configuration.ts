@@ -52,6 +52,34 @@ export default () => ({
     // the API shutdown wave reaches the full 4.1.
     fallbackModel: process.env.OPENAI_FALLBACK_MODEL ?? 'gpt-5.4',
   },
+  // Product attributes read from photos (catalog/attributes). The background
+  // worker is off unless enabled: it spends model calls on every new or
+  // changed product. `npm run attributes:extract` runs it for one store.
+  attributes: {
+    model: process.env.ATTRIBUTES_MODEL ?? 'gpt-6.1-terra',
+    reasoningEffort: process.env.ATTRIBUTES_REASONING_EFFORT || 'low',
+    workerEnabled: process.env.ATTRIBUTES_WORKER_ENABLED === 'true',
+    tickMs: parseInt(process.env.ATTRIBUTES_WORKER_TICK_MS ?? '60000', 10),
+    batch: parseInt(process.env.ATTRIBUTES_WORKER_BATCH ?? '10', 10),
+    backoffMinutes: parseInt(process.env.ATTRIBUTES_WORKER_BACKOFF_MIN ?? '30', 10),
+  },
+  agent: {
+    // v2 tool-calling agent (docs/v2-agent). The model id picks the provider;
+    // a store can override it with tenant_settings.ai_settings.model.
+    model: process.env.AGENT_MODEL ?? 'gpt-5.4-mini',
+    // Model calls per attempt. A turn is usually 2-4; hitting the cap hands off.
+    maxSteps: parseInt(process.env.AGENT_MAX_STEPS ?? '6', 10),
+    timeoutMs: parseInt(process.env.AGENT_TIMEOUT_MS ?? '45000', 10),
+    // Optional OpenAI reasoning effort. GPT-6: none | low | medium | high |
+    // xhigh | max; GPT-5.4: none | low | medium | high. Unset = the
+    // provider's default; tune from traces.
+    reasoningEffort: process.env.AGENT_REASONING_EFFORT || undefined,
+    // Optional sampling temperature. OpenAI accepts it only with reasoning
+    // effort `none`; otherwise it is dropped (see AgentModelFactory).
+    temperature: process.env.AGENT_TEMPERATURE ? parseFloat(process.env.AGENT_TEMPERATURE) : undefined,
+    // Stronger model that scores Ukrainian quality in the simulator (Phase 6).
+    judgeModel: process.env.JUDGE_MODEL ?? 'gpt-5.4',
+  },
   anthropic: {
     // Only used when the resolved classifier model is a `claude-*` id.
     // Absent key + claude model = hard error at call time, by design: a

@@ -9,6 +9,12 @@
 import { DataSource } from 'typeorm';
 import { COSMETICS_PRODUCTS } from '../data/cosmetics-products';
 import { getTemplatesForBusinessType } from '../templates';
+import { COSMETICS_KNOWLEDGE_DOC } from '../knowledge/cosmetics';
+import {
+  DEMO_HANDOFF_ANNOUNCE,
+  DEMO_PAYMENT_DETAILS,
+  DEMO_WELCOME_LINE,
+} from '../knowledge/demo-store-copy';
 import {
   CreateTenantOpts,
   copyImages,
@@ -57,14 +63,18 @@ export async function buildCosmeticsTenant(
   console.log(`  tenant_settings: ✓`);
 
   await createStoreConfig(ds, tenantId, {
-    brandConfig: {},
+    brandConfig: { welcomeLine: DEMO_WELCOME_LINE },
     flowConfig: COSMETICS_FLOW_CONFIG,
-    checkoutConfig: { fields: ['fullName', 'phone', 'city', 'novaPoshtaBranch'] },
+    checkoutConfig: {
+      fields: ['fullName', 'phone', 'city', 'novaPoshtaBranch'],
+      paymentDetails: DEMO_PAYMENT_DETAILS,
+    },
     escalationConfig: {},
     recommendationConfig: {},
-    handoffConfig: {},
+    handoffConfig: { announceText: DEMO_HANDOFF_ANNOUNCE },
     fallbackConfig: { mode: 'template_first_with_safe_fallback' },
     operatingMode: 'active',
+    knowledgeDoc: COSMETICS_KNOWLEDGE_DOC,
   });
   console.log(
     `  store_config: ✓ (businessType=cosmetics, ` +

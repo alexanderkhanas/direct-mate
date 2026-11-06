@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   ForbiddenException,
@@ -8,8 +9,12 @@ import {
   Patch,
   Post,
   Req,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 import { Request } from 'express';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { DataSource } from 'typeorm';
@@ -127,6 +132,17 @@ export class TestingController {
       text: body.text ?? '',
       mediaReference: body.mediaReference,
     });
+  }
+
+  /** A photo for the next live message, stored the way an inbound Instagram photo is. */
+  @Post('simulator/live/photo')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } }))
+  async uploadLivePhoto(@UploadedFile() file: Express.Multer.File | undefined, @CurrentUser() user: JwtPayload) {
+    this.assertSuperadmin(user);
+    if (!file) throw new BadRequestException('No file uploaded');
+    const attachment = await this.simulatorService.uploadLivePhoto(user.tenantId, file.buffer);
+    if (!attachment.url) throw new BadRequestException(`The photo could not be read (${attachment.error})`);
+    return { url: attachment.url };
   }
 
   @Post('simulator/live/reset')

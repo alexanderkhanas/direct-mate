@@ -533,6 +533,23 @@ export const uk = {
   // Catalog (extended)
   catalog_ext: {
     updated_date: 'Оновлено',
+    look_title: 'Як виглядає',
+    look_hint: 'Бот бачить ці ознаки, коли радить товари. Їх прочитано з фото — виправте будь-яку, і її вже не перезапише.',
+    look_not_read: 'Ще не прочитано з фото',
+    look_read_at: 'Прочитано з фото {date}',
+    look_error: 'Не вдалося прочитати з фото: {error}',
+    attr_formality: 'Стиль',
+    attr_pattern: 'Візерунок',
+    attr_colour: 'Колір',
+    attr_fabricLook: 'Фактура',
+    attr_collar: 'Комір',
+    attr_fit: 'Посадка',
+    source_ai: 'AI',
+    source_manual: 'Змінено',
+    save: 'Зберегти',
+    reread: 'Прочитати з фото знову',
+    reading: 'Читаю фото…',
+    reread_confirm: 'Це замінить і ваші зміни значеннями з фото. Продовжити?',
   },
 
   // Simulator

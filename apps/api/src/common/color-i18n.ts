@@ -316,3 +316,108 @@ export function localizeColorList(
 ): string {
   return raws.map(localizeColor).filter(Boolean).join(separator);
 }
+
+/**
+ * «5 кольорів» — Ukrainian count phrase for a colour axis.
+ *
+ * Slavic plurals are three-way, not two: 1 → колір, 2-4 → кольори, 0 and 5+ →
+ * кольорів. The teens are the trap — 11-14 take the 5+ form despite ending in
+ * 1-4, so the check on the last two digits has to come first.
+ *
+ * Used by the compact product list, which replaces a comma-separated colour
+ * enumeration with a count. Naming a single colour is the caller's job — «1
+ * колір» is grammatical but reads as a rendering bug.
+ */
+export function colorCountPhrase(n: number): string {
+  const lastTwo = n % 100;
+  const last = n % 10;
+  const noun =
+    lastTwo >= 11 && lastTwo <= 14
+      ? 'кольорів'
+      : last === 1
+        ? 'колір'
+        : last >= 2 && last <= 4
+          ? 'кольори'
+          : 'кольорів';
+  return `${n} ${noun}`;
+}
+
+// ─── Matching (v2 agent) ─────────────────────────────────────────
+
+// Ukrainian colour adjectives decline, and the map above lists nominative
+// forms only. These endings generate the rest from a masculine nominative key,
+// so «чорну», «чорного» and «синьою» resolve to their colour. Hard stems
+// (чорний) and soft stems (синій) decline differently; generating from the
+// right table is what keeps «сина» (of a son) from reading as «синій».
+const HARD_STEM_ENDINGS = ['ий', 'ого', 'ому', 'им', 'ім', 'а', 'ої', 'ій', 'у', 'ою', 'е', 'і', 'их', 'ими'];
+const SOFT_STEM_ENDINGS = ['ій', 'ього', 'ьому', 'ім', 'я', 'ьої', 'ю', 'ьою', 'є', 'і', 'іх', 'іми'];
+
+let colorFormsCache: Map<string, string> | null = null;
+
+function declineColorAdjective(word: string): string[] {
+  if (/\s/.test(word)) return [];
+  // Only the last part of a compound declines: «темно-синю».
+  const dash = word.lastIndexOf('-');
+  const prefix = word.slice(0, dash + 1);
+  const last = word.slice(dash + 1);
+  if (last.endsWith('ий')) {
+    return HARD_STEM_ENDINGS.map((e) => prefix + last.slice(0, -2) + e);
+  }
+  if (last.endsWith('ій')) {
+    return SOFT_STEM_ENDINGS.map((e) => prefix + last.slice(0, -2) + e);
+  }
+  return [];
+}
+
+/** Every known colour word, in every declined form, → its display name. */
+function colorForms(): Map<string, string> {
+  if (colorFormsCache) return colorFormsCache;
+  const forms = new Map<string, string>();
+  for (const [key, display] of Object.entries(COLOR_DISPLAY_UK)) {
+    if (!forms.has(key)) forms.set(key, display);
+    for (const form of declineColorAdjective(key)) {
+      if (!forms.has(form)) forms.set(form, display);
+    }
+  }
+  colorFormsCache = forms;
+  return forms;
+}
+
+/**
+ * Lowercase display form of a colour, whatever language or case it arrived
+ * in: «чорну», "Black" and «Чорний» all become «чорний». Unknown values come
+ * back lowercased as-is.
+ */
+export function canonicalColor(raw: string | null | undefined): string {
+  if (!raw) return '';
+  const trimmed = String(raw).trim();
+  if (!trimmed) return '';
+  const display = colorForms().get(trimmed.toLowerCase()) ?? localizeColor(trimmed);
+  return display.toLowerCase();
+}
+
+/**
+ * Whether two colour strings name the same colour. Containment in either
+ * direction counts, so «синя» matches a catalog «Темно-синій» and «Чорний»
+ * matches a compound «Чорний/Білий».
+ */
+export function colorsMatch(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): boolean {
+  const ca = canonicalColor(a);
+  const cb = canonicalColor(b);
+  if (!ca || !cb) return false;
+  return ca === cb || ca.includes(cb) || cb.includes(ca);
+}
+
+/** Colour words that appear in free text, with the colour each one names. */
+export function findColorWords(text: string): Array<{ word: string; color: string }> {
+  const forms = colorForms();
+  const found: Array<{ word: string; color: string }> = [];
+  for (const token of text.toLowerCase().match(/[\p{L}ʼ'’-]+/gu) ?? []) {
+    const color = forms.get(token);
+    if (color) found.push({ word: token, color });
+  }
+  return found;
+}

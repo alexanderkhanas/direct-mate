@@ -3,14 +3,19 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Conversation } from './entities/conversation.entity';
 import { Customer } from './entities/customer.entity';
-import { Message } from './entities/message.entity';
+import { Message, MessageAttachment } from './entities/message.entity';
 import { ConversationState } from './entities/conversation-state.entity';
 import {
+  CheckoutSessionStatus,
   ConversationStatus,
   ConversationStateStatus,
   MessageDirection,
   MessageRole,
 } from '@direct-mate/shared';
+import { StoreConfig } from '../engine/entities/store-config.entity';
+
+/** Idle gap after which a customer's next message starts a new conversation. */
+const DEFAULT_CONVERSATION_IDLE_HOURS = 24;
 
 @Injectable()
 export class ConversationsService {
@@ -23,6 +28,8 @@ export class ConversationsService {
     private readonly messageRepo: Repository<Message>,
     @InjectRepository(ConversationState)
     private readonly stateRepo: Repository<ConversationState>,
+    @InjectRepository(StoreConfig)
+    private readonly storeConfigRepo: Repository<StoreConfig>,
   ) {}
 
   async findOrCreateCustomer(
@@ -59,11 +66,26 @@ export class ConversationsService {
       order: { lastMessageAt: 'DESC' },
     });
 
-    // Close stale conversations (idle >72h) so returning customers get fresh state
+    // A conversation idle longer than the store's threshold is over: the
+    // customer's next message starts a new one. Its unfinished order draft
+    // expires with it, so nothing half-built carries into the new
+    // conversation; the agent sees the old one only as labelled context
+    // (HistoryBuilder). Decided lazily, on the next inbound message.
     if (conversation) {
-      const staleThreshold = new Date(Date.now() - 72 * 60 * 60 * 1000);
+      const idleHours = await this.conversationIdleHours(tenantId);
+      const staleThreshold = new Date(Date.now() - idleHours * 60 * 60 * 1000);
       if (conversation.lastMessageAt && conversation.lastMessageAt < staleThreshold) {
         await this.conversationRepo.update(conversation.id, { status: ConversationStatus.Closed });
+        await this.conversationRepo.query(
+          `UPDATE checkout_sessions SET status = $2, updated_at = now()
+            WHERE conversation_id = $1 AND status IN ($3, $4)`,
+          [
+            conversation.id,
+            CheckoutSessionStatus.Expired,
+            CheckoutSessionStatus.CollectingCustomerInfo,
+            CheckoutSessionStatus.ReadyForDraftOrder,
+          ],
+        );
         conversation = null as any;
       }
     }
@@ -93,6 +115,12 @@ export class ConversationsService {
     return { conversation, state };
   }
 
+  private async conversationIdleHours(tenantId: string): Promise<number> {
+    const config = await this.storeConfigRepo.findOne({ where: { tenantId }, select: ['flowConfig'] });
+    const hours = Number((config?.flowConfig as Record<string, unknown> | undefined)?.conversationIdleHours);
+    return Number.isFinite(hours) && hours > 0 ? hours : DEFAULT_CONVERSATION_IDLE_HOURS;
+  }
+
   async saveMessage(
     conversationId: string,
     tenantId: string,
@@ -101,6 +129,7 @@ export class ConversationsService {
     text: string,
     externalMessageId?: string,
     rawPayload?: Record<string, unknown> | null,
+    attachments?: MessageAttachment[] | null,
   ): Promise<Message> {
     const msg = this.messageRepo.create({
       conversationId,
@@ -110,6 +139,7 @@ export class ConversationsService {
       text,
       externalMessageId,
       rawPayload: rawPayload ?? null,
+      attachments: attachments ?? null,
     });
     await this.conversationRepo.update(conversationId, { lastMessageAt: new Date() });
     return this.messageRepo.save(msg);

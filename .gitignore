@@ -78,3 +78,18 @@ PROD_ACCESS.local.md
 
 # Simulator flow_config override backups (crash-recovery; auto-cleared on next run)
 apps/api/.simulator-backups/
+
+# Alta Men product photos (266 files / 28 MB) scraped from altamen.com.ua for
+# the demo-altamen tenant. Deliberately NOT committed — third-party imagery,
+# and the rest of test-assets/ (root fixtures + cosmetics/) stays tracked.
+#
+# Consequence: `seed:demo:altamen` cannot reproduce them from a clean checkout.
+# `copyImages` logs `! image source missing: …` per file and the seed still
+# completes, but every product renders imageless. The files live in two places:
+#   - prod box: /opt/directmate-assets/altamen  (outside the deploy rsync path,
+#     and already copied into the `uploads` docker volume)
+#   - whoever ran the scrape (apps/api/src/scripts/seed/data/altamen/README.md
+#     documents how they were produced)
+# Restore with: rsync -az root@<prod>:/opt/directmate-assets/altamen/ \
+#                 apps/api/test-assets/altamen/
+apps/api/test-assets/altamen/

@@ -11,6 +11,12 @@ import {
   CLOTHING_SIZE_CHARTS,
 } from '../data/clothing-women-products';
 import { getTemplatesForBusinessType } from '../templates';
+import { CLOTHING_KNOWLEDGE_DOC } from '../knowledge/clothing';
+import {
+  DEMO_HANDOFF_ANNOUNCE,
+  DEMO_PAYMENT_DETAILS,
+  DEMO_WELCOME_LINE,
+} from '../knowledge/demo-store-copy';
 import {
   CreateTenantOpts,
   copyImages,
@@ -64,14 +70,18 @@ export async function buildClothingTenant(
   console.log(`  tenant_settings: ✓`);
 
   await createStoreConfig(ds, tenantId, {
-    brandConfig: {},
+    brandConfig: { welcomeLine: DEMO_WELCOME_LINE },
     flowConfig: CLOTHING_FLOW_CONFIG,
-    checkoutConfig: { fields: ['fullName', 'phone', 'city', 'novaPoshtaBranch'] },
+    checkoutConfig: {
+      fields: ['fullName', 'phone', 'city', 'novaPoshtaBranch'],
+      paymentDetails: DEMO_PAYMENT_DETAILS,
+    },
     escalationConfig: {},
     recommendationConfig: {},
-    handoffConfig: {},
+    handoffConfig: { announceText: DEMO_HANDOFF_ANNOUNCE },
     fallbackConfig: { mode: 'template_first_with_safe_fallback' },
     operatingMode: 'active',
+    knowledgeDoc: CLOTHING_KNOWLEDGE_DOC,
   });
   console.log(`  store_config: ✓ (businessType=clothing, preQualifyStrategy=after_search_offered)`);
 

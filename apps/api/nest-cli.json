@@ -4,6 +4,13 @@
   "sourceRoot": "src",
   "compilerOptions": {
     "tsConfigPath": "tsconfig.build.json",
-    "plugins": []
+    "plugins": [],
+    "assets": [
+      {
+        "include": "scripts/seed/data/**/*.json",
+        "outDir": "dist"
+      }
+    ],
+    "watchAssets": false
   }
 }

@@ -165,6 +165,25 @@ export class ConversationTrace {
   @Column({ type: 'jsonb', nullable: true })
   error!: ConversationTraceError | null;
 
+  // ─── v2 agent ─────────────────────────────────────────────────
+  // Shapes are defined by the agent module; jsonb here so the trace table
+  // doesn't depend on it.
+
+  /** Per-step tool calls, arguments, results and text. */
+  @Column({ type: 'jsonb', nullable: true })
+  agentSteps!: unknown[] | null;
+
+  /** What the grounding and style guards found, and whether a retry happened. */
+  @Column({ type: 'jsonb', nullable: true })
+  guardResults!: Record<string, unknown> | null;
+
+  /** Model that answered; stores can override it, so it is recorded per turn. */
+  @Column({ type: 'text', nullable: true })
+  model!: string | null;
+
+  @Column({ type: 'jsonb', nullable: true })
+  usage!: Record<string, unknown> | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt!: Date;
 }

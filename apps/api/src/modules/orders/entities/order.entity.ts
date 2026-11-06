@@ -2,6 +2,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   OneToMany,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
@@ -10,6 +11,9 @@ import { OrderStatus } from '@direct-mate/shared';
 import { OrderItem } from './order-item.entity';
 
 @Entity('orders')
+// One order per checkout session, so placing an order is safe to retry.
+@Index(['checkoutSessionId'], { unique: true, where: '"checkout_session_id" IS NOT NULL' })
+@Index(['tenantId', 'customerId', 'createdAt'])
 export class Order {
   @PrimaryGeneratedColumn('uuid')
   id!: string;

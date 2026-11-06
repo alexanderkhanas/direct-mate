@@ -6,12 +6,12 @@
 # into a glibc runtime → ERR_DLOPEN_FAILED on every native module
 # require. Keep both stages on slim so the .node binaries are
 # glibc-linked throughout.
-FROM node:20-slim AS builder
+FROM node:22-slim AS builder
 WORKDIR /app
 
 # Toolchain for node-gyp. `bcrypt` downloads a prebuilt binary from GitHub
 # releases and node-pre-gyp falls back to compiling from source when that
-# download fails — but node:20-slim ships no Python and no compiler, so the
+# download fails — but node:22-slim ships no Python and no compiler, so the
 # fallback dead-ends and `npm ci` exits 1. A single GitHub 503 then takes the
 # whole deploy down (2026-08-02: exactly that, on
 # bcrypt_lib-v5.1.1-napi-v3-linux-x64-glibc.tar.gz).
@@ -43,10 +43,10 @@ RUN cd apps/api && npm run build
 # `image-embedding.service.ts`) ships prebuilt native binaries linked
 # against glibc. Alpine's musl + libc6-compat shim resolves the dlopen
 # but onnxruntime's internal C++ threads still SIGABRT with `Ort::Exception`
-# at startup, crashing the API. node:20-slim is Debian-based with real
+# at startup, crashing the API. node:22-slim is Debian-based with real
 # glibc — onnxruntime loads and runs cleanly. Image is ~140MB larger
 # than Alpine but production stability > image size.
-FROM node:20-slim
+FROM node:22-slim
 WORKDIR /app
 
 COPY --from=builder /app/node_modules ./node_modules

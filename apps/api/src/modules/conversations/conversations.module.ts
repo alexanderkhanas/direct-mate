@@ -20,6 +20,12 @@ import { EngineModule } from '../engine/engine.module';
 import { InstagramContentModule } from '../channels/instagram/instagram-content.module';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 import { SizeChartsModule } from '../size-charts/size-charts.module';
+import { AgentModule } from '../agent/agent.module';
+import { OrdersModule } from '../orders/orders.module';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { TurnRunner } from './turn-runner.service';
+import { HistoryBuilder } from './history.builder';
+import { MediaContextResolver } from './media-context.resolver';
 
 @Module({
   imports: [
@@ -40,9 +46,19 @@ import { SizeChartsModule } from '../size-charts/size-charts.module';
     InstagramContentModule,
     SubscriptionsModule,
     SizeChartsModule,
+    AgentModule,
+    OrdersModule,
+    NotificationsModule,
   ],
   controllers: [ConversationsController, ConversationReplyController],
-  providers: [ConversationsService, ConversationTracesService, ReplyEngineService],
-  exports: [ConversationsService, ConversationTracesService, ReplyEngineService],
+  providers: [
+    ConversationsService,
+    ConversationTracesService,
+    ReplyEngineService,
+    TurnRunner,
+    HistoryBuilder,
+    MediaContextResolver,
+  ],
+  exports: [ConversationsService, ConversationTracesService, ReplyEngineService, TurnRunner],
 })
 export class ConversationsModule {}

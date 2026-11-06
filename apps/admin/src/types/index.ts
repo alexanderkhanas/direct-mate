@@ -83,6 +83,12 @@ export interface ProductRow {
   variantCount: number;
   updatedAt: string;
   lastSyncedAt: string | null;
+  /** How the product looks (formality, pattern, colour, fabricLook, collar, fit). */
+  attributes: Record<string, string>;
+  /** Per attribute: 'ai' (read from the photo) or 'manual' (edited here). */
+  attributeSources: Record<string, 'ai' | 'manual'>;
+  attributesExtractedAt: string | null;
+  attributesError: string | null;
   variants: ProductVariantRow[];
 }
 

@@ -1,14 +1,37 @@
 {
-  "moduleFileExtensions": ["js", "json", "ts"],
+  "moduleFileExtensions": [
+    "js",
+    "json",
+    "ts"
+  ],
   "rootDir": "..",
   "testRegex": "test/.*\\.e2e-spec\\.ts$",
   "transform": {
-    "^.+\\.(t|j)s$": ["ts-jest", { "tsconfig": "<rootDir>/test/tsconfig.json" }]
+    "^.+\\.ts$": [
+      "ts-jest",
+      {
+        "tsconfig": "<rootDir>/test/tsconfig.json"
+      }
+    ],
+    "^.+\\.js$": [
+      "ts-jest",
+      {
+        "tsconfig": {
+          "allowJs": true,
+          "isolatedModules": true
+        }
+      }
+    ]
   },
   "testEnvironment": "node",
   "testTimeout": 30000,
   "moduleNameMapper": {
     "^@direct-mate/shared$": "<rootDir>/../../packages/shared/dist/index.js"
   },
-  "setupFiles": ["<rootDir>/test/setup-env.ts"]
+  "setupFiles": [
+    "<rootDir>/test/setup-env.ts"
+  ],
+  "transformIgnorePatterns": [
+    "/node_modules/(?!(ai|@ai-sdk|@workflow)/)"
+  ]
 }

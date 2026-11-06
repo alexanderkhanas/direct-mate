@@ -12,6 +12,7 @@ interface HandoffParams {
   reason: string;
   conversationId: string;
   lastMessage?: string;
+  summary?: string;
 }
 
 interface NewOrderParams {
@@ -183,6 +184,8 @@ export class TelegramService {
       `👤 ${params.customerName}`,
       `🕐 ${dateStr} ${timeStr}`,
       `💬 ${this.humanReadableReason(params.reason)}`,
+      // The agent's one-or-two-sentence summary: what the customer wants.
+      ...(params.summary ? ['', `📝 ${params.summary}`] : []),
     ].join('\n');
 
     await this.sendToAll(params.tenantId, message);
@@ -210,6 +213,22 @@ export class TelegramService {
       always_escalate: 'Завжди передавати менеджеру',
       send_failed: 'Не вдалося відправити повідомлення',
       unknown: 'Невідома причина',
+      // v2 agent
+      customer_asked_for_human: 'Клієнт просить менеджера',
+      complaint_or_return: 'Скарга, повернення або обмін',
+      order_change: 'Зміна вже оформленого замовлення',
+      payment_check: 'Клієнт надіслав підтвердження оплати — перевірте',
+      health_or_safety: "Питання про здоров'я чи безпеку",
+      not_in_store_notes: 'Питання, на яке бот не має відповіді',
+      unsure: 'Бот не впевнений у відповіді',
+      other: 'Інша причина',
+      ungrounded_reply: 'Бот не зміг підтвердити факти для відповіді',
+      step_limit: 'Бот не зміг завершити відповідь',
+      empty_reply: 'Бот не сформував відповідь',
+      agent_error: 'Помилка AI',
+      runner_error: 'Помилка обробки повідомлення',
+      order_failed: 'Не вдалося оформити замовлення',
+      subscription_expired: 'Підписка неактивна',
     };
     return map[reason] ?? reason;
   }

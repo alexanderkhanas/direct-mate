@@ -12,6 +12,12 @@
 import { DataSource } from 'typeorm';
 import { getAltamenProducts } from '../data/altamen-products';
 import { getTemplatesForBusinessType } from '../templates';
+import { ALTAMEN_KNOWLEDGE_DOC } from '../knowledge/clothing-men';
+import {
+  DEMO_HANDOFF_ANNOUNCE_NO_EMOJI,
+  DEMO_PAYMENT_DETAILS,
+  DEMO_WELCOME_LINE,
+} from '../knowledge/demo-store-copy';
 import {
   CreateTenantOpts,
   copyImages,
@@ -33,6 +39,15 @@ const ALTAMEN_FLOW_CONFIG = {
   // lands on category-only openers.
   preQualifyStrategy: 'before_search',
   sizeHelpMode: 'measurements',
+  // v2 agent: recommend a size from the ranges below and offer a manager's
+  // check to anyone who wants to be sure. Measurements are not asked up
+  // front: the agent shows options first and asks when sizes come up.
+  sizing: { advice: 'recommend', askMeasurementsFirst: false },
+  // One line per product, colour counts instead of colour names. The detailed
+  // renderer put a 5-product list at 573 chars / 23 lines — a full phone screen
+  // in a DM, before the product photos. Opt-in per tenant: production tenants
+  // keep the detailed form.
+  productListStyle: 'compact',
   preQualify: {
     enabled: true,
     fields: ['height', 'weight'],
@@ -71,14 +86,20 @@ export async function buildAltamenTenant(
   console.log(`  tenant_settings: ✓`);
 
   await createStoreConfig(ds, tenantId, {
-    brandConfig: {},
+    // Menswear voice: no 💛 anywhere. The template pack enforces it at seed
+    // time; disallowedPhrases makes the agent's style guard enforce it too.
+    brandConfig: { welcomeLine: DEMO_WELCOME_LINE, disallowedPhrases: ['💛'] },
     flowConfig: ALTAMEN_FLOW_CONFIG,
-    checkoutConfig: { fields: ['fullName', 'phone', 'city', 'novaPoshtaBranch'] },
+    checkoutConfig: {
+      fields: ['fullName', 'phone', 'city', 'novaPoshtaBranch'],
+      paymentDetails: DEMO_PAYMENT_DETAILS,
+    },
     escalationConfig: {},
     recommendationConfig: {},
-    handoffConfig: {},
+    handoffConfig: { announceText: DEMO_HANDOFF_ANNOUNCE_NO_EMOJI },
     fallbackConfig: { mode: 'template_first_with_safe_fallback' },
     operatingMode: 'active',
+    knowledgeDoc: ALTAMEN_KNOWLEDGE_DOC,
   });
   console.log(
     `  store_config: ✓ (businessType=${ALTAMEN_FLOW_CONFIG.businessType}, ` +
@@ -92,8 +113,15 @@ export async function buildAltamenTenant(
     `  catalog: ${catalog.productsCreated} products, ${catalog.variantsCreated} variants`,
   );
 
+  // Product-level AND per-variant images. The loader emits each colour's
+  // `imageFile` on that colour's FIRST variant, and `seedProductMedia` inserts
+  // a colour-keyed `product_media` row for every one of them — so a
+  // product-level-only copy list leaves those rows pointing at files that were
+  // never copied. It went unnoticed locally because `uploads/` accumulates
+  // across seed runs; a fresh box exposed it as 266 media rows against 128
+  // files (the cosmetics builder already collects both).
   const imageFiles = products
-    .map((p) => p.imageFile)
+    .flatMap((p) => [p.imageFile, ...p.variants.map((v) => v.imageFile)])
     .filter((f): f is string => Boolean(f));
   const urlPrefix = await copyImages('altamen', 'altamen', Array.from(new Set(imageFiles)));
   await seedProductMedia(ds, tenantId, products, urlPrefix);

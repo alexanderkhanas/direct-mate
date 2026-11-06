@@ -289,7 +289,17 @@ Templates, phrase blocks, and FAQ items are separate tables per tenant.
     reason — a bare «так» left to reach `resolveShortReply` reads as confirming a product) turns a
     yes into a real search via `armBroadenSearch`. A reply that answers neither yes nor no clears the
     wait and routes normally but LEAVES the guard set, so a second empty narrow broadens silently
-    instead of re-asking.
+    instead of re-asking. The guard is scoped to that EPISODE: it clears on an explicit yes/no, on
+    any narrow that finds something, and in the greeting reset. Left sticky it would silently disable
+    the question for the rest of the conversation after one ignored ask.
+  - `narrowShownProductsBySize` returns **`null` for "cannot narrow"** and `[]` for "nothing carries
+    that size" — legacy `lastPresentedProducts` entries have no `productId`, and the field documents
+    readers as fail-closed to a fresh search. Collapsing the two told customers «серед показаних
+    такого немає» on the strength of an empty id list.
+  - `findAllByProductIds` bounds the PRODUCT count and orders explicitly. A `take()` there is one
+    global LIMIT over joined rows, so a single variant-heavy product (demo-altamen's «Сорочка льон»
+    is 11 colours × 6 sizes = 66 variants) can eat the budget and leave the rest of the list partial
+    — reported to the customer as "doesn't carry that size", differently on each run.
   - `ctx.broadenNarrowing` is deliberately **transient**. Writing the size to `memory.recommendedSize`
     instead would switch on size-suppressed rendering for the rest of the conversation off the back
     of a one-off "have you got this in XL?". It also suppresses the `lastPresentedProducts`
@@ -300,6 +310,13 @@ Templates, phrase blocks, and FAQ items are separate tables per tenant.
   tries it first and falls back to the plain list if the tenant hasn't authored it. Hooked at the
   render layer so it covers every path that reaches `show_products` — the first-presentation force
   and the several `pickScenario` returns included. Copy: «Ось що є в наявності для розміру {size}:».
+  - **Gated on `listIsScopedToSize(productData, recommendedSize)`, NOT on `recommendedSize` alone.**
+    The search-path size filter stands down whenever `entities.productName` is set — and the
+    classifier writes the bare category noun there — so «Покажіть сорочки» yields an UNFILTERED list
+    with a size sitting in memory. The predicate asks the data («does every in-stock variant still on
+    this list carry that size?») instead of trusting the flag. `formatProductList`'s `suppressSizes`
+    had the same bug independently and now shares the predicate: it was hiding the size column on
+    full lists, so the customer saw neither the sizes nor any reason why.
   - **Not a second `show_products` template at a higher priority.** The anti-repetition filter drops
     recently-used templates *before* priority is read (`:314-318`), so a P95 sized template used on
     one turn silently demotes the next turn to the P90 plain one and the header flips on and off
@@ -315,6 +332,51 @@ Templates, phrase blocks, and FAQ items are separate tables per tenant.
     `!memory.recommendedSize`, so it and the sized variant are mutually exclusive by construction.
   - Cosmetics deliberately has no sized template — that vertical sets `recommendedSkinType`, never
     `recommendedSize`, so the scenario can never fire there.
+- **`flow_config.productListStyle: 'compact' | 'detailed'`** (default `detailed`) decides how
+  `formatProductList` renders `{product_list}`. Compact is one line per product —
+  «1. Сорочка льон — 3300 грн · 4 кольори» — and it is what a phone-sized DM needs: the real
+  demo-altamen turn-2 list went **496 chars / 19 lines → 256 / 5**. Pinned by
+  `template-engine.measure.spec.ts`; the branch matrix by `template-engine.format.spec.ts`.
+  - **Opt-in per tenant, never global.** Compact changes customer-facing copy, and `luxespace` /
+    `clothes-store` / `showcase-women-clothes` neither asked for it nor have scenarios written
+    against it. Only `demo-altamen` sets it today.
+  - Titles and prices render **verbatim** — they are what the customer quotes back and what
+    `narrowByProductName` matches on. Only the variant *enumeration* collapses.
+  - **A ragged size matrix renders NO sizes.** When colours carry different size sets (Reglan:
+    Блакитний L,M vs Темно-синій S–2XL) a union or an «S–XL» range would promise stock that
+    doesn't exist. Colour count only; `ask_variant_choice` shows the real matrix once a product
+    is chosen. Uniform matrices do append the size list.
+  - A single colour is NAMED, not counted — «1 колір» reads as a rendering bug. Counts go through
+    `colorCountPhrase` (`color-i18n.ts`), which is three-way (1 / 2-4 / 5+) with the 11-14 teens
+    exception. A single colour the TITLE already states is dropped entirely
+    («Футболка базова біла · Білий» is the product's own name read back). `titleStatesColor`
+    compares **stemmed tokens**, not substrings: «Білий» stems to «біл», three characters, and a
+    substring test would fire on anything containing those letters — token-stem equality lets
+    «біла» match while «синтетика» can never match «син». Cross-script pairs (title `MOKKO`,
+    colour «Мокко») are not matched; that is a known gap, not a bug to chase.
+  - Compact inlines the price for a ONE-product list instead of «Усі по X.» — "усі" has nothing
+    to range over. Detailed still emits it; that copy is live on production tenants.
+  - **The LLM-reformat alternative was considered and rejected** (~+50% LLM spend, roughly doubles
+    time-to-reply on top of a 1.4-1.5s classify, inverts "AI classifies only", bypasses the
+    compile-time 💛 guard at runtime, and makes every `replyContains` assertion flaky). Revisit
+    only if some catalog proves genuinely un-templatable.
+- **Alta Men titles are normalized in the LOADER, not the JSON.** `normalizeProductTitle`
+  (`seed/data/altamen-products.ts`) strips the stripped-SKU remnant the source's «NAME - SKU»
+  format left behind (16 titles ended in ` -` or ` - 05.30.70.51`) and sentence-cases the 66
+  ALL-CAPS entries. `altamen-products-merged.json` stays byte-identical to the scrape so the
+  transform stays reviewable; `backfill-altamen-titles.ts` pushes it onto already-seeded tenants,
+  keyed on `external_product_id` (the title is the thing changing, so matching on it would work
+  exactly once).
+  - **Sentence case is derived, not chosen.** Every capitalized Cyrillic token across the 62
+    mixed-case titles is the first word of its title, and «Трикотажний костюм тенор» keeps the
+    model name lowercase — that is the store's own house style. Mixed-case titles pass through
+    untouched; Latin tokens keep their casing, with `SANTORINI`/`PREMIUM`/`PRIVE` canonicalised so
+    one model doesn't present two spellings to `narrowByProductName`.
+  - **Stripping the code can COLLIDE.** «СОРОЧКА ЛЬОН У БЛАКИТНУ СМУЖКУ -» and «… - 1022404» are
+    two different colourways; without the code they are one string, and two products sharing a
+    display title breaks `narrowByProductName` and lets `titlesEqual` pair one product's name with
+    the other's price. `getAltamenProducts` detects collisions and keeps the code on just those
+    entries.
 - **`{product_name}` and `{price}` must come from the same product.** `buildVariableMap` resolved the
   name from memory (`selectedProductTitle` → `lastPresentedProducts[0]`) and then assigned the price
   **unconditionally** from `productData[0]`, so a recommendation could quote one product's name at
@@ -373,7 +435,13 @@ Templates, phrase blocks, and FAQ items are separate tables per tenant.
   - **Correcting it later** («мені потрібен XL, а не L») — `syncRecommendedSizeWithStatedSize`, called
     between pre-qualify and search so the new size reaches the filters. It only ever UPDATES an
     existing value, never invents one: creating `recommendedSize` from a passing mention («а в XL є?»)
-    would switch on size-suppressed rendering for tenants that never ran pre-qualify.
+    would switch on size-suppressed rendering for tenants that never ran pre-qualify. It also
+    requires a STATEMENT (`slotAction !== 'asks_question'` — «а в XL є, для брата?» asks about a
+    size, it doesn't adopt one) and requires the size to appear in what the customer actually TYPED
+    (`entityEchoedInText`, the same history-leak defence 4.6c uses — the classifier carries
+    `entities.size` forward on nearly every turn). Without both, one stray turn permanently rewrote a
+    field that steers the rest of the conversation. Guarded by the
+    `syncRecommendedSizeWithStatedSize` suite in `reply-engine.predicate.spec.ts`.
   - **Not re-asking for it.** 5.5c's colour-matched branch resolves straight to the known size when
     that colour carries it, instead of routing to `ask_size_for_color`. Companion to the 5.5b-2
     `userSize ?? selectedSize ?? recommendedSize` chain — same rule, different entry point.
@@ -421,6 +489,32 @@ Templates, phrase blocks, and FAQ items are separate tables per tenant.
   «ВʼЯЗАНА СОРОЧКА-ФУТБОЛКА БЕЖЕВА». The structural fix is running `narrowByProductName` *ahead* of the
   category/recency narrowings, which changes search identity for every tenant — not attempted. Standing
   red bug guard: `demo_altamen_tshirt_order`.
+- **«Які розміри є у футболки X?» ESCALATES TO A HUMAN on a tenant with no size charts.** The
+  classifier reads it as `size_chart_request` (a request for a measurement TABLE), so
+  `handleSizeChartRequest` runs, finds no chart — `demo-altamen` is a `measurements` tenant with
+  zero `size_charts` rows — and hits the `size_chart_not_available` handoff, while the answer (the
+  product's in-stock sizes) sits in the catalog. Standing red bug guard:
+  `demo_altamen_asks_sizes_of_named_product`; its green sibling
+  `demo_altamen_asks_colours_of_named_product` pins the colour question, which works.
+  - Fix shape, deferred to its own PR: in `handleSizeChartRequest`, before the no-chart
+    `doHandoff`, answer from the catalog when a product is resolvable and has a size axis — the
+    same principle as `canAnswerFromFocusedProduct` guarding the two `product_not_found` handoffs.
+    Render through `renderCustomScenario(…, 'show_product_sizes', {…})` with EXPLICIT variables
+    (the `ask_cart_removal` pattern) so it bypasses `buildVariableMap` — see the next bullet for
+    why that matters. Second layer: the SIZE CHART vs AVAILABILITY block (`classifier.service.ts`
+    ~:1047) covers «у вас є розмір М?» but has no case for *which* sizes exist.
+  - **An earlier version of this entry blamed `suppressSizes`. That was wrong** — the turn never
+    reaches the renderer. Recorded because the wrong cause was plausible enough to be written down
+    twice: check the trace before trusting a predicted cause.
+- **`suppressSizes` at the `{variants}` / `{variant_list}` sites is still flag-based.**
+  `template-engine.service.ts` ~:932 and ~:995 read `!!memory.recommendedSize && hasColourAxis`,
+  not the data — and the search-path size filter stands down whenever `entities.productName` is
+  set, so a named-product turn hydrates every size while the renderer believes the size is settled
+  and hides it. Same bug `listIsScopedToSize` already fixed for `formatProductList`; the fix is to
+  gate both sites on that predicate. Deferred because those variables are also read by the
+  media-link and two-step variant flows, so it needs a sweep over `demo-women-clothes` +
+  `men-demo-store`. Latent today (nothing routes there), but it would re-hide the sizes the fix
+  above resolves — which is why that fix passes variables explicitly.
 - **Cart abandon = 4.6c, and it is remove-if-named, else ask.** «джинси не треба — покажіть шорти» abandons the jeans and pivots to shorts. Handling:
   - **Removal cue** (`не треба`/`не хочу`/`прибери`/…, the `REMOVE_CUES` list computed above 4.6): a removal phrasing is never an *add*, but the classifier labels it `adds_to_cart` about as often as `correction`. Coerce `adds_to_cart → correction` on a cue up front, and stand 4.6b (keep-only) down on it, so it always reaches 4.6c. Deliberately NOT bare «ні» — «ні, давайте тільки Color Veil» is keep-only (`cart_abandon_pick_new`).
   - **remove-if-named** (`matchCartItems(cart, rawMessage)`, matched against the RAW message never `entities` — the classifier leaks `entities.category` from history): exactly one cart item named → remove it and consume its `productName` so the pivot searches the *category*, not the removed product. A named PIVOT target not in the cart matches nothing → falls through. Two items sharing a token → matches both → refuses to guess → ask.

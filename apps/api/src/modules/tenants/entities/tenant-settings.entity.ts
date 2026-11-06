@@ -24,6 +24,7 @@ export interface HandoffRules {
 }
 
 export interface AiSettings {
+  /** Per-store agent model override; falls back to AGENT_MODEL. Not shown in the admin panel. */
   model?: string;
   maxTokens?: number;
   temperature?: number;

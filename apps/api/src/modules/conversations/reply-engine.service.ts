@@ -23,7 +23,8 @@ import {
   ProductSearchResult,
 } from '../engine/template-engine.service';
 import { PolicyEngineService, PolicyEvaluation } from '../engine/policy-engine.service';
-import { localizeColor } from '../engine/color-i18n';
+import { localizeColor } from '../../common/color-i18n';
+import { NumericSizeChart, recommendSize } from '../size-charts/recommend-size';
 import { formatCurrency, sortSizes } from '../../common/format';
 import {
   AuditLogType,
@@ -5088,40 +5089,12 @@ export class ReplyEngineService {
 
   private recommendSize(
     params: Record<string, string>,
-    sizeChart: Record<string, { heightMin: number; heightMax: number; weightMin: number; weightMax: number }>,
+    sizeChart: NumericSizeChart,
   ): string | null {
-    const height = parseInt(params.height, 10);
-    const weight = parseInt(params.weight, 10);
-    if (!height && !weight) return null;
-
-    let bestSize: string | null = null;
-    let bestScore = -1;
-
-    for (const [size, range] of Object.entries(sizeChart)) {
-      let score = 0;
-      if (height && height >= range.heightMin && height <= range.heightMax) score++;
-      if (weight && weight >= range.weightMin && weight <= range.weightMax) score++;
-
-      if (score > bestScore) {
-        bestScore = score;
-        bestSize = size;
-      }
-    }
-
-    // Score 0 for all → fallback: find closest by height
-    if (bestScore === 0 && height) {
-      let closestDist = Infinity;
-      for (const [size, range] of Object.entries(sizeChart)) {
-        const mid = (range.heightMin + range.heightMax) / 2;
-        const dist = Math.abs(height - mid);
-        if (dist < closestDist) {
-          closestDist = dist;
-          bestSize = size;
-        }
-      }
-    }
-
-    return bestSize;
+    return recommendSize(
+      { heightCm: parseInt(params.height, 10), weightKg: parseInt(params.weight, 10) },
+      sizeChart,
+    );
   }
 
   // ─── Product search helpers ────────────────────────────────────

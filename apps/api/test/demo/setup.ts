@@ -6,27 +6,44 @@ import { DataSource } from 'typeorm';
 import { AppModule } from '../../src/app.module';
 import { AllExceptionsFilter } from '../../src/common/filters/http-exception.filter';
 import { createDemoCorsMiddleware } from '../../src/modules/demo/demo-cors.middleware';
-import { ReplyEngineService } from '../../src/modules/conversations/reply-engine.service';
+import { TurnRunner } from '../../src/modules/conversations/turn-runner.service';
 import { DemoMessageBufferService } from '../../src/modules/demo/demo-message-buffer.service';
 import { DemoRateLimiterService } from '../../src/modules/demo/demo-rate-limiter.service';
-import { ReplyDecision } from '@direct-mate/shared';
 
 export interface BootstrapResult {
   app: NestExpressApplication;
   dataSource: DataSource;
-  replyEngineMock: jest.SpyInstance;
+  turnRunnerMock: jest.SpyInstance;
 }
 
 /**
- * Mock reply payload returned for all engine calls in e2e — keeps tests
- * deterministic, fast, and free of OpenAI dependency.
+ * Turn result returned for every demo turn in e2e — keeps tests deterministic,
+ * fast, and free of model calls.
  */
-export const STUB_ENGINE_RESPONSE = {
-  decision: ReplyDecision.Reply,
-  reply: { text: 'привіт', sendNow: true, imageUrls: undefined },
-  handoff: { required: false, reason: null },
-  stateUpdate: null,
-  templateScenario: 'greeting',
+export const STUB_TURN_RESULT = {
+  status: 'replied',
+  messages: [{ kind: 'reply', text: 'привіт' }],
+  handoff: null,
+  committed: { orderId: null, paymentDetailsSent: false },
+  agent: {
+    reply: 'привіт',
+    effects: [],
+    handoff: null,
+    attempts: [],
+    steps: [
+      {
+        attempt: 1,
+        text: '',
+        finishReason: 'tool-calls',
+        toolCalls: [{ toolName: 'search_products', input: { query: 'сукня' } }],
+        toolResults: [],
+      },
+    ],
+    model: 'gpt-5.4-mini',
+    usage: { inputTokens: 100, cachedInputTokens: 0, outputTokens: 10 },
+    durationMs: 1,
+  },
+  traceId: 'e2e-stub',
 };
 
 export async function bootstrap(): Promise<BootstrapResult> {
@@ -62,19 +79,16 @@ export async function bootstrap(): Promise<BootstrapResult> {
   };
   rateLimiter.entries.clear();
 
-  // Replace replyEngineService.process so tests never hit OpenAI.
+  // Replace the turn runner so tests never call a model.
   const buffer = app.get(DemoMessageBufferService);
-  const engine = (buffer as unknown as { replyEngineService: ReplyEngineService })
-    .replyEngineService;
-  const replyEngineMock = jest
-    .spyOn(engine, 'process')
-    .mockResolvedValue(STUB_ENGINE_RESPONSE as never);
+  const runner = (buffer as unknown as { turnRunner: TurnRunner }).turnRunner;
+  const turnRunnerMock = jest.spyOn(runner, 'run').mockResolvedValue(STUB_TURN_RESULT as never);
 
-  return { app, dataSource, replyEngineMock };
+  return { app, dataSource, turnRunnerMock };
 }
 
 export async function teardown(result: BootstrapResult): Promise<void> {
-  result.replyEngineMock.mockRestore();
+  result.turnRunnerMock.mockRestore();
   await result.app.close();
 }
 

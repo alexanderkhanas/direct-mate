@@ -1,5 +1,5 @@
 # Stage 1: Build (Debian-based — react-snap's puppeteer Chromium needs glibc)
-FROM node:20-bookworm-slim AS builder
+FROM node:22-bookworm-slim AS builder
 WORKDIR /app
 
 # Chromium for react-snap's prerender pass. Point puppeteer at the apt

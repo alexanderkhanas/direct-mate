@@ -16,6 +16,14 @@ export class StoreConfig {
   @Column({ type: 'uuid' })
   tenantId!: string;
 
+  // Keys read by the v2 agent (validated where they're read, since owners edit
+  // them):
+  //   brandConfig.welcomeLine           first-reply line, incl. the AI disclosure
+  //   brandConfig.disallowedPhrases     string[] the style guard rejects (e.g. 💛)
+  //   checkoutConfig.fields             fields an order draft needs
+  //   checkoutConfig.paymentDetails     exact text send_payment_details sends
+  //   handoffConfig.announceText        line telling the customer a manager takes over
+  //   flowConfig.conversationIdleHours  idle gap that starts a new conversation (24)
   @Column({ type: 'jsonb', default: '{}' })
   brandConfig!: Record<string, unknown>;
 
@@ -36,6 +44,10 @@ export class StoreConfig {
 
   @Column({ type: 'jsonb', default: '{}' })
   fallbackConfig!: Record<string, unknown>;
+
+  /** The store's own notes on delivery, payment, returns and fit; goes into the agent prompt. */
+  @Column({ type: 'text', nullable: true })
+  knowledgeDoc!: string | null;
 
   @Column({ name: 'operating_mode', default: 'active' })
   operatingMode!: 'learning' | 'active' | 'paused';

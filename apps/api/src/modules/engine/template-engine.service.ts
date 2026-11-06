@@ -6,7 +6,7 @@ import { PhraseBlock } from './entities/phrase-block.entity';
 import { FaqItem } from './entities/faq-item.entity';
 import { ClassificationResult, AssistantMemory } from './classifier.service';
 import { formatCurrency, sortSizes } from '../../common/format';
-import { localizeColor, localizeColorList } from './color-i18n';
+import { colorCountPhrase, localizeColor, localizeColorList } from '../../common/color-i18n';
 
 /**
  * Same product? Used to keep `{product_name}` and `{price}` on one source.
@@ -23,6 +23,25 @@ function titlesEqual(a?: string, b?: string): boolean {
 
 function nonEmptyString(v?: string | null): v is string {
   return typeof v === 'string' && v.trim().length > 0;
+}
+
+export type ProductListStyle = 'detailed' | 'compact';
+
+/**
+ * `flow_config.productListStyle`, defaulting to today's behaviour.
+ *
+ * Opt-in per tenant rather than a global switch: `compact` changes
+ * customer-facing copy, and production tenants (`luxespace`, `clothes-store`,
+ * `showcase-women-clothes`) neither asked for it nor have scenarios written
+ * against it. Demo tenants opt in.
+ */
+function resolveProductListStyle(
+  flowConfig?: Record<string, unknown>,
+): ProductListStyle {
+  return (flowConfig as { productListStyle?: string } | undefined)
+    ?.productListStyle === 'compact'
+    ? 'compact'
+    : 'detailed';
 }
 
 /**
@@ -921,7 +940,11 @@ export class TemplateEngineService {
       const first = productData[0];
 
       // Build smart product list for show_products scenario
-      vars['product_list'] = this.formatProductList(productData, memory?.recommendedSize);
+      vars['product_list'] = this.formatProductList(
+        productData,
+        memory?.recommendedSize,
+        resolveProductListStyle(flowConfig),
+      );
 
       // Build variants string for single product (deduplicated)
       // When recommendedSize is set, only show colors (sizes already
@@ -1241,7 +1264,11 @@ export class TemplateEngineService {
 
   // ─── Product list formatter ────────────────────────────────────
 
-  private formatProductList(productData: ProductSearchResult[], recommendedSize?: string): string {
+  private formatProductList(
+    productData: ProductSearchResult[],
+    recommendedSize?: string,
+    style: ProductListStyle = 'detailed',
+  ): string {
     if (!productData || productData.length === 0) return '';
 
     // When the list is scoped to the customer's size, sizes are already
@@ -1276,6 +1303,15 @@ export class TemplateEngineService {
     const currency = [...allCurrencies][0] || 'UAH';
     const samePriceForAll = uniquePrices.length === 1;
 
+    // «Усі по 2500 грн.» after a list of ONE product is wrong copy — "усі"
+    // (all of them) has nothing to range over. Compact inlines the price
+    // instead. Left alone in detailed mode: that copy ships to production
+    // tenants today and this change is not the place to move it.
+    const renderedCount = productData.filter((p) =>
+      p.variants.some((v) => v.effectiveAvailable > 0),
+    ).length;
+    const inlineSharedPrice = style === 'compact' && renderedCount === 1;
+
     // Detect what type of variants we have (color, size, etc.)
     const variantType = this.detectVariantType(productData[0].variants);
 
@@ -1295,6 +1331,39 @@ export class TemplateEngineService {
 
       // Product name line
       let productLine = `${idx}. ${p.product.title}`;
+
+      // ── Compact: one line per product, no blank separators ──
+      //
+      // The detailed block below is 4 lines + a blank per product and spells
+      // out every colour — 47% of a 5-product reply was colour names, which on
+      // a phone is a screenful before the photos even arrive. Compact keeps
+      // the title and price verbatim (they are what the customer quotes back,
+      // and what `narrowByProductName` matches on) and collapses only the
+      // variant ENUMERATION to a count.
+      if (style === 'compact') {
+        // «Назва · 2 кольори — 3100 грн». The price lands last, after the
+        // em-dash, so the number is the thing the eye stops on at the end of
+        // every line — and the dash separates title+variants from price rather
+        // than sitting between the title and a number that isn't its own.
+        const variantSummary = this.compactVariantSummary(
+          inStock,
+          suppressSizes,
+          p.product.title,
+        );
+        let priceSuffix = '';
+        if (!samePriceForAll || inlineSharedPrice) {
+          const prices = [...new Set(inStock.map((v) => v.price))];
+          priceSuffix =
+            prices.length === 1
+              ? `${prices[0]} ${formatCurrency(currency)}`
+              : `від ${Math.min(...prices)} до ${Math.max(...prices)} ${formatCurrency(currency)}`;
+        }
+        if (variantSummary) productLine += ` · ${variantSummary}`;
+        if (priceSuffix) productLine += ` — ${priceSuffix}`;
+        lines.push(productLine);
+        idx++;
+        continue;
+      }
 
       // Deduplicate variants when suppressing sizes (multiple size variants with same color collapse)
       const displayVariants = suppressSizes
@@ -1395,12 +1464,129 @@ export class TemplateEngineService {
     }
 
     // Append shared price line if all same
-    if (samePriceForAll && uniquePrices.length > 0) {
+    if (samePriceForAll && uniquePrices.length > 0 && !inlineSharedPrice) {
       lines.push('');
       lines.push(`Усі по ${uniquePrices[0]} ${formatCurrency(currency)}.`);
     }
 
     return lines.join('\n');
+  }
+
+  /**
+   * The ` · …` tail of a compact product line: what the customer needs to know
+   * about this product's variants in as few characters as possible.
+   *
+   *   colour axis, >1   → «4 кольори»          (count, not the names)
+   *   colour axis, ==1  → «Мокко»              («1 колір» reads as a bug)
+   *                       …unless the TITLE already says it — «Футболка базова
+   *                       біла · Білий» is the product name repeated back.
+   *   no colour axis    → «S, M, L, XL»        (sizes are the only variant info there is)
+   *   both axes         → colours + sizes, but ONLY when every colour carries
+   *                       the same sizes
+   *
+   * The ragged case — sizes differ per colour — deliberately renders NO size
+   * information. The detailed renderer spells out per-colour parens there,
+   * which is the single longest thing it can emit; a union or an «S–XL» range
+   * would be short but would claim sizes exist in colours where they don't.
+   * Saying nothing is the honest short answer, and `ask_variant_choice` shows
+   * the real matrix as soon as the customer picks a product.
+   *
+   * Sizes are enumerated rather than ranged for the same reason: a product
+   * stocking S, M and XL is not «S–XL». They are short tokens; the cost of
+   * being exact is a few characters.
+   */
+  private compactVariantSummary(
+    inStock: ProductSearchResult['variants'],
+    suppressSizes: boolean,
+    title = '',
+  ): string {
+    const colors = [...new Set(inStock.map((v) => v.color).filter(Boolean))] as string[];
+    const sizes = [...new Set(inStock.map((v) => v.size).filter(Boolean))] as string[];
+
+    if (colors.length === 0) {
+      return sizes.length > 0 ? sortSizes(sizes).join(', ') : '';
+    }
+
+    // A single colour the title already states is the product's own name read
+    // back at the customer — «Футболка базова біла · Білий». Only for ONE
+    // colour: with several the count is real information, and a title can name
+    // at most one of them.
+    //
+    // Matched through `translateColor`'s canonical forms, not raw equality: the
+    // title carries the Ukrainian gendered adjective («біла», «чорне») while the
+    // variant stores the masculine nominative («Білий»). Same helper, same
+    // reason, as the in-memory narrow.
+    const colorIsInTitle =
+      colors.length === 1 && this.titleStatesColor(title, colors[0]);
+
+    const colorPart = colorIsInTitle
+      ? ''
+      : colors.length === 1
+        ? localizeColor(colors[0])
+        : colorCountPhrase(colors.length);
+
+    // Size-scoped list: the `show_products_with_size` header already names the
+    // size, so repeating it on every line is noise.
+    if (suppressSizes || sizes.length === 0) return colorPart;
+
+    const withSizes = (sizeText: string) =>
+      colorPart ? `${colorPart} · ${sizeText}` : sizeText;
+
+    const sizesByColor = new Map<string, Set<string>>();
+    for (const v of inStock) {
+      if (!v.color || !v.size) continue;
+      if (!sizesByColor.has(v.color)) sizesByColor.set(v.color, new Set());
+      sizesByColor.get(v.color)!.add(v.size);
+    }
+    const signatures = new Set(
+      Array.from(sizesByColor.values()).map((s) => [...s].sort().join('|')),
+    );
+    if (signatures.size !== 1) return colorPart; // ragged — see above
+
+    return withSizes(sortSizes(sizes).join(', '));
+  }
+
+  /**
+   * Does the product title already state this colour?
+   *
+   * Stem comparison, because the two sides are in different grammatical forms:
+   * the catalog stores the masculine nominative («Білий») while a Ukrainian
+   * title carries the gendered adjective agreeing with the noun («футболка
+   * базова біла», «поло чорне»). Neither raw equality nor `localizeColor`
+   * alone bridges that.
+   *
+   * Compared TOKEN by token, both sides stemmed — not substring. «Білий»
+   * stems to «біл», only three characters, and a substring test would fire on
+   * any title containing those letters. Stemming the title's words instead
+   * means «біла» matches while «синтетика» («синтетик») can never match «син».
+   * That is what makes it safe to accept short stems at all, and short stems
+   * are precisely the common colours.
+   *
+   * The prefix rule (≥4 chars) catches «ментол» in a title against the
+   * catalog's «Ментоловий» without letting three-letter stems match loosely.
+   *
+   * Only the colour's first token is used: a compound colour («Білий у
+   * блакитну смужку») describes a pattern, not a name a title restates.
+   */
+  private titleStatesColor(title: string, rawColor: string): boolean {
+    if (!title || !rawColor) return false;
+    // Ukrainian adjective endings, longest first so «ього» wins over «о».
+    const stemOf = (w: string) =>
+      w.toLowerCase().replace(/(ього|ими|ому|ої|ий|ій|их|им|ім|а|е|є|и|і|о|у|ю|я)$/u, '');
+
+    const colorStem = stemOf(localizeColor(rawColor).split(/[\s,/-]+/)[0] ?? '');
+    if (colorStem.length < 3) return false;
+
+    return title
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter(Boolean)
+      .map(stemOf)
+      .some(
+        (t) =>
+          t === colorStem ||
+          (colorStem.length >= 4 && t.startsWith(colorStem)) ||
+          (t.length >= 4 && colorStem.startsWith(t)),
+      );
   }
 
   /** Collapse variants with the same color into one (pick first of each color) */

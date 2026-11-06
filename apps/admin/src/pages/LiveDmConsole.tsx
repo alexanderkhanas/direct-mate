@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Loader2,
   MessageSquare,
+  X,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { Card } from '../components/ui/Card';
@@ -28,6 +29,9 @@ interface LiveResult {
   conversationId: string;
   message: string;
   mediaReference?: { mediaId: string; type: string };
+  /** Our stored copy of the photo sent with the message. */
+  photoUrl?: string;
+  photoError?: string;
   classification: Record<string, unknown> | null;
   decision: string;
   scenario: string | null;
@@ -123,6 +127,10 @@ export default function LiveDmConsole() {
   const [mediaMode, setMediaMode] = useState<MediaMode>('none');
   const [storyMediaId, setStoryMediaId] = useState('');
   const [photoUrl, setPhotoUrl] = useState('');
+  // A photo uploaded from disk: stored by the API right away, sent with the next message.
+  const [uploaded, setUploaded] = useState<{ url: string; name: string } | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -140,13 +148,18 @@ export default function LiveDmConsole() {
       .get('/testing/simulator/live')
       .then((r) => {
         setConversationId(r.data?.conversationId ?? null);
-        const msgs = (r.data?.messages ?? []) as Array<{ role: string; text: string | null }>;
+        const msgs = (r.data?.messages ?? []) as Array<{
+          role: string;
+          text: string | null;
+          photoUrls?: string[];
+        }>;
         setBubbles(
           msgs
-            .filter((m) => m.text)
+            .filter((m) => m.text || m.photoUrls?.length)
             .map((m) => ({
               from: m.role === 'user' ? 'you' : 'bot',
-              text: m.text as string,
+              text: m.text ?? '',
+              imageUrls: m.photoUrls,
             })),
         );
       })
@@ -161,10 +174,31 @@ export default function LiveDmConsole() {
     if (mediaMode === 'story' && storyMediaId) {
       return { mediaId: storyMediaId, type: 'story_reply' };
     }
+    if (mediaMode === 'photo' && uploaded) {
+      return { mediaId: uploaded.url, type: 'customer_photo' };
+    }
     if (mediaMode === 'photo' && photoUrl.trim()) {
       return { mediaId: photoUrl.trim(), type: 'customer_photo' };
     }
     return undefined;
+  };
+
+  const uploadPhoto = async (file: File) => {
+    setUploading(true);
+    setError(null);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const { data } = await api.post<{ url: string }>('/testing/simulator/live/photo', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setUploaded({ url: data.url, name: file.name });
+    } catch (err: any) {
+      setError(err?.response?.data?.message ?? err?.message ?? 'Upload failed');
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = '';
+    }
   };
 
   const send = async () => {
@@ -173,13 +207,16 @@ export default function LiveDmConsole() {
     setBusy(true);
     setError(null);
 
-    // Optimistic user bubble
+    // Optimistic user bubble. A photo shows as itself; the URL is replaced by
+    // our stored copy once the API answers.
+    const isPhoto = mediaReference?.type === 'customer_photo';
     setBubbles((b) => [
       ...b,
       {
         from: 'you',
-        text: text.trim() || '(media only)',
-        mediaBadge: mediaReference?.type,
+        text: text.trim() || (isPhoto ? '' : '(media only)'),
+        mediaBadge: isPhoto ? undefined : mediaReference?.type,
+        imageUrls: isPhoto ? [mediaReference.mediaId] : undefined,
       },
     ]);
     const sentText = text;
@@ -195,6 +232,8 @@ export default function LiveDmConsole() {
     // looped instead of checking out. The console must model one story reply,
     // then plain messages.
     setMediaMode('none');
+    setUploaded(null);
+    setPhotoUrl('');
 
     try {
       const { data } = await api.post<LiveResult>('/testing/simulator/live/message', {
@@ -202,6 +241,7 @@ export default function LiveDmConsole() {
         mediaReference,
       });
       setConversationId(data.conversationId);
+      if (data.photoError) setError(`The photo could not be stored (${data.photoError}); the bot was told to ask for it again.`);
       const botBubbles: Bubble[] = [];
       if (data.replyText) {
         botBubbles.push({
@@ -267,8 +307,10 @@ export default function LiveDmConsole() {
         </Button>
       </div>
       <p className="text-xs text-gray-500 mb-3">
-        Drives the reply engine like a real inbound DM (media included) against the
-        tenant you're logged in as. No message is sent to Meta.
+        Drives the agent like a real inbound DM (media included) against the
+        tenant you're logged in as. An uploaded photo is stored like an Instagram
+        photo and stays in the bot's context for the rest of the conversation. No
+        message is sent to Meta.
       </p>
 
       {/* Thread */}
@@ -301,8 +343,15 @@ export default function LiveDmConsole() {
                   </span>
                 </div>
               )}
-              <div className="whitespace-pre-wrap">{b.text}</div>
-              {b.imageUrls && b.imageUrls.length > 0 && (
+              {b.text && <div className="whitespace-pre-wrap">{b.text}</div>}
+              {b.imageUrls && b.imageUrls.length > 0 && b.from === 'you' && (
+                <div className={cn('flex flex-col gap-1', b.text && 'mt-1.5')}>
+                  {b.imageUrls.map((u, j) => (
+                    <img key={j} src={u} alt="" className="rounded-md max-h-48 w-auto object-contain" />
+                  ))}
+                </div>
+              )}
+              {b.imageUrls && b.imageUrls.length > 0 && b.from === 'bot' && (
                 <div className="mt-1.5 grid grid-cols-2 gap-1">
                   {b.imageUrls.slice(0, 4).map((u, j) => (
                     <img
@@ -356,12 +405,50 @@ export default function LiveDmConsole() {
           </select>
         )}
         {mediaMode === 'photo' && (
-          <input
-            value={photoUrl}
-            onChange={(e) => setPhotoUrl(e.target.value)}
-            placeholder="image URL (a catalog image matches deterministically)"
-            className="flex-1 min-w-[16rem] border border-gray-300 rounded-lg px-2 py-1 text-xs"
-          />
+          <>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) void uploadPhoto(file);
+              }}
+            />
+            {uploaded ? (
+              <span className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700">
+                <img src={uploaded.url} alt="" className="h-6 w-6 rounded object-cover" />
+                {uploaded.name}
+                <button
+                  onClick={() => setUploaded(null)}
+                  className="text-gray-400 hover:text-gray-700"
+                  aria-label="Remove photo"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ) : (
+              <>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => fileRef.current?.click()}
+                  disabled={uploading || busy}
+                  loading={uploading}
+                >
+                  <ImageIcon className="h-3.5 w-3.5" />
+                  Upload photo
+                </Button>
+                <input
+                  value={photoUrl}
+                  onChange={(e) => setPhotoUrl(e.target.value)}
+                  placeholder="or an image URL (a catalog image matches deterministically)"
+                  className="flex-1 min-w-[16rem] border border-gray-300 rounded-lg px-2 py-1 text-xs"
+                />
+              </>
+            )}
+          </>
         )}
       </div>
 
@@ -380,7 +467,7 @@ export default function LiveDmConsole() {
           placeholder="Type a customer message…  (Enter to send, Shift+Enter for newline)"
           className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-gray-900"
         />
-        <Button onClick={send} disabled={busy} loading={busy}>
+        <Button onClick={send} disabled={busy || uploading} loading={busy}>
           <Send className="h-4 w-4" />
           Send
         </Button>

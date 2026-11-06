@@ -51,6 +51,13 @@ export class Conversation {
   @Column({ type: 'timestamptz', nullable: true })
   autoResumeAt!: Date | null;
 
+  /**
+   * Processing lease: a run claims the conversation until this time, so two
+   * runs never answer the same thread. Expires on its own if a run dies.
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  processingUntil!: Date | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt!: Date;
 

@@ -47,16 +47,27 @@ local_psql -c "DELETE FROM tenants WHERE slug = '$SLUG';" > /dev/null
 
 # Each call streams one table's filtered rows via COPY ... TO STDOUT on
 # prod → COPY ... FROM STDIN on local. Order matters for FK constraints.
+#
+# Only columns present in BOTH databases are copied, named explicitly on each
+# side: local and prod migrate at different times (e.g. store_configs gained
+# knowledge_doc locally first), and a bare `COPY table FROM STDIN` fails on any
+# column-count mismatch. Columns that exist only locally keep their defaults.
+COLUMNS_SQL="SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name ="
+
 copy_filtered() {
   local table=$1
   local where=$2
-  local count
+  local count prod_cols local_cols cols
+  prod_cols=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$PROD_HOST" \
+    "docker exec $PROD_PG_CONTAINER psql -U postgres -d directmate -At -c \"$COLUMNS_SQL '$table'\"" | sort)
+  local_cols=$(docker exec -i "$LOCAL_PG_CONTAINER" psql -U postgres -d directmate -At -c "$COLUMNS_SQL '$table'" | sort)
+  cols=$(comm -12 <(echo "$local_cols") <(echo "$prod_cols") | paste -sd, -)
   count=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$PROD_HOST" \
     "docker exec $PROD_PG_CONTAINER psql -U postgres -d directmate -At -c \"SELECT COUNT(*) FROM $table WHERE $where\"")
   printf "  %-30s %5s rows ... " "$table" "$count"
   ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$PROD_HOST" \
-    "docker exec $PROD_PG_CONTAINER psql -U postgres -d directmate -c \"COPY (SELECT * FROM $table WHERE $where) TO STDOUT;\"" \
-    | local_psql -c "COPY $table FROM STDIN;" > /dev/null
+    "docker exec $PROD_PG_CONTAINER psql -U postgres -d directmate -c \"COPY (SELECT $cols FROM $table WHERE $where) TO STDOUT;\"" \
+    | local_psql -c "COPY $table ($cols) FROM STDIN;" > /dev/null
   echo "ok"
 }
 

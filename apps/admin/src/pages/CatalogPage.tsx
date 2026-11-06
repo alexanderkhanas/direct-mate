@@ -7,6 +7,7 @@ import { Card } from '../components/ui/Card';
 import { Input } from '../components/ui/Input';
 import { LoadingState } from '../components/ui/Spinner';
 import { EmptyState } from '../components/ui/EmptyState';
+import { ProductAttributesEditor } from '../components/catalog/ProductAttributesEditor';
 import { cn } from '../lib/cn';
 import { useT } from '../i18n';
 
@@ -77,7 +78,8 @@ function ProductRow({ product }: { product: ProductRow }) {
       </button>
 
       {expanded && (
-        <div className="px-5 pb-4">
+        <div className="px-5 pb-4 space-y-3">
+          <ProductAttributesEditor product={product} />
           <div className="rounded-lg border border-gray-100 overflow-hidden">
             <table className="w-full text-sm">
               <thead>

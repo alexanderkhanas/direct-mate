@@ -216,6 +216,10 @@ export class CatalogService {
         // in connector feed". UI shows the latter (freshness signal).
         updatedAt: p.updatedAt,
         lastSyncedAt: p.lastSyncedAt ?? p.updatedAt,
+        attributes: p.attributes ?? {},
+        attributeSources: (p.attributesMeta?.sources as Record<string, string> | undefined) ?? {},
+        attributesExtractedAt: (p.attributesMeta?.extractedAt as string | undefined) ?? null,
+        attributesError: (p.attributesMeta?.error as string | undefined) ?? null,
         variants: (p.variants ?? []).map((v) => ({
           id: v.id,
           sku: v.sku,

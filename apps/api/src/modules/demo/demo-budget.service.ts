@@ -8,6 +8,10 @@ import { DataSource } from 'typeorm';
 const COST_RATES: Record<string, { input: number; output: number }> = {
   'gpt-5.4-mini': { input: 0.075, output: 0.450 },
   'gpt-5.4': { input: 0.250, output: 1.500 },
+  'gpt-6.1-sol': { input: 0.200, output: 1.000 },
+  'gpt-6-sol': { input: 0.200, output: 1.000 },
+  'gpt-6.1-terra': { input: 0.100, output: 0.500 },
+  'gpt-6-luna': { input: 0.010, output: 0.050 },
   'gpt-4o-mini': { input: 0.015, output: 0.060 },
   'gpt-4o': { input: 0.250, output: 1.000 },
 };

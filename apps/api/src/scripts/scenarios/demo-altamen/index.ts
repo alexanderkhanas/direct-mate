@@ -34,9 +34,13 @@ const ASKS_MEASUREMENTS = {
 const RECOMMENDS_L = {
   decision: 'reply' as const,
   replyContains: 'L',
-  replyNotContains: '💛',
+  // `productListStyle: 'compact'` — one line per product, colour COUNTS rather
+  // than colour names. «Відтінки:» / «Розміри:» are the detailed renderer's
+  // labels and must not appear. Structural rather than content assertions:
+  // which products the search returns is not this scenario's subject.
+  replyNotContains: ['💛', 'Відтінки:', 'Розміри:'],
   state: { preQualifyCollected: true, recommendedSize: 'L' },
-  note: 'Recommendation rendered via the recommend_size template (no 💛)',
+  note: 'recommend_size + compact product list (no 💛, no detailed labels)',
 };
 
 export const DEMO_ALTAMEN_SCENARIOS: Record<string, SimulatorScenario> = {
@@ -332,6 +336,69 @@ export const DEMO_ALTAMEN_SCENARIOS: Record<string, SimulatorScenario> = {
           // silently doing nothing at all.
           replyNotContains: 'ширше',
           note: 'Wider search ran, found no shirt in 42, escalated honestly',
+        },
+      },
+    ],
+  },
+
+  // ─── 9. Asking about ONE product from the compact list ──────────
+  demo_altamen_asks_colours_of_named_product: {
+    name: 'demo-altamen — «Покажіть кольори футболки Reglan»',
+    description:
+      'The compact list trades colour NAMES for a count («4 кольори»), so the ' +
+      'obvious next question is which four. Nothing is in focus yet — the ' +
+      'focus gate needs `selectedProductId` and the narrow gate needs a ' +
+      'slot-fill — so this rides the normal search on `entities.productName` ' +
+      'and lands on the product, then `{variant_list}` names the colours.\n' +
+      'The catalog has TWO Reglan products («В\'язана футболка Reglan» and ' +
+      '«В\'язане поло на ґудзиках Reglan»), so the assertion is on ' +
+      '«Темно-синій», which only the футболка carries — a resolution to the ' +
+      'поло fails instead of passing by accident.',
+    tenantId: DEMO_ALTAMEN_SLUG,
+    turns: [
+      { message: 'Хочу замовити футболку', expect: ASKS_MEASUREMENTS },
+      { message: 'Зріст 182, вага 78', expect: RECOMMENDS_L },
+      {
+        message: 'Покажіть кольори футболки Reglan',
+        expect: {
+          decision: 'reply',
+          replyContains: ['Reglan', 'Темно-синій'],
+          note: 'Names the colours of the right Reglan product',
+        },
+      },
+    ],
+  },
+
+  demo_altamen_asks_sizes_of_named_product: {
+    name: 'demo-altamen — «Які розміри є у футболки Reglan?» (RED bug guard)',
+    description:
+      'RED — a bug guard, not a passing test. The sibling of the colours ' +
+      'scenario above, and it answers with COLOURS.\n' +
+      'Cause: `suppressSizes` at `template-engine.service.ts` ~:932 and ~:995 ' +
+      '(the `{variants}` / `{variant_list}` sites) is ' +
+      '`!!memory.recommendedSize && hasColourAxis` — a FLAG, not the data. ' +
+      'A size sits in memory from pre-qualify, and the search-path size filter ' +
+      'stands down whenever the customer names a product ' +
+      '(`!namedAProduct`), so `productData` carries every size while the ' +
+      'renderer still believes the size is settled and hides it.\n' +
+      'Same flag-vs-data bug `listIsScopedToSize` already fixed for ' +
+      '`formatProductList`; the fix is to gate those two sites on the same ' +
+      'predicate. Deliberately NOT done here — those variables are also read ' +
+      'by the media-link and two-step variant flows, so it needs a sweep ' +
+      'covering demo-women-clothes and men-demo-store, not just this tenant.\n' +
+      'Reglan is a ragged matrix (Блакитний: L,M · Темно-синій: S–2XL), so the ' +
+      'right answer names sizes the flag currently suppresses.',
+    tenantId: DEMO_ALTAMEN_SLUG,
+    turns: [
+      { message: 'Хочу замовити футболку', expect: ASKS_MEASUREMENTS },
+      { message: 'Зріст 182, вага 78', expect: RECOMMENDS_L },
+      {
+        message: 'Які розміри є у футболки Reglan?',
+        expect: {
+          decision: 'reply',
+          replyContains: 'XL',
+          replyNotContains: 'Темно-синій',
+          note: 'THE BUG: answers a size question with a list of colours',
         },
       },
     ],

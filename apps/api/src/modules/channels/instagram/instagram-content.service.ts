@@ -13,6 +13,18 @@ import { ImageHashService } from '../../catalog/image-hash.service';
 import { ImageEmbeddingService } from '../../catalog/image-embedding.service';
 import { DataSource } from 'typeorm';
 import { ConnectionType, ConnectionStatus } from '@direct-mate/shared';
+import { readFile } from 'fs/promises';
+import { extname } from 'path';
+import { uploadPath } from '../../../common/uploads';
+
+const MEDIA_TYPES: Record<string, string> = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.avif': 'image/avif',
+};
 
 const DEFAULT_SKU_PATTERNS = [
   'SKU[:\\s]*(\\S+)',
@@ -557,6 +569,12 @@ export class InstagramContentService {
 
   private async toBase64DataUrl(url: string): Promise<string | null> {
     try {
+      // Our own copies (customer photos, demo catalog images) are read from disk.
+      const local = uploadPath(url);
+      if (local) {
+        const mime = MEDIA_TYPES[extname(local).toLowerCase()] ?? 'image/jpeg';
+        return `data:${mime};base64,${(await readFile(local)).toString('base64')}`;
+      }
       const res = await fetch(url);
       if (!res.ok) return null;
       const buffer = await res.arrayBuffer();
@@ -769,9 +787,10 @@ export class InstagramContentService {
     }
 
     // ─── Stage 2: CLIP retrieval ───────────────────────────────────
-    const customerEmbedding = await this.imageEmbeddingService.embedFromUrl(
-      customerImageUrl,
-    );
+    // Replicate fetches the image itself, so a file only we serve can't be embedded.
+    const customerEmbedding = /^https?:\/\//i.test(customerImageUrl)
+      ? await this.imageEmbeddingService.embedFromUrl(customerImageUrl)
+      : null;
 
     let clipCandidates: VisionCandidate[] = [];
     let top1: VisionCandidate | undefined;
@@ -1261,12 +1280,17 @@ export class InstagramContentService {
   } | null> {
     let buf: Buffer;
     try {
-      const res = await fetch(customerImageUrl);
-      if (!res.ok) {
-        this.logger.warn(`pHash: customer image fetch HTTP ${res.status}`);
-        return null;
+      const local = uploadPath(customerImageUrl);
+      if (local) {
+        buf = await readFile(local);
+      } else {
+        const res = await fetch(customerImageUrl);
+        if (!res.ok) {
+          this.logger.warn(`pHash: customer image fetch HTTP ${res.status}`);
+          return null;
+        }
+        buf = Buffer.from(await res.arrayBuffer());
       }
-      buf = Buffer.from(await res.arrayBuffer());
     } catch (err: any) {
       this.logger.warn(`pHash: customer image fetch failed: ${err.message ?? err}`);
       return null;

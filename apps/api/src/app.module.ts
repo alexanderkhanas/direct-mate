@@ -25,6 +25,7 @@ import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
 import { SizeChartsModule } from './modules/size-charts/size-charts.module';
 import { DemoModule } from './modules/demo/demo.module';
+import { AgentModule } from './modules/agent/agent.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -59,6 +60,7 @@ import { HealthController } from './health.controller';
     SubscriptionsModule,
     SizeChartsModule,
     DemoModule,
+    AgentModule,
   ],
 })
 export class AppModule {}

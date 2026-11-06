@@ -105,6 +105,7 @@ export interface StoreConfigSpec {
   handoffConfig: Record<string, unknown>;
   fallbackConfig: Record<string, unknown>;
   operatingMode?: 'learning' | 'active' | 'paused';
+  knowledgeDoc?: string | null;
 }
 
 export async function createStoreConfig(
@@ -116,8 +117,8 @@ export async function createStoreConfig(
     `INSERT INTO store_configs (tenant_id, brand_config, flow_config,
                                  checkout_config, escalation_config,
                                  recommendation_config, handoff_config,
-                                 fallback_config, operating_mode)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+                                 fallback_config, operating_mode, knowledge_doc)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [
       tenantId,
       JSON.stringify(spec.brandConfig),
@@ -128,6 +129,7 @@ export async function createStoreConfig(
       JSON.stringify(spec.handoffConfig),
       JSON.stringify(spec.fallbackConfig),
       spec.operatingMode ?? 'active',
+      spec.knowledgeDoc ?? null,
     ],
   );
 }

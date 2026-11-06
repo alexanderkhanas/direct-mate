@@ -44,7 +44,8 @@ interface ConversationTrace {
   openaiCalls: OpenAiCall[] | null;
   memoryBefore: Record<string, unknown> | null;
   memoryAfter: Record<string, unknown> | null;
-  recentMessages: Array<{ role: string; text: string | null }> | null;
+  /** `images`: customer photos the model saw with that message (agent turns). */
+  recentMessages: Array<{ role: string; text: string | null; images?: string[] }> | null;
   outboundReply: string | null;
   error: { name: string; message: string; stack?: string; stage?: string } | null;
 }
@@ -161,7 +162,7 @@ function traceToMarkdown(t: ConversationTrace): string {
     lines.push('**Recent messages (classifier context):**');
     lines.push('```');
     t.recentMessages.forEach((m) =>
-      lines.push(`${m.role}: ${m.text ?? '(empty)'}`),
+      lines.push(`${m.role}: ${m.text ?? '(empty)'}${m.images?.length ? ` [photos: ${m.images.join(', ')}]` : ''}`),
     );
     lines.push('```');
   }
@@ -406,6 +407,15 @@ function TraceCard({ trace, selected, onToggleSelect }: TraceCardProps) {
                 <span className="text-gray-400 w-16 shrink-0">{m.role}:</span>
                 <span className="whitespace-pre-wrap break-words flex-1">
                   {m.text ?? <em className="opacity-50">empty</em>}
+                  {m.images && m.images.length > 0 && (
+                    <span className="mt-1 flex gap-1">
+                      {m.images.map((u) => (
+                        <a key={u} href={u} target="_blank" rel="noreferrer">
+                          <img src={u} alt="" className="h-12 w-12 rounded object-cover border border-gray-200" />
+                        </a>
+                      ))}
+                    </span>
+                  )}
                 </span>
               </li>
             ))}

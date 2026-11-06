@@ -282,51 +282,43 @@ export function DemoWidget({
       messageIndexRef.current += 1;
       analytics.demoMessageSent(messageIndexRef.current, data.isAggregated, tenantSlug);
 
+      // One bubble per message the bot sent (welcome line, reply, payment
+      // details, the handoff announcement), staggered so each lands as its
+      // own message. A handoff adds the marker after the last one.
+      const bubbles = [...(data.reply ? [data.reply] : []), ...(data.extraReplies ?? [])].filter(
+        (b) => b.text || b.imageUrls?.length,
+      );
+      const delayFor = (idx: number) => (idx === 0 ? 0 : 800 + (idx - 1) * 600);
+      const later = (delay: number, add: () => void) => {
+        if (delay === 0) return add();
+        setTimeout(() => {
+          if (sendId !== liveSendIdRef.current) return;
+          add();
+        }, delay);
+      };
+      bubbles.forEach((bubble, idx) => {
+        later(delayFor(idx), () =>
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: 'bot' as const,
+              text: bubble.text,
+              imageUrls: bubble.imageUrls,
+              ...(idx === 0 && { aggregatedHint: data.isAggregated }),
+              id: nextId(),
+            },
+          ]),
+        );
+      });
       if (data.handoff?.required) {
-        setMessages((prev) => [
-          ...prev,
-          ...(data.reply?.text
-            ? [{ role: 'bot' as const, text: data.reply.text, id: nextId() }]
-            : []),
-          {
-            role: 'bot' as const,
-            text: 'Розмову передано оператору',
-            isHandoff: true,
-            id: nextId(),
-          },
-        ]);
-      } else if (data.reply?.text) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: 'bot' as const,
-            text: data.reply!.text,
-            imageUrls: data.reply!.imageUrls,
-            aggregatedHint: data.isAggregated,
-            id: nextId(),
-          },
-        ]);
-        // Cascade follow-up bubbles (size chart, etc.) with a small stagger
-        // so each lands as its own message, matching scenario-playback feel.
-        const extras = data.extraReplies ?? [];
-        extras.forEach((extra, idx) => {
-          if (!extra.text && !extra.imageUrls?.length) return;
-          const delay = 800 + idx * 600;
-          setTimeout(() => {
-            if (sendId !== liveSendIdRef.current) return;
-            setMessages((prev) => [
-              ...prev,
-              {
-                role: 'bot' as const,
-                text: extra.text,
-                imageUrls: extra.imageUrls,
-                id: nextId(),
-              },
-            ]);
-          }, delay);
-        });
+        later(delayFor(bubbles.length), () =>
+          setMessages((prev) => [
+            ...prev,
+            { role: 'bot' as const, text: 'Розмову передано оператору', isHandoff: true, id: nextId() },
+          ]),
+        );
       }
-      // 'noop' / null reply → render nothing, drop typing
+      // No messages → render nothing, drop typing
     } catch (err) {
       if (sendId !== liveSendIdRef.current) return;
       setIsTyping(false);

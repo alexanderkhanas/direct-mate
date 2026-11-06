@@ -1,28 +1,87 @@
 // Simulator scenario types and shared tenant constants.
 
+/**
+ * What a turn must produce. The first group checks outcomes, which is what
+ * matters with the v2 agent: its path through a turn isn't fixed, so asserting
+ * a route would test the wrong thing.
+ *
+ * The legacy group further down was written for the classifier engine. Those
+ * fields still work: `mapLegacyExpect` (modules/testing/scenario-assertions.ts)
+ * turns each into its outcome equivalent where one exists, and reports the
+ * route-only ones it had to drop, per turn.
+ */
 export interface SimulatorTurnExpect {
-  /** Expected ReplyEngineOutput.decision */
-  decision?: 'reply' | 'handoff' | 'create_draft_order';
-  /** Expected templateScenario value (e.g. 'confirm_selection') */
-  scenario?: string;
-  /** Substring(s) the main reply text MUST contain */
+  // ─── Outcomes ───────────────────────────────────────────────────
+  /** Whether the turn handed off to a manager. */
+  handoff?: boolean;
+  /** Whether this turn's message started a new conversation (an idle gap passed). */
+  newConversation?: boolean;
+  /** The handoff reason, e.g. 'complaint_or_return', 'health_or_safety'. */
+  handoffReason?: string;
+  /** Substring(s) some outgoing message must contain (case-insensitive). */
   replyContains?: string | string[];
-  /** Substring(s) the main reply text MUST NOT contain */
+  /** Substring(s) no outgoing message may contain (case-insensitive). */
   replyNotContains?: string | string[];
-  /** Expected number of image URLs attached */
-  imageCount?: number;
   /**
-   * Lower bound on attached image URLs. Use when the assertion is "images
-   * were attached at all" and the exact count depends on how many products
-   * a search happens to return — `imageCount` would make the test a hostage
-   * to catalog size.
+   * Size(s) the reply must name as a word ("XXL" counts as "2XL"). A size is
+   * one or two letters, so `replyContains: 'L'` would match almost anything.
    */
+  replyMentionsSize?: string | string[];
+  /** Colour(s) the reply must name, in any form: «Білий» matches «біла», «білу», "White". */
+  replyMentionsColor?: string | string[];
+  /** Exact number of images across the outgoing messages. */
+  imageCount?: number;
+  /** At least this many images. Use when the count depends on the catalog. */
   imageCountMin?: number;
-  /** Expected number of follow-up replies (extraReplies array length). */
+  /** Substring some image URL must contain (e.g. a size chart file name). */
+  imageContains?: string;
+  /** Tool(s) the agent must have called this turn. */
+  toolCalled?: string | string[];
+  /** Tool(s) the agent must not have called this turn. */
+  toolNotCalled?: string | string[];
+  /** The conversation's order draft after the turn. */
+  orderDraft?: {
+    /** Number of items in it. */
+    itemCount?: number;
+    /** Items that must be in it, in any order. `variantIncludes`: "Чорний, L" — every part must match. */
+    items?: Array<{ titleIncludes?: string; variantIncludes?: string }>;
+    complete?: boolean;
+    customer?: Partial<Record<'fullName' | 'phone' | 'city' | 'novaPoshtaBranch' | 'paymentMethod', string>>;
+  };
+  /** Whether the conversation has a placed order after the turn. */
+  orderPlaced?: boolean;
+  /** Whether payment details have been sent for the current draft. */
+  paymentDetailsSent?: boolean;
+  /**
+   * The products the bot offered this turn — named in the reply (any
+   * inflection) or shown in a photo — checked by kind, not by name: «plain,
+   * dressy shirts», not «Сорочка льон Premium». Attribute lists are the
+   * values each offered product may have; a product without the attribute
+   * fails.
+   */
+  shortlist?: {
+    min?: number;
+    max?: number;
+    category?: string;
+    attributes?: Partial<Record<'formality' | 'pattern' | 'colour' | 'fabricLook' | 'collar' | 'fit', string[]>>;
+  };
+  /** Free-form note describing what this turn is testing */
+  note?: string;
+
+  // ─── Legacy (classifier engine) ─────────────────────────────────
+  /** @deprecated Use `handoff` / `orderPlaced`. Mapped: 'handoff' → handoff, 'reply' → no handoff, 'create_draft_order' → orderPlaced. */
+  decision?: 'reply' | 'handoff' | 'create_draft_order';
+  /** @deprecated Route assertion; dropped (the agent has no template scenarios). */
+  scenario?: string;
+  /** @deprecated Dropped: the agent's message layout differs from the engine's bubbles. */
   extraReplyCount?: number;
-  /** Substring that at least one extraReplies[*].imageUrls entry must contain. */
+  /** @deprecated Mapped to `imageContains`. */
   extraReplyImageContains?: string;
-  /** Partial state assertions (all listed keys must match exactly) */
+  /**
+   * @deprecated Engine memory. Mapped where an outcome exists — orderCreated →
+   * orderPlaced, cartLength / cartHasVariant → orderDraft, recommendedSize →
+   * replyMentionsSize — and dropped otherwise.
+   */
   state?: {
     selectionState?: 'awaiting_product' | 'awaiting_variant' | 'awaiting_confirmation' | 'cart_item_added' | 'confirmed' | null;
     selectedProductId?: string | null;
@@ -41,8 +100,6 @@ export interface SimulatorTurnExpect {
     awaitingPreQualifyAnswer?: boolean;
     orderCreated?: boolean;
   };
-  /** Free-form note describing what this turn is testing */
-  note?: string;
 }
 
 export interface SimulatorTurn {
@@ -61,6 +118,20 @@ export interface SimulatorTurn {
    * sides → vision is near-certain to match).
    */
   resolveMediaFromLinkedProduct?: boolean;
+  /**
+   * A photo the customer sends before this turn's text: a file under
+   * `apps/api/test-assets/` or a URL. It is its own message, as on Instagram,
+   * stored the way an inbound photo is, so the agent sees it on this turn and
+   * the later ones.
+   */
+  image?: string;
+  /**
+   * Move the clock forward this many hours before the turn: every earlier
+   * message, the conversation and its order draft are shifted back in time.
+   * Tests conversation boundaries ("the customer comes back the next day")
+   * without waiting.
+   */
+  advanceHours?: number;
   expect?: SimulatorTurnExpect;
 }
 
@@ -88,6 +159,12 @@ export interface SimulatorScenario {
    * scenarios stay un-flaky and gate the suite normally.
    */
   flaky?: boolean;
+  /**
+   * A known open bug this scenario guards. Its failure is reported but doesn't
+   * fail the run; if it starts passing, the run says so, so the marker can be
+   * removed. Replaces the old "RED — bug guard" naming convention.
+   */
+  expectedFailure?: string;
 }
 
 // Real tenant IDs from the database. Demo tenants use slugs (resolved at
