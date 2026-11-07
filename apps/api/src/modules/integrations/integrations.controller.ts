@@ -148,24 +148,29 @@ export class InstagramOAuthController {
   @Post('connections/instagram/oauth/start')
   async start(@CurrentUser() user: JwtPayload) {
     const appId = this.config.get<string>('meta.appId');
+    const configId = this.config.get<string>('meta.loginConfigId');
     const redirectUri = this.config.get<string>('meta.oauthRedirectUri');
-    if (!appId || !redirectUri) {
+    if (!appId || !configId || !redirectUri) {
       throw new BadRequestException('Instagram OAuth not configured');
     }
 
     // Generate state token and save to DB (reuse telegram_connect_tokens table)
     const state = await this.integrationsService.createOAuthState(user.tenantId);
 
-    const scopes = [
-      'instagram_business_basic',
-      'instagram_business_manage_messages',
-      'instagram_business_content_publish',
-      'instagram_business_manage_comments',
-    ].join(',');
+    // The Unified Login URL from the App Dashboard. The configuration carries
+    // the permissions, so no scopes here. Its `display=popup` is dropped: the
+    // admin opens this as a full page.
+    const params = new URLSearchParams({
+      client_id: appId,
+      config_id: configId,
+      redirect_uri: redirectUri,
+      response_type: 'code',
+      override_default_response_type: 'true',
+      state,
+      prompt: 'login',
+    });
 
-    const redirectUrl = `https://www.instagram.com/oauth/authorize?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scopes}&response_type=code&state=${state}`;
-
-    return { redirectUrl };
+    return { redirectUrl: `https://www.facebook.com/dialog/oauth?${params}` };
   }
 
   @Get('auth/instagram/callback')
@@ -187,26 +192,31 @@ export class InstagramOAuthController {
         return res.redirect(`${adminBaseUrl}/connections?instagram=error&reason=invalid_state`);
       }
 
-      // Exchange code for token
-      const { accessToken, userId } = await this.integrationsService.exchangeCodeForToken(code);
+      const { accessToken, expiresAt } = await this.integrationsService.exchangeCodeForToken(code);
 
-      // Fetch Business Account ID + username from Graph API
-      // OAuth returns IGSID, but webhooks use Business Account ID — they're different
-      let businessAccountId = userId;
-      let username: string | undefined;
+      // One token can cover several accounts; a tenant is one account. Picking
+      // one for the store could wire the wrong account, so ask them to
+      // reconnect sharing just one.
+      const accounts = await this.integrationsService.getAssignedInstagramAccounts(accessToken);
+      if (accounts.length !== 1) {
+        const reason = accounts.length === 0 ? 'no_account' : 'multiple_accounts';
+        this.logger.warn(`Instagram OAuth for tenant ${tenantId}: ${accounts.length} accounts shared — ${reason}`);
+        return res.redirect(`${adminBaseUrl}/connections?instagram=error&reason=${reason}`);
+      }
+      const [account] = accounts;
+
       try {
-        const profileRes = await fetch(`https://graph.instagram.com/me?fields=user_id,username&access_token=${accessToken}`);
-        if (profileRes.ok) {
-          const profile = await profileRes.json() as { user_id?: number; username?: string };
-          if (profile.user_id) businessAccountId = String(profile.user_id);
-          username = profile.username;
-        }
-      } catch { /* non-critical */ }
+        await this.integrationsService.subscribeToWebhooks(account.id, accessToken);
+      } catch (err) {
+        // Saving now would show a connected account that never hears a message.
+        this.logger.error(`Instagram OAuth for tenant ${tenantId}`, (err as Error).message);
+        return res.redirect(`${adminBaseUrl}/connections?instagram=error&reason=subscribe_failed`);
+      }
 
-      // Connect using Business Account ID (matches webhook entry.id)
-      await this.integrationsService.connectInstagram(tenantId, businessAccountId, accessToken, username);
+      // The account id is what webhooks put in entry.id.
+      await this.integrationsService.connectInstagram(tenantId, account.id, accessToken, account.username, expiresAt);
 
-      this.logger.log(`Instagram OAuth connected for tenant ${tenantId}, user ${userId}`);
+      this.logger.log(`Instagram OAuth connected for tenant ${tenantId}, account ${account.id}`);
       return res.redirect(`${adminBaseUrl}/connections?instagram=connected`);
     } catch (err) {
       this.logger.error('Instagram OAuth callback failed', (err as Error).message);

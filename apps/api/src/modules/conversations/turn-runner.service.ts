@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 import { randomUUID } from 'crypto';
 import { ConversationStatus, MessageDirection, MessageRole } from '@direct-mate/shared';
@@ -16,6 +17,7 @@ import { ConversationTracesService } from './conversation-traces.service';
 import { HistoryBuilder } from './history.builder';
 import { MediaContextResolver, MediaReference } from './media-context.resolver';
 import type { TraceSource } from './entities/conversation-trace.entity';
+import type { MessageAttachment } from './entities/message.entity';
 
 /**
  * - `live`: every effect, including outside the system (Telegram, n8n order
@@ -34,6 +36,10 @@ export interface TurnRunInput {
   conversationId: string;
   mode: TurnMode;
   source: TraceSource;
+  /**
+   * What to match against the catalog. Omitted: whatever the customer's new
+   * messages carry (photos, story and post replies, shared posts).
+   */
   mediaReference?: MediaReference | null;
   modelOverride?: string;
   /** Discard the reply if the customer wrote again while it was being prepared (Instagram). */
@@ -44,6 +50,8 @@ export interface OutgoingMessage {
   kind: 'welcome' | 'reply' | 'payment_details' | 'handoff_announce';
   text: string;
   imageUrls?: string[];
+  /** The saved message row (not in dry_run), so a channel can record delivery on it. */
+  messageId?: string;
 }
 
 export interface TurnHandoff {
@@ -65,6 +73,13 @@ export interface TurnRunResult {
 const LEASE_SECONDS = 120;
 const WELCOME_AGAIN_AFTER_DAYS = 30;
 const MAX_IMAGES = 4;
+const DEFAULT_MAX_MESSAGES_PER_HOUR = 60;
+const MATCHABLE: ReadonlySet<MessageAttachment['type']> = new Set([
+  'customer_photo',
+  'story_reply',
+  'post_reply',
+  'post_share',
+]);
 export const DEFAULT_HANDOFF_ANNOUNCE = 'Передаю розмову менеджеру — він відповість вам тут найближчим часом.';
 const FIRST_REPLY_NOTE =
   "This is your first reply to this customer. A welcome line introducing you as the shop's AI assistant " +
@@ -82,7 +97,9 @@ interface ConversationRow {
  * simulator, the manual reply API and (Phase 4) Instagram all use:
  *
  *  1. lease the conversation, so two runs never answer the same thread;
- *  2. gates: paused store, manager in control, expired subscription;
+ *  2. gates: paused store, manager in control, expired subscription, and (live)
+ *     a customer sending more messages an hour than any person would, which
+ *     caps what a script can spend;
  *  3. history (with conversation boundaries) and media context;
  *  4. the agent;
  *  5. drop the reply if the customer wrote again meanwhile (Instagram only);
@@ -109,6 +126,7 @@ export class TurnRunner {
     private readonly drafts: OrderDraftService,
     private readonly orders: OrdersService,
     private readonly telegram: TelegramService,
+    private readonly config: ConfigService,
   ) {}
 
   async run(input: TurnRunInput): Promise<TurnRunResult> {
@@ -142,6 +160,19 @@ export class TurnRunner {
           firstReply,
         });
       }
+      if (input.mode === 'live') {
+        const limit = this.maxMessagesPerHour();
+        if ((await this.messagesLastHour(conversation.customer_id)) > limit) {
+          return this.finish(input, conversation, settings, history, startedAt, traceId, {
+            reply: null,
+            handoff: {
+              reason: 'rate_limited',
+              summaryForManager: `Клієнт надіслав понад ${limit} повідомлень за годину; бот зупинився.`,
+            },
+            firstReply,
+          });
+        }
+      }
 
       history = await this.history.build({
         id: conversation.id,
@@ -151,10 +182,16 @@ export class TurnRunner {
       const lastSaid = [...history].reverse().find((e) => e.role !== 'note');
       if (lastSaid?.role !== 'customer') return this.skipped('nothing_to_answer', traceId);
 
+      const references =
+        input.mediaReference !== undefined
+          ? input.mediaReference
+            ? [input.mediaReference]
+            : []
+          : await this.newMediaReferences(conversation.id);
       const media = await this.media.resolve(
         input.tenantId,
         conversation.id,
-        input.mediaReference,
+        references,
         trailingCustomerText(history),
       );
       const notes = [...media.notes, ...(firstReply && settings.welcomeLine ? [FIRST_REPLY_NOTE] : [])];
@@ -255,7 +292,7 @@ export class TurnRunner {
 
     if (input.mode !== 'dry_run') {
       for (const m of messages) {
-        await this.conversations.saveMessage(
+        const saved = await this.conversations.saveMessage(
           conversation.id,
           input.tenantId,
           MessageDirection.Outbound,
@@ -264,6 +301,7 @@ export class TurnRunner {
           undefined,
           { kind: m.kind, ...(m.imageUrls && { imageUrls: m.imageUrls }) },
         );
+        if (saved?.id) m.messageId = saved.id;
       }
     }
     if (handoff && input.mode === 'live') await this.escalate(input, conversation, handoff, history);
@@ -352,6 +390,36 @@ export class TurnRunner {
     return rows.length > 0;
   }
 
+  /** What the customer's messages since the last reply point at: photos, stories, posts. */
+  private async newMediaReferences(conversationId: string): Promise<MediaReference[]> {
+    const rows: Array<{ attachments: MessageAttachment[] | null }> = await this.dataSource.query(
+      `SELECT attachments FROM messages
+        WHERE conversation_id = $1 AND direction = $2 AND attachments IS NOT NULL
+          AND created_at > COALESCE(
+            (SELECT max(created_at) FROM messages WHERE conversation_id = $1 AND direction = $3), '-infinity')
+        ORDER BY created_at`,
+      [conversationId, MessageDirection.Inbound, MessageDirection.Outbound],
+    );
+    return rows
+      .flatMap((r) => (Array.isArray(r.attachments) ? r.attachments : []))
+      .filter((a) => MATCHABLE.has(a.type) && !a.error)
+      .map((a) => ({ type: a.type, mediaId: a.mediaId }));
+  }
+
+  /** Inbound messages from this customer in the last hour, across conversations. */
+  private async messagesLastHour(customerId: string): Promise<number> {
+    const [row]: Array<{ n: number }> = await this.dataSource.query(
+      `SELECT count(*)::int AS n FROM messages m JOIN conversations c ON c.id = m.conversation_id
+        WHERE c.customer_id = $1 AND m.direction = $2 AND m.created_at > now() - interval '1 hour'`,
+      [customerId, MessageDirection.Inbound],
+    );
+    return row?.n ?? 0;
+  }
+
+  private maxMessagesPerHour(): number {
+    return this.config.get<number>('agent.maxCustomerMessagesPerHour') || DEFAULT_MAX_MESSAGES_PER_HOUR;
+  }
+
   private async hasNewerInbound(conversationId: string, since: Date): Promise<boolean> {
     const rows = await this.dataSource.query(
       `SELECT 1 FROM messages WHERE conversation_id = $1 AND direction = $2 AND created_at > $3 LIMIT 1`,
@@ -374,7 +442,8 @@ export class TurnRunner {
     void this.telegram
       .notifyHandoff({
         tenantId: input.tenantId,
-        customerName: customer?.full_name || customer?.username || 'Клієнт',
+        customerName:
+          [customer?.full_name, customer?.username && `@${customer.username}`].filter(Boolean).join(' ') || 'Клієнт',
         reason: handoff.reason,
         conversationId: conversation.id,
         lastMessage: trailingCustomerText(history),

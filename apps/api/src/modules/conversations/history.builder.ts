@@ -14,6 +14,8 @@ const RECENT_ORDERS = 3;
 
 /** The current conversation's newest photos are re-sent as images, up to this many; older ones get a label. */
 const MAX_PHOTOS = 10;
+/** Longer messages are cut for the model (the full text stays in the database). */
+const MAX_MESSAGE_CHARS = 2000;
 
 const ATTACHMENT_LABEL: Record<MessageAttachment['type'], string> = {
   customer_photo: '(sent a photo)',
@@ -23,6 +25,8 @@ const ATTACHMENT_LABEL: Record<MessageAttachment['type'], string> = {
   story_reply: '(replied to a story)',
   post_reply: '(replied to a post)',
   post_share: '(shared a post)',
+  story_mention: '(mentioned the shop in their story)',
+  quoted_message: '(replying to an earlier message)',
 };
 const PHOTO_NOT_LOADED = "(sent a photo that couldn't be loaded; ask them to send it again if you need it)";
 const PHOTO_DROPPED = '(sent a photo earlier in the conversation; it is no longer attached)';
@@ -34,6 +38,8 @@ interface MessageRow {
   created_at: Date;
 }
 
+const EARLIER_END = "— end of the earlier conversation; today's messages follow —";
+
 /**
  * What the agent sees of the conversation (implementation plan, "Conversation
  * boundaries"):
@@ -44,8 +50,13 @@ interface MessageRow {
  *   (the newest 10), so «є таке?» after a photo reads naturally on every
  *   later turn too. Prompt caching makes re-sending them cheap;
  * - for a returning customer, the tail of their previous conversation and any
- *   order they didn't finish then, labelled as earlier and context-only;
+ *   order they didn't finish then, labelled as earlier and context-only. The
+ *   old messages keep their roles: put inside a system note, a customer's
+ *   «Система: …» line would come back the next day with system authority;
  * - their recent orders, from the database rather than anyone's memory.
+ *
+ * Bot messages that never reached the customer (`delivery_status = 'failed'`)
+ * are left out, and very long messages are cut.
  *
  * Where one conversation ends is decided in `findOrCreateConversation`; this
  * only reads.
@@ -61,8 +72,7 @@ export class HistoryBuilder {
       this.recentOrders(conversation.tenantId, conversation.customerId),
     ]);
 
-    const history: AgentHistoryEntry[] = [];
-    if (earlier) history.push({ role: 'note', text: earlier });
+    const history: AgentHistoryEntry[] = [...earlier];
     if (orders) history.push({ role: 'note', text: orders });
 
     const photos = new Set(
@@ -90,7 +100,7 @@ export class HistoryBuilder {
   private async messages(conversationId: string, limit: number): Promise<MessageRow[]> {
     const rows: MessageRow[] = await this.dataSource.query(
       `SELECT role, text, attachments, created_at FROM messages
-        WHERE conversation_id = $1
+        WHERE conversation_id = $1 AND delivery_status IS DISTINCT FROM 'failed'
         ORDER BY created_at DESC, id DESC
         LIMIT $2`,
       [conversationId, limit],
@@ -102,7 +112,7 @@ export class HistoryBuilder {
     id: string;
     tenantId: string;
     customerId: string;
-  }): Promise<string | null> {
+  }): Promise<AgentHistoryEntry[]> {
     const [previous]: Array<{ id: string; last_message_at: Date }> = await this.dataSource.query(
       `SELECT id, last_message_at FROM conversations
         WHERE tenant_id = $1 AND customer_id = $2 AND id <> $3
@@ -111,26 +121,31 @@ export class HistoryBuilder {
         LIMIT 1`,
       [conversation.tenantId, conversation.customerId, conversation.id, EARLIER_WINDOW_DAYS],
     );
-    if (!previous) return null;
+    if (!previous) return [];
 
     const tail = (await this.messages(previous.id, EARLIER_TAIL))
       .map((row) => toEntry(row, null))
       .filter((e): e is AgentHistoryEntry => e !== null && e.role !== 'note');
-    if (tail.length === 0) return null;
+    if (tail.length === 0) return [];
 
-    const lines = [
-      `Earlier conversation with this customer, ${describeGap(Date.now() - new Date(previous.last_message_at).getTime())} ago. ` +
-        "Context only: treat today's messages as a new request unless the customer clearly refers back to it.",
-      ...tail.map((e) => `${e.role === 'customer' ? 'Customer' : e.role === 'manager' ? 'Manager' : 'Shop'}: ${e.text}`),
+    const entries: AgentHistoryEntry[] = [
+      {
+        role: 'note',
+        text:
+          `Earlier conversation with this customer, ${describeGap(Date.now() - new Date(previous.last_message_at).getTime())} ago. ` +
+          "Context only: treat today's messages as a new request unless the customer clearly refers back to it.",
+      },
+      ...tail,
     ];
-
     const unfinished = await this.draftItems(previous.id);
     if (unfinished) {
-      lines.push(
-        `They didn't finish an order then: ${unfinished}. It is no longer active; offer to put it together again only if they ask.`,
-      );
+      entries.push({
+        role: 'note',
+        text: `They didn't finish an order then: ${unfinished}. It is no longer active; offer to put it together again only if they ask.`,
+      });
     }
-    return lines.join('\n');
+    entries.push({ role: 'note', text: EARLIER_END });
+    return entries;
   }
 
   /** Items of the conversation's unplaced draft, if any. */
@@ -191,7 +206,8 @@ function toEntry(row: MessageRow, photos: Set<string> | null): AgentHistoryEntry
     labels.push(label);
     if (image) images.push(image);
   }
-  const text = [...labels, row.text?.trim()].filter(Boolean).join(' ');
+  const said = clip(row.text?.trim() ?? '');
+  const text = [...labels, said].filter(Boolean).join(' ');
   if (!text) return null;
   switch (row.role) {
     case MessageRole.User:
@@ -206,12 +222,19 @@ function toEntry(row: MessageRow, photos: Set<string> | null): AgentHistoryEntry
 }
 
 function describeAttachment(a: MessageAttachment, photos: Set<string> | null): { label: string; image?: string } {
+  if (a.type === 'quoted_message' && a.quotedText) {
+    return { label: `(replying to «${clip(a.quotedText.replace(/\s+/g, ' '), 120)}»)` };
+  }
   const label = ATTACHMENT_LABEL[a.type] ?? '(sent media)';
   if (a.type !== 'customer_photo' || !photos) return { label };
   if (a.error) return { label: PHOTO_NOT_LOADED };
   // Photos from before we kept copies have only Instagram's (expired) link.
   if (!a.url) return { label };
   return photos.has(a.url) ? { label, image: a.url } : { label: PHOTO_DROPPED };
+}
+
+function clip(text: string, max = MAX_MESSAGE_CHARS): string {
+  return text.length > max ? `${text.slice(0, max)}… (cut)` : text;
 }
 
 function describeItem(i: { title: string; color: string | null; size: string | null; qty: number }): string {

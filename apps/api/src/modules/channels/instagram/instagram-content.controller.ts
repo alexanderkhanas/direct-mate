@@ -94,6 +94,6 @@ export class InternalInstagramContentController {
 
   @Post('refresh-tokens')
   refreshTokens() {
-    return this.integrationsService.refreshExpiringTokens();
+    return this.integrationsService.reportExpiringTokens();
   }
 }

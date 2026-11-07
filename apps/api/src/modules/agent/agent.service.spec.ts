@@ -81,7 +81,7 @@ const READY_DRAFT: OrderDraftView = {
 
 function buildAgent(
   model: MockLanguageModelV4,
-  opts: { draft?: OrderDraftView | null; photos?: Record<string, LoadedImage | null> } = {},
+  opts: { draft?: OrderDraftView | null; photos?: Record<string, LoadedImage | null>; flagged?: string } = {},
 ) {
   return new AgentService(
     { get: (key: string) => ({ 'agent.maxSteps': 6, 'agent.timeoutMs': 10_000 })[key] } as never,
@@ -97,6 +97,7 @@ function buildAgent(
     { resolveForContext: async () => null, getBrandAndCategoryForProduct: async () => ({}), publicUrl: (p: string) => p } as never,
     { getCurrentDraft: async () => opts.draft ?? null, update: jest.fn() } as never,
     { load: async (url: string) => opts.photos?.[url] ?? null } as never,
+    { flaggedCategories: async (t: string) => (opts.flagged && t.includes(opts.flagged) ? ['harassment'] : []) } as never,
   );
 }
 
@@ -237,6 +238,16 @@ describe('AgentService.runTurn', () => {
     expect(fileParts(model, 1)).toEqual([]);
     expect(JSON.stringify(model.doGenerateCalls[1].prompt)).toContain("couldn't be opened");
     expect(result.images).toEqual({ inContext: 0, unavailable: 1, rejected: true });
+  });
+
+  it('retries a reply moderation flags, and hands off if the retry is flagged too', async () => {
+    const model = new MockLanguageModelV4({ doGenerate: [text('Ви ідіот.'), text('Ви ідіот, кажу ж.')] });
+    const result = await run(buildAgent(model, { flagged: 'ідіот' }), 'Ти тупий бот');
+
+    expect(result.attempts.map((a) => a.grounding.map((g) => g.kind))).toEqual([['unsafe'], ['unsafe']]);
+    expect(JSON.stringify(model.doGenerateCalls[1].prompt)).toContain('flagged as inappropriate');
+    expect(result.reply).toBeNull();
+    expect(result.handoff?.reason).toBe('ungrounded_reply');
   });
 
   it('turns a model error into a handoff instead of throwing', async () => {

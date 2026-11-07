@@ -1,27 +1,28 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy, UnauthorizedException } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository, LessThanOrEqual } from 'typeorm';
+import { DataSource, LessThanOrEqual, Repository } from 'typeorm';
 import * as crypto from 'crypto';
+import { ConnectionType, ConversationStatus, MessageRole } from '@direct-mate/shared';
 import { ConversationsService } from '../../conversations/conversations.service';
-import { ReplyEngineService } from '../../conversations/reply-engine.service';
-import { IntegrationsService } from '../../integrations/integrations.service';
-import { OrdersService } from '../../orders/orders.service';
-import { CryptoService } from '../../../common/crypto.service';
-import { TelegramService } from '../../notifications/telegram.service';
-import { Connection } from '../../integrations/entities/connection.entity';
-import { PendingMessage } from './entities/pending-message.entity';
 import { Conversation } from '../../conversations/entities/conversation.entity';
-import { ConversationState } from '../../conversations/entities/conversation-state.entity';
-import { StoreConfig } from '../../engine/entities/store-config.entity';
+import type { MessageAttachment } from '../../conversations/entities/message.entity';
+import { TurnRunner, TurnRunResult } from '../../conversations/turn-runner.service';
+import { AgentStoreSettingsService } from '../../agent/store-settings.service';
+import { CustomerMediaService } from '../../customer-media/customer-media.service';
+import { IntegrationsService } from '../../integrations/integrations.service';
+import { Connection } from '../../integrations/entities/connection.entity';
+import { TelegramService } from '../../notifications/telegram.service';
 import { LearningObserverService } from '../../screenshot-training/learning-observer.service';
+import { CryptoService } from '../../../common/crypto.service';
+import { returnedRows } from '../../../common/db';
+import { GRAPH_API } from '../../../common/meta-graph';
 import { InstagramCommentService } from './instagram-comment.service';
-import { ConnectionType, ConversationStatus, MessageDirection, MessageRole, ReplyDecision } from '@direct-mate/shared';
-import { withRetry } from '../../../common/retry';
+import { InstagramSender, splitForInstagram } from './instagram-sender.service';
 
-interface MediaReference {
-  mediaId: string;
-  type: 'story_reply' | 'post_reply' | 'post_share' | 'customer_photo';
+interface MetaAttachment {
+  type: string;
+  payload?: { url?: string; ig_post_media_id?: string; reel_video_id?: string; title?: string };
 }
 
 interface MetaMessagingEvent {
@@ -31,11 +32,10 @@ interface MetaMessagingEvent {
     mid: string;
     text?: string;
     is_echo?: boolean;
-    reply_to?: { mid?: string; story?: { id: string } };
-    attachments?: Array<{
-      type: string;
-      payload?: { url?: string; ig_post_media_id?: string; title?: string };
-    }>;
+    /** Set on echoes of messages an app sent; compared with our META_APP_ID. */
+    app_id?: string | number;
+    reply_to?: { mid?: string; story?: { id: string; url?: string } };
+    attachments?: MetaAttachment[];
   };
   message_edit?: { mid: string; num_edit: number };
   timestamp: number;
@@ -68,255 +68,80 @@ interface MetaWebhookPayload {
   entry: MetaMessagingEntry[];
 }
 
-const DEBOUNCE_MS = 5_000; // 5 seconds
-/** Images per turn sent to Instagram. Each is its own DM, so an uncapped
- *  product list would arrive as N notifications. Mirrors the demo widget,
- *  which renders at most 4 (`MessageBubble.tsx`). */
-const MAX_IG_IMAGES_PER_TURN = 4;
+interface DueConversation {
+  id: string;
+  tenant_id: string;
+  customer_id: string;
+  channel_account_id: string | null;
+  reply_rerun: boolean;
+}
 
+const POLL_MS = 1_000;
+/** Conversations answered at once; more wait for the next poll. */
+const MAX_CONCURRENT_RUNS = 10;
+/** A run that found the conversation leased tries again this much later. */
+const BUSY_RETRY_SECONDS = 2;
+/** Images sent with one reply: each is its own DM, so a product list shouldn't arrive as N notifications. */
+const MAX_IMAGES_PER_MESSAGE = 4;
+/** An echo whose id we don't know yet is checked again after this, in case our send response is still in flight. */
+const ECHO_RECHECK_MS = 3_000;
+const PRUNE_EVERY_MS = 60 * 60 * 1000;
+/** Attachment types that are a reaction, not a message: nothing to answer. */
+const IGNORED_ATTACHMENTS = new Set(['like_heart', 'reaction']);
 
+/**
+ * Instagram DMs on the v2 agent (implementation plan, Phase 4).
+ *
+ * - **Intake.** Each webhook message is saved once: a redelivered `mid` is
+ *   dropped by the unique index. Every attachment is recorded, and photos are
+ *   copied (Instagram's links expire). Then the conversation's reply timer
+ *   (`reply_due_at`) is pushed out by the debounce window.
+ * - **Answering.** A poller claims due conversations with one atomic UPDATE
+ *   and runs each through the TurnRunner: live for active stores, dry run for
+ *   learning ones. A run dropped because the customer wrote again is re-run
+ *   once with everything; that re-run sends what it writes.
+ * - **Delivery.** Messages go out in order (photos before the reply text);
+ *   every id Meta returns is recorded. A text that can't be sent is marked
+ *   failed, left out of the agent's history, and handed to a manager.
+ * - **Echoes.** Instagram echoes every message the account sends. Ours are
+ *   recognised by id (or app id, or the text of a reply we just sent); any
+ *   other is a manager writing from the Instagram app, which pauses the bot.
+ */
 @Injectable()
 export class InstagramService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(InstagramService.name);
-  private readonly recentSentMids = new Set<string>();
-  // Per-recipient timestamp of our last outbound send. Used to filter out
-  // bot's own echoes that arrive before we register the MID (race condition
-  // between Meta's fetch response and Meta's echo webhook).
-  private readonly recentSendByRecipient = new Map<string, number>();
   private pollInterval: ReturnType<typeof setInterval> | null = null;
+  private polling = false;
+  private readonly running = new Set<string>();
+  /** Webhook messages from one sender are saved in arrival order, so a burst doesn't open two conversations. */
+  private readonly intakeQueues = new Map<string, Promise<void>>();
+  private lastPrune = 0;
 
   constructor(
     private readonly config: ConfigService,
     private readonly conversationsService: ConversationsService,
-    private readonly replyEngineService: ReplyEngineService,
     private readonly integrationsService: IntegrationsService,
-    private readonly ordersService: OrdersService,
     private readonly cryptoService: CryptoService,
     private readonly telegramService: TelegramService,
-    @InjectRepository(PendingMessage)
-    private readonly pendingMessageRepo: Repository<PendingMessage>,
     @InjectRepository(Conversation)
     private readonly conversationRepo: Repository<Conversation>,
-    @InjectRepository(StoreConfig)
-    private readonly storeConfigRepo: Repository<StoreConfig>,
     private readonly learningObserver: LearningObserverService,
     private readonly commentService: InstagramCommentService,
     private readonly dataSource: DataSource,
+    private readonly turnRunner: TurnRunner,
+    private readonly storeSettings: AgentStoreSettingsService,
+    private readonly media: CustomerMediaService,
+    private readonly sender: InstagramSender,
   ) {}
 
   async onModuleInit(): Promise<void> {
     // Recover auto-resume: release overdue conversations, keep future ones
-    const overdue = await this.conversationRepo.find({
-      where: {
-        status: ConversationStatus.HumanInControl,
-        autoResumeAt: LessThanOrEqual(new Date()),
-      },
-    });
-    for (const conv of overdue) {
-      await this.conversationsService.release(conv.id);
-      await this.conversationRepo.update(conv.id, { autoResumeAt: null });
-      this.logger.log(`Startup recovery: auto-resumed conversation ${conv.id}`);
-    }
-
-    // Start polling for pending messages (debounce flush) and auto-resume
-    this.pollInterval = setInterval(() => this.pollTasks(), 2_000);
+    await this.autoResumeExpired();
+    this.pollInterval = setInterval(() => void this.poll(), POLL_MS);
   }
 
   onModuleDestroy(): void {
     if (this.pollInterval) clearInterval(this.pollInterval);
-  }
-
-  /** Polls DB for debounce flushes and auto-resume deadlines */
-  private async pollTasks(): Promise<void> {
-    try {
-      await this.flushReadyMessages();
-      await this.autoResumeExpired();
-    } catch (err) {
-      this.logger.error('Poll tasks error', (err as Error).message);
-    }
-  }
-
-  private async flushReadyMessages(): Promise<void> {
-    // Find distinct debounce keys that are ready to flush
-    const ready = await this.pendingMessageRepo
-      .createQueryBuilder('pm')
-      .select('DISTINCT pm.debounce_key', 'debounceKey')
-      .where('pm.flush_at <= :now', { now: new Date() })
-      .getRawMany<{ debounceKey: string }>();
-
-    for (const { debounceKey } of ready) {
-      await this.flushPending(debounceKey);
-    }
-  }
-
-  private async autoResumeExpired(): Promise<void> {
-    const expired = await this.conversationRepo.find({
-      where: {
-        status: ConversationStatus.HumanInControl,
-        autoResumeAt: LessThanOrEqual(new Date()),
-      },
-    });
-    for (const conv of expired) {
-      try {
-        await this.conversationsService.release(conv.id);
-        await this.conversationRepo.update(conv.id, { autoResumeAt: null });
-        this.logger.log(`Auto-resumed conversation ${conv.id} after timeout`);
-      } catch (err) {
-        this.logger.error(`Auto-resume failed for ${conv.id}`, err);
-      }
-    }
-  }
-
-  private async sendMetaMessage(
-    recipientId: string,
-    text: string,
-    pageAccessToken: string,
-  ): Promise<string | null> {
-    this.recentSendByRecipient.set(recipientId, Date.now());
-    const res = await fetch('https://graph.instagram.com/v21.0/me/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${pageAccessToken}`,
-      },
-      body: JSON.stringify({
-        recipient: { id: recipientId },
-        message: { text },
-      }),
-    });
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Meta API error ${res.status}: ${body}`);
-    }
-    const body = await res.json() as { message_id?: string };
-    const mid = body.message_id ?? null;
-    if (mid) {
-      this.recentSentMids.add(mid);
-      setTimeout(() => this.recentSentMids.delete(mid), 5 * 60 * 1000);
-    }
-    return mid;
-  }
-
-  /**
-   * Convert a possibly-relative image path to a fully-qualified URL Meta can
-   * fetch. Already-absolute http(s) URLs pass through unchanged. Relative
-   * paths get the configured `app.baseUrl` prefix (ngrok tunnel in dev,
-   * public HTTPS domain in prod). Mirrors `SizeChartsService.publicUrl()` —
-   * the size-chart bubble path already does this; product images need it too.
-   */
-  private toPublicImageUrl(url: string): string {
-    if (/^https?:\/\//i.test(url)) return url;
-    const base = (this.config.get<string>('app.baseUrl') ?? '').replace(/\/$/, '');
-    // Percent-encode the path. Seeded filenames carry non-ASCII characters the
-    // scraper preserved from the source titles — `v´yazana-…` (U+00B4 ACUTE
-    // ACCENT) and `vʼyazana-…` (U+02BC MODIFIER LETTER APOSTROPHE) are both in
-    // the altamen catalog. curl and nginx cope with the raw bytes; Meta's
-    // fetcher is not a browser and should not be handed a non-ASCII URL.
-    // `encodeURI` leaves `/` and already-escaped `%XX` alone.
-    const clean = encodeURI(url.replace(/^\//, ''));
-    return base ? `${base}/${clean}` : url;
-  }
-
-  /**
-   * Send image attachments best-effort. Images are supplementary to the
-   * text reply, so a failure here is logged at WARN and swallowed — it must
-   * never block the text or escalate the conversation to a human. The retry
-   * wrapper still gives transient Meta hiccups a few attempts before we give
-   * up. Used for both the primary reply images and any extraReplies images.
-   */
-  private async sendImagesBestEffort(
-    recipientId: string,
-    imageUrls: string[],
-    pageAccessToken: string,
-    label: string,
-  ): Promise<void> {
-    // ONE image per message, sequentially — not one request carrying all of
-    // them. The old batched form put an `attachments` ARRAY inside `message`,
-    // and Meta rejected every single attempt with 400 / subcode 2018007
-    // ("upload attachment failure"): zero successful image sends in the whole
-    // retained production log. The singular `attachment` shape is the one form
-    // the Send API documents unambiguously.
-    //
-    // Per-image sends also isolate failures: one unfetchable URL costs that
-    // image, not the customer's whole product grid.
-    const capped = imageUrls.slice(0, MAX_IG_IMAGES_PER_TURN);
-    if (capped.length < imageUrls.length) {
-      this.logger.log(
-        `[${label}] ${imageUrls.length} images → sending first ${capped.length} ` +
-          `(cap: a product list should not arrive as N separate DMs)`,
-      );
-    }
-
-    let sent = 0;
-    for (const url of capped) {
-      try {
-        await withRetry(
-          () => this.sendMetaImage(recipientId, url, pageAccessToken),
-          { label, maxAttempts: 3, baseDelayMs: 2000 },
-        );
-        sent++;
-      } catch (err) {
-        this.logger.warn(
-          `Image attachment send failed (non-fatal) for ${recipientId} [${label}] ` +
-            `url=${url}: ${(err as Error).message}. Continuing with the rest.`,
-        );
-      }
-    }
-    if (sent > 0) {
-      this.logger.log(`Sent ${sent}/${capped.length} image(s) to ${recipientId} [${label}]`);
-    } else if (capped.length > 0) {
-      this.logger.warn(
-        `No images delivered to ${recipientId} [${label}]. ` +
-          `Text reply still delivered; conversation not handed off.`,
-      );
-    }
-  }
-
-  private async sendMetaImage(
-    recipientId: string,
-    imageUrl: string,
-    pageAccessToken: string,
-  ): Promise<void> {
-    this.recentSendByRecipient.set(recipientId, Date.now());
-
-    // Pre-flight: Meta cannot fetch from localhost/unset hosts. Surface this
-    // before burning 3 retries × ~6s of confusing 400s.
-    if (!/^https?:\/\//i.test(imageUrl)) {
-      const base = this.config.get<string>('app.baseUrl') ?? '';
-      if (!base || /^https?:\/\/localhost/i.test(base)) {
-        this.logger.warn(
-          `app.baseUrl is "${base || '(unset)'}" — Meta cannot fetch attachments. ` +
-            `Set APP_BASE_URL to the public ngrok / prod URL.`,
-        );
-      }
-    }
-
-    const url = this.toPublicImageUrl(imageUrl);
-    const res = await fetch('https://graph.instagram.com/v21.0/me/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${pageAccessToken}`,
-      },
-      body: JSON.stringify({
-        recipient: { id: recipientId },
-        message: {
-          attachment: {
-            type: 'image',
-            payload: { url },
-          },
-        },
-      }),
-    });
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Meta API images send error ${res.status}: ${body}`);
-    }
-    const body = await res.json() as { message_id?: string };
-    if (body.message_id) {
-      this.recentSentMids.add(body.message_id);
-      setTimeout(() => this.recentSentMids.delete(body.message_id!), 5 * 60 * 1000);
-    }
   }
 
   verifySignature(rawBody: Buffer, signature: string): boolean {
@@ -325,11 +150,10 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
       this.logger.error('META_APP_SECRET is not configured — rejecting webhook');
       return false;
     }
-    const expected = `sha256=${crypto
-      .createHmac('sha256', appSecret)
-      .update(rawBody)
-      .digest('hex')}`;
-    return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+    const expected = `sha256=${crypto.createHmac('sha256', appSecret).update(rawBody).digest('hex')}`;
+    const given = Buffer.from(signature);
+    const wanted = Buffer.from(expected);
+    return given.length === wanted.length && crypto.timingSafeEqual(given, wanted);
   }
 
   verifyWebhook(mode: string, token: string, challenge: string): string {
@@ -340,694 +164,478 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
     throw new UnauthorizedException('Webhook verification failed');
   }
 
-  private async fetchMessageFromApi(
-    messageId: string,
-    accessToken: string,
-  ): Promise<{ from: { id: string }; to: { data: Array<{ id: string }> }; message: string } | null> {
-    try {
-      const res = await fetch(
-        `https://graph.instagram.com/v21.0/${messageId}?fields=from,to,message&access_token=${accessToken}`,
-      );
-      if (!res.ok) {
-        const errBody = await res.text();
-        this.logger.warn(`Failed to fetch message ${messageId}: ${res.status} - ${errBody}`);
-        return null;
-      }
-      return await res.json() as any;
-    } catch (err) {
-      this.logger.error(`Error fetching message ${messageId}`, err);
-      return null;
-    }
-  }
-
-  private extractMediaReference(
-    message: MetaMessagingEvent['message'],
-  ): MediaReference | null {
-    if (!message) return null;
-
-    // Story reply: reply_to.story.id
-    if (message.reply_to?.story?.id) {
-      return { mediaId: message.reply_to.story.id, type: 'story_reply' };
-    }
-
-    // Post reply: reply_to.mid (without story)
-    if (message.reply_to?.mid) {
-      return { mediaId: message.reply_to.mid, type: 'post_reply' };
-    }
-
-    // Post share: user shared a product post from the feed.
-    // Meta sends attachments[].type='share' or 'ig_post' (newer payload
-    // shape) with payload.ig_post_media_id.
-    if (message.attachments?.length) {
-      const shareAttachment = message.attachments.find(
-        (a) => a.type === 'share' || a.type === 'ig_post',
-      );
-      if (shareAttachment?.payload?.ig_post_media_id) {
-        return {
-          mediaId: shareAttachment.payload.ig_post_media_id,
-          type: 'post_share',
-        };
-      }
-
-      // Customer photo: attachments with image/video type
-      const mediaAttachment = message.attachments.find(
-        (a) => a.type === 'image' || a.type === 'video',
-      );
-      if (mediaAttachment) {
-        return {
-          mediaId: mediaAttachment.payload?.url ?? 'unknown',
-          type: 'customer_photo',
-        };
-      }
-
-      this.logger.warn(
-        `Unrecognized attachment shape: ${JSON.stringify(message.attachments)}`,
-      );
-    }
-
-    return null;
-  }
+  // ─── Webhook ────────────────────────────────────────────────────
 
   async handleWebhook(payload: MetaWebhookPayload): Promise<void> {
     if (payload.object !== 'instagram') return;
 
     for (const entry of payload.entry) {
-      const entryId = entry.id;
+      const entryId = entry.id ?? '';
 
       for (const messaging of entry.messaging ?? []) {
-        // Debug: log raw messaging event
-        this.logger.debug(`Webhook messaging: is_echo=${messaging.message?.is_echo}, sender=${messaging.sender?.id}, text="${messaging.message?.text?.substring(0, 30)}"`);
-
-        // Echo detection — before standard message handling
-        if (messaging.message?.is_echo) {
-          const mid = messaging.message.mid;
-          if (this.recentSentMids.has(mid)) {
-            this.recentSentMids.delete(mid);
-            continue; // Bot echo, skip
-          }
-          // Race-condition guard: the echo may arrive before we've registered
-          // the MID (Meta fires the webhook in parallel with the HTTP response).
-          // If we sent something to this recipient in the last 10s, treat it as
-          // our own echo, not a manager reply.
-          const recipientId = messaging.recipient?.id;
-          if (recipientId) {
-            const lastSendTs = this.recentSendByRecipient.get(recipientId);
-            if (lastSendTs && Date.now() - lastSendTs < 10_000) {
-              this.logger.debug(`Skipping echo within 10s send window for ${recipientId}`);
-              continue;
-            }
-          }
-          // Persistent fallback: the in-memory maps clear on restart. Before
-          // treating this as a manager reply, check the DB for a recent
-          // outbound message to this recipient's conversation. If the bot sent
-          // anything in the last 20s, this is almost certainly its own echo.
-          if (recipientId) {
-            const isOurEcho = await this.hasRecentOutbound(recipientId, 20_000);
-            if (isOurEcho) {
-              this.logger.debug(
-                `Skipping echo: DB shows recent outbound to ${recipientId} (post-restart dedup)`,
-              );
-              continue;
-            }
-          }
-          // Manager replied in Instagram DMs
-          await this.handleManagerReply(messaging, entryId ?? '').catch(err =>
-            this.logger.error('handleManagerReply failed', err),
+        const message = messaging.message;
+        if (message?.is_echo) {
+          // Not awaited: an unknown echo waits a few seconds before it is judged.
+          this.handleEcho(messaging, entryId).catch((err) =>
+            this.logger.error(`Echo handling failed: ${(err as Error).message}`),
           );
           continue;
         }
 
-        // Standard message event
-        if (messaging.message && messaging.sender && messaging.recipient) {
-          const mediaRef = this.extractMediaReference(messaging.message);
-          const text = messaging.message.text ?? '';
-          // Skip if no text AND no media reference
-          if (!text && !mediaRef) continue;
-          await this.handleIncomingMessage(
-            messaging.sender.id,
-            messaging.recipient.id,
-            messaging.message.mid,
-            text,
-            mediaRef,
+        if (message && messaging.sender && messaging.recipient) {
+          const senderId = messaging.sender.id;
+          const recipientId = messaging.recipient.id;
+          this.enqueueIntake(`${senderId}:${recipientId}`, () =>
+            this.ingest({ senderId, recipientId, mid: message.mid, text: message.text ?? '', message }),
           );
           continue;
         }
 
         // message_edit with num_edit=0 is a new message in dev mode (no text in payload)
         if (messaging.message_edit && messaging.message_edit.num_edit === 0) {
-          this.logger.log(`Received message_edit (num_edit=0), fetching message content...`);
-
-          // Find connection by entry ID (Instagram Business Account ID)
-          const connection = await this.integrationsService.findByExternalAccountId(
-            entryId ?? '',
-            ConnectionType.Instagram,
-          );
-          if (!connection) {
-            this.logger.warn(`No connection for entry id ${entryId}`);
-            continue;
-          }
-
-          if (!connection.accessTokenEncrypted) {
-            this.logger.warn(`No access token for connection ${connection.id}`);
-            continue;
-          }
-          const accessToken = this.cryptoService.decrypt(connection.accessTokenEncrypted);
-          const msgData = await this.fetchMessageFromApi(messaging.message_edit.mid, accessToken);
-          if (!msgData || !msgData.message) {
-            this.logger.warn(`Could not fetch message content for ${messaging.message_edit.mid}`);
-            continue;
-          }
-
-          const senderId = msgData.from?.id;
-          const recipientId = msgData.to?.data?.[0]?.id;
-
-          // Skip messages sent by us (the page/business account)
-          if (senderId === entryId || senderId === connection.externalAccountId) {
-            this.logger.log(`Skipping own message`);
-            continue;
-          }
-
-          if (senderId && recipientId) {
-            await this.handleIncomingMessage(
-              senderId,
-              recipientId,
-              messaging.message_edit.mid,
-              msgData.message,
-            );
-          }
-          continue;
+          await this.ingestEditedMessage(entryId, messaging.message_edit.mid);
         }
       }
 
-      // Field-based changes (comments). Comments arrive here rather than in
-      // entry.messaging. Fire-and-forget per change, mirroring the DM path —
-      // one bad comment must never abort the rest of the batch.
+      // Field-based changes (comments). Fire-and-forget per change: one bad
+      // comment must never abort the rest of the batch.
       for (const change of entry.changes ?? []) {
         if (change.field !== 'comments') continue;
         this.commentService
-          .handleComment(entryId ?? '', change.value)
-          .catch((err) =>
-            this.logger.error('handleComment failed', (err as Error).message),
-          );
+          .handleComment(entryId, change.value)
+          .catch((err) => this.logger.error('handleComment failed', (err as Error).message));
       }
     }
   }
 
-  private async handleIncomingMessage(
-    externalUserId: string,
-    channelAccountId: string,
-    messageId: string,
-    messageText: string,
-    mediaReference?: MediaReference | null,
-  ): Promise<void> {
-    // Try to find connection by channelAccountId first, then by any known ID
-    let connection = await this.integrationsService.findByExternalAccountId(
-      channelAccountId,
+  private enqueueIntake(key: string, task: () => Promise<void>): void {
+    const previous = this.intakeQueues.get(key) ?? Promise.resolve();
+    const next = previous
+      .then(task)
+      .catch((err) => this.logger.error(`Intake failed for ${key}: ${(err as Error).message}`))
+      .finally(() => {
+        if (this.intakeQueues.get(key) === next) this.intakeQueues.delete(key);
+      });
+    this.intakeQueues.set(key, next);
+  }
+
+  // ─── Intake ─────────────────────────────────────────────────────
+
+  private async ingest(params: {
+    senderId: string;
+    recipientId: string;
+    mid: string;
+    text: string;
+    message?: MetaMessagingEvent['message'];
+  }): Promise<void> {
+    const connection = await this.integrationsService.findByExternalAccountId(
+      params.recipientId,
       ConnectionType.Instagram,
     );
     if (!connection) {
-      // Try sender as the account (in case sender/recipient are swapped)
-      connection = await this.integrationsService.findByExternalAccountId(
-        externalUserId,
-        ConnectionType.Instagram,
-      );
-      if (connection) {
-        // Swap: we are the sender, skip our own messages
-        this.logger.log(`Skipping own outbound message`);
-        return;
-      }
-      this.logger.warn(`No connected Instagram account for ${channelAccountId} — skipping`);
+      // Sender and recipient swapped means we are the sender: our own outbound message.
+      const own = await this.integrationsService.findByExternalAccountId(params.senderId, ConnectionType.Instagram);
+      if (!own) this.logger.warn(`No connected Instagram account for ${params.recipientId} — skipping`);
       return;
     }
+    const tenantId = connection.tenantId;
 
-    // Save message immediately to DB
-    const customer = await this.conversationsService.findOrCreateCustomer(
-      connection.tenantId,
-      'instagram',
-      externalUserId,
-    );
+    const attachments = await this.parseAttachments(tenantId, params.message);
+    const text = params.text.trim();
+    if (!text && attachments.length === 0) return;
 
-    const { conversation, state } = await this.conversationsService.findOrCreateConversation(
-      connection.tenantId,
-      customer.id,
-      'instagram',
-      channelAccountId,
-    );
-
-    await this.conversationsService.saveMessage(
-      conversation.id,
-      connection.tenantId,
-      MessageDirection.Inbound,
-      MessageRole.User,
-      messageText,
-      messageId,
-    );
-
-    // Learning mode: record customer message immediately (before debounce)
-    // so it's in the Map when manager echo arrives (echo has no debounce).
-    // Also fire off engine dry-run immediately so bot analysis is ready before manager replies.
-    if (messageText) {
-      const storeConfig = await this.storeConfigRepo.findOne({ where: { tenantId: connection.tenantId } });
-      if (storeConfig?.operatingMode === 'learning') {
-        this.learningObserver.recordCustomerMessage(conversation.id, messageText);
-        this.runLearningDryRun(connection.tenantId, conversation.id, messageText, state).catch(
-          (err: unknown) => this.logger.error(`Learning dry-run failed: ${err}`),
-        );
-      }
-    }
-
-    // Debounce: save to DB, flush when timer expires (polled every 2s)
-    const debounceKey = `${externalUserId}:${channelAccountId}`;
-    const flushAt = new Date(Date.now() + DEBOUNCE_MS);
-
-    // Update flush_at for all pending messages with this key (extend debounce window)
-    await this.pendingMessageRepo
-      .createQueryBuilder()
-      .update(PendingMessage)
-      .set({ flushAt })
-      .where('debounce_key = :debounceKey', { debounceKey })
-      .execute();
-
-    // Save the new message
-    await this.pendingMessageRepo.save({
-      debounceKey,
-      tenantId: connection.tenantId,
-      externalUserId,
-      channelAccountId,
-      connectionId: connection.id,
-      messageId,
-      messageText,
-      mediaReference: mediaReference as any,
-      flushAt,
-    });
-
-    this.logger.log(`Debounce: saved message for ${debounceKey}, flush at ${flushAt.toISOString()}`);
-  }
-
-  private async flushPending(debounceKey: string): Promise<void> {
-    // Atomically grab pending messages for this key
-    const messages = await this.pendingMessageRepo.find({
-      where: { debounceKey },
-      order: { createdAt: 'ASC' },
-    });
-    if (messages.length === 0) return;
-
-    // Delete immediately to prevent double-processing
-    await this.pendingMessageRepo.delete({ debounceKey });
-
-    const combinedText = messages.map((m) => m.messageText).join('\n');
-    const mediaRef = messages.find((m) => m.mediaReference)?.mediaReference ?? null;
-    const first = messages[0];
-
-    this.logger.log(
-      `Debounce: processing ${messages.length} message(s) for ${debounceKey}: "${combinedText.substring(0, 100)}"`,
-    );
-
-    // Load connection from DB (not cached in memory)
-    const connection = await this.integrationsService.findById(first.connectionId);
-    if (!connection) {
-      this.logger.warn(`Connection ${first.connectionId} not found during flush — skipping`);
-      return;
-    }
-
-    try {
-      await this.processInbound({
-        tenantId: first.tenantId,
-        externalUserId: first.externalUserId,
-        channelAccountId: first.channelAccountId,
-        messageText: combinedText,
-        connection,
-        mediaReference: mediaRef as MediaReference | null,
-      });
-    } catch (err) {
-      this.logger.error(`Failed to process debounced messages for ${debounceKey}`, err);
-    }
-  }
-
-  private async processInbound(params: {
-    tenantId: string;
-    externalUserId: string;
-    channelAccountId: string;
-    messageText: string;
-    connection: Connection;
-    mediaReference?: MediaReference | null;
-  }): Promise<void> {
-    const customer = await this.conversationsService.findOrCreateCustomer(
-      params.tenantId,
-      'instagram',
-      params.externalUserId,
-    );
-
-    // One-time fetch of Instagram username if not yet populated
-    if (!customer.username && params.connection.accessTokenEncrypted) {
-      try {
-        const token = this.cryptoService.decrypt(params.connection.accessTokenEncrypted);
-        const res = await fetch(
-          `https://graph.instagram.com/v21.0/${params.externalUserId}?fields=username,name`,
-          { headers: { Authorization: `Bearer ${token}` } },
-        );
-        if (res.ok) {
-          const profile = await res.json() as { username?: string; name?: string };
-          if (profile.username) customer.username = profile.username;
-          if (profile.name) customer.fullName = profile.name;
-          await this.conversationsService.updateCustomer(customer.id, {
-            username: profile.username ?? null,
-            fullName: profile.name ?? null,
-          });
-        }
-      } catch {
-        // Non-critical — continue without username
-      }
-    }
-
-    const { conversation, state } = await this.conversationsService.findOrCreateConversation(
-      params.tenantId,
-      customer.id,
-      'instagram',
-      params.channelAccountId,
-    );
-
-    // Acquire advisory lock on conversation to prevent concurrent processing
-    // Uses a hash of the UUID as the lock key (pg_advisory_xact_lock needs bigint)
-    const lockKey = this.conversationLockKey(conversation.id);
-    await this.dataSource.query(`SELECT pg_advisory_lock($1)`, [lockKey]);
-
-    try {
-      // Re-fetch state inside the lock to get latest version
-      const freshState = await this.conversationsService.getState(conversation.id);
-      const currentConv = await this.conversationRepo.findOne({ where: { id: conversation.id } });
-
-      // Skip bot processing when manager is in control
-      if (currentConv?.status === ConversationStatus.HumanInControl) {
-        this.logger.log(`Skipping bot reply — conversation ${conversation.id} is human_in_control`);
-        return;
-      }
-
-      // Learning mode: dry-run already fired in handleIncomingMessage — just skip reply
-      const storeConfig = await this.storeConfigRepo.findOne({ where: { tenantId: params.tenantId } });
-      if (storeConfig?.operatingMode === 'learning') {
-        return;
-      }
-
-      const recentMessages =
-        await this.conversationsService.getRecentMessages(conversation.id, 10);
-
-      // Per-engine-call trace correlation. One debounced batch → one
-      // engine call → one traceId. Threaded into conversation_traces
-      // for end-to-end debugging in the admin UI.
-      const traceId = crypto.randomUUID();
-      const result = await this.replyEngineService.process({
-        source: 'instagram',
-        tenantId: params.tenantId,
-        conversationId: conversation.id,
-        messageText: params.messageText,
-        state: freshState ?? state,
-        recentMessages,
-        mediaReference: params.mediaReference ? {
-          mediaId: params.mediaReference.mediaId,
-          type: params.mediaReference.type,
-        } : undefined,
-        traceId,
-      });
-
-      if (result.stateUpdate) {
-        await this.conversationsService.updateState(conversation.id, result.stateUpdate);
-      }
-
-    if (result.handoff.required) {
-      await this.conversationsService.escalate(
-        conversation.id,
-        result.handoff.reason ?? 'unknown',
-      );
-
-      // The engine owns handoff copy (doHandoff always emits an announce,
-      // tenant-authorable via the `handoff_ack` template). This used to send a
-      // hardcoded "checking" line and DISCARD result.reply, so the engine's
-      // per-reason copy never reached a customer and the demo widget — which
-      // does pass result.reply through — behaved differently from production.
-      // The fallback only covers an engine path that somehow emits no text.
-      //
-      // extraReplies matter here too, and only started to on a handoff once
-      // doHandoff began emitting text: on a first (or dormant) turn the
-      // conversation-start welcome takes over `result.reply` and pushes the
-      // announce down into extraReplies[0]. Sending only `reply` would hand the
-      // customer "Вітаю, з вами АІ асистент" and nothing else — dead air on the
-      // exact turn the announce exists to prevent.
-      const handoffTexts = [
-        result.reply?.text ?? 'Секунду, уточню для вас інформацію 🙏',
-        ...(result.extraReplies ?? []).map((e) => e.text).filter(Boolean),
-      ];
-      const encryptedToken = params.connection.accessTokenEncrypted;
-      const pageAccessToken = encryptedToken
-        ? this.cryptoService.decrypt(encryptedToken)
-        : null;
-      for (const text of handoffTexts) {
-        await this.conversationsService.saveMessage(
-          conversation.id,
-          params.tenantId,
-          MessageDirection.Outbound,
-          MessageRole.Assistant,
-          text,
-        );
-        if (pageAccessToken) {
-          await this.sendMetaMessage(params.externalUserId, text, pageAccessToken).catch((err) => {
-            this.logger.error('Failed to send handoff message', err);
-          });
-        }
-      }
-
-      // Notify manager via Telegram (with retry — critical for handoff awareness)
-      withRetry(
-        () => this.telegramService.notifyHandoff({
-          tenantId: params.tenantId,
-          customerName: customer.username ? `@${customer.username}` : customer.fullName || params.externalUserId,
-          reason: result.handoff.reason ?? 'unknown',
-          conversationId: conversation.id,
-          lastMessage: params.messageText,
-        }),
-        { label: `telegram-handoff-${conversation.id}` },
-      ).catch(err => this.logger.error('Telegram notification failed after retries', err));
-
-      this.logger.log(`HANDOFF: conversation ${conversation.id}, reason: ${result.handoff.reason}`);
-      return;
-    }
-
-    // Send reply to customer (common for Reply and CreateDraftOrder)
-    if (result.reply?.sendNow && result.reply.text) {
-      await this.conversationsService.saveMessage(
-        conversation.id,
-        params.tenantId,
-        MessageDirection.Outbound,
-        MessageRole.Assistant,
-        result.reply.text,
-      );
-
-      const encryptedToken = params.connection.accessTokenEncrypted;
-      if (encryptedToken) {
-        const pageAccessToken = this.cryptoService.decrypt(encryptedToken);
-        try {
-          // Images are SUPPLEMENTARY (product photos, size charts). A failed
-          // image attachment — broken URL, rotated CDN, Meta "Upload
-          // attachment failure" 400 — must NOT block the text reply or
-          // trigger a handoff. `sendImagesBestEffort` swallows image
-          // failures; only a TEXT-send failure (the essential payload)
-          // reaches the catch below and escalates.
-          const replyText = result.reply!.text;
-          const replyImages = result.reply!.imageUrls;
-          if (replyImages?.length) {
-            await this.sendImagesBestEffort(
-              params.externalUserId,
-              replyImages,
-              pageAccessToken,
-              `meta-images-${params.externalUserId}`,
-            );
-          }
-
-          await withRetry(
-            () => this.sendMetaMessage(params.externalUserId, replyText, pageAccessToken),
-            { label: `meta-msg-${params.externalUserId}`, maxAttempts: 3, baseDelayMs: 2000 },
-          );
-
-          // Iterate any sibling bubbles (size-chart attachment, conversation-
-          // start greeting follow-up, future multi-bubble flows). Images are
-          // best-effort; extra text is essential (e.g. the welcome-prepend
-          // flow carries the real contextual reply in extraReplies[0].text).
-          for (const extra of result.extraReplies ?? []) {
-            if (extra.imageUrls?.length) {
-              await this.sendImagesBestEffort(
-                params.externalUserId,
-                extra.imageUrls,
-                pageAccessToken,
-                `meta-images-extra-${params.externalUserId}`,
-              );
-            }
-            if (extra.text) {
-              await withRetry(
-                () => this.sendMetaMessage(params.externalUserId, extra.text, pageAccessToken),
-                { label: `meta-msg-extra-${params.externalUserId}`, maxAttempts: 3, baseDelayMs: 2000 },
-              );
-            }
-          }
-
-          this.logger.log(
-            `Delivered ${1 + (result.extraReplies?.length ?? 0)} bubble(s) to ${params.externalUserId} via Meta Graph API`,
-          );
-        } catch (err) {
-          this.logger.error(`Failed to send to Meta API for conversation ${conversation.id}`, err);
-          await this.conversationsService.escalate(conversation.id, 'send_failed');
-        }
-      } else {
-        this.logger.warn(`No access token for connection — cannot send message to Meta`);
-      }
-    }
-
-    // Handle draft order creation
-    if (result.decision === ReplyDecision.CreateDraftOrder && result.orderPayload) {
-      try {
-        // Override customerId with the actual customer from this conversation
-        const orderPayload = {
-          ...result.orderPayload,
-          customerId: customer.id,
-        };
-
-        const order = await this.ordersService.createFromConversation(orderPayload);
-        this.logger.log(`Order created: ${order.id} for conversation ${conversation.id}`);
-
-        // Trigger external sync (with retry)
-        withRetry(
-          () => this.ordersService.triggerExternalSync(order),
-          { label: `order-sync-${order.id}` },
-        ).catch((err) => {
-          this.logger.error(
-            `External sync trigger failed for order ${order.id} after retries`,
-            (err as Error).message,
-          );
-        });
-      } catch (err) {
-        this.logger.error(
-          `Order creation failed for conversation ${conversation.id}`,
-          (err as Error).message,
-        );
-        // Don't block the conversation — order can be created manually
-      }
-    }
-    } finally {
-      await this.dataSource.query(`SELECT pg_advisory_unlock($1)`, [lockKey]);
-    }
-  }
-
-  private async runLearningDryRun(
-    tenantId: string,
-    conversationId: string,
-    messageText: string,
-    state: ConversationState,
-  ): Promise<void> {
-    const recentMessages =
-      await this.conversationsService.getRecentMessages(conversationId, 10);
-
-    const dryRun = await this.replyEngineService.process({
-      source: 'instagram_dry_run',
+    const customer = await this.conversationsService.findOrCreateCustomer(tenantId, 'instagram', params.senderId);
+    if (!customer.username) await this.fetchProfile(connection, customer.id, params.senderId);
+    const { conversation } = await this.conversationsService.findOrCreateConversation(
       tenantId,
-      conversationId,
-      messageText,
-      state,
-      recentMessages,
-      traceId: crypto.randomUUID(),
-    });
+      customer.id,
+      'instagram',
+      params.recipientId,
+    );
 
-    this.learningObserver.recordBotAnalysis(conversationId, {
-      classification: dryRun.classification
-        ? (dryRun.classification as unknown as Record<string, unknown>)
-        : null,
-      botReply: dryRun.reply?.text ?? (dryRun.handoff.required ? `[handoff: ${dryRun.handoff.reason}]` : null),
-      templateScenario: dryRun.templateScenario ?? (dryRun.handoff.required ? 'handoff' : null),
-    });
+    const messageId = await this.conversationsService.saveChannelMessage(
+      conversation.id,
+      tenantId,
+      MessageRole.User,
+      text,
+      params.mid,
+      attachments.length > 0 ? attachments : null,
+    );
+    if (!messageId) {
+      this.logger.log(`Duplicate delivery of ${params.mid} dropped`);
+      return;
+    }
 
-    this.logger.log(`Learning dry-run complete for conversation ${conversationId}: template=${dryRun.templateScenario ?? 'none'}`);
+    // Copy photos before arming the timer, so the agent never runs without them.
+    if (attachments.some((a) => a.type === 'customer_photo' && !a.url && !a.error)) {
+      const stored = await Promise.all(
+        attachments.map((a) => (a.type === 'customer_photo' && !a.url && !a.error ? this.media.attachmentFor(tenantId, a) : a)),
+      );
+      await this.dataSource.query(`UPDATE messages SET attachments = $1 WHERE id = $2`, [
+        JSON.stringify(stored),
+        messageId,
+      ]);
+    }
+
+    const settings = await this.storeSettings.load(tenantId);
+    if (settings.operatingMode === 'learning' && text) {
+      this.learningObserver.recordCustomerMessage(conversation.id, text);
+    }
+
+    const debounceMs = this.config.get<number>('instagram.debounceMs') ?? 5000;
+    await this.dataSource.query(
+      `UPDATE conversations SET reply_due_at = now() + make_interval(secs => $2) WHERE id = $1`,
+      [conversation.id, debounceMs / 1000],
+    );
   }
 
-  private conversationLockKey(conversationId: string): number {
-    // Hash UUID to a 32-bit integer for pg_advisory_lock
-    let hash = 0;
-    for (let i = 0; i < conversationId.length; i++) {
-      hash = ((hash << 5) - hash + conversationId.charCodeAt(i)) | 0;
+  /** What a message carried besides text. Photos are recorded here and copied after the row is saved. */
+  private async parseAttachments(
+    tenantId: string,
+    message: MetaMessagingEvent['message'] | undefined,
+  ): Promise<MessageAttachment[]> {
+    if (!message) return [];
+    const out: MessageAttachment[] = [];
+
+    if (message.reply_to?.story?.id) {
+      out.push({ type: 'story_reply', mediaId: message.reply_to.story.id });
+    } else if (message.reply_to?.mid) {
+      // A quote-reply to an earlier message in the thread (not a post).
+      const quoted = await this.sender.messageText(tenantId, message.reply_to.mid).catch(() => null);
+      out.push({ type: 'quoted_message', mediaId: message.reply_to.mid, ...(quoted && { quotedText: quoted }) });
     }
-    return hash;
+
+    for (const a of message.attachments ?? []) {
+      if (IGNORED_ATTACHMENTS.has(a.type)) continue;
+      const url = a.payload?.url;
+      switch (a.type) {
+        case 'image':
+        case 'animated_image':
+          out.push(url ? { type: 'customer_photo', mediaId: url } : { type: 'customer_photo', mediaId: 'unknown', error: 'download_failed' });
+          break;
+        case 'video':
+          out.push({ type: 'customer_video', mediaId: url ?? 'unknown' });
+          break;
+        case 'audio':
+          out.push({ type: 'customer_audio', mediaId: url ?? 'unknown' });
+          break;
+        case 'share':
+        case 'ig_post':
+          out.push({ type: 'post_share', mediaId: a.payload?.ig_post_media_id ?? url ?? 'unknown' });
+          break;
+        case 'ig_reel':
+        case 'reel':
+          out.push({ type: 'post_share', mediaId: a.payload?.reel_video_id ?? a.payload?.ig_post_media_id ?? url ?? 'unknown' });
+          break;
+        case 'story_mention':
+          out.push({ type: 'story_mention', mediaId: url ?? 'unknown' });
+          break;
+        default:
+          this.logger.warn(`Unrecognised Instagram attachment type "${a.type}" — recorded as a file`);
+          out.push({ type: 'customer_file', mediaId: url ?? a.type });
+      }
+    }
+    return out;
+  }
+
+  /** Dev-mode quirk: a new message arrives as message_edit with no text, so it is fetched. */
+  private async ingestEditedMessage(entryId: string, mid: string): Promise<void> {
+    const connection = await this.integrationsService.findByExternalAccountId(entryId, ConnectionType.Instagram);
+    if (!connection?.accessTokenEncrypted) return;
+    const token = this.cryptoService.decrypt(connection.accessTokenEncrypted);
+    try {
+      const res = await fetch(`${GRAPH_API}/${mid}?fields=from,to,message`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        this.logger.warn(`Failed to fetch message ${mid}: ${res.status} - ${await res.text()}`);
+        return;
+      }
+      const data = (await res.json()) as { from?: { id: string }; to?: { data?: Array<{ id: string }> }; message?: string };
+      const senderId = data.from?.id;
+      const recipientId = data.to?.data?.[0]?.id;
+      if (!data.message || !senderId || !recipientId) return;
+      if (senderId === entryId || senderId === connection.externalAccountId) return; // our own message
+      this.enqueueIntake(`${senderId}:${recipientId}`, () =>
+        this.ingest({ senderId, recipientId, mid, text: data.message! }),
+      );
+    } catch (err) {
+      this.logger.error(`Error fetching message ${mid}: ${(err as Error).message}`);
+    }
+  }
+
+  /** The customer's Instagram username and name, once. Never fails intake. */
+  private async fetchProfile(connection: Connection, customerId: string, igUserId: string): Promise<void> {
+    if (!connection.accessTokenEncrypted) return;
+    try {
+      const token = this.cryptoService.decrypt(connection.accessTokenEncrypted);
+      const res = await fetch(`${GRAPH_API}/${igUserId}?fields=username,name`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const profile = (await res.json()) as { username?: string; name?: string };
+      await this.conversationsService.updateCustomer(customerId, {
+        username: profile.username ?? null,
+        fullName: profile.name ?? null,
+      });
+    } catch {
+      // Non-critical — continue without username
+    }
+  }
+
+  // ─── Answering ──────────────────────────────────────────────────
+
+  private async poll(): Promise<void> {
+    if (this.polling) return;
+    this.polling = true;
+    try {
+      await this.answerDue();
+      await this.autoResumeExpired();
+      if (Date.now() - this.lastPrune > PRUNE_EVERY_MS) {
+        this.lastPrune = Date.now();
+        await this.sender.pruneSentIds();
+      }
+    } catch (err) {
+      this.logger.error(`Poll failed: ${(err as Error).message}`);
+    } finally {
+      this.polling = false;
+    }
+  }
+
+  /** Claim conversations whose reply is due — atomically, so no two pollers answer one — and answer each. */
+  private async answerDue(): Promise<void> {
+    const capacity = MAX_CONCURRENT_RUNS - this.running.size;
+    if (capacity <= 0) return;
+    const due = returnedRows<DueConversation>(
+      await this.dataSource.query(
+        `UPDATE conversations SET reply_due_at = NULL
+          WHERE id IN (
+            SELECT id FROM conversations
+             WHERE reply_due_at <= now()
+             ORDER BY reply_due_at
+             LIMIT $1
+             FOR UPDATE SKIP LOCKED)
+          RETURNING id, tenant_id, customer_id, channel_account_id, reply_rerun`,
+        [capacity],
+      ),
+    );
+    for (const conversation of due) {
+      this.running.add(conversation.id);
+      void this.answer(conversation).finally(() => this.running.delete(conversation.id));
+    }
+  }
+
+  private async answer(conversation: DueConversation): Promise<void> {
+    try {
+      const settings = await this.storeSettings.load(conversation.tenant_id);
+      const learning = settings.operatingMode === 'learning';
+      const result = await this.turnRunner.run({
+        tenantId: conversation.tenant_id,
+        conversationId: conversation.id,
+        mode: learning ? 'dry_run' : 'live',
+        source: learning ? 'instagram_dry_run' : 'instagram',
+        supersede: !learning && !conversation.reply_rerun,
+      });
+
+      if (result.status === 'busy') {
+        await this.dataSource.query(
+          `UPDATE conversations SET reply_due_at = COALESCE(reply_due_at, now() + make_interval(secs => $2)) WHERE id = $1`,
+          [conversation.id, BUSY_RETRY_SECONDS],
+        );
+        return;
+      }
+      if (result.status === 'superseded') {
+        // The new message armed the timer already; COALESCE covers a race where it didn't.
+        await this.dataSource.query(
+          `UPDATE conversations SET reply_rerun = true, reply_due_at = COALESCE(reply_due_at, now()) WHERE id = $1`,
+          [conversation.id],
+        );
+        return;
+      }
+      if (conversation.reply_rerun) {
+        await this.dataSource.query(`UPDATE conversations SET reply_rerun = false WHERE id = $1`, [conversation.id]);
+      }
+
+      if (learning) {
+        this.recordLearning(conversation.id, result);
+        return;
+      }
+      if (result.messages.length > 0) await this.deliver(conversation, result);
+    } catch (err) {
+      this.logger.error(`Answering conversation ${conversation.id} failed: ${(err as Error).message}`);
+    }
   }
 
   /**
-   * Persistent fallback for bot-echo detection. Returns true if the bot sent
-   * an outbound message to this customer's conversation within `windowMs`.
-   * Used when the in-memory dedup maps miss (e.g. after a server restart).
+   * Send the runner's messages in order. Photos are best-effort and go before
+   * the text they illustrate; a text that fails after retries stops the rest,
+   * is marked failed, and hands the conversation to a manager.
    */
-  private async hasRecentOutbound(
-    customerExternalId: string,
-    windowMs: number,
-  ): Promise<boolean> {
-    try {
-      const rows: Array<{ exists: boolean }> = await this.dataSource.query(
-        `SELECT EXISTS (
-           SELECT 1
-           FROM messages m
-           JOIN conversations c ON c.id = m.conversation_id
-           JOIN customers cu ON cu.id = c.customer_id
-           WHERE cu.external_user_id = $1
-             AND m.direction = 'outbound'
-             AND m.created_at > NOW() - ($2::int * INTERVAL '1 millisecond')
-         ) AS exists`,
-        [customerExternalId, windowMs],
-      );
-      return rows[0]?.exists === true;
-    } catch (err) {
-      this.logger.warn(`hasRecentOutbound query failed: ${(err as Error).message}`);
-      return false;
+  private async deliver(conversation: DueConversation, result: TurnRunResult): Promise<void> {
+    const connection = conversation.channel_account_id
+      ? await this.integrationsService.findByExternalAccountId(conversation.channel_account_id, ConnectionType.Instagram)
+      : null;
+    const [customer]: Array<{ external_user_id: string }> = await this.dataSource.query(
+      `SELECT external_user_id FROM customers WHERE id = $1`,
+      [conversation.customer_id],
+    );
+    const ids = result.messages.map((m) => m.messageId).filter((id): id is string => !!id);
+    if (!connection?.accessTokenEncrypted || !connection.externalAccountId || !customer) {
+      this.logger.error(`Cannot send to Instagram for conversation ${conversation.id}: no connection token or customer`);
+      await this.markFailed(ids);
+      return;
+    }
+    const account = {
+      token: this.cryptoService.decrypt(connection.accessTokenEncrypted),
+      igAccountId: connection.externalAccountId,
+    };
+    const recipient = { id: customer.external_user_id };
+
+    for (const [i, message] of result.messages.entries()) {
+      const ctx = { tenantId: conversation.tenant_id, conversationId: conversation.id, messageId: message.messageId ?? null };
+      for (const url of (message.imageUrls ?? []).slice(0, MAX_IMAGES_PER_MESSAGE)) {
+        await this.sender
+          .sendImage(account, recipient, url, ctx)
+          .catch((err) => this.logger.warn(`Image not delivered (text still goes) for ${conversation.id}: ${(err as Error).message}`));
+      }
+      try {
+        const mids = await this.sender.sendText(account, recipient, message.text, ctx);
+        if (message.messageId) {
+          await this.dataSource.query(
+            `UPDATE messages SET delivery_status = 'sent', external_message_id = COALESCE(external_message_id, $2) WHERE id = $1`,
+            [message.messageId, mids[0] ?? null],
+          );
+        }
+      } catch (err) {
+        this.logger.error(`Sending to Instagram failed for conversation ${conversation.id}: ${(err as Error).message}`);
+        await this.markFailed(result.messages.slice(i).flatMap((m) => (m.messageId ? [m.messageId] : [])));
+        if (!result.handoff) await this.handOffUndelivered(conversation, message.text);
+        return;
+      }
     }
   }
 
-  // ─── Manager reply detection ──────────────────────────────────
+  private async markFailed(messageIds: string[]): Promise<void> {
+    if (messageIds.length === 0) return;
+    await this.dataSource.query(`UPDATE messages SET delivery_status = 'failed' WHERE id = ANY($1)`, [messageIds]);
+  }
 
-  private async handleManagerReply(messaging: MetaMessagingEvent, channelAccountId: string): Promise<void> {
-    const customerId = messaging.recipient?.id;
-    if (!customerId) return;
-
-    const connection = await this.integrationsService.findByExternalAccountId(
-      channelAccountId, ConnectionType.Instagram,
+  private async handOffUndelivered(conversation: DueConversation, text: string): Promise<void> {
+    await this.conversationsService.escalate(conversation.id, 'send_failed');
+    const [customer]: Array<{ full_name: string | null; username: string | null }> = await this.dataSource.query(
+      `SELECT full_name, username FROM customers WHERE id = $1`,
+      [conversation.customer_id],
     );
+    await this.telegramService.notifyHandoff({
+      tenantId: conversation.tenant_id,
+      customerName: customer?.username ? `@${customer.username}` : customer?.full_name || 'Клієнт',
+      reason: 'send_failed',
+      conversationId: conversation.id,
+      lastMessage: '',
+      summary: `Бот не зміг надіслати відповідь в Instagram: «${text.slice(0, 300)}»`,
+    });
+  }
+
+  private recordLearning(conversationId: string, result: TurnRunResult): void {
+    const reply = result.messages.filter((m) => m.kind === 'reply').map((m) => m.text).join('\n') || null;
+    const tools = [...new Set((result.agent?.steps ?? []).flatMap((s) => s.toolCalls.map((c) => c.toolName)))];
+    this.learningObserver.recordBotAnalysis(conversationId, {
+      classification: null,
+      botReply: reply ?? (result.handoff ? `[handoff: ${result.handoff.reason}]` : null),
+      templateScenario: result.handoff ? 'handoff' : tools.join(', ') || null,
+    });
+  }
+
+  // ─── Echoes and manager replies ─────────────────────────────────
+
+  /**
+   * Instagram echoes every message the shop's account sends. Ours are known
+   * by id; Meta's app id, when the echo carries one, and the text of a reply
+   * we sent in the last two minutes cover an echo that beats our send
+   * response. Anything else is a manager writing from the Instagram app.
+   */
+  private async handleEcho(messaging: MetaMessagingEvent, entryId: string): Promise<void> {
+    const message = messaging.message!;
+    if (await this.sender.isOwnMessage(message.mid)) return;
+    const appId = this.config.get<string>('meta.appId');
+    if (message.app_id != null && appId && String(message.app_id) === appId) return;
+
+    const customerIgId = messaging.recipient?.id;
+    if (!customerIgId) return;
+    const connection = await this.integrationsService.findByExternalAccountId(entryId, ConnectionType.Instagram);
     if (!connection) return;
-
-    const customer = await this.conversationsService.findCustomer(
-      connection.tenantId, 'instagram', customerId,
-    );
+    const customer = await this.conversationsService.findCustomer(connection.tenantId, 'instagram', customerIgId);
     if (!customer) return;
-
     const conversation = await this.conversationsService.findConversationByCustomer(
-      connection.tenantId, customer.id, 'instagram', channelAccountId,
+      connection.tenantId,
+      customer.id,
+      'instagram',
+      entryId,
     );
     if (!conversation) return;
 
-    const managerText = messaging.message?.text ?? '';
+    const text = message.text?.trim() ?? '';
+    if (text && (await this.matchesRecentBotText(conversation.id, text))) return;
+    await new Promise((r) => setTimeout(r, ECHO_RECHECK_MS));
+    if (await this.sender.isOwnMessage(message.mid)) return;
 
-    // Save manager's message
-    await this.conversationsService.saveMessage(
-      conversation.id, connection.tenantId,
-      MessageDirection.Outbound, MessageRole.Manager,
-      managerText, messaging.message?.mid,
+    await this.handleManagerReply(connection.tenantId, conversation, message.mid, text, message);
+  }
+
+  /** The echo's text equals a message (or one of its Instagram-sized parts) the bot sent here just now. */
+  private async matchesRecentBotText(conversationId: string, text: string): Promise<boolean> {
+    const rows: Array<{ text: string | null }> = await this.dataSource.query(
+      `SELECT text FROM messages
+        WHERE conversation_id = $1 AND role = $2 AND created_at > now() - interval '2 minutes'`,
+      [conversationId, MessageRole.Assistant],
     );
+    return rows.some((r) => r.text && splitForInstagram(r.text).some((part) => part === text));
+  }
 
-    // Learning mode: record manager reply paired with the last customer message
-    const storeConfig = await this.storeConfigRepo.findOne({ where: { tenantId: connection.tenantId } });
-    if (storeConfig?.operatingMode === 'learning' && managerText) {
-      await this.learningObserver.recordManagerReply(connection.tenantId, conversation.id, managerText);
+  private async handleManagerReply(
+    tenantId: string,
+    conversation: Conversation,
+    mid: string,
+    text: string,
+    message: MetaMessagingEvent['message'],
+  ): Promise<void> {
+    const attachments = await this.parseAttachments(tenantId, message);
+    if (!text && attachments.length === 0) return;
+    const saved = await this.conversationsService.saveChannelMessage(
+      conversation.id,
+      tenantId,
+      MessageRole.Manager,
+      text,
+      mid,
+      attachments.length > 0 ? attachments : null,
+    );
+    if (!saved) return; // a redelivered echo
+
+    const settings = await this.storeSettings.load(tenantId);
+    if (settings.operatingMode === 'learning' && text) {
+      await this.learningObserver.recordManagerReply(tenantId, conversation.id, text);
     }
 
-    // Set conversation to human_in_control (manager already took over, no handoff needed)
     if (conversation.status !== ConversationStatus.HumanInControl) {
       await this.conversationsService.takeover(conversation.id, null, 'auto_detected');
       this.logger.log(`Manager reply detected → conversation ${conversation.id} set to human_in_control`);
     }
-
-    // Reset auto-resume timer
     await this.setAutoResumeDeadline(conversation.id);
+  }
+
+  private async autoResumeExpired(): Promise<void> {
+    const expired = await this.conversationRepo.find({
+      where: { status: ConversationStatus.HumanInControl, autoResumeAt: LessThanOrEqual(new Date()) },
+    });
+    for (const conv of expired) {
+      try {
+        await this.conversationsService.release(conv.id);
+        await this.conversationRepo.update(conv.id, { autoResumeAt: null });
+        this.logger.log(`Auto-resumed conversation ${conv.id} after timeout`);
+      } catch (err) {
+        this.logger.error(`Auto-resume failed for ${conv.id}`, err);
+      }
+    }
   }
 
   private async setAutoResumeDeadline(conversationId: string, delayMs = 30 * 60 * 1000): Promise<void> {

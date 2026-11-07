@@ -23,10 +23,10 @@ flowchart TB
         LLM["ClassifierService"]
     end
 
-    IGS -->|"Bearer token"| META["graph.instagram.com/v21.0<br/><i>messages, media, stories, comments</i>"]
+    IGS -->|"Bearer token"| META["graph.facebook.com/v27.0<br/><i>messages, media, stories, comments</i>"]
     ICS --> META
     ICM --> META
-    INTG -->|"OAuth code exchange"| IGOAUTH["api.instagram.com/oauth"]
+    INTG -->|"OAuth code exchange"| IGOAUTH["graph.facebook.com/oauth"]
     META -->|"webhook"| IGS
 
     ORD -->|"POST webhook"| N8N["n8n"]
@@ -48,9 +48,9 @@ flowchart TB
 
 | Service | Endpoint | Auth |
 |---|---|---|
-| Instagram Graph — messaging | `graph.instagram.com/v21.0/me/messages` | `Authorization: Bearer <decrypted page token>` |
-| Instagram Graph — content | `/me/media`, `/me/stories`, `/{mediaId}`, `/{userId}`, `/{commentId}/replies` | Bearer or query token |
-| Instagram OAuth | `api.instagram.com/oauth/access_token`, `graph.instagram.com/access_token`, `/refresh_access_token` | client id + secret |
+| Instagram Graph — messaging | `graph.facebook.com/v27.0/{ig-id}/messages` | `Authorization: Bearer <decrypted system-user token>` |
+| Instagram Graph — content | `/{ig-id}/media`, `/{ig-id}/stories`, `/{mediaId}`, `/{userId}`, `/{commentId}/replies` | Bearer |
+| Instagram OAuth (Unified Login) | `graph.facebook.com/v27.0/oauth/access_token`, `/me/assigned_instagram_accounts`, `/{ig-id}/subscribed_apps` | Meta app id + secret, then Bearer |
 | Telegram | `api.telegram.org/bot<token>/sendMessage` | token in path |
 | Monobank | `api.monobank.ua/api/merchant/{subscription/create, invoice/status, invoice/cancel, pubkey}` | `X-Token`; inbound webhooks verified with SHA256 against the fetched public key |
 | Replicate | `api.replicate.com/v1/predictions` | `Authorization: Token`, `Prefer: wait` + polling fallback |
@@ -266,7 +266,7 @@ Every route is guarded by `InternalApiKeyGuard` (`x-internal-key` header).
 | `GET /internal/connections/shopify` | — | Tenant discovery for scheduled workflows |
 | `POST /internal/orders/:id/sync-callback` | `SyncCallbackDto` | Order sync result, idempotency-keyed |
 | `POST /internal/instagram/fetch-content` | `{tenantId?}` | Omit tenantId to fan out over every connected tenant |
-| `POST /internal/instagram/refresh-tokens` | — | Refresh IG tokens expiring within 7 days |
+| `POST /internal/instagram/refresh-tokens` | — | Logs IG tokens expiring within 7 days (no refresh grant exists — the store must reconnect) |
 | `POST /conversation/reply` | `ConversationReplyDto` | Full engine invocation on any tenant |
 
 ### 5.2 `CatalogImportDto` — the shape an n8n node must produce
@@ -504,17 +504,24 @@ flowchart LR
 `GET /auth/instagram/callback` is unauthenticated by necessity; the `state` param is the sole tenant
 binding.
 
-📌 `external_account_id` must be the **Business Account ID** (matching webhook `entry.id`), not the OAuth
-IGSID — the callback deliberately re-queries `graph.instagram.com/me?fields=user_id` to get it, falling
-back to the IGSID on failure. ⚠️ A silent failure there produces a connection that **never matches an
-inbound webhook**.
+The flow is **Instagram API with Unified Login**: the start endpoint returns a
+`facebook.com/dialog/oauth?config_id=…` URL (the configuration owns the permissions, so no scopes), and the
+callback exchanges the code at `graph.facebook.com/v27.0/oauth/access_token` with the **Meta** app id and
+secret for a Business Integration System User token. Then, in order:
 
-⚠️ **Long-lived token exchange failure is swallowed** — `connectInstagram` logs a warning and stores the
-~1-hour short-lived token with `tokenExpiresAt = null`. `refreshExpiringTokens` filters on
-`tokenExpiresAt < now+7d`, so a NULL expiry is **never picked up** and that connection quietly dies.
+1. `GET /me/assigned_instagram_accounts` — `/me` is the system user, so this is the only way to the account
+   id, which is what webhooks put in `entry.id`. Exactly one account is required: zero redirects with
+   `reason=no_account`, several with `reason=multiple_accounts` (a tenant is one account, and guessing
+   could wire the wrong one).
+2. `POST /{ig-id}/subscribed_apps?subscribed_fields=messages,comments` — a Unified Login connection gets
+   **no webhooks** until this is called. A failure redirects with `reason=subscribe_failed` and saves
+   nothing, so no connection looks connected while being deaf.
+3. `connectInstagram` stores the token with `tokenExpiresAt` from `expires_in`, or NULL when the
+   configuration issues non-expiring tokens.
 
-⚠️ **Nothing in-process refreshes tokens.** `refreshExpiringTokens` runs only when n8n calls
-`POST /internal/instagram/refresh-tokens`. **If n8n is down, Instagram tokens silently expire.**
+There is no refresh grant for these tokens. `reportExpiringTokens` (n8n →
+`POST /internal/instagram/refresh-tokens`) only logs connections expiring within 7 days: the store has to
+reconnect.
 
 ---
 

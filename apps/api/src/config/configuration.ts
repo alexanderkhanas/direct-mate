@@ -17,6 +17,8 @@ export default () => ({
     appSecret: process.env.META_APP_SECRET ?? '',
     webhookVerifyToken: process.env.META_WEBHOOK_VERIFY_TOKEN ?? '',
     appId: process.env.META_APP_ID ?? '',
+    // The "Instagram API (Unified Login)" configuration in the App Dashboard.
+    loginConfigId: process.env.META_LOGIN_CONFIG_ID ?? '',
     oauthRedirectUri: process.env.INSTAGRAM_OAUTH_REDIRECT_URI ?? '',
   },
   admin: {
@@ -79,6 +81,16 @@ export default () => ({
     temperature: process.env.AGENT_TEMPERATURE ? parseFloat(process.env.AGENT_TEMPERATURE) : undefined,
     // Stronger model that scores Ukrainian quality in the simulator (Phase 6).
     judgeModel: process.env.JUDGE_MODEL ?? 'gpt-5.4',
+    // Live channels: a customer past this many messages an hour is handed to a
+    // manager instead of answered. No person types that fast; a script does.
+    maxCustomerMessagesPerHour: parseInt(process.env.AGENT_MAX_CUSTOMER_MESSAGES_PER_HOUR ?? '60', 10),
+    // OpenAI's moderation check on every reply before it is sent (free).
+    moderation: process.env.AGENT_MODERATION !== 'false',
+  },
+  instagram: {
+    // Wait this long after a customer's last message before answering, so
+    // «photo + "є таке?"» or a burst of short messages get one reply.
+    debounceMs: parseInt(process.env.INSTAGRAM_DEBOUNCE_MS ?? '5000', 10),
   },
   anthropic: {
     // Only used when the resolved classifier model is a `claude-*` id.

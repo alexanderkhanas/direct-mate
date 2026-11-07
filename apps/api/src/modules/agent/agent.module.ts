@@ -9,6 +9,7 @@ import { TenantSettings } from '../tenants/entities/tenant-settings.entity';
 import { Tenant } from '../tenants/entities/tenant.entity';
 import { ManagerExample } from '../settings/entities/manager-example.entity';
 import { AgentService } from './agent.service';
+import { ReplyModeration } from './guards/reply-moderation.service';
 import { AgentModelFactory } from './model.factory';
 import { AgentStoreSettingsService } from './store-settings.service';
 import { CatalogReader } from './catalog/catalog-reader.service';
@@ -29,6 +30,7 @@ import { CATALOG_SEARCH, RankedCatalogSearch } from './catalog/catalog-search';
   ],
   providers: [
     AgentService,
+    ReplyModeration,
     AgentModelFactory,
     AgentStoreSettingsService,
     CatalogReader,

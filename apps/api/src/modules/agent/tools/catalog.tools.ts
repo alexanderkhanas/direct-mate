@@ -184,7 +184,6 @@ export function getSizeHelpTool(deps: AgentToolDeps, scope: ToolScope, settings:
       }
 
       const chart = settings.sizeChart;
-      const recommended = chart && (heightCm || weightKg) ? recommendSize({ heightCm, weightKg }, chart) : null;
       const inStockSizes = product
         ? sortSizes([...new Set(product.variants.filter((v) => v.available > 0 && v.size).map((v) => v.size!))])
         : undefined;
@@ -193,6 +192,24 @@ export function getSizeHelpTool(deps: AgentToolDeps, scope: ToolScope, settings:
         category: product?.category,
       });
 
+      // Ranges in S–3XL say nothing about trousers in 48–58 or jeans in 30–38,
+      // and letter-to-number conversions differ between brands. The answer is
+      // the size the customer wears in this product's own system.
+      if (chart && product && !product.variants.some((v) => Object.keys(chart).some((s) => sameSize(s, v.size)))) {
+        return {
+          available: false,
+          ...(inStockSizes && { inStockSizes }),
+          sizeChartImage: !!chartImage,
+          note:
+            "The store's height and weight ranges don't cover this product's sizes, so there is no recommendation. " +
+            "Don't ask for height and weight and don't convert a letter size into these. Ask which of the sizes in " +
+            'stock the customer usually wears' +
+            (chartImage ? ', and offer the size chart if they are not sure' : '') +
+            '. If they still can\'t tell, hand off with what they told you.',
+        };
+      }
+
+      const recommended = chart && (heightCm || weightKg) ? recommendSize({ heightCm, weightKg }, chart) : null;
       if (!chart && !chartImage) {
         return {
           available: false,

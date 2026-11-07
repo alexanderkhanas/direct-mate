@@ -58,6 +58,17 @@ export class Conversation {
   @Column({ type: 'timestamptz', nullable: true })
   processingUntil!: Date | null;
 
+  /**
+   * Instagram debounce: when the bot should answer. Each inbound message
+   * pushes it out; the poller claims due conversations atomically.
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  replyDueAt!: Date | null;
+
+  /** The last run was dropped because the customer wrote again; the re-run sends what it writes. */
+  @Column({ type: 'boolean', default: false })
+  replyRerun!: boolean;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt!: Date;
 

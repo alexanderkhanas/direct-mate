@@ -5,6 +5,7 @@ import { MoreThan, IsNull, Repository } from 'typeorm';
 import * as crypto from 'crypto';
 import { TelegramConnectToken } from './entities/telegram-connect-token.entity';
 import { StoreConfig } from '../engine/entities/store-config.entity';
+import { withRetry } from '../../common/retry';
 
 interface HandoffParams {
   tenantId: string;
@@ -127,35 +128,28 @@ export class TelegramService {
     });
   }
 
+  /** Send once; never throws (logs the failure). */
   async sendMessage(chatId: string, text: string, parseMode?: 'HTML'): Promise<void> {
+    await this.post(chatId, text, parseMode).catch((err) =>
+      this.logger.error(`Telegram sendMessage failed: ${(err as Error).message}`),
+    );
+  }
+
+  /** Throws on failure, so `withRetry` can retry it. */
+  private async post(chatId: string, text: string, parseMode?: 'HTML'): Promise<void> {
     const botToken = this.config.get<string>('telegram.botToken');
     if (!botToken) {
       this.logger.warn('Telegram bot token not configured — skipping message send');
       return;
     }
-
-    try {
-      const body: Record<string, unknown> = {
-        chat_id: chatId,
-        text,
-      };
-      if (parseMode) {
-        body.parse_mode = parseMode;
-      }
-
-      const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-
-      if (!res.ok) {
-        const errBody = await res.text();
-        this.logger.error(`Telegram sendMessage failed: ${res.status} — ${errBody}`);
-      }
-    } catch (err) {
-      this.logger.error('Telegram sendMessage error', err);
-    }
+    const body: Record<string, unknown> = { chat_id: chatId, text };
+    if (parseMode) body.parse_mode = parseMode;
+    const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`${res.status} — ${await res.text()}`);
   }
 
   private async getChatIds(tenantId: string): Promise<string[]> {
@@ -168,9 +162,20 @@ export class TelegramService {
     return this.sendToAll(tenantId, message);
   }
 
+  /**
+   * Each chat is retried on its own, so a retry never sends a second copy to
+   * a chat that already got it. Never throws: a notification must not fail
+   * the turn that triggered it.
+   */
   private async sendToAll(tenantId: string, message: string): Promise<void> {
     const chatIds = await this.getChatIds(tenantId);
-    await Promise.all(chatIds.map(id => this.sendMessage(id, message)));
+    await Promise.all(
+      chatIds.map((id) =>
+        withRetry(() => this.post(id, message), { label: `telegram-${id}`, maxAttempts: 3, baseDelayMs: 1000 }).catch(
+          (err) => this.logger.error(`Telegram notification to ${id} failed after retries: ${(err as Error).message}`),
+        ),
+      ),
+    );
   }
 
   async notifyHandoff(params: HandoffParams): Promise<void> {
@@ -178,14 +183,19 @@ export class TelegramService {
     const dateStr = now.toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit', year: 'numeric' });
     const timeStr = now.toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' });
 
+    const adminBase = (this.config.get<string>('admin.baseUrl') ?? '').replace(/\/$/, '');
+    const said = params.lastMessage?.trim();
     const message = [
       '🔔 Нове звернення',
       '',
       `👤 ${params.customerName}`,
       `🕐 ${dateStr} ${timeStr}`,
-      `💬 ${this.humanReadableReason(params.reason)}`,
-      // The agent's one-or-two-sentence summary: what the customer wants.
-      ...(params.summary ? ['', `📝 ${params.summary}`] : []),
+      `⚠️ ${this.humanReadableReason(params.reason)}`,
+      // The customer's own words, so the manager doesn't depend on the AI's
+      // reading of them: a customer can steer what the summary says.
+      ...(said ? ['', `💬 Клієнт: «${said.length > 300 ? `${said.slice(0, 300)}…` : said}»`] : []),
+      ...(params.summary ? ['', `🤖 Підсумок від AI: ${params.summary}`] : []),
+      ...(adminBase ? ['', `${adminBase}/conversations/${params.conversationId}`] : []),
     ].join('\n');
 
     await this.sendToAll(params.tenantId, message);
@@ -229,6 +239,7 @@ export class TelegramService {
       runner_error: 'Помилка обробки повідомлення',
       order_failed: 'Не вдалося оформити замовлення',
       subscription_expired: 'Підписка неактивна',
+      rate_limited: 'Забагато повідомлень за годину — бот зупинився',
     };
     return map[reason] ?? reason;
   }

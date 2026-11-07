@@ -1,5 +1,4 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConnectionType, MessageDirection, MessageRole } from '@direct-mate/shared';
@@ -13,7 +12,9 @@ import { ConversationsService } from '../../conversations/conversations.service'
 import { StoreConfig } from '../../engine/entities/store-config.entity';
 import { CryptoService } from '../../../common/crypto.service';
 import { withRetry } from '../../../common/retry';
+import { GRAPH_API } from '../../../common/meta-graph';
 import { CommentChangeValue } from './instagram.service';
+import { InstagramSender } from './instagram-sender.service';
 
 /**
  * Intents that count as a product question worth answering on a comment.
@@ -56,7 +57,6 @@ export class InstagramCommentService {
   private readonly processedCommentIds = new Set<string>();
 
   constructor(
-    private readonly config: ConfigService,
     private readonly integrationsService: IntegrationsService,
     private readonly contentService: InstagramContentService,
     private readonly availabilityService: AvailabilityService,
@@ -67,6 +67,7 @@ export class InstagramCommentService {
     private readonly cryptoService: CryptoService,
     @InjectRepository(StoreConfig)
     private readonly storeConfigRepo: Repository<StoreConfig>,
+    private readonly sender: InstagramSender,
   ) {}
 
   async handleComment(entryId: string, value: CommentChangeValue): Promise<void> {
@@ -202,11 +203,12 @@ export class InstagramCommentService {
       { commentId, parentId: value.parent_id ?? null, mediaId, productId: mapping.productId },
     );
 
-    if (!connection.accessTokenEncrypted) {
+    if (!connection.accessTokenEncrypted || !connection.externalAccountId) {
       this.logger.warn(`No access token for connection ${connection.id} — cannot reply to comment`);
       return;
     }
     const token = this.cryptoService.decrypt(connection.accessTokenEncrypted);
+    const account = { token, igAccountId: connection.externalAccountId };
 
     // 1) Public reply under the comment (short nudge to the inbox).
     const publicText =
@@ -221,20 +223,18 @@ export class InstagramCommentService {
     );
 
     // 2) Private DM with the actual answer. Private reply is the sanctioned way
-    //    to open a DM from a comment (recipient: { comment_id }).
+    //    to open a DM from a comment (recipient: { comment_id }). Sent through
+    //    InstagramSender so their echoes are recognised as ours, not as a
+    //    manager writing in the customer's DM thread.
+    const recipient = { comment_id: commentId };
+    const ctx = { tenantId, conversationId: conversation.id };
     try {
-      if (answer.imageUrls?.length) {
-        await this.sendPrivateReplyImages(commentId, answer.imageUrls, token).catch((err) =>
-          this.logger.warn(
-            `Private reply images failed (non-fatal) for ${commentId}: ${(err as Error).message}`,
-          ),
+      for (const url of (answer.imageUrls ?? []).slice(0, 4)) {
+        await this.sender.sendImage(account, recipient, url, ctx).catch((err) =>
+          this.logger.warn(`Private reply image failed (non-fatal) for ${commentId}: ${(err as Error).message}`),
         );
       }
-      await withRetry(() => this.sendPrivateReply(commentId, answer.text, token), {
-        label: `comment-private-reply-${commentId}`,
-        maxAttempts: 3,
-        baseDelayMs: 2000,
-      });
+      await this.sender.sendText(account, recipient, answer.text, ctx);
       await this.conversationsService.saveMessage(
         conversation.id,
         tenantId,
@@ -295,12 +295,11 @@ export class InstagramCommentService {
     return { text: rendered.text, imageUrls: rendered.imageUrls };
   }
 
-  // ─── Graph API senders (self-contained to keep this service independent of
-  //     InstagramService, which depends on us) ──────────────────────────────
+  // ─── Graph API: the public comment reply. DMs go through InstagramSender. ──
 
   /** Public reply threaded under the comment. */
   private async replyToComment(commentId: string, text: string, token: string): Promise<void> {
-    const res = await fetch(`https://graph.instagram.com/v21.0/${commentId}/replies`, {
+    const res = await fetch(`${GRAPH_API}/${commentId}/replies`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ message: text }),
@@ -308,46 +307,6 @@ export class InstagramCommentService {
     if (!res.ok) {
       throw new Error(`Comment reply error ${res.status}: ${await res.text()}`);
     }
-  }
-
-  /** Private reply DM to the commenter (recipient: { comment_id }). */
-  private async sendPrivateReply(commentId: string, text: string, token: string): Promise<void> {
-    const res = await fetch('https://graph.instagram.com/v21.0/me/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ recipient: { comment_id: commentId }, message: { text } }),
-    });
-    if (!res.ok) {
-      throw new Error(`Private reply error ${res.status}: ${await res.text()}`);
-    }
-  }
-
-  /** Image attachments over the private-reply channel (best-effort). */
-  private async sendPrivateReplyImages(
-    commentId: string,
-    imageUrls: string[],
-    token: string,
-  ): Promise<void> {
-    const absoluteUrls = imageUrls.map((u) => this.toPublicImageUrl(u));
-    const res = await fetch('https://graph.instagram.com/v21.0/me/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        recipient: { comment_id: commentId },
-        message: { attachments: absoluteUrls.map((url) => ({ type: 'image', payload: { url } })) },
-      }),
-    });
-    if (!res.ok) {
-      throw new Error(`Private reply images error ${res.status}: ${await res.text()}`);
-    }
-  }
-
-  /** Mirrors InstagramService.toPublicImageUrl — absolutize relative paths. */
-  private toPublicImageUrl(url: string): string {
-    if (/^https?:\/\//i.test(url)) return url;
-    const base = (this.config.get<string>('app.baseUrl') ?? '').replace(/\/$/, '');
-    const clean = url.replace(/^\//, '');
-    return base ? `${base}/${clean}` : url;
   }
 
   private markProcessed(commentId: string): void {

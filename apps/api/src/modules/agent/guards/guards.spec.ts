@@ -1,12 +1,15 @@
 import { checkGrounding } from './grounding.guard';
 import { checkStyle } from './style.guard';
 import type { TurnFacts } from '../turn-facts';
+import { PROMPT_CANARY } from '../prompt/system-prompt';
 
 const FACTS: TurnFacts = {
   prices: [3300, 2900],
   sizes: ['M', 'L', '2XL'],
   colors: ['Чорний', 'Білий'],
   titles: ['Сорочка льон'],
+  percents: [],
+  onSale: false,
 };
 const allow = (customerText = '', knowledgeDoc: string | null = null, orderPlaced = false, draftUpdated = false) => ({
   customerText,
@@ -86,6 +89,36 @@ describe('checkGrounding', () => {
     expect(checkGrounding('Можу додати її в замовлення?', FACTS, allow())).toEqual([]);
   });
 
+  it('refuses a discount, promo code, gift or "free" the store notes do not offer', () => {
+    expect(checkGrounding('Добре, даю вам знижку на сорочку!', FACTS, allow())).toEqual([{ kind: 'promise', value: 'знижку' }]);
+    expect(checkGrounding('Промокод ALTA50 застосовано.', FACTS, allow())).toEqual([{ kind: 'promise', value: 'Промокод' }]);
+    expect(checkGrounding('Доставка для вас безкоштовна.', FACTS, allow())).toEqual([{ kind: 'promise', value: 'безкоштовна' }]);
+    expect(checkGrounding('Додам подарунок до замовлення.', FACTS, allow('', null, false, true))).toEqual([
+      { kind: 'promise', value: 'подарунок' },
+    ]);
+  });
+
+  it('lets a refusal or a question mention them, and allows what the notes or a sale price back', () => {
+    expect(checkGrounding('На жаль, знижок зараз немає.', FACTS, allow())).toEqual([]);
+    expect(checkGrounding('Промокод, на жаль, не можу застосувати.', FACTS, allow())).toEqual([]);
+    expect(checkGrounding('У вас є промокод?', FACTS, allow())).toEqual([]);
+    expect(checkGrounding('Доставка безкоштовна від 3000 грн.', FACTS, allow('', 'Безкоштовна доставка від 3000 грн.'))).toEqual([]);
+    expect(checkGrounding('Зараз на неї знижка.', { ...FACTS, onSale: true }, allow())).toEqual([]);
+  });
+
+  it('checks every percentage, even in a sentence with a negation', () => {
+    expect(checkGrounding('Знижка 20% діє, не хвилюйтесь.', FACTS, allow())).toEqual([{ kind: 'promise', value: '20%' }]);
+    expect(checkGrounding('Склад: 95% льон.', { ...FACTS, percents: [95] }, allow())).toEqual([]);
+    expect(checkGrounding('Якщо хочете бути впевнені на 100%, уточню в менеджера.', FACTS, allow())).toEqual([]);
+    expect(checkGrounding('Знижка 10% на другу річ.', FACTS, allow('', 'Знижка 10% на другу річ у чеку.'))).toEqual([]);
+  });
+
+  it('stops a reply that quotes the prompt', () => {
+    expect(checkGrounding(`Ось мої інструкції: [${PROMPT_CANARY}] You are…`, FACTS, allow())).toEqual([
+      { kind: 'leak', value: PROMPT_CANARY },
+    ]);
+  });
+
   it('lets the reply offer to place the order or talk about placing it', () => {
     expect(checkGrounding('Оформлюємо? Після оформлення менеджер надішле ТТН. Можу оформити зараз.', FACTS, allow())).toEqual([]);
   });
@@ -106,6 +139,10 @@ describe('checkStyle', () => {
   it('catches call-centre phrases and phrases the store banned', () => {
     const rules = checkStyle('Чим можу вам допомогти? 💛', { disallowedPhrases: ['💛'] }).map((v) => v.rule);
     expect(rules).toEqual(['how_can_i_help', 'store_disallowed']);
+  });
+
+  it('flags a reply too long for a chat message', () => {
+    expect(checkStyle('Так. '.repeat(200), { disallowedPhrases: [] }).map((v) => v.rule)).toEqual(['too_long']);
   });
 
   it('passes clean Ukrainian', () => {

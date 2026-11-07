@@ -101,6 +101,27 @@ describe('HistoryBuilder', () => {
     ]);
   });
 
+  it('shows what a quote-reply quoted, labels story mentions and cuts very long messages', async () => {
+    const history = await builder({
+      messages: {
+        c2: [
+          {
+            role: 'user',
+            text: 'а ця в L є?',
+            attachments: [{ type: 'quoted_message', mediaId: 'mid1', quotedText: 'Сорочка льон — 3300 грн' }],
+            created_at: at(0),
+          },
+          { role: 'user', text: '', attachments: [{ type: 'story_mention', mediaId: 'x' }], created_at: at(0) },
+          { role: 'user', text: 'я'.repeat(2500), created_at: at(0) },
+        ],
+      },
+    }).build(CONVERSATION);
+
+    expect(history[0].text).toBe('(replying to «Сорочка льон — 3300 грн») а ця в L є?');
+    expect(history[1].text).toBe('(mentioned the shop in their story)');
+    expect(history[2].text).toBe(`${'я'.repeat(2000)}… (cut)`);
+  });
+
   it('adds the previous conversation as labelled context, with its unfinished order', async () => {
     const history = await builder({
       messages: {
@@ -122,11 +143,19 @@ describe('HistoryBuilder', () => {
 
     expect(history[0].role).toBe('note');
     expect(history[0].text).toContain('Earlier conversation with this customer, 1 day ago');
+    // The old messages keep their roles, so a customer's words never come back as system text.
     // Photos from an earlier conversation are named, not re-sent.
-    expect(history[0].text).toContain('Customer: (sent a photo)\nCustomer: а чорна є?\nShop: Так, чорна є в L');
-    expect(history.some((e) => 'images' in e)).toBe(false);
-    expect(history[0].text).toContain("They didn't finish an order then: Сорочка льон (Чорний, L) ×1");
-    expect(history.at(-1)).toEqual({ role: 'customer', text: 'а в M?' });
+    expect(history.slice(1)).toEqual([
+      { role: 'customer', text: '(sent a photo)' },
+      { role: 'customer', text: 'а чорна є?' },
+      { role: 'bot', text: 'Так, чорна є в L' },
+      {
+        role: 'note',
+        text: "They didn't finish an order then: Сорочка льон (Чорний, L) ×1. It is no longer active; offer to put it together again only if they ask.",
+      },
+      { role: 'note', text: "— end of the earlier conversation; today's messages follow —" },
+      { role: 'customer', text: 'а в M?' },
+    ]);
   });
 
   it("lists the customer's recent orders from the database", async () => {

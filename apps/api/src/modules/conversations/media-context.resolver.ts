@@ -17,6 +17,8 @@ export interface MediaContext {
 }
 
 const POST_LINK = /https?:\/\/(?:www\.)?instagram\.com\/(?:p|reel)\/[A-Za-z0-9_-]+[^\s]*/i;
+/** Matching runs per item; a burst of photos past this many isn't worth a vision call each. */
+const MAX_REFERENCES = 3;
 
 const SOURCE_LABEL: Record<string, string> = {
   story_reply: 'replied to a story',
@@ -46,29 +48,44 @@ export class MediaContextResolver {
     private readonly dataSource: DataSource,
   ) {}
 
+  /** `references`: what the customer's new messages pointed at, oldest first. */
   async resolve(
     tenantId: string,
     conversationId: string,
-    reference: MediaReference | null | undefined,
+    references: MediaReference[],
     messageText: string,
   ): Promise<MediaContext> {
     let text = messageText;
-    let ref = reference ?? null;
+    let refs = references.slice(0, MAX_REFERENCES);
 
     // A pasted post link counts as a post reply.
-    const link = !ref ? text.match(POST_LINK)?.[0] : undefined;
+    const link = refs.length === 0 ? text.match(POST_LINK)?.[0] : undefined;
     if (link) {
       const mediaId = await this.content.resolveMediaIdByPostUrl(tenantId, link).catch((err) => {
         this.logger.warn(`Post link resolution failed (non-fatal): ${err}`);
         return null;
       });
       if (mediaId) {
-        ref = { mediaId, type: 'post_reply' };
+        refs = [{ mediaId, type: 'post_reply' }];
         text = text.replace(link, '').replace(/\s{2,}/g, ' ').trim();
       }
     }
-    if (!ref) return { notes: [], messageText: text, productId: null };
 
+    const notes: string[] = [];
+    let productId: string | null = null;
+    for (const ref of refs) {
+      const one = await this.resolveOne(tenantId, conversationId, ref);
+      if (one.note) notes.push(one.note);
+      productId ??= one.productId;
+    }
+    return { notes, messageText: text, productId };
+  }
+
+  private async resolveOne(
+    tenantId: string,
+    conversationId: string,
+    ref: MediaReference,
+  ): Promise<{ note: string | null; productId: string | null }> {
     const what = SOURCE_LABEL[ref.type] ?? 'sent media';
     const match = await this.match(tenantId, conversationId, ref);
     if (!match) {
@@ -78,25 +95,19 @@ export class MediaContextResolver {
           ? "Look at the photo yourself and find the closest products; you may say it looks like one of the shop's, " +
             "but don't call it the same item."
           : "Ask what they mean, or hand off if you can't tell.";
-      return {
-        notes: [`The customer ${what}, but it wasn't recognised as one of the shop's product photos. ${next}`],
-        messageText: text,
-        productId: null,
-      };
+      return { note: `The customer ${what}, but it wasn't recognised as one of the shop's product photos. ${next}`, productId: null };
     }
 
     const [product]: Array<{ title: string }> = await this.dataSource.query(
       `SELECT title FROM products WHERE id = $1 AND tenant_id = $2`,
       [match.productId, tenantId],
     );
-    if (!product) return { notes: [], messageText: text, productId: null };
+    if (!product) return { note: null, productId: null };
     const color = match.color ? `, colour «${match.color}»` : '';
     return {
-      notes: [
+      note:
         `The customer ${what} showing «${product.title}» (ref ${productRef(match.productId)}${color}). ` +
-          'Their message is about this product unless they say otherwise; check it with get_product.',
-      ],
-      messageText: text,
+        'Their message is about this product unless they say otherwise; check it with get_product.',
       productId: match.productId,
     };
   }

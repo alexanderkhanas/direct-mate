@@ -1,8 +1,9 @@
 import { colorsMatch, findColorWords } from '../../../common/color-i18n';
 import { findSizes, normSize } from '../catalog/catalog-format';
 import { stem } from '../catalog/catalog-search';
+import { PROMPT_CANARY } from '../prompt/system-prompt';
 import type { GroundingViolation } from '../agent.types';
-import type { TurnFacts } from '../turn-facts';
+import { PERCENT, type TurnFacts } from '../turn-facts';
 
 /**
  * The grounding check (decisions doc, Decision 3): every price, size and
@@ -15,6 +16,16 @@ import type { TurnFacts } from '../turn-facts';
  * this turn, and "I saved your details / added it" needs a successful
  * update_order_draft. These are the false claims that cost a customer — they
  * wait for a parcel, or think their details are on file.
+ *
+ * Promises: a discount, promo code, gift, bonus or "free" anything must be in
+ * the store notes (or, for «знижка»/«акція», on a product a tool returned with
+ * a crossed-out price), and every percentage must come from the notes or a
+ * tool. These are what a customer talks a bot into and then screenshots. A
+ * sentence that denies one («знижок, на жаль, немає») or asks a question
+ * passes the word check; a percentage is checked regardless.
+ *
+ * Leaks: a reply that contains the prompt's canary is quoting the
+ * instructions.
  *
  * What it can't catch: a wrong stock statement about a size or colour that
  * WAS returned ("L є" when the tool said L is out). That is left to the prompt
@@ -31,6 +42,16 @@ const ORDER_PLACED =
 const DRAFT_SAVED =
   /(?<!\p{L})(?:записа(?:в|ла|ли|но)|зберіг|зберегла|зберегли|збережено|дода(?:в|ла|ли|но))(?!\p{L})/iu;
 const PRICE = /(\d{1,3}(?:[   ]\d{3})+|\d+)(?:[.,](\d{1,2}))?\s*(?:грн|гривень|гривні|гривня|₴|uah)(?!\p{L})/giu;
+// Promise words, by family: a store note mentioning one member allows the family.
+const PROMISE_FAMILIES: Array<{ family: string; pattern: RegExp }> = [
+  { family: 'discount', pattern: /(?<!\p{L})(?:знижк|знижок|скидк|discount)\p{L}*/iu },
+  { family: 'promo', pattern: /(?<!\p{L})(?:промокод|промо-код|купон)\p{L}*/iu },
+  { family: 'sale', pattern: /(?<!\p{L})(?:акці[йяїюі]|розпродаж)\p{L}*/iu },
+  { family: 'free', pattern: /(?<!\p{L})(?:безкоштовн|безплатн|бесплатн|даремн)\p{L}*/iu },
+  { family: 'gift', pattern: /(?<!\p{L})(?:подарун|подарок|подару[єю])\p{L}*/iu },
+  { family: 'bonus', pattern: /(?<!\p{L})(?:бонус|кешбек|кешбэк|cashback)\p{L}*/iu },
+];
+const NEGATION = /(?<!\p{L})(?:не|немає|нема|ні|жодн\p{L}*|на жаль)(?!\p{L})/iu;
 
 function parseNumber(raw: string): number {
   return Number(raw.replace(/[   ]/g, ''));
@@ -144,5 +165,42 @@ export function checkGrounding(
     }
   }
 
+  violations.push(...checkPromises(reply, facts, allow.knowledgeDoc ?? ''));
+  if (reply.includes(PROMPT_CANARY)) violations.push({ kind: 'leak', value: PROMPT_CANARY });
+
   return violations;
+}
+
+function checkPromises(reply: string, facts: TurnFacts, notes: string): GroundingViolation[] {
+  const violations: GroundingViolation[] = [];
+  const offered = new Set(PROMISE_FAMILIES.filter((f) => f.pattern.test(notes)).map((f) => f.family));
+  if (facts.onSale) offered.add('discount').add('sale');
+
+  const seen = new Set<string>();
+  for (const sentence of reply.split(/(?<=[.!?…])\s+|\n+/)) {
+    if (NEGATION.test(sentence) || sentence.trim().endsWith('?')) continue;
+    for (const { family, pattern } of PROMISE_FAMILIES) {
+      const match = sentence.match(pattern);
+      if (match && !offered.has(family) && !seen.has(family)) {
+        seen.add(family);
+        violations.push({ kind: 'promise', value: match[0] });
+      }
+    }
+  }
+
+  // «впевнені на 100%» is how the size rules offer a manager check; a «знижка
+  // 100%» is still caught by the word check above.
+  const allowedPercents = new Set([
+    100,
+    ...facts.percents,
+    ...[...notes.matchAll(PERCENT)].map((m) => percentValue(m[1])),
+  ]);
+  for (const m of reply.matchAll(PERCENT)) {
+    if (!allowedPercents.has(percentValue(m[1]))) violations.push({ kind: 'promise', value: m[0] });
+  }
+  return violations;
+}
+
+function percentValue(raw: string): number {
+  return Number(raw.replace(',', '.'));
 }

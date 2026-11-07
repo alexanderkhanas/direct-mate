@@ -228,7 +228,7 @@ manager-takeover detection, and outbound Graph API sends.
 | **Key classes** | `InstagramService` (1,001 lines, `OnModuleInit` + 2 s poller), `InstagramController`, `InstagramCommentService` (357), `InstagramContentService` (1,448 — in `InstagramContentModule`) |
 | **Depends on** | `ConversationsModule`, `IntegrationsModule`, `OrdersModule`, `NotificationsModule`, `InstagramContentModule`, `ScreenshotTrainingModule`, `EngineModule`, `AvailabilityModule`, `SizeChartsModule`, `CryptoService` |
 | **Inbound** | `InstagramController` only (the module exports nothing) |
-| **Outbound** | `graph.instagram.com/v21.0`, `ReplyEngineService`, `OrdersService`, `TelegramService`, `LearningObserverService`, `IntegrationsService` |
+| **Outbound** | `graph.facebook.com/v27.0`, `ReplyEngineService`, `OrdersService`, `TelegramService`, `LearningObserverService`, `IntegrationsService` |
 | **Tables** | `pending_messages` (owner), `conversations`, `messages`, `customers`, `store_configs`, `connections` |
 | **HTTP** | `GET/POST /channels/instagram/webhook` — **unauthenticated**; signature checked only when the header is present |
 | **Async** | `OnModuleInit` → startup recovery + `setInterval(2000)` flush/auto-resume; in-memory echo maps |
@@ -340,7 +340,7 @@ and the enum has no OpenCart member. The `platform` variable and the comments ar
 | **Purpose** | Own the `connections` table (encrypted credentials, Instagram OAuth, long-lived token lifecycle) and expose the `x-internal-key`-guarded API that n8n drives |
 | **Key classes** | `IntegrationsService`, `IntegrationsController` + `InternalConnectionsController` + `InstagramOAuthController` (three in one file), `InternalController`, `InternalApiKeyGuard` |
 | **Inbound** | n8n, `InstagramService`, `InstagramCommentService`, `InternalInstagramContentController`, the admin SPA |
-| **Outbound** | `api.instagram.com/oauth`, `graph.instagram.com`, `CryptoService` |
+| **Outbound** | `graph.facebook.com/v27.0` (Unified Login OAuth, assigned accounts, subscribed_apps), `CryptoService` |
 | **Tables** | `connections`, `sync_jobs`; borrows `telegram_connect_tokens` as an OAuth state store |
 | **HTTP** | 9 connection routes (mixed JWT/internal/public-callback) + 5 `/internal/sync/*` routes |
 

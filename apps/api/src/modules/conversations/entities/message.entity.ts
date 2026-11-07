@@ -23,9 +23,15 @@ export interface MessageAttachment {
     // The agent can't open these; it is told one was sent and asks for a photo or text.
     | 'customer_video'
     | 'customer_audio'
-    | 'customer_file';
-  /** The Instagram media id, or for a customer's photo the URL it came from. */
+    | 'customer_file'
+    /** The customer mentioned the shop in their own story. */
+    | 'story_mention'
+    /** A quote-reply to an earlier message in the thread (Instagram `reply_to.mid`). */
+    | 'quoted_message';
+  /** The Instagram media id, for a customer's photo the URL it came from, for a quote the quoted message's id. */
   mediaId: string;
+  /** What the quoted message said, looked up when the reply arrived. */
+  quotedText?: string;
   /** Our copy of a customer's photo (`CustomerMediaService`), re-sent to the agent on later turns. */
   url?: string;
   /** Why a customer's photo has no copy. */
@@ -71,6 +77,10 @@ export class Message {
 
   @Column({ type: 'jsonb', nullable: true })
   attachments!: MessageAttachment[] | null;
+
+  /** For bot messages sent to Instagram: whether they reached the customer. A failed one is left out of the agent's history. */
+  @Column({ type: 'text', nullable: true })
+  deliveryStatus!: 'sent' | 'failed' | null;
 
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt!: Date;

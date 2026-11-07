@@ -33,11 +33,13 @@ function setup(opts: {
   agent?: AgentTurnResult | Error;
   placeOrder?: { ok: true; orderId: string; alreadyPlaced: boolean } | { ok: false; error: string };
   paymentClaim?: boolean;
+  messagesLastHour?: number;
 } = {}) {
   const queries: string[] = [];
   const dataSource = {
     query: jest.fn(async (sql: string) => {
       queries.push(sql);
+      if (sql.includes('count(*)::int AS n')) return [{ n: opts.messagesLastHour ?? 0 }];
       if (sql.includes('SET processing_until = now()')) return opts.leaseFree === false ? [[], 0] : [[{ id: 'c1' }], 1];
       if (sql.includes('FROM conversations')) {
         return [{ id: 'c1', tenant_id: 't1', customer_id: 'u1', status: opts.status ?? ConversationStatus.Active }];
@@ -81,6 +83,7 @@ function setup(opts: {
     drafts as never,
     { triggerExternalSync: jest.fn() } as never,
     telegram as never,
+    { get: () => undefined } as never,
   );
   const run = (mode: TurnMode = 'demo') =>
     runner.run({ tenantId: 't1', conversationId: 'c1', mode, source: 'simulator_cli' });
@@ -179,5 +182,17 @@ describe('TurnRunner', () => {
     expect(result.handoff?.reason).toBe('runner_error');
     expect(result.messages.map((m) => m.kind)).toEqual(['handoff_announce']);
     expect(t.queries.at(-1)).toContain('SET processing_until = NULL');
+  });
+
+  it('hands a customer sending more than 60 messages an hour to a manager without running the agent (live only)', async () => {
+    const live = setup({ botReplied: true, messagesLastHour: 61 });
+    const result = await live.run('live');
+    expect(result.handoff?.reason).toBe('rate_limited');
+    expect(live.agent.runTurn).not.toHaveBeenCalled();
+    expect(live.conversations.escalate).toHaveBeenCalledWith('c1', 'rate_limited');
+
+    const demo = setup({ botReplied: true, messagesLastHour: 61 });
+    expect((await demo.run('demo')).handoff).toBeNull();
+    expect(demo.agent.runTurn).toHaveBeenCalled();
   });
 });

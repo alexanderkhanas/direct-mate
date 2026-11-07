@@ -14,6 +14,10 @@ export interface TurnFacts {
   sizes: string[];
   colors: string[];
   titles: string[];
+  /** Percentages in any text a tool returned («100% льон»). */
+  percents: number[];
+  /** A tool returned a product with a crossed-out regular price, so «знижка»/«акція» about it is true. */
+  onSale: boolean;
 }
 
 interface StepLike {
@@ -26,6 +30,7 @@ const PRICE_KEYS = new Set(['price', 'maxPrice', 'regularPrice', 'lineTotal', 't
 const SIZE_KEYS = new Set(['size', 'sizesInStock', 'inStockSizes', 'outOfStockSizes', 'recommendedSize']);
 const COLOR_KEYS = new Set(['color', 'colorsInStock']);
 const TITLE_KEYS = new Set(['title']);
+export const PERCENT = /(\d{1,3}(?:[.,]\d)?)\s?%/g;
 
 /** Facts from any tool-shaped value: tool outputs, or the draft loaded at turn start. */
 export function collectFacts(values: unknown[]): TurnFacts {
@@ -33,6 +38,8 @@ export function collectFacts(values: unknown[]): TurnFacts {
   const sizes = new Set<string>();
   const colors = new Set<string>();
   const titles = new Set<string>();
+  const percents = new Set<number>();
+  let onSale = false;
 
   const walk = (value: unknown, key?: string): void => {
     if (Array.isArray(value)) {
@@ -42,7 +49,10 @@ export function collectFacts(values: unknown[]): TurnFacts {
       for (const [k, v] of Object.entries(value)) walk(v, k);
     } else if (key && typeof value === 'number' && PRICE_KEYS.has(key)) {
       prices.add(value);
-    } else if (key && typeof value === 'string' && value.trim()) {
+      if (key === 'regularPrice') onSale = true;
+    } else if (typeof value === 'string' && value.trim()) {
+      for (const m of value.matchAll(PERCENT)) percents.add(Number(m[1].replace(',', '.')));
+      if (!key) return;
       if (SIZE_KEYS.has(key)) sizes.add(normSize(value));
       else if (COLOR_KEYS.has(key)) colors.add(value);
       else if (TITLE_KEYS.has(key)) titles.add(value);
@@ -50,7 +60,14 @@ export function collectFacts(values: unknown[]): TurnFacts {
   };
   for (const value of values) walk(value);
 
-  return { prices: [...prices], sizes: [...sizes], colors: [...colors], titles: [...titles] };
+  return {
+    prices: [...prices],
+    sizes: [...sizes],
+    colors: [...colors],
+    titles: [...titles],
+    percents: [...percents],
+    onSale,
+  };
 }
 
 export function collectTurnFacts(steps: StepLike[], extra: unknown[] = []): TurnFacts {

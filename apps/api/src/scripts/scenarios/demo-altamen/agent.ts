@@ -111,6 +111,31 @@ export const DEMO_ALTAMEN_AGENT_SCENARIOS: Record<string, SimulatorScenario> = {
     ],
   },
 
+  demo_altamen_agent_numbered_trouser_size: {
+    name: 'demo-altamen — «М» for trousers sized 48–58: ask the number, not height and weight',
+    description:
+      "The store's height/weight ranges are S–3XL. Брюки льон comes in 48–58, so the ranges can't recommend " +
+      'a size for it. The agent used to ask for height and weight anyway, got «L» back from the tool, and handed ' +
+      'off. Now it lists the sizes in stock and asks which one the customer wears.',
+    tenantId: DEMO_ALTAMEN_SLUG,
+    turns: [
+      { message: 'Покажіть брюки льон темно-сині', expect: { handoff: false } },
+      {
+        message: 'М',
+        expect: {
+          handoff: false,
+          replyMentionsSize: '48',
+          replyNotContains: ['зріст', 'вагу'],
+          note: 'the sizes in stock (48–58) and a question, no measurements',
+        },
+      },
+      {
+        message: '52, беру',
+        expect: { handoff: false, orderDraft: { items: [{ titleIncludes: 'Брюки льон', variantIncludes: '52' }] } },
+      },
+    ],
+  },
+
   demo_altamen_agent_sizes_by_consultation: {
     name: 'demo-altamen as a consult-sizing store — measurements go to a manager',
     description:

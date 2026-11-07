@@ -1,5 +1,6 @@
-import { browseCategoryTool, MAX_CATEGORY_CARDS, searchProductsTool } from './catalog.tools';
+import { browseCategoryTool, getSizeHelpTool, MAX_CATEGORY_CARDS, searchProductsTool } from './catalog.tools';
 import type { AgentProduct } from '../catalog/catalog-reader.service';
+import type { AgentStoreSettings } from '../store-settings.service';
 import type { AgentToolDeps, ToolScope } from './tool-deps';
 
 const SCOPE: ToolScope = { tenantId: 't1', conversationId: 'c1', customerId: 'u1' };
@@ -94,6 +95,48 @@ describe('browse_category', () => {
     const out = await browse(deps(many), { category: 'Сорочки' });
     expect(out.products).toBeUndefined();
     expect(out.byFormality).toEqual({ святкова: 30, повсякденна: 31 });
+  });
+});
+
+describe('get_size_help', () => {
+  const RANGES = {
+    M: { heightMin: 170, heightMax: 180, weightMin: 65, weightMax: 80 },
+    L: { heightMin: 175, heightMax: 185, weightMin: 75, weightMax: 90 },
+  };
+  const LINEN_TROUSERS = product('dddddddd', 'Брюки льон', {}, [
+    ['Темно-синій', '48', 2],
+    ['Темно-синій', '50', 1],
+    ['Бежевий', '52', 3],
+    ['Бежевий', '54', 0],
+  ]);
+  const sizeHelp = (p: AgentProduct, input: Record<string, unknown>) => {
+    const d = {
+      ...deps([p]),
+      sizeCharts: { resolveForContext: async () => null },
+    } as unknown as AgentToolDeps;
+    (d.catalog as unknown as Record<string, unknown>).resolveProductRef = async () => ({ id: p.id });
+    const settings = { sizeChart: RANGES } as unknown as AgentStoreSettings;
+    return getSizeHelpTool(d, SCOPE, settings).execute!({ productRef: p.ref, ...input } as never, CALL) as unknown as Promise<
+      Record<string, unknown>
+    >;
+  };
+
+  it('recommends from the ranges for a product in letter sizes', async () => {
+    expect(await sizeHelp(PREMIUM, { heightCm: 182, weightKg: 85 })).toMatchObject({
+      available: true,
+      recommendedSize: 'L',
+      recommendedInStock: true,
+    });
+  });
+
+  it("asks for the customer's own size, not their measurements, when the ranges don't cover the product", async () => {
+    for (const input of [{}, { heightCm: 180, weightKg: 75 }]) {
+      const out = await sizeHelp(LINEN_TROUSERS, input);
+      expect(out).toMatchObject({ available: false, inStockSizes: ['48', '50', '52'], sizeChartImage: false });
+      expect(out.recommendedSize).toBeUndefined();
+      expect(out.sizeRanges).toBeUndefined();
+      expect(out.note).toContain("Don't ask for height and weight");
+    }
   });
 });
 

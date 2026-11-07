@@ -13,6 +13,7 @@ import {
   MessageRole,
 } from '@direct-mate/shared';
 import { StoreConfig } from '../engine/entities/store-config.entity';
+import { returnedRows } from '../../common/db';
 
 /** Idle gap after which a customer's next message starts a new conversation. */
 const DEFAULT_CONVERSATION_IDLE_HOURS = 24;
@@ -143,6 +144,42 @@ export class ConversationsService {
     });
     await this.conversationRepo.update(conversationId, { lastMessageAt: new Date() });
     return this.messageRepo.save(msg);
+  }
+
+  /**
+   * Save a message Instagram delivered (a customer's, or a manager's echo),
+   * or nothing if its `mid` is already stored: Meta redelivers webhooks, and
+   * the unique index on (tenant_id, external_message_id) makes the second copy
+   * a no-op. Returns the new row's id, or null for a duplicate.
+   */
+  async saveChannelMessage(
+    conversationId: string,
+    tenantId: string,
+    role: MessageRole.User | MessageRole.Manager,
+    text: string,
+    externalMessageId: string,
+    attachments: MessageAttachment[] | null,
+  ): Promise<string | null> {
+    const rows = returnedRows<{ id: string }>(
+      await this.messageRepo.query(
+        `INSERT INTO messages (conversation_id, tenant_id, direction, role, text, external_message_id, attachments)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT DO NOTHING
+         RETURNING id`,
+        [
+          conversationId,
+          tenantId,
+          role === MessageRole.User ? MessageDirection.Inbound : MessageDirection.Outbound,
+          role,
+          text,
+          externalMessageId,
+          attachments ? JSON.stringify(attachments) : null,
+        ],
+      ),
+    );
+    if (rows.length === 0) return null;
+    await this.conversationRepo.update(conversationId, { lastMessageAt: new Date() });
+    return rows[0].id;
   }
 
   async findAll(

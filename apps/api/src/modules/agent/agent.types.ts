@@ -61,8 +61,11 @@ export interface GroundingViolation {
   /**
    * `order`: the reply says the order is placed when it isn't.
    * `draft`: the reply says details were saved or an item added, but no draft update succeeded.
+   * `promise`: a discount, promo code, gift, "free" or percentage the store notes and tools don't back.
+   * `leak`: the reply quotes the system prompt.
+   * `unsafe`: OpenAI moderation flagged the reply.
    */
-  kind: 'price' | 'size' | 'color' | 'order' | 'draft';
+  kind: 'price' | 'size' | 'color' | 'order' | 'draft' | 'promise' | 'leak' | 'unsafe';
   value: string;
 }
 

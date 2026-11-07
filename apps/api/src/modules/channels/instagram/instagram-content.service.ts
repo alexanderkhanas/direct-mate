@@ -16,6 +16,8 @@ import { ConnectionType, ConnectionStatus } from '@direct-mate/shared';
 import { readFile } from 'fs/promises';
 import { extname } from 'path';
 import { uploadPath } from '../../../common/uploads';
+import { GRAPH_API } from '../../../common/meta-graph';
+import type { IgAccount } from './instagram-sender.service';
 
 const MEDIA_TYPES: Record<string, string> = {
   '.jpg': 'image/jpeg',
@@ -283,7 +285,7 @@ export class InstagramContentService {
 
       const token = this.crypto.decrypt(connection.accessTokenEncrypted);
       const res = await fetch(
-        `https://graph.instagram.com/v21.0/${mediaId}?fields=id,caption,media_type,media_url,permalink,timestamp`,
+        `${GRAPH_API}/${mediaId}?fields=id,caption,media_type,media_url,permalink,timestamp`,
         { headers: { Authorization: `Bearer ${token}` } },
       );
       if (!res.ok) {
@@ -379,11 +381,14 @@ export class InstagramContentService {
     const connection = await this.connectionRepo.findOne({
       where: { tenantId, type: ConnectionType.Instagram, status: ConnectionStatus.Connected },
     });
-    if (!connection || !connection.accessTokenEncrypted) {
+    if (!connection || !connection.accessTokenEncrypted || !connection.externalAccountId) {
       throw new BadRequestException('No active Instagram connection');
     }
 
-    const token = this.crypto.decrypt(connection.accessTokenEncrypted);
+    const account = {
+      token: this.crypto.decrypt(connection.accessTokenEncrypted),
+      igAccountId: connection.externalAccountId,
+    };
     let fetched = 0;
 
     // Check if this is first sync (no existing mappings) → full pagination
@@ -391,10 +396,10 @@ export class InstagramContentService {
     const fullSync = existingCount === 0;
 
     // 1. Fetch posts (full pagination only on first sync)
-    fetched += await this.fetchPosts(tenantId, token, fullSync);
+    fetched += await this.fetchPosts(tenantId, account, fullSync);
 
     // 2. Fetch active stories (24h window)
-    const storiesResult = await this.fetchStories(tenantId, token);
+    const storiesResult = await this.fetchStories(tenantId, account);
     fetched += storiesResult.count;
 
     // 3. SKU matching pass
@@ -445,14 +450,14 @@ export class InstagramContentService {
     return !existing;
   }
 
-  private async fetchPosts(tenantId: string, token: string, fullSync = false): Promise<number> {
+  private async fetchPosts(tenantId: string, account: IgAccount, fullSync = false): Promise<number> {
     let fetched = 0;
     let cursor: string | undefined;
     const maxItems = fullSync ? 200 : 50; // First sync: up to 200, regular: first page only
 
     do {
-      const url = `https://graph.instagram.com/v21.0/me/media?fields=id,caption,media_type,permalink,timestamp,media_url&limit=50${cursor ? `&after=${cursor}` : ''}`;
-      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      const url = `${GRAPH_API}/${account.igAccountId}/media?fields=id,caption,media_type,permalink,timestamp,media_url&limit=50${cursor ? `&after=${cursor}` : ''}`;
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${account.token}` } });
 
       if (!res.ok) {
         this.logger.error(`Instagram posts API error: ${res.status}`);
@@ -476,13 +481,13 @@ export class InstagramContentService {
     return fetched;
   }
 
-  private async fetchStories(tenantId: string, token: string): Promise<{ count: number; newIds: string[] }> {
+  private async fetchStories(tenantId: string, account: IgAccount): Promise<{ count: number; newIds: string[] }> {
     let fetched = 0;
     const newIds: string[] = [];
 
     try {
-      const url = `https://graph.instagram.com/v21.0/me/stories?fields=id,caption,media_type,media_url,permalink,timestamp`;
-      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      const url = `${GRAPH_API}/${account.igAccountId}/stories?fields=id,caption,media_type,media_url,permalink,timestamp`;
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${account.token}` } });
 
       if (!res.ok) {
         this.logger.warn(`Instagram stories API error: ${res.status} — stories may not be available`);

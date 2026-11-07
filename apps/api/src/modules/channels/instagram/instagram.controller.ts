@@ -38,13 +38,12 @@ export class InstagramController {
     console.log('[WEBHOOK] POST /channels/instagram/webhook', JSON.stringify(body).substring(0, 800));
     console.log('[WEBHOOK] signature:', signature ? 'present' : 'none');
 
-    if (req.rawBody && signature) {
-      const valid = this.instagramService.verifySignature(req.rawBody, signature);
-      console.log('[WEBHOOK] signature valid:', valid);
-      if (!valid) {
-        console.log('[WEBHOOK] REJECTED - invalid signature');
-        throw new UnauthorizedException('Invalid webhook signature');
-      }
+    // Every webhook must be signed by Meta. An unsigned request used to be
+    // processed as a real message: anyone could start paid agent runs or pause
+    // the bot with a fake manager echo.
+    if (!req.rawBody || !signature || !this.instagramService.verifySignature(req.rawBody, signature)) {
+      console.log('[WEBHOOK] REJECTED - missing or invalid signature');
+      throw new UnauthorizedException('Invalid webhook signature');
     }
 
     // Fire-and-forget: acknowledge immediately, process async

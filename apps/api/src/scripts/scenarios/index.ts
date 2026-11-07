@@ -13,6 +13,7 @@ import { SHOWCASE_WOMEN_CLOTHES_SCENARIOS } from './showcase-women-clothes';
 import { DEMO_WOMEN_CLOTHES_SCENARIOS } from './demo-women-clothes';
 import { DEMO_ALTAMEN_SCENARIOS } from './demo-altamen';
 import { DEMO_ALTAMEN_AGENT_SCENARIOS } from './demo-altamen/agent';
+import { DEMO_ALTAMEN_ATTACK_SCENARIOS } from './demo-altamen/attacks';
 // Prod-only tenant — these scenarios fail locally at tenant resolution.
 import { MEN_DEMO_STORE_SCENARIOS } from './men-demo-store';
 
@@ -39,5 +40,6 @@ export const SCENARIOS: Record<string, SimulatorScenario> = {
   ...DEMO_WOMEN_CLOTHES_SCENARIOS,
   ...DEMO_ALTAMEN_SCENARIOS,
   ...DEMO_ALTAMEN_AGENT_SCENARIOS,
+  ...DEMO_ALTAMEN_ATTACK_SCENARIOS,
   ...MEN_DEMO_STORE_SCENARIOS,
 };

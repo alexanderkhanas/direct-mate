@@ -39,6 +39,7 @@ export type OutcomeExpect = Pick<
   | 'handoffReason'
   | 'replyContains'
   | 'replyNotContains'
+  | 'replyMaxChars'
   | 'replyMentionsSize'
   | 'replyMentionsColor'
   | 'imageCount'
@@ -177,6 +178,10 @@ export function evaluateExpect(expect: OutcomeExpect, o: TurnOutcome): Assertion
   }
   for (const sub of list(expect.replyNotContains)) {
     push('replyNotContains', !lower.includes(sub.toLowerCase()), `NOT ${sub}`, preview());
+  }
+  if (expect.replyMaxChars !== undefined) {
+    const reply = o.messages.filter((m) => m.kind === 'reply').map((m) => m.text).join('\n');
+    push('replyMaxChars', reply.length <= expect.replyMaxChars, `≤ ${expect.replyMaxChars}`, reply.length);
   }
   const mentioned = findSizes(text).map(normSize);
   for (const size of list(expect.replyMentionsSize)) {

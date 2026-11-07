@@ -226,14 +226,25 @@ Templates, phrase blocks, and FAQ items are separate tables per tenant.
 
 ## Meta/Instagram Setup
 
-- App ID: configured in .env (META_APP_ID)
-- Webhook URL: `https://{ngrok}/channels/instagram/webhook`
+- **Instagram API with Unified Login** (since Nov 2026; replaced Instagram Login, hard cutover — every
+  store reconnected once). `META_APP_ID` / `META_APP_SECRET` are the **Meta** app's, not the Instagram
+  app's; the same secret signs webhooks. `META_LOGIN_CONFIG_ID` = the "Instagram API (Unified Login)"
+  configuration in the App Dashboard, which owns the permissions (`instagram_basic`,
+  `instagram_manage_messages`, `instagram_manage_comments`, …) — the login URL carries no scopes.
+- OAuth: `facebook.com/dialog/oauth?config_id=…` → `/auth/instagram/callback` → code exchanged at
+  `graph.facebook.com/v27.0/oauth/access_token` for a Business Integration System User token (expiry is
+  set on the configuration; there is no refresh grant — an expiring token means reconnect).
+- `external_account_id` = the id from `GET /me/assigned_instagram_accounts`, which is webhook
+  `entry.id`. **`/me` is the system user, never the account** — every call names the account id.
+  More than one shared account → the callback refuses (`reason=multiple_accounts`).
+- The callback subscribes the account with `POST /{ig-id}/subscribed_apps?subscribed_fields=messages,comments`.
+  Without it a Unified Login connection receives no webhooks at all.
+- All Graph calls go through `GRAPH_API` (`apps/api/src/common/meta-graph.ts`, `graph.facebook.com/v27.0`).
+  Messages: `POST {GRAPH_API}/{ig-id}/messages`.
+- Webhook URL: `https://{ngrok}/channels/instagram/webhook`, set on the Meta app's **Instagram** webhook object
 - Verify token: `directmate_verify_a3f7b9c2e1d4`
-- Uses Facebook Login for Instagram API (not Instagram Login)
-- Page Access Token stored encrypted in `connections` table
-- `external_account_id` = Instagram Business Account ID from webhook entry.id
-- Messages sent via `graph.instagram.com/v21.0/me/messages`
-- Both sender and receiver must be app testers in development mode
+- Token stored encrypted in `connections` table
+- Both sender and receiver must be app testers in development mode (Instagram Tester role, accepted on instagram.com)
 - Message debouncing: 5s window, collects multiple messages before processing
 
 ## Known Issues / TODOs

@@ -22,6 +22,8 @@ export interface SimulatorTurnExpect {
   replyContains?: string | string[];
   /** Substring(s) no outgoing message may contain (case-insensitive). */
   replyNotContains?: string | string[];
+  /** The reply itself (not the welcome or handoff lines) is at most this long, e.g. a refusal rather than a poem. */
+  replyMaxChars?: number;
   /**
    * Size(s) the reply must name as a word ("XXL" counts as "2XL"). A size is
    * one or two letters, so `replyContains: 'L'` would match almost anything.
