@@ -65,6 +65,10 @@ export default () => ({
     maxCustomerMessagesPerHour: parseInt(process.env.AGENT_MAX_CUSTOMER_MESSAGES_PER_HOUR ?? '60', 10),
     // OpenAI's moderation check on every reply before it is sent (free).
     moderation: process.env.AGENT_MODERATION !== 'false',
+    // What the prompt carries of the catalog: 'list' = one line per product
+    // (cost grows with the catalog); 'overview' = categories with counts and
+    // price ranges, and the model finds products with its tools.
+    catalogPrompt: process.env.AGENT_CATALOG_PROMPT === 'overview' ? 'overview' : 'list',
   },
   instagram: {
     // Wait this long after a customer's last message before answering, so

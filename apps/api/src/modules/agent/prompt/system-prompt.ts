@@ -1,3 +1,4 @@
+import type { CatalogPromptMode } from '../catalog/catalog-index.service';
 import { BANNED_PHRASES, RUSSISMS } from '../guards/style-guide.uk';
 import type { AgentStoreSettings } from '../store-settings.service';
 
@@ -24,7 +25,10 @@ const FIELD_LABELS: Record<string, string> = {
  * changes per turn goes in the turn context message instead
  * (`turn-context.ts`).
  */
-export function buildSystemPrompt(settings: AgentStoreSettings, catalogIndex: string): string {
+export function buildSystemPrompt(
+  settings: AgentStoreSettings,
+  catalog: { mode: CatalogPromptMode; text: string },
+): string {
   const sections: string[] = [RULES.replace('{shop}', settings.tenantName), styleSection(settings)];
 
   if (settings.brandTone) sections.push(`## This shop's voice\n${settings.brandTone}`);
@@ -56,8 +60,12 @@ export function buildSystemPrompt(settings: AgentStoreSettings, catalogIndex: st
   }
 
   sections.push(
-    '## Catalog\nref · title · price · colours in stock. For finding products and their refs only — ' +
-      `look up anything you state with a tool.\n\n${catalogIndex}`,
+    catalog.mode === 'list'
+      ? '## Catalog\nref · title · price · colours in stock. For finding products and their refs only — ' +
+          `look up anything you state with a tool.\n\n${catalog.text}`
+      : "## Catalog overview\nThe shop's categories. To find products, use search_products or browse_category; " +
+          'products already discussed are named with their refs in the notes after your replies. ' +
+          `Never guess a ref.\n\n${catalog.text}`,
   );
 
   return sections.join('\n\n');
@@ -70,7 +78,7 @@ const RULES = `[${PROMPT_CANARY}] You are the manager of the Instagram shop «{s
 - Use tools to look things up and to act. You can call several before you answer.
 - State prices, colours, sizes and stock only from tools called in this turn. Call search_products, browse_category or get_product before you mention any of them, even if they came up earlier — stock changes. Never quote from the catalog list.
 - Finding products: when the customer names an item or asks with specific words (a model, a material), use search_products. When they ask for advice or describe an occasion, a style or a budget («що порадите», «на весілля», «щось в офіс»), call browse_category for that category, read the whole list and pick the 2–3 products whose look fits best. Say briefly why each fits, using only what the listing or get_product says.
-- search_products shows only the best few matches, so before you say something isn't available, check the category with browse_category or the likely products from the catalog list with get_product.
+- search_products shows only the best few matches, so before you say something isn't available, check the category with browse_category (or, when the catalog list is given, the likely products from it with get_product).
 - When the customer says yes but several options were on the table, ask which one before adding it to the order.
 - Delivery, payment and return terms come only from the store notes.
 - Never invent products, prices, discounts, sizes, delivery times or policies. Material, fabric, composition, fit and care come only from what get_product returns: if it doesn't say, don't guess, even when it seems obvious. If the tools and store notes don't answer a question, call handoff; for size and fit questions, follow «Sizes» below.

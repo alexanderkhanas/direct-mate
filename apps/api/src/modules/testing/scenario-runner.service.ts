@@ -99,7 +99,12 @@ export class ScenarioRunner {
   async run(
     scenario: SimulatorScenario,
     identity: ScenarioIdentity,
-    opts: { source: TraceSource; modelOverride?: string; onTurn?: (log: ScenarioTurnLog) => void },
+    opts: {
+      source: TraceSource;
+      modelOverride?: string;
+      catalogPrompt?: 'list' | 'overview';
+      onTurn?: (log: ScenarioTurnLog) => void;
+    },
   ): Promise<ScenarioTurnLog[]> {
     const tenantId = scenario.tenantId;
     await this.cleanup(tenantId, identity);
@@ -148,6 +153,7 @@ export class ScenarioRunner {
         source: opts.source,
         mediaReference,
         modelOverride: opts.modelOverride,
+        catalogPrompt: opts.catalogPrompt,
       });
 
       const outcome = {

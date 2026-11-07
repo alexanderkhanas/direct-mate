@@ -6,6 +6,7 @@ import { ConversationStatus, MessageDirection, MessageRole } from '@direct-mate/
 import { returnedRows } from '../../common/db';
 import { AgentService, trailingCustomerText } from '../agent/agent.service';
 import { AgentStoreSettings, AgentStoreSettingsService } from '../agent/store-settings.service';
+import { productsInReply } from '../agent/turn-products';
 import type { AgentHistoryEntry, AgentTurnResult } from '../agent/agent.types';
 import { OrderDraftService } from '../orders/order-draft.service';
 import { OrdersService } from '../orders/orders.service';
@@ -42,6 +43,8 @@ export interface TurnRunInput {
    */
   mediaReference?: MediaReference | null;
   modelOverride?: string;
+  /** Catalog in the prompt for this turn only (simulator comparison runs). */
+  catalogPrompt?: 'list' | 'overview';
   /** Discard the reply if the customer wrote again while it was being prepared (Instagram). */
   supersede?: boolean;
   /** Extra context for this turn only, e.g. that the reply goes out as a comment's private reply. */
@@ -210,6 +213,7 @@ export class TurnRunner {
         history,
         notes,
         modelOverride: input.modelOverride,
+        catalogPrompt: input.catalogPrompt,
       });
 
       if (input.supersede && (await this.hasNewerInbound(conversation.id, startedAt))) {
@@ -298,6 +302,8 @@ export class TurnRunner {
     }
 
     if (input.mode !== 'dry_run') {
+      // The products the reply was about, so later turns can refer back to them (HistoryBuilder).
+      const products = reply && outcome.agentResult ? productsInReply(outcome.agentResult.steps, reply) : [];
       for (const m of messages) {
         const saved = await this.conversations.saveMessage(
           conversation.id,
@@ -306,7 +312,11 @@ export class TurnRunner {
           MessageRole.Assistant,
           m.text,
           undefined,
-          { kind: m.kind, ...(m.imageUrls && { imageUrls: m.imageUrls }) },
+          {
+            kind: m.kind,
+            ...(m.imageUrls && { imageUrls: m.imageUrls }),
+            ...(m.kind === 'reply' && products.length > 0 && { products }),
+          },
         );
         if (saved?.id) m.messageId = saved.id;
       }

@@ -30,8 +30,12 @@ export interface CatalogIndexRow {
  * guard checks exactly that — so a cached index can't leak stale stock into a
  * reply. Sizes are left out for the same reason.
  */
+export type CatalogPromptMode = 'list' | 'overview';
+
 export interface CatalogIndex {
   text: string;
+  /** Categories with product counts and price ranges, for `overview` mode: the same size at any catalog size. */
+  overview: string;
   /** Every product title; the grounding guard treats names as names, not claims. */
   titles: string[];
 }
@@ -56,7 +60,11 @@ export class CatalogIndexService {
         ORDER BY p.category NULLS LAST, p.title, p.id`,
       [tenantId],
     );
-    const index = { text: formatCatalogIndex(rows), titles: [...new Set(rows.map((r) => r.title))] };
+    const index = {
+      text: formatCatalogIndex(rows),
+      overview: formatCatalogOverview(rows),
+      titles: [...new Set(rows.map((r) => r.title))],
+    };
     this.cache.set(tenantId, { index, expiresAt: Date.now() + TTL_MS });
     return index;
   }
@@ -64,6 +72,38 @@ export class CatalogIndexService {
   invalidate(tenantId: string): void {
     this.cache.delete(tenantId);
   }
+}
+
+/** «Сорочки — 21 товар, 2900–4500 грн (3 немає в наявності)», one line per category. */
+export function formatCatalogOverview(rows: CatalogIndexRow[]): string {
+  const categories = new Map<string, { products: Map<string, boolean>; prices: number[]; currency: string }>();
+  for (const r of rows) {
+    const name = r.category?.trim() || 'Інше';
+    if (!categories.has(name)) categories.set(name, { products: new Map(), prices: [], currency: r.currency });
+    const c = categories.get(name)!;
+    const inStock = Number(r.available) > 0;
+    c.products.set(r.product_id, (c.products.get(r.product_id) ?? false) || inStock);
+    if (inStock) c.prices.push(effectivePrice(Number(r.price), r.sale_price != null ? Number(r.sale_price) : null));
+  }
+  if (categories.size === 0) return '(the catalog is empty)';
+  return [...categories.entries()]
+    .map(([name, c]) => {
+      const total = c.products.size;
+      const sold = [...c.products.values()].filter((v) => !v).length;
+      const min = Math.min(...c.prices);
+      const max = Math.max(...c.prices);
+      const price = c.prices.length === 0 ? '' : min === max ? `, ${money(min, c.currency)}` : `, ${money(min, c.currency)}–${money(max, c.currency)}`;
+      return `- ${name}: ${total} ${productsWord(total)}${price}${sold > 0 ? ` (${sold} немає в наявності)` : ''}`;
+    })
+    .join('\n');
+}
+
+function productsWord(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return 'товар';
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'товари';
+  return 'товарів';
 }
 
 export function formatCatalogIndex(rows: CatalogIndexRow[]): string {

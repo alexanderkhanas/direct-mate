@@ -103,6 +103,26 @@ describe('TurnRunner', () => {
     expect((await setup({ status: ConversationStatus.HumanInControl }).run('dry_run')).status).toBe('replied');
   });
 
+  it('saves the products the reply was about with the reply, for later turns', async () => {
+    const t = setup({
+      agent: agentResult({
+        steps: [
+          {
+            attempt: 1,
+            text: '',
+            finishReason: 'tool-calls',
+            toolCalls: [{ toolName: 'get_product', input: { productRef: '5d041fb6' } }],
+            toolResults: [{ toolName: 'get_product', output: { ref: '5d041fb6', title: 'Сорочка льон' } }],
+          },
+        ],
+      }),
+    });
+    await t.run();
+    const reply = t.saved.find((m) => (m.payload as { kind: string }).kind === 'reply');
+    expect(reply?.payload).toMatchObject({ products: [{ ref: '5d041fb6', title: 'Сорочка льон' }] });
+    expect(t.saved.find((m) => (m.payload as { kind: string }).kind === 'welcome')?.payload).not.toHaveProperty('products');
+  });
+
   it("opens the conversation's first reply with the welcome line, and tells the agent not to greet", async () => {
     const t = setup();
     const result = await t.run();

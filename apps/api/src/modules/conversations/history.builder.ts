@@ -36,6 +36,8 @@ interface MessageRow {
   role: MessageRole;
   text: string | null;
   attachments: MessageAttachment[] | null;
+  /** Bot replies: the products the reply was about (`productsInReply`). */
+  products: Array<{ ref: string; title: string }> | null;
   created_at: Date;
 }
 
@@ -94,13 +96,14 @@ export class HistoryBuilder {
       previousAt = at;
       const entry = toEntry(row, photos);
       if (entry) history.push(entry);
+      if (entry?.role === 'bot') history.push(...productsNote(row));
     }
     return history;
   }
 
   private async messages(conversationId: string, limit: number): Promise<MessageRow[]> {
     const rows: MessageRow[] = await this.dataSource.query(
-      `SELECT role, text, attachments, created_at FROM messages
+      `SELECT role, text, attachments, raw_payload->'products' AS products, created_at FROM messages
         WHERE conversation_id = $1 AND delivery_status IS DISTINCT FROM 'failed'
         ORDER BY created_at DESC, id DESC
         LIMIT $2`,
@@ -124,9 +127,11 @@ export class HistoryBuilder {
     );
     if (!previous) return [];
 
-    const tail = (await this.messages(previous.id, EARLIER_TAIL))
-      .map((row) => toEntry(row, null))
-      .filter((e): e is AgentHistoryEntry => e !== null && e.role !== 'note');
+    const tail = (await this.messages(previous.id, EARLIER_TAIL)).flatMap((row) => {
+      const entry = toEntry(row, null);
+      if (!entry) return [];
+      return entry.role === 'bot' ? [entry, ...productsNote(row)] : [entry];
+    });
     if (tail.length === 0) return [];
 
     const entries: AgentHistoryEntry[] = [
@@ -196,6 +201,18 @@ export class HistoryBuilder {
       ...lines,
     ].join('\n');
   }
+}
+
+/**
+ * A system note after a bot reply naming the products it was about, with
+ * refs. Kept out of the bot's own text, so the model never sees refs in what
+ * it wrote and never learns to write them to a customer.
+ */
+function productsNote(row: MessageRow): AgentHistoryEntry[] {
+  const products = Array.isArray(row.products) ? row.products : [];
+  if (products.length === 0) return [];
+  const list = products.map((p) => `«${p.title}» ref ${p.ref}`).join(', ');
+  return [{ role: 'note', text: `Products in the reply above: ${list}.` }];
 }
 
 /** `photos`: our copies to attach as images; null for an earlier conversation, which gets labels only. */

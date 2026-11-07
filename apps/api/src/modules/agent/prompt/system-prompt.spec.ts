@@ -21,7 +21,7 @@ const SETTINGS: AgentStoreSettings = {
 };
 
 const sizes = (settings: AgentStoreSettings) => {
-  const prompt = buildSystemPrompt(settings, '(catalog)');
+  const prompt = buildSystemPrompt(settings, { mode: 'list', text: '(catalog)' });
   return prompt.slice(prompt.indexOf('## Sizes'), prompt.indexOf('## Details needed'));
 };
 
@@ -63,3 +63,18 @@ describe('the Sizes section', () => {
     );
   });
 });
+
+describe('catalog in the prompt', () => {
+  it('lists products in list mode and only the overview in overview mode', () => {
+    const list = buildSystemPrompt(SETTINGS, { mode: 'list', text: 'a1b2c3d4 · Сорочка льон · 3300 грн' });
+    expect(list).toContain('## Catalog\nref · title');
+    expect(list).toContain('a1b2c3d4 · Сорочка льон');
+
+    const overview = buildSystemPrompt(SETTINGS, { mode: 'overview', text: '- Сорочки: 21 товар, 2900–4500 грн' });
+    expect(overview).toContain('## Catalog overview');
+    expect(overview).toContain('- Сорочки: 21 товар');
+    expect(overview).toContain('Never guess a ref');
+    expect(overview).not.toContain('ref · title');
+  });
+});
+

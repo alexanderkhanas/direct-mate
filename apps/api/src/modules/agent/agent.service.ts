@@ -6,7 +6,7 @@ import { OrderDraftService } from '../orders/order-draft.service';
 import { SizeChartsService } from '../size-charts/size-charts.service';
 import { CatalogReader } from './catalog/catalog-reader.service';
 import { CATALOG_SEARCH, CatalogSearch } from './catalog/catalog-search';
-import { CatalogIndexService } from './catalog/catalog-index.service';
+import { CatalogIndex, CatalogIndexService, CatalogPromptMode } from './catalog/catalog-index.service';
 import { checkGrounding } from './guards/grounding.guard';
 import { checkStyle } from './guards/style.guard';
 import { ReplyModeration } from './guards/reply-moderation.service';
@@ -113,7 +113,7 @@ export class AgentService {
 
       const agent = new ToolLoopAgent({
         model: resolved.model,
-        instructions: buildSystemPrompt(settings, index.text),
+        instructions: buildSystemPrompt(settings, this.catalogFor(index, input.catalogPrompt)),
         tools: buildAgentTools(this.toolDeps, scope, settings),
         stopWhen: [isStepCount(this.maxSteps()), hasToolCall(HANDOFF_TOOL)],
         allowSystemInMessages: true,
@@ -262,6 +262,11 @@ export class AgentService {
     const urls = [...new Set(history.flatMap((e) => (e.role === 'customer' ? e.images ?? [] : [])))];
     const loaded = await Promise.all(urls.map((url) => this.media.load(url)));
     return new Map(urls.map((url, i) => [url, loaded[i]]));
+  }
+
+  private catalogFor(index: CatalogIndex, turn?: CatalogPromptMode): { mode: CatalogPromptMode; text: string } {
+    const mode = turn ?? (this.config.get<CatalogPromptMode>('agent.catalogPrompt') === 'overview' ? 'overview' : 'list');
+    return { mode, text: mode === 'overview' ? index.overview : index.text };
   }
 
   private maxSteps(): number {

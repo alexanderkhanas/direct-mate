@@ -14,6 +14,7 @@
  *   npm run simulate -- --all --out agent-run.json
  *   npm run simulate -- --list
  *   ... --model gpt-5.4          run every turn on another model
+ *   ... --catalog-prompt overview  categories only instead of the product list (cost comparison)
  *
  * Costs real model calls. Scenarios written for the classifier engine still
  * run: their route-only assertions are dropped and listed per turn (see
@@ -146,6 +147,7 @@ interface CliArgs {
   image: string | null;
   out: string | null;
   model: string | null;
+  catalogPrompt: 'list' | 'overview' | null;
 }
 
 function parseArgs(): CliArgs {
@@ -159,6 +161,7 @@ function parseArgs(): CliArgs {
     image: null,
     out: null,
     model: null,
+    catalogPrompt: null,
   };
   for (let i = 0; i < args.length; i++) {
     const next = args[i + 1];
@@ -170,6 +173,11 @@ function parseArgs(): CliArgs {
     else if (args[i] === '--image' && next) result.image = args[++i];
     else if (args[i] === '--out' && next) result.out = args[++i];
     else if (args[i] === '--model' && next) result.model = args[++i];
+    else if (args[i] === '--catalog-prompt' && next) {
+      const mode = args[++i];
+      if (mode !== 'list' && mode !== 'overview') throw new Error('--catalog-prompt must be list or overview');
+      result.catalogPrompt = mode;
+    }
   }
   return result;
 }
@@ -399,7 +407,7 @@ async function main(): Promise<void> {
 
   const selection = selectScenarios(args);
   if (!selection) {
-    console.log(`Usage: npm run simulate -- --scenario <name> | --all | --list | --tenant <slug> [--message <text> [--image <file|url>]] [--model <id>] [--out <file>]`);
+    console.log(`Usage: npm run simulate -- --scenario <name> | --all | --list | --tenant <slug> [--message <text> [--image <file|url>]] [--model <id>] [--catalog-prompt list|overview] [--out <file>]`);
     return;
   }
 
@@ -464,6 +472,7 @@ async function main(): Promise<void> {
       turns = await runner.run(scenario, IDENTITY, {
         source: 'simulator_cli',
         modelOverride: args.model ?? undefined,
+        catalogPrompt: args.catalogPrompt ?? undefined,
         onTurn: printTurn,
       });
     } finally {

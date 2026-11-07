@@ -23,6 +23,8 @@ export interface AgentTurnInput {
   notes?: string[];
   /** Model for this turn only (simulator `--model`); beats the store's override. */
   modelOverride?: string;
+  /** Catalog in the prompt for this turn only (simulator `--catalog-prompt`); beats AGENT_CATALOG_PROMPT. */
+  catalogPrompt?: 'list' | 'overview';
   now?: Date;
 }
 

@@ -5,7 +5,10 @@ const at = (hoursAgo: number) => new Date(Date.now() - hoursAgo * HOUR);
 
 /** A fake DataSource that answers by which table the SQL reads. */
 function builder(data: {
-  messages?: Record<string, Array<{ role: string; text: string | null; attachments?: unknown; created_at: Date }>>;
+  messages?: Record<
+    string,
+    Array<{ role: string; text: string | null; attachments?: unknown; products?: unknown; created_at: Date }>
+  >;
   previous?: { id: string; last_message_at: Date } | null;
   draftItems?: Array<{ title: string; color: string | null; size: string | null; qty: number }>;
   orders?: Array<{ id: string; created_at: Date; status: string; total_amount: string; currency: string }>;
@@ -13,7 +16,7 @@ function builder(data: {
 }) {
   const query = jest.fn(async (sql: string, params: unknown[]) => {
     if (sql.includes('FROM messages')) {
-      const rows = (data.messages?.[params[0] as string] ?? []).map((m) => ({ attachments: null, ...m }));
+      const rows = (data.messages?.[params[0] as string] ?? []).map((m) => ({ attachments: null, products: null, ...m }));
       // The builder asks newest-first and reverses.
       return [...rows].reverse().slice(0, params[1] as number);
     }
@@ -48,6 +51,36 @@ describe('HistoryBuilder', () => {
       { role: 'note', text: '— 5 hours later —' },
       { role: 'customer', text: '(sent a photo)' },
       { role: 'manager', text: 'Зараз уточню' },
+    ]);
+  });
+
+  it('names the products each bot reply was about in a note after it, never in the reply itself', async () => {
+    const history = await builder({
+      messages: {
+        c2: [
+          { role: 'user', text: 'Біла сорочка в M є?', created_at: at(0.2) },
+          {
+            role: 'assistant',
+            text: 'Є дві: Сорочка з льону і Premium.',
+            products: [
+              { ref: '5d041fb6', title: 'Сорочка льон' },
+              { ref: '007ad88f', title: 'Сорочка льон Premium' },
+            ],
+            created_at: at(0.2),
+          },
+          { role: 'user', text: 'давайте звичайну', created_at: at(0.1) },
+        ],
+      },
+    }).build(CONVERSATION);
+
+    expect(history).toEqual([
+      { role: 'customer', text: 'Біла сорочка в M є?' },
+      { role: 'bot', text: 'Є дві: Сорочка з льону і Premium.' },
+      {
+        role: 'note',
+        text: 'Products in the reply above: «Сорочка льон» ref 5d041fb6, «Сорочка льон Premium» ref 007ad88f.',
+      },
+      { role: 'customer', text: 'давайте звичайну' },
     ]);
   });
 
