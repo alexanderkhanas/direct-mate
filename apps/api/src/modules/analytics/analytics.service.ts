@@ -95,16 +95,25 @@ export class AnalyticsService {
     const rows = await this.dataSource.query(
       `SELECT
         COUNT(DISTINCT c.id) AS started,
+        -- The agent looked up or showed products.
         COUNT(DISTINCT c.id) FILTER (
-          WHERE cs.context_json->>'lastPresentedProducts' IS NOT NULL
+          WHERE EXISTS (
+            SELECT 1 FROM conversation_traces t,
+                   jsonb_array_elements(COALESCE(t.agent_steps, '[]'::jsonb)) step,
+                   jsonb_array_elements(COALESCE(step->'toolCalls', '[]'::jsonb)) call
+             WHERE t.conversation_id = c.id
+               AND call->>'toolName' IN ('search_products', 'browse_category', 'get_product', 'show_products')
+          )
         ) AS product_shown,
+        -- Something went into the order draft.
         COUNT(DISTINCT c.id) FILTER (
-          WHERE cs.selected_variant_id IS NOT NULL
-            OR cs.context_json->>'selectedVariantId' IS NOT NULL
+          WHERE EXISTS (
+            SELECT 1 FROM checkout_sessions s JOIN checkout_items i ON i.checkout_session_id = s.id
+             WHERE s.conversation_id = c.id
+          )
         ) AS variant_selected,
         COUNT(DISTINCT o.id) AS order_created
       FROM conversations c
-      LEFT JOIN conversation_state cs ON cs.conversation_id = c.id
       LEFT JOIN orders o ON o.customer_id = c.customer_id AND o.tenant_id = c.tenant_id AND o.created_at >= $2
       WHERE c.tenant_id = $1 AND c.created_at >= $2`,
       [tenantId, from],

@@ -1,6 +1,6 @@
 // Seed entry: non-demo test tenant cloned from demo-women-clothes content.
 //
-// Produces a real (is_demo=false) tenant with the same catalog/templates/
+// Produces a real (is_demo=false) tenant with the same catalog/store notes/
 // size charts/config as `demo-women-clothes`, plus an admin user you can
 // log into the panel with. Useful for end-to-end testing the full engine
 // without the demo restrictions (rate limits, ordersService skip).
@@ -57,17 +57,6 @@ async function seed(): Promise<void> {
       businessType: 'fashion',
       isDemo: false,
     });
-
-    // Test-tenant-only: conversation_start_greeting fires once at the start
-    // of every conversation (DM, story reply, post reply). Demo tenants don't
-    // get this template so they keep their existing behavior.
-    await AppDataSource.query(
-      `INSERT INTO response_templates
-         (tenant_id, scenario, stage, blocks, required_variables, tone_tags, priority, active)
-       VALUES ($1, 'conversation_start_greeting', '', $2, '[]', '["warm"]', 90, true)`,
-      [tenantId, JSON.stringify(['Вітаю! З вами АІ помічник DirectMate.'])],
-    );
-    console.log(`  conversation_start_greeting template: ✓`);
 
     await createAdminUser(AppDataSource, tenantId, EMAIL, PASSWORD);
     console.log(`  admin user: ✓`);

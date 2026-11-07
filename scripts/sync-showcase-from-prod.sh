@@ -1,7 +1,7 @@
 #!/bin/bash
 # Sync the showcase-women-clothes tenant from prod into the local DB.
 #
-# Replaces local catalog, media mappings, templates, configs, and tenant
+# Replaces local catalog, media mappings, configs, and tenant
 # row with the prod copies. The point is so simulator scenarios that
 # rely on real linked stories run identically in both envs.
 #
@@ -79,9 +79,6 @@ echo "Copying from prod → local..."
 copy_filtered tenants                  "id = '$TENANT_ID'"
 copy_filtered tenant_settings          "$BY_TENANT"
 copy_filtered store_configs            "$BY_TENANT"
-copy_filtered response_templates       "$BY_TENANT"
-copy_filtered phrase_blocks            "$BY_TENANT"
-copy_filtered faq_items                "$BY_TENANT"
 copy_filtered categories               "$BY_TENANT"
 copy_filtered products                 "$BY_TENANT"
 copy_filtered product_variants         "$BY_TENANT"
@@ -92,7 +89,7 @@ copy_filtered size_charts              "$BY_TENANT"
 copy_filtered instagram_media_mappings "$BY_TENANT"
 
 echo
-echo "Local showcase tenant now mirrors prod (catalog, templates, links)."
+echo "Local showcase tenant now mirrors prod (catalog, store config, links)."
 echo "  - Re-link a local Instagram account in admin if you want to test live."
 echo "  - Image URLs that point at prod /uploads/ paths won't resolve locally."
 

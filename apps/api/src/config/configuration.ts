@@ -29,30 +29,9 @@ export default () => ({
   },
   openai: {
     apiKey: process.env.OPENAI_API_KEY ?? '',
-    // Used by ReplyEngineService.aiFallback (free-form reply when no
-    // template matches). Customer-facing text — quality matters more
-    // than latency/cost. Defaults to gpt-5.4.
-    model: process.env.OPENAI_MODEL ?? 'gpt-5.4',
-    // Used by ClassifierService — every turn, entity extraction + intent
-    // routing. Fast and cheap; gpt-5.4-mini handles this well.
-    //
-    // CLASSIFIER_MODEL is the provider-neutral name and wins when set: the
-    // classifier routes by model id, so `claude-*` sends the call to
-    // Anthropic and anything else to OpenAI. OPENAI_CLASSIFIER_MODEL stays
-    // as the legacy alias so existing scripts keep working.
-    classifierModel:
-      process.env.CLASSIFIER_MODEL ??
-      process.env.OPENAI_CLASSIFIER_MODEL ??
-      'gpt-5.4-mini',
     // Used by InstagramContentService (vision matching) and
     // ScreenshotExtractionService. Vision tasks need a stronger model.
     visionModel: process.env.OPENAI_VISION_MODEL ?? 'gpt-4o',
-    // Used by ClassifierService.classifyWithFallback for handoff
-    // verification (second-opinion classifier pass). gpt-4.1 was the
-    // previous default — retired from ChatGPT Feb 2026, 4.1-nano API
-    // shutdown Jul 23 2026; gpt-5.4 (the main model) replaces it before
-    // the API shutdown wave reaches the full 4.1.
-    fallbackModel: process.env.OPENAI_FALLBACK_MODEL ?? 'gpt-5.4',
   },
   // Product attributes read from photos (catalog/attributes). The background
   // worker is off unless enabled: it spends model calls on every new or
@@ -91,11 +70,12 @@ export default () => ({
     // Wait this long after a customer's last message before answering, so
     // «photo + "є таке?"» or a burst of short messages get one reply.
     debounceMs: parseInt(process.env.INSTAGRAM_DEBOUNCE_MS ?? '5000', 10),
+    // Decides whether a comment under a post is a question for the shop.
+    commentGateModel: process.env.INSTAGRAM_COMMENT_GATE_MODEL ?? 'gpt-5.4-mini',
   },
   anthropic: {
-    // Only used when the resolved classifier model is a `claude-*` id.
-    // Absent key + claude model = hard error at call time, by design: a
-    // silent fall back to OpenAI would quietly invalidate an A/B run.
+    // For `claude-*` agent models once the Anthropic provider is installed
+    // (Phase 6 model comparison).
     apiKey: process.env.ANTHROPIC_API_KEY ?? '',
   },
   internal: {

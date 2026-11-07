@@ -6,7 +6,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { DataSource } from 'typeorm';
 import { ProductSpec, VariantSpec } from '../data/types';
-import { TemplateSpec } from '../templates/types';
 
 // ─── Tenant lifecycle ───────────────────────────────────────────
 
@@ -294,30 +293,3 @@ export async function seedProductMedia(
   console.log(`  product_media: ${created} primary + variant overrides inserted`);
 }
 
-// ─── Templates / phrases / faq insert ────────────────────────────
-
-export async function seedResponseTemplates(
-  ds: DataSource,
-  tenantId: string,
-  templates: TemplateSpec[],
-): Promise<void> {
-  for (const t of templates) {
-    await ds.query(
-      `INSERT INTO response_templates (tenant_id, scenario, stage, blocks,
-                                        required_variables, tone_tags,
-                                        priority, active)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [
-        tenantId,
-        t.scenario,
-        t.stage,
-        JSON.stringify(t.blocks),
-        JSON.stringify(t.requiredVariables),
-        JSON.stringify(t.toneTags),
-        t.priority,
-        t.active,
-      ],
-    );
-  }
-  console.log(`  response_templates: ${templates.length} inserted`);
-}

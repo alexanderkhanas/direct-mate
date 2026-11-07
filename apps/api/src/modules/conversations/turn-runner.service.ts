@@ -44,6 +44,8 @@ export interface TurnRunInput {
   modelOverride?: string;
   /** Discard the reply if the customer wrote again while it was being prepared (Instagram). */
   supersede?: boolean;
+  /** Extra context for this turn only, e.g. that the reply goes out as a comment's private reply. */
+  notes?: string[];
 }
 
 export interface OutgoingMessage {
@@ -79,6 +81,7 @@ const MATCHABLE: ReadonlySet<MessageAttachment['type']> = new Set([
   'story_reply',
   'post_reply',
   'post_share',
+  'post_comment',
 ]);
 export const DEFAULT_HANDOFF_ANNOUNCE = 'Передаю розмову менеджеру — він відповість вам тут найближчим часом.';
 const FIRST_REPLY_NOTE =
@@ -194,7 +197,11 @@ export class TurnRunner {
         references,
         trailingCustomerText(history),
       );
-      const notes = [...media.notes, ...(firstReply && settings.welcomeLine ? [FIRST_REPLY_NOTE] : [])];
+      const notes = [
+        ...media.notes,
+        ...(firstReply && settings.welcomeLine ? [FIRST_REPLY_NOTE] : []),
+        ...(input.notes ?? []),
+      ];
 
       const agentResult = await this.agent.runTurn({
         tenantId: input.tenantId,

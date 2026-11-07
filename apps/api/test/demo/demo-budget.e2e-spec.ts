@@ -4,12 +4,11 @@ import { bootstrap, teardown, resetDemoSpend, BootstrapResult } from './setup';
 
 describe('demo budget cap', () => {
   let ctx: BootstrapResult;
-  let classifierModel: string;
+  let agentModel: string;
 
   beforeAll(async () => {
     ctx = await bootstrap();
-    classifierModel =
-      ctx.app.get(ConfigService).get<string>('openai.model') ?? 'gpt-5.4-mini';
+    agentModel = ctx.app.get(ConfigService).get<string>('agent.model') ?? 'gpt-5.4-mini';
   });
 
   afterAll(async () => {
@@ -21,12 +20,12 @@ describe('demo budget cap', () => {
     ctx.turnRunnerMock.mockClear();
   });
 
-  it("returns budget_exceeded and skips the engine when today's classifier spend is over the cap", async () => {
+  it("returns budget_exceeded and skips the agent when today's spend on its model is over the cap", async () => {
     await ctx.dataSource.query(
       `INSERT INTO demo_spend_daily (day, model, usd_cents, calls)
        VALUES (CURRENT_DATE, $1, 99999, 9999)
        ON CONFLICT (day, model) DO UPDATE SET usd_cents = 99999`,
-      [classifierModel],
+      [agentModel],
     );
 
     const res = await request(ctx.app.getHttpServer())

@@ -61,15 +61,14 @@ export class ConversationsController {
   }
 
   /**
-   * Per-turn trace rows for a conversation, newest first. Each row holds
-   * the `ctx.trace` step list, classifier output, stage timings, memory
-   * snapshots, recent-message window, and any captured error from
-   * `ReplyEngineService.process()`.
+   * Per-turn trace rows for a conversation, newest first: the agent's tool
+   * calls and results, guard checks, model and usage, the history it was
+   * given, and any captured error.
    *
-   * Restricted to super-admins. Tenant-admins don't need engine internals
-   * for their own conversations — they have the Messages view. The trace
-   * data exposes classifier prompt-engineering details and timings that
-   * are platform-operator concerns, not customer-facing.
+   * Restricted to super-admins. Tenant-admins don't need agent internals
+   * for their own conversations — they have the Messages view. Traces
+   * expose prompt and tool details that are platform-operator concerns,
+   * not customer-facing.
    *
    * Super-admins inspect any tenant by passing `X-Tenant-Id` (handled by
    * the `CurrentUser` decorator at common/decorators/current-user.decorator.ts).

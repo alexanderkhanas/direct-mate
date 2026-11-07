@@ -1,7 +1,6 @@
 // Clothing-vertical demo builder. Orchestrates the full seed pipeline for a
 // clothing demo tenant: tenant + settings + store_config (with sizeChart and
-// preQualify height/weight flow) + 18 products + 100 variants + size charts +
-// 22 templates from getTemplatesForBusinessType('clothing').
+// preQualify height/weight flow) + 18 products + 100 variants + size charts.
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -10,7 +9,6 @@ import {
   CLOTHING_WOMEN_PRODUCTS,
   CLOTHING_SIZE_CHARTS,
 } from '../data/clothing-women-products';
-import { getTemplatesForBusinessType } from '../templates';
 import { CLOTHING_KNOWLEDGE_DOC } from '../knowledge/clothing';
 import {
   DEMO_HANDOFF_ANNOUNCE,
@@ -25,7 +23,6 @@ import {
   createTenantSettings,
   seedCatalog,
   seedProductMedia,
-  seedResponseTemplates,
 } from './tenant-builder';
 
 const CLOTHING_FLOW_CONFIG = {
@@ -109,9 +106,6 @@ export async function buildClothingTenant(
   // they ship with rsync; the seed copies them into uploads/ where the
   // /uploads static route serves them.
   await copyTestAssetsToUploads(DEMO_WIDGET_ASSETS, 'demo_widget (images)');
-
-  const templates = getTemplatesForBusinessType('clothing');
-  await seedResponseTemplates(ds, tenantId, templates);
 
   console.log(`✓ Clothing tenant ready: ${opts.slug}\n`);
   return tenantId;

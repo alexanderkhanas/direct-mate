@@ -1,14 +1,12 @@
 // Cosmetics-vertical demo builder. Orchestrates the full seed pipeline for a
 // cosmetics demo tenant: tenant + settings + store_config (with skin-type
-// preQualify, no sizeChart) + 10 products + 13 variants + 18 templates from
-// getTemplatesForBusinessType('cosmetics').
+// preQualify, no sizeChart) + 10 products + 13 variants.
 //
 // Image files are downloaded once into apps/api/test-assets/cosmetics/ and
 // served at /uploads/cosmetics/<file> after the seed copies them to uploads/.
 
 import { DataSource } from 'typeorm';
 import { COSMETICS_PRODUCTS } from '../data/cosmetics-products';
-import { getTemplatesForBusinessType } from '../templates';
 import { COSMETICS_KNOWLEDGE_DOC } from '../knowledge/cosmetics';
 import {
   DEMO_HANDOFF_ANNOUNCE,
@@ -23,7 +21,6 @@ import {
   createTenantSettings,
   seedCatalog,
   seedProductMedia,
-  seedResponseTemplates,
 } from './tenant-builder';
 
 const COSMETICS_FLOW_CONFIG = {
@@ -97,9 +94,6 @@ export async function buildCosmeticsTenant(
   );
   const urlPrefix = await copyImages('cosmetics', 'cosmetics', imageFiles);
   await seedProductMedia(ds, tenantId, COSMETICS_PRODUCTS, urlPrefix);
-
-  const templates = getTemplatesForBusinessType('cosmetics');
-  await seedResponseTemplates(ds, tenantId, templates);
 
   console.log(`✓ Cosmetics tenant ready: ${opts.slug}\n`);
   return tenantId;

@@ -25,6 +25,7 @@ const SOURCE_LABEL: Record<string, string> = {
   post_reply: 'replied to a post',
   post_share: 'shared a post',
   customer_photo: 'sent a photo',
+  post_comment: 'commented under a post',
 };
 
 /**

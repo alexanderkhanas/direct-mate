@@ -1,73 +1,68 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { ConnectionType, MessageDirection, MessageRole } from '@direct-mate/shared';
+import { ConfigService } from '@nestjs/config';
+import { DataSource } from 'typeorm';
+import { createOpenAI, type OpenAIProvider } from '@ai-sdk/openai';
+import { generateText, Output } from 'ai';
+import { z } from 'zod';
+import { ConnectionType, MessageRole } from '@direct-mate/shared';
 import { IntegrationsService } from '../../integrations/integrations.service';
 import { InstagramContentService } from './instagram-content.service';
-import { AvailabilityService } from '../../availability/availability.service';
-import { ClassifierService, ClassificationResult, AssistantMemory } from '../../engine/classifier.service';
-import { TemplateEngineService, ProductSearchResult } from '../../engine/template-engine.service';
-import { SizeChartsService } from '../../size-charts/size-charts.service';
 import { ConversationsService } from '../../conversations/conversations.service';
-import { StoreConfig } from '../../engine/entities/store-config.entity';
+import { TurnRunner, TurnRunResult } from '../../conversations/turn-runner.service';
+import { AgentStoreSettingsService } from '../../agent/store-settings.service';
 import { CryptoService } from '../../../common/crypto.service';
 import { withRetry } from '../../../common/retry';
 import { GRAPH_API } from '../../../common/meta-graph';
 import { CommentChangeValue } from './instagram.service';
 import { InstagramSender } from './instagram-sender.service';
 
-/**
- * Intents that count as a product question worth answering on a comment.
- * Everything else (greeting, thanks, complaint, unknown, ...) is ignored
- * silently — reactions and discussion never trigger a reply.
- */
-const PRODUCT_QUESTION_INTENTS = new Set([
-  'ask_price',
-  'availability_check',
-  'product_inquiry',
-  'category_browse',
-  'size_chart_request',
-]);
+const PUBLIC_REPLY_FALLBACK = 'Відповіли вам у дірект';
+/** A conversation already being answered: let the DM poller pick this up shortly. */
+const BUSY_RETRY_SECONDS = 2;
 
-const DEFAULT_CONFIDENCE_THRESHOLD = 0.55;
-const PUBLIC_REPLY_FALLBACK = 'Відповіли вам у дірект 💛';
+/** Told to the agent on a comment turn: the private reply is one text message. */
+const COMMENT_NOTE =
+  "The customer wrote this as a comment under the shop's post, not in the chat. Your answer goes to them as one " +
+  "private message in Direct, and it can't carry photos: don't call show_products or send_size_chart, don't " +
+  'mention photos, and keep it to two or three short sentences. They can reply in Direct to continue.';
+
+const GATE_INSTRUCTIONS =
+  "You screen comments under an online clothing shop's Instagram posts. Decide whether the comment is a question " +
+  'or request the shop should answer in a private message: price, sizes, colours, stock, delivery, payment, how to ' +
+  'order, or a request for details («ціна?», «є M?», «+», «хочу», «в директ», «скільки коштує»). Compliments, ' +
+  'emojis, tagging friends, discussion between other people, complaints written for an audience, and spam are not.';
+const gateSchema = z.object({ answer: z.boolean() });
 
 /**
- * Handles Instagram comment webhooks (entry[].changes, field='comments').
+ * Instagram comments (entry[].changes, field='comments') under a FEED post
+ * linked to a product.
  *
- * When a comment on a FEED post that is linked to a product is a product
- * question (price / availability / sizes / size chart), the bot posts a short
- * public reply under the comment ("Відповіли вам у дірект 💛") and sends the
- * actual answer as a private DM to the commenter. Anything else is ignored.
+ * A small model decides whether the comment asks the shop something. If it
+ * does, the comment is saved in the commenter's DM conversation (the same one
+ * their direct messages use) and the agent answers it as a normal turn; the
+ * reply goes out as a private reply to the comment, the sanctioned way to open
+ * a DM from a comment. When they write back in Direct, the agent already has
+ * the comment and its answer in the history. A short public reply under the
+ * comment then points them to Direct.
  *
- * This path is intentionally decoupled from the DM sales funnel
- * (`ReplyEngineService.process()` drives cart/checkout/variant-selection and is
- * the wrong fit for a single-shot comment answer). It reuses the stateless
- * classifier and the template engine's variable builder directly.
- *
- * Note: a private reply lands in the normal DM inbox, so the commenter's
- * follow-up DM arrives as a standard messaging event under channel
- * 'instagram' and flows through the DM funnel. The 'instagram_comment'
- * conversation created here is the audit record of the comment turn only.
+ * A private reply is a single message, so it is sent as text only: the agent
+ * is told not to show photos, and any it staged are dropped.
  */
 @Injectable()
 export class InstagramCommentService {
   private readonly logger = new Logger(InstagramCommentService.name);
-  /** Recently processed comment ids (dedup against Meta resends). */
-  private readonly processedCommentIds = new Set<string>();
+  private openai: OpenAIProvider | null = null;
 
   constructor(
     private readonly integrationsService: IntegrationsService,
     private readonly contentService: InstagramContentService,
-    private readonly availabilityService: AvailabilityService,
-    private readonly classifierService: ClassifierService,
-    private readonly templateEngine: TemplateEngineService,
-    private readonly sizeChartsService: SizeChartsService,
     private readonly conversationsService: ConversationsService,
+    private readonly turnRunner: TurnRunner,
+    private readonly storeSettings: AgentStoreSettingsService,
     private readonly cryptoService: CryptoService,
-    @InjectRepository(StoreConfig)
-    private readonly storeConfigRepo: Repository<StoreConfig>,
     private readonly sender: InstagramSender,
+    private readonly config: ConfigService,
+    private readonly dataSource: DataSource,
   ) {}
 
   async handleComment(entryId: string, value: CommentChangeValue): Promise<void> {
@@ -76,226 +71,179 @@ export class InstagramCommentService {
     const mediaId = value.media?.id;
     const text = value.text?.trim();
 
-    // Basic shape guards
     if (!commentId || !fromId || !mediaId || !text) {
       this.logger.debug('Comment ignored: incomplete payload');
       return;
     }
-
-    // Scope to FEED posts for now (skip reels/ads/igtv product types)
+    // Feed posts only (not reels, ads or IGTV).
     if (value.media?.media_product_type && value.media.media_product_type !== 'FEED') {
       this.logger.debug(`Comment ignored: media_product_type=${value.media.media_product_type}`);
       return;
     }
 
-    // Dedup against Meta resends (in-memory, TTL). Belt-and-braces only —
-    // reactions never reach persistence so there's no DB row to check.
-    if (this.processedCommentIds.has(commentId)) {
-      this.logger.debug(`Comment ${commentId} already processed — skipping`);
-      return;
-    }
-
-    // Resolve the tenant/connection. entry.id is the IG Business Account id in
-    // production; Meta test payloads send "0" which resolves to nothing → skip.
-    const connection = await this.integrationsService.findByExternalAccountId(
-      entryId,
-      ConnectionType.Instagram,
-    );
+    // entry.id is the IG business account; Meta's test payloads send "0", which resolves to nothing.
+    const connection = await this.integrationsService.findByExternalAccountId(entryId, ConnectionType.Instagram);
     if (!connection) {
       this.logger.debug(`No connected Instagram account for entry ${entryId} — skipping comment`);
       return;
     }
     const tenantId = connection.tenantId;
 
-    // Loop prevention: our own public reply is itself a comment → Meta re-fires
-    // a comments event with from.id == our account id. Never reply to ourselves.
+    // Our own public reply is itself a comment, and Meta sends it back to us.
     if (connection.externalAccountId && fromId === connection.externalAccountId) {
       this.logger.debug('Comment ignored: authored by the connected account (own reply)');
       return;
     }
+    if (!connection.accessTokenEncrypted || !connection.externalAccountId) {
+      this.logger.warn(`No access token for connection ${connection.id} — cannot answer comments`);
+      return;
+    }
 
-    // Feature flag (default on). Tenants can disable comment handling via
-    // flow_config.commentHandling.enabled = false.
-    const storeConfig = await this.storeConfigRepo.findOne({ where: { tenantId } });
-    const commentCfg = (storeConfig?.flowConfig as any)?.commentHandling ?? {};
+    const [storeConfig]: Array<{ flow_config: Record<string, unknown> | null }> = await this.dataSource.query(
+      `SELECT flow_config FROM store_configs WHERE tenant_id = $1`,
+      [tenantId],
+    );
+    const commentCfg = (storeConfig?.flow_config?.commentHandling ?? {}) as { enabled?: boolean; publicReply?: string };
     if (commentCfg.enabled === false) {
       this.logger.debug(`Comment handling disabled for tenant ${tenantId}`);
       return;
     }
-    const confidenceThreshold =
-      typeof commentCfg.confidenceThreshold === 'number'
-        ? commentCfg.confidenceThreshold
-        : DEFAULT_CONFIDENCE_THRESHOLD;
+    const settings = await this.storeSettings.load(tenantId);
+    if (settings.operatingMode !== 'active') {
+      this.logger.debug(`Comment ignored: store ${tenantId} is ${settings.operatingMode}`);
+      return;
+    }
 
-    // Resolve the post → product. Ignore silently when unlinked / no product.
     const mapping = await this.contentService.findByMediaId(tenantId, mediaId);
     if (!mapping?.productId) {
       this.logger.debug(`Comment ignored: post ${mediaId} not linked to a product`);
       return;
     }
-    const productData = await this.availabilityService.findAllByProductId(mapping.productId);
-    if (productData.length === 0) {
-      this.logger.debug(`Comment ignored: no active variants for product ${mapping.productId}`);
+    if (!(await this.isQuestionForShop(text))) {
+      this.logger.log(`Comment ${commentId} ignored: not a question for the shop`);
       return;
     }
 
-    // Classify the comment text (stateless — empty memory, tenant categories).
-    const businessType = (storeConfig?.flowConfig as any)?.businessType as
-      | 'clothing'
-      | 'cosmetics'
-      | undefined;
-    const categories = await this.availabilityService.getCategories(tenantId);
-    const classification = await this.classifierService.classify({
-      messageText: text,
-      recentMessages: [],
-      memory: {} as AssistantMemory,
-      categories,
-      tenantBusinessType: businessType,
-    });
-
-    if (
-      !PRODUCT_QUESTION_INTENTS.has(classification.primaryIntent) ||
-      classification.confidence < confidenceThreshold
-    ) {
-      this.logger.log(
-        `Comment ${commentId} ignored: intent=${classification.primaryIntent} ` +
-          `confidence=${classification.confidence} (not a product question)`,
-      );
-      return;
-    }
-
-    // Build the DM answer from templates before touching the DB — if we can't
-    // produce an answer, ignore silently rather than persist a dead-end.
-    const answer = await this.buildAnswer(tenantId, classification, mapping.productId, productData);
-    if (!answer?.text) {
-      this.logger.log(`Comment ${commentId}: no template answer produced — ignoring`);
-      return;
-    }
-
-    // Mark processed only once we've committed to answering.
-    this.markProcessed(commentId);
-
-    // Persist under a dedicated channel, isolated from DM threads by the
-    // (tenantId, channel, externalUserId) unique key.
-    const customer = await this.conversationsService.findOrCreateCustomer(
-      tenantId,
-      'instagram_comment',
-      fromId,
-    );
+    // The commenter's DM conversation: the same keys the DM webhook uses.
+    const customer = await this.conversationsService.findOrCreateCustomer(tenantId, 'instagram', fromId);
     if (!customer.username && value.from?.username) {
-      await this.conversationsService.updateCustomer(customer.id, {
-        username: value.from.username,
-      });
+      await this.conversationsService.updateCustomer(customer.id, { username: value.from.username });
     }
     const { conversation } = await this.conversationsService.findOrCreateConversation(
       tenantId,
       customer.id,
-      'instagram_comment',
-      mediaId,
+      'instagram',
+      connection.externalAccountId,
     );
-    await this.conversationsService.saveMessage(
+    // Keyed on the comment id, so Meta's resends are dropped here.
+    const messageId = await this.conversationsService.saveChannelMessage(
       conversation.id,
       tenantId,
-      MessageDirection.Inbound,
       MessageRole.User,
       text,
       commentId,
-      { commentId, parentId: value.parent_id ?? null, mediaId, productId: mapping.productId },
+      [{ type: 'post_comment', mediaId }],
     );
-
-    if (!connection.accessTokenEncrypted || !connection.externalAccountId) {
-      this.logger.warn(`No access token for connection ${connection.id} — cannot reply to comment`);
+    if (!messageId) {
+      this.logger.debug(`Comment ${commentId} already handled — skipping`);
       return;
     }
-    const token = this.cryptoService.decrypt(connection.accessTokenEncrypted);
-    const account = { token, igAccountId: connection.externalAccountId };
 
-    // 1) Public reply under the comment (short nudge to the inbox).
-    const publicText =
-      (await this.templateEngine.renderCustomScenario(tenantId, 'comment_public_reply', {}))?.text ??
-      PUBLIC_REPLY_FALLBACK;
-    await withRetry(() => this.replyToComment(commentId, publicText, token), {
+    const result = await this.turnRunner.run({
+      tenantId,
+      conversationId: conversation.id,
+      mode: 'live',
+      source: 'instagram',
+      notes: [COMMENT_NOTE],
+    });
+    if (result.status === 'busy') {
+      // They are mid-conversation in Direct, so a normal DM reaches them: leave it to the DM poller.
+      await this.dataSource.query(
+        `UPDATE conversations SET reply_due_at = COALESCE(reply_due_at, now() + make_interval(secs => $2)) WHERE id = $1`,
+        [conversation.id, BUSY_RETRY_SECONDS],
+      );
+      return;
+    }
+    if (result.messages.length === 0) return;
+
+    const account = {
+      token: this.cryptoService.decrypt(connection.accessTokenEncrypted),
+      igAccountId: connection.externalAccountId,
+    };
+    const sent = await this.sendPrivateReply(account, commentId, tenantId, conversation.id, result);
+    if (!sent) return;
+
+    const publicText = commentCfg.publicReply?.trim() || PUBLIC_REPLY_FALLBACK;
+    await withRetry(() => this.replyToComment(commentId, publicText, account.token), {
       label: `comment-public-reply-${commentId}`,
       maxAttempts: 3,
       baseDelayMs: 2000,
-    }).catch((err) =>
-      this.logger.error(`Public comment reply failed for ${commentId}`, (err as Error).message),
-    );
-
-    // 2) Private DM with the actual answer. Private reply is the sanctioned way
-    //    to open a DM from a comment (recipient: { comment_id }). Sent through
-    //    InstagramSender so their echoes are recognised as ours, not as a
-    //    manager writing in the customer's DM thread.
-    const recipient = { comment_id: commentId };
-    const ctx = { tenantId, conversationId: conversation.id };
-    try {
-      for (const url of (answer.imageUrls ?? []).slice(0, 4)) {
-        await this.sender.sendImage(account, recipient, url, ctx).catch((err) =>
-          this.logger.warn(`Private reply image failed (non-fatal) for ${commentId}: ${(err as Error).message}`),
-        );
-      }
-      await this.sender.sendText(account, recipient, answer.text, ctx);
-      await this.conversationsService.saveMessage(
-        conversation.id,
-        tenantId,
-        MessageDirection.Outbound,
-        MessageRole.Assistant,
-        answer.text,
-      );
-      this.logger.log(
-        `Answered comment ${commentId} on product ${mapping.productId} (intent=${classification.primaryIntent})`,
-      );
-    } catch (err) {
-      this.logger.error(
-        `Private DM reply failed for comment ${commentId}`,
-        (err as Error).message,
-      );
-    }
+    }).catch((err) => this.logger.error(`Public comment reply failed for ${commentId}: ${(err as Error).message}`));
+    this.logger.log(`Answered comment ${commentId} on product ${mapping.productId} (${result.status})`);
   }
 
-  /**
-   * Build the DM answer text (+ images) from templates. size_chart_request is
-   * handled with the size-chart resolver + explicit variables; every other
-   * product-question intent goes through the standard template variable builder
-   * (`render`), which maps ask_price → show_price, availability/inquiry →
-   * show_products, etc. and interpolates product_name / price / product_list.
-   */
-  private async buildAnswer(
+  /** Every message the runner produced (welcome, reply, handoff line), as one text. */
+  private async sendPrivateReply(
+    account: { token: string; igAccountId: string },
+    commentId: string,
     tenantId: string,
-    classification: ClassificationResult,
-    productId: string,
-    productData: ProductSearchResult[],
-  ): Promise<{ text: string; imageUrls?: string[] } | null> {
-    if (classification.primaryIntent === 'size_chart_request') {
-      const { brand, category } = await this.sizeChartsService.getBrandAndCategoryForProduct(
-        tenantId,
-        productId,
-      );
-      const chart = await this.sizeChartsService.resolveForContext(tenantId, { brand, category });
-      if (chart) {
-        const rendered = await this.templateEngine.renderCustomScenario(tenantId, 'show_size_chart', {
-          brand: brand ?? category ?? '',
-          name: chart.name,
-        });
-        if (rendered?.text) {
-          return { text: rendered.text, imageUrls: [this.sizeChartsService.publicUrl(chart.imagePath)] };
-        }
-      }
-      // No chart / no template → fall through to a product answer (list sizes).
+    conversationId: string,
+    result: TurnRunResult,
+  ): Promise<boolean> {
+    const ids = result.messages.flatMap((m) => (m.messageId ? [m.messageId] : []));
+    const replyId = result.messages.find((m) => m.kind === 'reply')?.messageId ?? ids[0] ?? null;
+    const text = result.messages.map((m) => m.text).join('\n\n');
+    if (result.messages.some((m) => m.imageUrls?.length)) {
+      this.logger.warn(`Comment ${commentId}: photos dropped, a private reply is text only`);
     }
-
-    const rendered = await this.templateEngine.render({
-      tenantId,
-      classification,
-      productData,
-      memory: {} as AssistantMemory,
-      recentTemplateIds: [],
-    });
-    if (!rendered?.text) return null;
-    return { text: rendered.text, imageUrls: rendered.imageUrls };
+    try {
+      const mids = await this.sender.sendText(account, { comment_id: commentId }, text, {
+        tenantId,
+        conversationId,
+        messageId: replyId,
+      });
+      if (ids.length > 0) {
+        await this.dataSource.query(`UPDATE messages SET delivery_status = 'sent' WHERE id = ANY($1)`, [ids]);
+      }
+      if (replyId && mids[0]) {
+        await this.dataSource.query(`UPDATE messages SET external_message_id = $2 WHERE id = $1`, [replyId, mids[0]]);
+      }
+      return true;
+    } catch (err) {
+      this.logger.error(`Private reply failed for comment ${commentId}: ${(err as Error).message}`);
+      if (ids.length > 0) {
+        await this.dataSource.query(`UPDATE messages SET delivery_status = 'failed' WHERE id = ANY($1)`, [ids]);
+      }
+      return false;
+    }
   }
 
-  // ─── Graph API: the public comment reply. DMs go through InstagramSender. ──
+  /** Fails closed: a comment we can't screen gets no DM. */
+  private async isQuestionForShop(comment: string): Promise<boolean> {
+    const openai = this.provider();
+    if (!openai) return false;
+    try {
+      const result = await generateText({
+        model: openai(this.config.get<string>('instagram.commentGateModel') ?? 'gpt-5.4-mini'),
+        instructions: GATE_INSTRUCTIONS,
+        output: Output.object({ schema: gateSchema, name: 'comment_screen' }),
+        messages: [{ role: 'user', content: comment.slice(0, 500) }],
+        maxRetries: 2,
+      });
+      return result.output?.answer === true;
+    } catch (err) {
+      this.logger.warn(`Comment screen failed, comment not answered: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
+  private provider(): OpenAIProvider | null {
+    if (this.openai) return this.openai;
+    const apiKey = this.config.get<string>('openai.apiKey');
+    if (!apiKey) return null;
+    this.openai = createOpenAI({ apiKey });
+    return this.openai;
+  }
 
   /** Public reply threaded under the comment. */
   private async replyToComment(commentId: string, text: string, token: string): Promise<void> {
@@ -307,10 +255,5 @@ export class InstagramCommentService {
     if (!res.ok) {
       throw new Error(`Comment reply error ${res.status}: ${await res.text()}`);
     }
-  }
-
-  private markProcessed(commentId: string): void {
-    this.processedCommentIds.add(commentId);
-    setTimeout(() => this.processedCommentIds.delete(commentId), 10 * 60 * 1000);
   }
 }

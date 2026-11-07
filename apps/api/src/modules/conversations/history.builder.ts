@@ -27,6 +27,7 @@ const ATTACHMENT_LABEL: Record<MessageAttachment['type'], string> = {
   post_share: '(shared a post)',
   story_mention: '(mentioned the shop in their story)',
   quoted_message: '(replying to an earlier message)',
+  post_comment: "(commented under the shop's post)",
 };
 const PHOTO_NOT_LOADED = "(sent a photo that couldn't be loaded; ask them to send it again if you need it)";
 const PHOTO_DROPPED = '(sent a photo earlier in the conversation; it is no longer attached)';

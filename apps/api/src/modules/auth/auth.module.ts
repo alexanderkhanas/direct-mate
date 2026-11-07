@@ -8,7 +8,6 @@ import { Tenant } from '../tenants/entities/tenant.entity';
 import { TenantSettings } from '../tenants/entities/tenant-settings.entity';
 import { User } from '../tenants/entities/user.entity';
 import { StoreConfig } from '../engine/entities/store-config.entity';
-import { ResponseTemplate } from '../engine/entities/response-template.entity';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
@@ -16,7 +15,7 @@ import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([User, Tenant, TenantSettings, StoreConfig, ResponseTemplate]),
+    TypeOrmModule.forFeature([User, Tenant, TenantSettings, StoreConfig]),
     PassportModule,
     SubscriptionsModule,
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 5 }]),

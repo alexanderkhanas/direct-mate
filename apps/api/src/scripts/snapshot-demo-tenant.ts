@@ -18,8 +18,8 @@
 //   npm run verify:men-demo     → --check    read-only diff, exit 1 on drift
 //   npm run restore:men-demo    → --restore  upsert the differences back
 //
-// Covers CONFIGURATION only — catalog, variants, stock, templates, FAQ, size
-// charts, store config, settings. Conversations, customers, messages and
+// Covers CONFIGURATION only — catalog, variants, stock, size charts, store
+// config (including the store notes), settings. Conversations, customers, messages and
 // orders are never read and never written: restore must be safe to run on a
 // tenant mid-demo.
 
@@ -37,8 +37,6 @@ interface Snapshot {
   storeConfig: Record<string, unknown> | null;
   settings: Record<string, unknown> | null;
   products: Array<Record<string, unknown>>;
-  templates: Array<Record<string, unknown>>;
-  faqItems: Array<Record<string, unknown>>;
   sizeCharts: Array<Record<string, unknown>>;
 }
 
@@ -46,8 +44,6 @@ interface Snapshot {
 // local have different row UUIDs for the same logical rows.
 const productKey = (p: any) => String(p.title);
 const variantKey = (v: any) => `${v.color ?? '-'}/${v.size ?? '-'}`;
-const templateKey = (t: any) => String(t.scenario);
-const faqKey = (f: any) => JSON.stringify(f.question_tags);
 const chartKey = (c: any) => String(c.name);
 
 async function capture(slug: string): Promise<Snapshot> {
@@ -60,7 +56,7 @@ async function capture(slug: string): Promise<Snapshot> {
 
   const [storeConfig] = await AppDataSource.query(
     `SELECT flow_config, checkout_config, escalation_config, fallback_config,
-            brand_config, recommendation_config
+            brand_config, recommendation_config, handoff_config, knowledge_doc
        FROM store_configs WHERE tenant_id = $1`,
     [tenantId],
   );
@@ -95,19 +91,6 @@ async function capture(slug: string): Promise<Snapshot> {
     [tenantId],
   );
 
-  const templates = await AppDataSource.query(
-    `SELECT scenario, stage, blocks, required_variables, tone_tags,
-            priority, active
-       FROM response_templates WHERE tenant_id = $1 ORDER BY scenario`,
-    [tenantId],
-  );
-
-  const faqItems = await AppDataSource.query(
-    `SELECT question_tags, answer_template, active
-       FROM faq_items WHERE tenant_id = $1 ORDER BY question_tags::text`,
-    [tenantId],
-  );
-
   const sizeCharts = await AppDataSource.query(
     `SELECT name, image_path, categories, brands, is_default
        FROM size_charts WHERE tenant_id = $1 ORDER BY name`,
@@ -121,8 +104,6 @@ async function capture(slug: string): Promise<Snapshot> {
     storeConfig: storeConfig ?? null,
     settings: settings ?? null,
     products,
-    templates,
-    faqItems,
     sizeCharts,
   };
 }
@@ -201,8 +182,6 @@ function diffSnapshots(expected: Snapshot, actual: Snapshot): Drift[] {
   }
 
   drifts.push(...diffCollection('product', expected.products, actual.products, productKey));
-  drifts.push(...diffCollection('template', expected.templates, actual.templates, templateKey));
-  drifts.push(...diffCollection('faq', expected.faqItems, actual.faqItems, faqKey));
   drifts.push(...diffCollection('sizeChart', expected.sizeCharts, actual.sizeCharts, chartKey));
   return drifts;
 }
@@ -210,12 +189,11 @@ function diffSnapshots(expected: Snapshot, actual: Snapshot): Drift[] {
 // ─── Restore ─────────────────────────────────────────────────────
 //
 // Repairs the rows a demo depends on. Deliberately NOT a mirror of every
-// drift kind: it never DELETEs (an "extra" template someone added on purpose
-// is reported, not destroyed) and it never touches catalog rows — a product
+// drift kind: it never DELETEs and it never touches catalog rows — a product
 // or price that changed in prod is a business decision, not corruption, and
 // the right response is to re-export the snapshot after reviewing it. What it
-// does own is the config surface a demo silently depends on: the is_demo flag,
-// the templates, and the FAQ items.
+// does own is the config surface a demo silently depends on: the is_demo flag
+// and the store notes the agent answers from.
 
 async function restore(snapshot: Snapshot): Promise<number> {
   const [tenant] = await AppDataSource.query(
@@ -237,56 +215,16 @@ async function restore(snapshot: Snapshot): Promise<number> {
     repaired++;
   }
 
-  for (const t of snapshot.templates as any[]) {
-    const [existing] = await AppDataSource.query(
-      `SELECT id, stage, blocks, required_variables, tone_tags, priority, active
-         FROM response_templates WHERE tenant_id = $1 AND scenario = $2`,
-      [tenantId, t.scenario],
+  const notes = (snapshot.storeConfig as any)?.knowledge_doc ?? null;
+  if (notes) {
+    const restored = await AppDataSource.query(
+      `UPDATE store_configs SET knowledge_doc = $2
+        WHERE tenant_id = $1 AND knowledge_doc IS DISTINCT FROM $2
+       RETURNING tenant_id`,
+      [tenantId, notes],
     );
-    const params = [
-      tenantId,
-      t.scenario,
-      t.stage,
-      JSON.stringify(t.blocks),
-      JSON.stringify(t.required_variables),
-      JSON.stringify(t.tone_tags),
-      t.priority,
-      t.active,
-    ];
-    if (!existing) {
-      await AppDataSource.query(
-        `INSERT INTO response_templates (tenant_id, scenario, stage, blocks,
-                                          required_variables, tone_tags, priority, active)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        params,
-      );
-      console.log(`  restored template ${t.scenario} (was missing)`);
-      repaired++;
-    } else if (JSON.stringify(existing.blocks) !== JSON.stringify(t.blocks)) {
-      await AppDataSource.query(
-        `UPDATE response_templates
-            SET stage = $3, blocks = $4, required_variables = $5,
-                tone_tags = $6, priority = $7, active = $8
-          WHERE tenant_id = $1 AND scenario = $2`,
-        params,
-      );
-      console.log(`  restored template ${t.scenario} (copy changed)`);
-      repaired++;
-    }
-  }
-
-  for (const f of snapshot.faqItems as any[]) {
-    const [existing] = await AppDataSource.query(
-      `SELECT id FROM faq_items WHERE tenant_id = $1 AND question_tags::text = $2`,
-      [tenantId, JSON.stringify(f.question_tags)],
-    );
-    if (!existing) {
-      await AppDataSource.query(
-        `INSERT INTO faq_items (tenant_id, question_tags, answer_template, active)
-         VALUES ($1, $2, $3, $4)`,
-        [tenantId, JSON.stringify(f.question_tags), f.answer_template, f.active],
-      );
-      console.log(`  restored FAQ ${faqKey(f)} (was missing)`);
+    if (restored.length > 0) {
+      console.log('  restored the store notes (knowledge_doc)');
       repaired++;
     }
   }
@@ -318,8 +256,7 @@ async function main(): Promise<void> {
       fs.writeFileSync(file, `${JSON.stringify(snapshot, null, 2)}\n`);
       console.log(
         `Snapshot written: ${path.relative(process.cwd(), file)}\n` +
-          `  ${snapshot.products.length} products, ${snapshot.templates.length} templates, ` +
-          `${snapshot.faqItems.length} FAQ, ${snapshot.sizeCharts.length} size charts`,
+          `  ${snapshot.products.length} products, ${snapshot.sizeCharts.length} size charts`,
       );
       return;
     }

@@ -27,7 +27,9 @@ export interface MessageAttachment {
     /** The customer mentioned the shop in their own story. */
     | 'story_mention'
     /** A quote-reply to an earlier message in the thread (Instagram `reply_to.mid`). */
-    | 'quoted_message';
+    | 'quoted_message'
+    /** A comment under one of the shop's posts, answered here by private reply. */
+    | 'post_comment';
   /** The Instagram media id, for a customer's photo the URL it came from, for a quote the quoted message's id. */
   mediaId: string;
   /** What the quoted message said, looked up when the reply arrived. */

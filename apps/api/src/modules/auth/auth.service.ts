@@ -6,20 +6,17 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { UserRole } from '@direct-mate/shared';
 import { User } from '../tenants/entities/user.entity';
 import { Tenant } from '../tenants/entities/tenant.entity';
 import { TenantSettings } from '../tenants/entities/tenant-settings.entity';
 import { StoreConfig } from '../engine/entities/store-config.entity';
-import { ResponseTemplate } from '../engine/entities/response-template.entity';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { JwtPayload } from '../../common/decorators/current-user.decorator';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
-import { BASE_TEMPLATES } from '../../scripts/seed/templates/base';
-import { CLOTHING_TEMPLATES } from '../../scripts/seed/templates/clothing';
 
 @Injectable()
 export class AuthService {
@@ -124,7 +121,7 @@ export class AuthService {
       const settings = manager.create(TenantSettings, {
         tenantId: savedTenant.id,
         supportedLanguages: ['uk'],
-        brandTonePrompt: 'Warm, friendly, concise. Use Ukrainian. Never reveal you are AI.',
+        brandTonePrompt: 'Warm, friendly, concise.',
       });
       await manager.save(settings);
 
@@ -133,9 +130,6 @@ export class AuthService {
         tenantId: savedTenant.id,
       });
       await manager.save(storeConfig);
-
-      // Create default templates
-      await this.createDefaultTemplates(manager, savedTenant.id);
 
       // Generate JWT
       const payload: JwtPayload = {
@@ -180,37 +174,5 @@ export class AuthService {
 
   private randomSuffix(): string {
     return Math.random().toString(36).substring(2, 6);
-  }
-
-  /**
-   * Insert the default starter-pack response templates for a newly registered
-   * tenant. Pulls from the same source-of-truth as the demo-tenant builders
-   * (BASE_TEMPLATES + CLOTHING_TEMPLATES) so adding a new scenario in
-   * `seed/templates/{base,clothing}/index.ts` automatically propagates to new
-   * registrations.
-   *
-   * Vertical: defaults to clothing/fashion. If a future signup flow surfaces
-   * `businessType === 'cosmetics'`, swap CLOTHING_TEMPLATES for
-   * COSMETICS_TEMPLATES based on `dto.businessType`.
-   */
-  private async createDefaultTemplates(manager: EntityManager, tenantId: string): Promise<void> {
-    // Dedup by scenario — vertical templates can override base entries by key.
-    const merged = new Map<string, (typeof BASE_TEMPLATES)[number]>();
-    for (const t of BASE_TEMPLATES) merged.set(t.scenario, t);
-    for (const t of CLOTHING_TEMPLATES) merged.set(t.scenario, t);
-
-    for (const t of merged.values()) {
-      const entity = manager.create(ResponseTemplate, {
-        tenantId,
-        scenario: t.scenario,
-        stage: t.stage,
-        blocks: t.blocks,
-        requiredVariables: t.requiredVariables,
-        toneTags: t.toneTags,
-        priority: t.priority,
-        active: t.active,
-      });
-      await manager.save(entity);
-    }
   }
 }

@@ -3,7 +3,7 @@
 // clothing businessType as the women-clothes demo, but `before_search`:
 // height/weight are collected up front, mapped through a men's size chart
 // covering S–3XL. No size-chart images (the site has none), so
-// sizeHelpMode is 'measurements'. Templates come from the men's copy pack.
+// sizeHelpMode is 'measurements'.
 //
 // Shoes (37 products, numeric sizes 40–45) are included; the measurements
 // flow doesn't map shoe sizes — a shoe-size question falls through to the
@@ -11,7 +11,6 @@
 
 import { DataSource } from 'typeorm';
 import { getAltamenProducts } from '../data/altamen-products';
-import { getTemplatesForBusinessType } from '../templates';
 import { ALTAMEN_KNOWLEDGE_DOC } from '../knowledge/clothing-men';
 import {
   DEMO_HANDOFF_ANNOUNCE_NO_EMOJI,
@@ -26,7 +25,6 @@ import {
   createTenantSettings,
   seedCatalog,
   seedProductMedia,
-  seedResponseTemplates,
 } from './tenant-builder';
 
 const ALTAMEN_FLOW_CONFIG = {
@@ -125,10 +123,6 @@ export async function buildAltamenTenant(
     .filter((f): f is string => Boolean(f));
   const urlPrefix = await copyImages('altamen', 'altamen', Array.from(new Set(imageFiles)));
   await seedProductMedia(ds, tenantId, products, urlPrefix);
-
-  // Men's copy variant: same scenarios, restrained voice, no 💛.
-  const templates = getTemplatesForBusinessType('clothing-men');
-  await seedResponseTemplates(ds, tenantId, templates);
 
   console.log(`✓ Alta Men tenant ready: ${opts.slug}\n`);
   return tenantId;

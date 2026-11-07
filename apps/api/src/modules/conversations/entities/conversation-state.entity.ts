@@ -20,21 +20,6 @@ export class ConversationState {
   @Column({ type: 'text', default: ConversationStateStatus.Browsing })
   stateStatus!: ConversationStateStatus;
 
-  @Column({ type: 'uuid', nullable: true })
-  selectedProductId!: string | null;
-
-  @Column({ type: 'uuid', nullable: true })
-  selectedVariantId!: string | null;
-
-  @Column({ type: 'uuid', nullable: true })
-  activeCheckoutSessionId!: string | null;
-
-  @Column({ type: 'numeric', precision: 4, scale: 3, nullable: true })
-  lastAiConfidence!: number | null;
-
-  @Column({ type: 'jsonb', nullable: true })
-  contextJson!: Record<string, unknown> | null;
-
   @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt!: Date;
 
