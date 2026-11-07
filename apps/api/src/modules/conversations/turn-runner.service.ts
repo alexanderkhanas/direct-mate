@@ -45,6 +45,8 @@ export interface TurnRunInput {
   modelOverride?: string;
   /** Catalog in the prompt for this turn only (simulator comparison runs). */
   catalogPrompt?: 'list' | 'overview';
+  /** Answer even though the store is paused: the owner trying their bot before turning it on. */
+  ignorePause?: boolean;
   /** Discard the reply if the customer wrote again while it was being prepared (Instagram). */
   supersede?: boolean;
   /** Extra context for this turn only, e.g. that the reply goes out as a comment's private reply. */
@@ -153,7 +155,7 @@ export class TurnRunner {
       settings = await this.storeSettings.load(input.tenantId);
       const live = input.mode !== 'dry_run';
 
-      if (live && settings.operatingMode === 'paused') return this.skipped('paused', traceId);
+      if (live && settings.operatingMode === 'paused' && !input.ignorePause) return this.skipped('paused', traceId);
       if (live && conversation.status === ConversationStatus.HumanInControl) {
         return this.skipped('human_in_control', traceId);
       }
@@ -529,5 +531,6 @@ export class TurnRunner {
 function orderSource(source: TraceSource): string {
   if (source === 'demo_widget') return 'demo';
   if (source === 'simulator_cli' || source === 'simulator_scenario' || source === 'live_console') return 'simulator';
+  if (source === 'owner_test') return 'test';
   return 'instagram_ai';
 }

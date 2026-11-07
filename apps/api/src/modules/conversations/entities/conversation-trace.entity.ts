@@ -44,6 +44,8 @@ export type TraceSource =
   | 'conversation_test'
   /** Manual replay/re-drive through the conversations API. */
   | 'manual_api'
+  /** The store owner trying their bot in the setup flow (channel 'test'). */
+  | 'owner_test'
   /** Caller didn't say — pre-migration rows, or a new call site that forgot. */
   | 'unknown';
 

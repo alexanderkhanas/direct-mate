@@ -38,7 +38,7 @@ export class AnalyticsService {
         COUNT(*) FILTER (WHERE needs_handoff = false) AS auto_handled,
         COUNT(*) FILTER (WHERE needs_handoff = true) AS handoff_count
       FROM conversations
-      WHERE tenant_id = $1 AND created_at >= $2`,
+      WHERE tenant_id = $1 AND created_at >= $2 AND channel <> 'test'`,
       [tenantId, from],
     );
 
@@ -48,7 +48,7 @@ export class AnalyticsService {
         COALESCE(SUM(total_amount), 0) AS total_revenue,
         COALESCE(MAX(currency), 'UAH') AS currency
       FROM orders
-      WHERE tenant_id = $1 AND created_at >= $2`,
+      WHERE tenant_id = $1 AND created_at >= $2 AND source NOT IN ('test', 'simulator')`,
       [tenantId, from],
     );
 
@@ -77,7 +77,7 @@ export class AnalyticsService {
           COUNT(*) AS total,
           COUNT(*) FILTER (WHERE needs_handoff = false) AS auto_handled
         FROM conversations
-        WHERE tenant_id = $1 AND created_at >= $2
+        WHERE tenant_id = $1 AND created_at >= $2 AND channel <> 'test'
         GROUP BY day
       ) c ON c.day = d::date
       ORDER BY d`,
@@ -115,7 +115,7 @@ export class AnalyticsService {
         COUNT(DISTINCT o.id) AS order_created
       FROM conversations c
       LEFT JOIN orders o ON o.customer_id = c.customer_id AND o.tenant_id = c.tenant_id AND o.created_at >= $2
-      WHERE c.tenant_id = $1 AND c.created_at >= $2`,
+      WHERE c.tenant_id = $1 AND c.created_at >= $2 AND c.channel <> 'test'`,
       [tenantId, from],
     );
 
@@ -133,7 +133,7 @@ export class AnalyticsService {
         COALESCE(handoff_reason, 'unknown') AS reason,
         COUNT(*) AS count
       FROM conversations
-      WHERE tenant_id = $1 AND needs_handoff = true AND created_at >= $2
+      WHERE tenant_id = $1 AND needs_handoff = true AND created_at >= $2 AND channel <> 'test'
       GROUP BY handoff_reason
       ORDER BY count DESC
       LIMIT 10`,
@@ -184,7 +184,7 @@ export class AnalyticsService {
       FROM orders o
       LEFT JOIN customers cu ON cu.id = o.customer_id
       LEFT JOIN checkout_customer_info cci ON cci.checkout_session_id = o.checkout_session_id
-      WHERE o.tenant_id = $1
+      WHERE o.tenant_id = $1 AND o.source NOT IN ('test', 'simulator')
       ORDER BY o.created_at DESC
       LIMIT 10`,
       [tenantId],

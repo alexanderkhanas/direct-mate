@@ -7,6 +7,7 @@ describe('AuthService.register', () => {
     const saved: Array<{ entity: unknown; row: Record<string, unknown> }> = [];
     const manager = {
       findOne: jest.fn(async () => null),
+      query: jest.fn(async () => []),
       create: jest.fn((entity, row) => ({ entity, row })),
       save: jest.fn(async ({ entity, row }) => {
         saved.push({ entity, row });
@@ -40,6 +41,7 @@ describe('AuthService.register', () => {
     expect(saved.some((s) => s.row.brandTonePrompt === DEFAULT_BRAND_TONE)).toBe(true);
     // The trial is created with the transaction's manager, so it commits with the store.
     expect(subscriptions.createTrialForTenant).toHaveBeenCalledWith('1', manager);
+    expect(manager.query).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO tenant_onboarding'), ['1']);
     expect(telegram.notifyPlatform).toHaveBeenCalledWith(expect.stringContaining('Alta Men'));
   });
 });

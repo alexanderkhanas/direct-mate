@@ -6,7 +6,10 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Not, Repository } from 'typeorm';
+
+/** Orders placed by the owner's test chat or the simulator: real rows, not real sales. */
+export const NOT_REAL_ORDER_SOURCES = ['test', 'simulator'];
 import { withRetry } from '../../common/retry';
 import { Order } from './entities/order.entity';
 import { OrderItem } from './entities/order-item.entity';
@@ -423,8 +426,9 @@ export class OrdersService {
   }
 
   async findAll(tenantId: string): Promise<any[]> {
+    // Orders from the owner's test chat and the simulator aren't real sales.
     const orders = await this.orderRepo.find({
-      where: { tenantId },
+      where: { tenantId, source: Not(In(NOT_REAL_ORDER_SOURCES)) },
       relations: ['items'],
       order: { createdAt: 'DESC' },
     });

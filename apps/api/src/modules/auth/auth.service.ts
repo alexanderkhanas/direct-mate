@@ -140,6 +140,8 @@ export class AuthService {
 
       // The trial commits with the store: a store with no plan row would count as active forever.
       await this.subscriptionsService.createTrialForTenant(savedTenant.id, manager);
+      // Not finished: the owner lands in the setup flow.
+      await manager.query(`INSERT INTO tenant_onboarding (tenant_id) VALUES ($1)`, [savedTenant.id]);
 
       // Generate JWT
       const payload: JwtPayload = {

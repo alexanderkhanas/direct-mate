@@ -15,7 +15,8 @@ function setup(mode: string, missing: string[] = []) {
   };
   const readiness = { check: jest.fn(async () => ({ ready: missing.length === 0, missing })) };
   const telegram = { notifyPlatform: jest.fn(async () => undefined) };
-  const controller = new StoreConfigController(repo as never, readiness as never, telegram as never);
+  const onboarding = { markCompleted: jest.fn(async () => undefined) };
+  const controller = new StoreConfigController(repo as never, readiness as never, telegram as never, onboarding as never);
   return { controller, repo, readiness, telegram };
 }
 

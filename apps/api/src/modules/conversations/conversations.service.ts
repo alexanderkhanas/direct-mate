@@ -191,6 +191,8 @@ export class ConversationsService {
       .createQueryBuilder('c')
       .innerJoinAndSelect('c.customer', 'cust')
       .where('c.tenant_id = :tenantId', { tenantId })
+      // The owner's own test chats (setup flow) aren't customers.
+      .andWhere("c.channel <> 'test'")
       .orderBy('c.lastMessageAt', 'DESC')
       .skip((page - 1) * limit)
       .take(limit);

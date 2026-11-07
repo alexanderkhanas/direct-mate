@@ -146,7 +146,7 @@ export class InstagramOAuthController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @Post('connections/instagram/oauth/start')
-  async start(@CurrentUser() user: JwtPayload) {
+  async start(@CurrentUser() user: JwtPayload, @Body() body: { returnTo?: string } = {}) {
     const appId = this.config.get<string>('meta.appId');
     const configId = this.config.get<string>('meta.loginConfigId');
     const redirectUri = this.config.get<string>('meta.oauthRedirectUri');
@@ -154,8 +154,10 @@ export class InstagramOAuthController {
       throw new BadRequestException('Instagram OAuth not configured');
     }
 
-    // Generate state token and save to DB (reuse telegram_connect_tokens table)
-    const state = await this.integrationsService.createOAuthState(user.tenantId);
+    // Generate state token and save to DB (reuse telegram_connect_tokens table).
+    // Meta returns `state` as given, so it also says which admin page to come back to.
+    const token = await this.integrationsService.createOAuthState(user.tenantId);
+    const state = `${token}.${body?.returnTo === 'onboarding' ? 'onboarding' : 'connections'}`;
 
     // The Unified Login URL from the App Dashboard. The configuration carries
     // the permissions, so no scopes here. Its `display=popup` is dropped: the
@@ -176,20 +178,26 @@ export class InstagramOAuthController {
   @Get('auth/instagram/callback')
   async callback(
     @Query('code') code: string,
-    @Query('state') state: string,
+    @Query('state') rawState: string,
+    @Query('error') error: string,
     @Res() res: Response,
   ) {
     const adminBaseUrl = this.config.get<string>('admin.baseUrl') ?? 'http://localhost:5173';
+    const [state, returnKey] = (rawState ?? '').split('.');
+    // Only the two pages that start a connection; never a URL from the query.
+    const page = `${adminBaseUrl}/${returnKey === 'onboarding' ? 'onboarding' : 'connections'}`;
 
     if (!code || !state) {
-      return res.redirect(`${adminBaseUrl}/connections?instagram=error&reason=missing_params`);
+      // Meta sends `error=access_denied` when the owner closes or declines the login.
+      const reason = error === 'access_denied' ? 'cancelled' : 'missing_params';
+      return res.redirect(`${page}?instagram=error&reason=${reason}`);
     }
 
     try {
       // Validate state and get tenantId
       const tenantId = await this.integrationsService.validateOAuthState(state);
       if (!tenantId) {
-        return res.redirect(`${adminBaseUrl}/connections?instagram=error&reason=invalid_state`);
+        return res.redirect(`${page}?instagram=error&reason=invalid_state`);
       }
 
       const { accessToken, expiresAt } = await this.integrationsService.exchangeCodeForToken(code);
@@ -201,7 +209,7 @@ export class InstagramOAuthController {
       if (accounts.length !== 1) {
         const reason = accounts.length === 0 ? 'no_account' : 'multiple_accounts';
         this.logger.warn(`Instagram OAuth for tenant ${tenantId}: ${accounts.length} accounts shared — ${reason}`);
-        return res.redirect(`${adminBaseUrl}/connections?instagram=error&reason=${reason}`);
+        return res.redirect(`${page}?instagram=error&reason=${reason}`);
       }
       const [account] = accounts;
 
@@ -210,17 +218,17 @@ export class InstagramOAuthController {
       } catch (err) {
         // Saving now would show a connected account that never hears a message.
         this.logger.error(`Instagram OAuth for tenant ${tenantId}`, (err as Error).message);
-        return res.redirect(`${adminBaseUrl}/connections?instagram=error&reason=subscribe_failed`);
+        return res.redirect(`${page}?instagram=error&reason=subscribe_failed`);
       }
 
       // The account id is what webhooks put in entry.id.
       await this.integrationsService.connectInstagram(tenantId, account.id, accessToken, account.username, expiresAt);
 
       this.logger.log(`Instagram OAuth connected for tenant ${tenantId}, account ${account.id}`);
-      return res.redirect(`${adminBaseUrl}/connections?instagram=connected`);
+      return res.redirect(`${page}?instagram=connected`);
     } catch (err) {
       this.logger.error('Instagram OAuth callback failed', (err as Error).message);
-      return res.redirect(`${adminBaseUrl}/connections?instagram=error&reason=exchange_failed`);
+      return res.redirect(`${page}?instagram=error&reason=exchange_failed`);
     }
   }
 }

@@ -41,7 +41,6 @@ export default function App() {
         <Route path="/data-deletion" element={<DataDeletionPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
-        <Route path="/onboarding" element={<OnboardingPage />} />
         <Route
           path="/"
           element={
@@ -51,6 +50,7 @@ export default function App() {
           }
         >
           <Route index element={<DashboardPage />} />
+          <Route path="onboarding" element={<OnboardingPage />} />
           <Route path="orders" element={<OrdersPage />} />
           <Route path="conversations" element={<ConversationsPage />} />
           <Route path="conversations/:id" element={<ConversationDetailPage />} />

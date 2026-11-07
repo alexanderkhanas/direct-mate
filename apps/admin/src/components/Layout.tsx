@@ -135,6 +135,7 @@ export default function Layout() {
 
       {/* Main */}
       <main className="flex-1 overflow-y-auto">
+        <SetupBanner />
         <div className="max-w-5xl mx-auto px-8 py-8">
           <Outlet />
         </div>
@@ -188,3 +189,24 @@ function AdminTopBar() {
     </div>
   );
 }
+
+/** Until the bot is on (or set to watch), every page points back to the setup flow. */
+function SetupBanner() {
+  const { t } = useT();
+  const location = useLocation();
+  const { data } = useQuery<{ completed: boolean }>({
+    queryKey: ['onboarding-status'],
+    queryFn: () => api.get('/onboarding/status').then((r) => r.data),
+    staleTime: 30_000,
+  });
+  if (!data || data.completed || location.pathname.startsWith('/onboarding')) return null;
+  return (
+    <div className="bg-amber-50 border-b border-amber-100 px-8 py-2.5 text-sm text-amber-800 flex items-center gap-3">
+      <span>{t('setup.banner')}</span>
+      <Link to="/onboarding" className="font-medium underline">
+        {t('setup.banner_link')}
+      </Link>
+    </div>
+  );
+}
+
