@@ -127,12 +127,8 @@ export interface OrderItem {
 export interface TenantSettings {
   brandTonePrompt: string | null;
   supportedLanguages: string[];
-  businessHours: {
-    timezone: string;
-    days: number[];
-    start: string;
-    end: string;
-  } | null;
+  /** Per day: `mon`…`sun` (or `mon_fri`) → `'09:00-18:00'` or `'closed'`. */
+  businessHours: Record<string, string> | null;
 }
 
 export interface AuditLog {

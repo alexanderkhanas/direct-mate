@@ -497,3 +497,127 @@ export function ExamplesSection() {
     </Card>
   );
 }
+
+const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
+type Day = (typeof DAYS)[number];
+type DayHours = { open: boolean; from: string; to: string };
+
+/** Stored hours (`mon_fri`/`sat_sun` ranges or single days) → one row per day. */
+function hoursToRows(raw: unknown): Record<Day, DayHours> {
+  const stored = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const value = (day: Day): unknown =>
+    stored[day] ?? (['mon', 'tue', 'wed', 'thu', 'fri'].includes(day) ? stored.mon_fri : stored.sat_sun);
+  return Object.fromEntries(
+    DAYS.map((day) => {
+      const v = value(day);
+      const m = typeof v === 'string' ? v.match(/(\d{1,2}:\d{2})\s*[-–]\s*(\d{1,2}:\d{2})/) : null;
+      return [day, m ? { open: true, from: m[1], to: m[2] } : { open: false, from: '09:00', to: '18:00' }];
+    }),
+  ) as Record<Day, DayHours>;
+}
+
+/** When managers answer: the bot tells customers when a person will reply after a handoff. */
+export function BusinessHoursSection({ settings }: { settings: TenantSettings }) {
+  const { t } = useT();
+  const qc = useQueryClient();
+  const [rows, setRows] = useState<Record<Day, DayHours>>(() => hoursToRows(settings.businessHours));
+  useEffect(() => setRows(hoursToRows(settings.businessHours)), [settings.businessHours]);
+
+  const save = useMutation({
+    mutationFn: () =>
+      api.patch('/settings', {
+        businessHours: Object.fromEntries(
+          DAYS.map((day) => [day, rows[day].open ? `${rows[day].from}-${rows[day].to}` : 'closed']),
+        ),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['settings'] }),
+  });
+  const update = (day: Day, patch: Partial<DayHours>) => setRows((r) => ({ ...r, [day]: { ...r[day], ...patch } }));
+
+  return (
+    <Card>
+      <h2 className="text-sm font-semibold text-gray-900 mb-1">{t('settings_ext.hours_title')}</h2>
+      <p className="text-xs text-gray-500 mb-4">{t('settings_ext.hours_desc')}</p>
+      <div className="space-y-2">
+        {DAYS.map((day) => (
+          <div key={day} className="flex items-center gap-3 text-sm">
+            <label className="flex items-center gap-2 w-28 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={rows[day].open}
+                onChange={(e) => update(day, { open: e.target.checked })}
+                className="h-4 w-4 rounded border-gray-300 text-gray-900 focus:ring-gray-900"
+              />
+              <span className="text-gray-700">{t(`settings_ext.day_${day}`)}</span>
+            </label>
+            {rows[day].open ? (
+              <>
+                <input type="time" value={rows[day].from} onChange={(e) => update(day, { from: e.target.value })}
+                  className="px-2 py-1 text-sm border border-gray-200 rounded-lg" />
+                <span className="text-gray-300">–</span>
+                <input type="time" value={rows[day].to} onChange={(e) => update(day, { to: e.target.value })}
+                  className="px-2 py-1 text-sm border border-gray-200 rounded-lg" />
+              </>
+            ) : (
+              <span className="text-xs text-gray-400">{t('settings_ext.day_off')}</span>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center gap-3 mt-4">
+        <Button onClick={() => save.mutate()} loading={save.isPending} size="sm">{t('common.save')}</Button>
+        {save.isSuccess && <span className="text-xs text-emerald-600">{t('settings.saved')}</span>}
+      </div>
+    </Card>
+  );
+}
+
+/** What the bot asks for before placing an order. Only these names mean anything to the order draft. */
+const CHECKOUT_FIELDS = ['fullName', 'phone', 'city', 'novaPoshtaBranch', 'paymentMethod'] as const;
+const DEFAULT_CHECKOUT_FIELDS = ['fullName', 'phone', 'city', 'novaPoshtaBranch'];
+
+export function CheckoutFieldsSection() {
+  const { t } = useT();
+  const qc = useQueryClient();
+  const { data: config } = useQuery<any>({
+    queryKey: ['store-config'],
+    queryFn: () => api.get('/engine/config').then((r) => r.data),
+  });
+  const [fields, setFields] = useState<string[]>(DEFAULT_CHECKOUT_FIELDS);
+  useEffect(() => {
+    const stored = config?.checkoutConfig?.fields;
+    if (Array.isArray(stored) && stored.length > 0) setFields(stored);
+  }, [config]);
+
+  const save = useMutation({
+    mutationFn: () => api.patch('/engine/config', { checkoutConfig: { fields } }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['store-config'] }),
+  });
+
+  return (
+    <Card>
+      <h2 className="text-sm font-semibold text-gray-900 mb-1">{t('settings_ext.checkout_title')}</h2>
+      <p className="text-xs text-gray-500 mb-4">{t('settings_ext.checkout_desc')}</p>
+      <div className="space-y-2">
+        {CHECKOUT_FIELDS.map((f) => (
+          <label key={f} className="flex items-center gap-2.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={fields.includes(f)}
+              onChange={(e) => setFields((cur) => (e.target.checked ? [...cur, f] : cur.filter((x) => x !== f)))}
+              className="h-4 w-4 rounded border-gray-300 text-gray-900 focus:ring-gray-900"
+            />
+            <span className="text-sm text-gray-700">{t(`settings_ext.field_${f}`)}</span>
+          </label>
+        ))}
+      </div>
+      <div className="flex items-center gap-3 mt-4">
+        <Button onClick={() => save.mutate()} loading={save.isPending} size="sm" disabled={fields.length === 0}>
+          {t('common.save')}
+        </Button>
+        {save.isSuccess && <span className="text-xs text-emerald-600">{t('settings.saved')}</span>}
+      </div>
+    </Card>
+  );
+}
+

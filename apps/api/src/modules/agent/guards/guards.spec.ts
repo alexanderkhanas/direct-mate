@@ -106,6 +106,17 @@ describe('checkGrounding', () => {
     expect(checkGrounding('Зараз на неї знижка.', { ...FACTS, onSale: true }, allow())).toEqual([]);
   });
 
+  it("doesn't read a refusal in the store notes as an offer", () => {
+    // Owners write exactly this; before, it let the bot promise a discount.
+    for (const notes of ['Знижок немає, ціни фіксовані.', 'Ми не робимо знижок.', 'Доставка не безкоштовна.', 'Безкоштовної доставки немає.']) {
+      const discount = checkGrounding('Дам вам знижку на сорочку.', FACTS, allow('', notes));
+      const free = checkGrounding('Доставка для вас безкоштовна.', FACTS, allow('', notes));
+      expect([...discount, ...free].length).toBeGreaterThan(0);
+    }
+    // A real offer with a caveat elsewhere in the sentence still counts.
+    expect(checkGrounding('Даю знижку на другу сорочку.', FACTS, allow('', 'Знижка 10% на другу річ, але не діє на акційні товари.'))).toEqual([]);
+  });
+
   it('checks every percentage, even in a sentence with a negation', () => {
     expect(checkGrounding('Знижка 20% діє, не хвилюйтесь.', FACTS, allow())).toEqual([{ kind: 'promise', value: '20%' }]);
     expect(checkGrounding('Склад: 95% льон.', { ...FACTS, percents: [95] }, allow())).toEqual([]);

@@ -10,9 +10,10 @@ import { LoadingState } from '../components/ui/Spinner';
 import { ProductSourcePanel } from '../components/catalog/ProductSourcePanel';
 import { InstagramConnectButton, useInstagramOAuthResult } from '../components/connections/InstagramConnect';
 import { TelegramConnectSection } from '../components/connections/TelegramConnectSection';
-import { BrandToneSection, ExamplesSection, KnowledgeSection, SizingSection } from '../components/settings/StoreSettingsSections';
+import { BrandToneSection, ExamplesSection, SizingSection } from '../components/settings/StoreSettingsSections';
 import { OwnerTestChat } from '../components/onboarding/OwnerTestChat';
 import { SetUpForMeButton } from '../components/onboarding/SetUpForMeButton';
+import { NotesBuilder } from '../components/onboarding/NotesBuilder';
 import { useT } from '../i18n';
 import { cn } from '../lib/cn';
 
@@ -116,7 +117,7 @@ export default function OnboardingPage() {
             </Card>
           )}
           {active === 'products' && <ProductSourcePanel onImported={refresh} />}
-          {active === 'knowledge' && <KnowledgeSection />}
+          {active === 'knowledge' && <NotesBuilder onSaved={refresh} />}
           {active === 'tone' && <ToneStep />}
           {active === 'sizes' && (
             <>

@@ -83,17 +83,22 @@ function parse<T extends z.ZodTypeAny>(schema: T, raw: unknown): z.infer<T> {
   return result.success ? result.data : schema.parse({});
 }
 
+const DAY_LABEL: Record<string, string> = {
+  mon: 'Пн', tue: 'Вт', wed: 'Ср', thu: 'Чт', fri: 'Пт', sat: 'Сб', sun: 'Нд', mon_fri: 'Пн–Пт', sat_sun: 'Сб–Нд',
+};
+
+/** «Пн–Пт: 09:00–18:00», «Нд: вихідний» (Kyiv time). */
 function renderBusinessHours(raw: unknown): string[] {
   if (!raw || typeof raw !== 'object') return [];
   const hours = raw as Record<string, unknown>;
-  // Typed shape: { timezone, days: [1..7], start, end }.
+  // An older typed shape: { timezone, days: [1..7], start, end }, 1 = Monday.
   if (Array.isArray(hours.days) && typeof hours.start === 'string' && typeof hours.end === 'string') {
-    return [`days ${hours.days.join(', ')}: ${hours.start}–${hours.end}`];
+    const names = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'];
+    return [`${hours.days.map((d) => names[Number(d) - 1] ?? d).join(', ')}: ${hours.start}–${hours.end}`];
   }
-  // Seeded shape: { mon_fri: '09:00-18:00', sat: ..., sun: 'closed' }.
   return Object.entries(hours)
-    .filter(([, v]) => typeof v === 'string')
-    .map(([k, v]) => `${k}: ${v}`);
+    .filter(([k, v]) => typeof v === 'string' && k !== 'timezone')
+    .map(([k, v]) => `${DAY_LABEL[k] ?? k}: ${v === 'closed' ? 'вихідний' : String(v).replace('-', '–')}`);
 }
 
 @Injectable()

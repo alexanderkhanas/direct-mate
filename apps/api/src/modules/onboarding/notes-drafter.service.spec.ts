@@ -1,0 +1,148 @@
+import { MockLanguageModelV4 } from 'ai/test';
+import { NotesDrafterService } from './notes-drafter.service';
+import { readWebsite, pageText, policyLinks } from './website-reader';
+import { renderKnowledgeDoc, emptyDraft } from './store-notes';
+
+jest.mock('./website-reader', () => {
+  const actual = jest.requireActual('./website-reader');
+  return { ...actual, readWebsite: jest.fn() };
+});
+const readWebsiteMock = readWebsite as jest.MockedFunction<typeof readWebsite>;
+
+const USAGE = {
+  inputTokens: { total: 100, noCache: 100, cacheRead: 0, cacheWrite: 0 },
+  outputTokens: { total: 10, text: 10, reasoning: 0 },
+};
+const text = (t: string) => ({
+  content: [{ type: 'text' as const, text: t }],
+  finishReason: { unified: 'stop' as const, raw: undefined },
+  usage: USAGE,
+  warnings: [],
+});
+const call = (toolName: string, input: unknown) => ({
+  content: [{ type: 'tool-call' as const, toolCallId: toolName, toolName, input: JSON.stringify(input) }],
+  finishReason: { unified: 'tool-calls' as const, raw: undefined },
+  usage: USAGE,
+  warnings: [],
+});
+
+function setup(model: MockLanguageModelV4, stored: Record<string, unknown> = {}) {
+  const writes: Array<{ sql: string; params: unknown[] }> = [];
+  const query = jest.fn(async (sql: string, params: unknown[]) => {
+    if (sql.includes('FROM tenants WHERE id')) return [{ name: 'Alta', business_type: 'fashion' }];
+    if (sql.includes("history_import->'facts'")) return [{ facts: null }];
+    if (sql.includes('SELECT o.notes_draft')) return [{ notes_draft: stored.draft ?? null, interview: stored.interview ?? null, feed_url: null }];
+    writes.push({ sql, params });
+    return [];
+  });
+  const models = { resolve: () => ({ model, providerOptions: {} }) };
+  return { service: new NotesDrafterService({ query } as never, models as never), writes };
+}
+
+describe('NotesDrafterService', () => {
+  beforeEach(() => readWebsiteMock.mockReset());
+
+  it("drafts the notes from the store's website and opens the chat with what's missing", async () => {
+    readWebsiteMock.mockResolvedValue([{ url: 'https://alta.example/dostavka', text: 'Відправляємо Новою Поштою за 1-2 дні.' }]);
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        text(
+          JSON.stringify({
+            delivery: '- Нова Пошта, відправка за 1–2 дні.',
+            payment: null,
+            returns: null,
+            sizes: null,
+            contacts: null,
+            other: null,
+            paymentDetails: null,
+            checkoutFields: ['fullName', 'phone', 'city', 'novaPoshtaBranch'],
+            businessHours: null,
+            sizingAdvice: 'recommend',
+            questions: ['Як можна оплатити замовлення?', 'Хто оплачує доставку?'],
+          }),
+        ),
+      ],
+    });
+    const t = setup(model);
+    const { draft, messages } = await t.service.draft('t1', 'https://alta.example');
+
+    expect(draft.sections).toEqual({ delivery: '- Нова Пошта, відправка за 1–2 дні.' });
+    expect(draft.sources).toEqual(['https://alta.example/dostavka']);
+    expect(messages[0].text).toContain('з вашого сайту: доставка');
+    expect(messages[0].text).toContain('Як можна оплатити замовлення?');
+    // The model saw the page text.
+    expect(JSON.stringify(model.doGenerateCalls[0].prompt)).toContain('Відправляємо Новою Поштою');
+  });
+
+  it('asks the standard questions without a model call when there is no website', async () => {
+    const model = new MockLanguageModelV4({ doGenerate: [] });
+    const { draft, messages } = await setup(model).service.draft('t1', null);
+    expect(model.doGenerateCalls).toHaveLength(0);
+    expect(draft.questions.length).toBeGreaterThan(0);
+    expect(messages[0].text).toContain('Якою службою відправляєте');
+  });
+
+  it("records the owner's answers in the draft with its tools", async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        call('update_section', { section: 'payment', text: '- Накладений платіж\n- Передоплата на картку' }),
+        call('set_payment_details', { details: 'ФОП Іваненко, IBAN UA12 3456' }),
+        text('Записала. А протягом скількох днів можна обміняти товар?'),
+      ],
+    });
+    const t = setup(model, { draft: { ...emptyDraft(), questions: ['Як оплатити?'] } });
+    const result = await t.service.chat('t1', 'Накладений платіж або передоплата, реквізити: ФОП Іваненко, IBAN UA12 3456');
+
+    expect(result.reply).toContain('обміняти');
+    expect(result.draft.sections.payment).toContain('Передоплата на картку');
+    expect(result.draft.paymentDetails).toBe('ФОП Іваненко, IBAN UA12 3456');
+    expect(result.messages.map((m) => m.role)).toEqual(['owner', 'assistant']);
+  });
+
+  it('writes the notes, checkout details and payment details into the store on save', async () => {
+    const t = setup(new MockLanguageModelV4({ doGenerate: [] }));
+    const draft = {
+      ...emptyDraft(),
+      sections: { delivery: '- Нова Пошта', payment: '- Накладений платіж' },
+      paymentDetails: 'IBAN UA00',
+      businessHours: { mon: '09:00-18:00', sun: 'closed' },
+    };
+    await t.service.apply('t1', draft);
+    const config = t.writes.find((w) => w.sql.includes('UPDATE store_configs'))!;
+    expect(config.params[1]).toBe('# Доставка\n- Нова Пошта\n\n# Оплата\n- Накладений платіж');
+    expect(config.params[3]).toBe('IBAN UA00');
+    const hours = t.writes.find((w) => w.sql.includes('business_hours'))!;
+    expect(JSON.parse(hours.params[1] as string)).toEqual({ mon: '09:00-18:00', sun: 'closed' });
+  });
+});
+
+describe('website reader', () => {
+  const html = `<html><head><script>var x</script><style>.a{}</style></head><body>
+    <nav><a href="/catalog">Каталог</a></nav>
+    <a href="/oplata-i-dostavka">Оплата і доставка</a>
+    <a href="https://alta.example/contacts">Контакти</a>
+    <a href="/obmin">Обмін та повернення</a>
+    <a href="https://other.example/dostavka">чужий сайт</a>
+    <p>Сорочки з льону&nbsp;для чоловіків</p>
+    <footer>Тел. +380 67 000 00 00</footer></body></html>`;
+
+  it("finds the shop's own policy pages, delivery and payment first", () => {
+    expect(policyLinks(html, 'https://alta.example/')).toEqual([
+      'https://alta.example/oplata-i-dostavka',
+      'https://alta.example/contacts',
+      'https://alta.example/obmin',
+    ]);
+  });
+
+  it('keeps visible text and the footer, drops scripts and navigation', () => {
+    const text = pageText(html);
+    expect(text).toContain('Сорочки з льону для чоловіків');
+    expect(text).toContain('+380 67 000 00 00');
+    expect(text).not.toContain('var x');
+    expect(text).not.toContain('Каталог');
+  });
+
+  it('renders the notes the agent reads, skipping empty sections', () => {
+    expect(renderKnowledgeDoc({ ...emptyDraft(), sections: { returns: '- 14 днів' } })).toBe('# Обмін і повернення\n- 14 днів');
+  });
+});

@@ -10,6 +10,8 @@ import { LoadingState } from '../components/ui/Spinner';
 import { useT } from '../i18n';
 import {
   BrandToneSection,
+  BusinessHoursSection,
+  CheckoutFieldsSection,
   ExamplesSection,
   KnowledgeSection,
   SizingSection,
@@ -331,6 +333,8 @@ export default function SettingsPage() {
       <OperatingModeSection />
       <BrandToneSection settings={data} />
       <KnowledgeSection />
+      <BusinessHoursSection settings={data} />
+      <CheckoutFieldsSection />
       <SizingSection />
       <ExamplesSection />
       <SubscriptionSection />

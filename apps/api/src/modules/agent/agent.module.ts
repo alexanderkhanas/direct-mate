@@ -37,6 +37,6 @@ import { CATALOG_SEARCH, RankedCatalogSearch } from './catalog/catalog-search';
     CatalogIndexService,
     { provide: CATALOG_SEARCH, useClass: RankedCatalogSearch },
   ],
-  exports: [AgentService, AgentStoreSettingsService, CatalogIndexService],
+  exports: [AgentService, AgentStoreSettingsService, CatalogIndexService, AgentModelFactory],
 })
 export class AgentModule {}

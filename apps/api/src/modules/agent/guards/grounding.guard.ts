@@ -171,9 +171,38 @@ export function checkGrounding(
   return violations;
 }
 
+/**
+ * The promise families the store notes actually offer. A mention next to a
+ * negation doesn't count: owners write «Знижок немає» and «Доставка не
+ * безкоштовна», and reading those as offers let the bot promise exactly what
+ * the store refuses. Only words right next to the promise word count, so
+ * «Знижка 10% на другу річ, але не діє на акційні» is still an offer.
+ */
+function offeredFamilies(notes: string): Set<string> {
+  const offered = new Set<string>();
+  for (const sentence of notes.split(/(?<=[.!?…])\s+|\n+/)) {
+    for (const { family, pattern } of PROMISE_FAMILIES) {
+      const global = new RegExp(pattern.source, 'giu');
+      for (const m of sentence.matchAll(global)) {
+        if (!negatedNear(sentence, m.index ?? 0, m[0].length)) offered.add(family);
+      }
+    }
+  }
+  return offered;
+}
+
+const NEGATION_WORD = /^(не|без|жодн\p{L}*|ніяк\p{L}*|немає|нема|відсутн\p{L}*)$/iu;
+
+function negatedNear(sentence: string, index: number, length: number): boolean {
+  const words = (s: string) => s.toLowerCase().match(/[\p{L}%\d]+/gu) ?? [];
+  const before = words(sentence.slice(0, index)).slice(-2);
+  const after = words(sentence.slice(index + length)).slice(0, 2);
+  return [...before, ...after].some((w) => NEGATION_WORD.test(w));
+}
+
 function checkPromises(reply: string, facts: TurnFacts, notes: string): GroundingViolation[] {
   const violations: GroundingViolation[] = [];
-  const offered = new Set(PROMISE_FAMILIES.filter((f) => f.pattern.test(notes)).map((f) => f.family));
+  const offered = offeredFamilies(notes);
   if (facts.onSale) offered.add('discount').add('sale');
 
   const seen = new Set<string>();
