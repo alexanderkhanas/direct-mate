@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Patch, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Patch, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -8,6 +8,10 @@ import {
   JwtPayload,
 } from '../../common/decorators/current-user.decorator';
 import { StoreConfig } from './entities/store-config.entity';
+import { OnboardingReadiness } from '../onboarding/onboarding-readiness.service';
+import { TelegramService } from '../notifications/telegram.service';
+
+const OPERATING_MODES = ['learning', 'active', 'paused'] as const;
 
 @ApiTags('engine')
 @UseGuards(JwtAuthGuard)
@@ -17,6 +21,8 @@ export class StoreConfigController {
   constructor(
     @InjectRepository(StoreConfig)
     private readonly configRepo: Repository<StoreConfig>,
+    private readonly readiness: OnboardingReadiness,
+    private readonly telegram: TelegramService,
   ) {}
 
   // ─── Store Config ──────────────────────────────────────────────
@@ -86,7 +92,19 @@ export class StoreConfigController {
     if (body.knowledgeDoc !== undefined) {
       config.knowledgeDoc = typeof body.knowledgeDoc === 'string' && body.knowledgeDoc.trim() ? body.knowledgeDoc : null;
     }
+    // Turning the bot on is checked here, not only in the admin: a store with
+    // no catalog or notes would answer real customers with nothing to say.
+    const goingLive = body.operatingMode === 'active' && config.operatingMode !== 'active';
     if (body.operatingMode !== undefined) {
+      if (!OPERATING_MODES.includes(body.operatingMode)) {
+        throw new BadRequestException(`operatingMode must be one of ${OPERATING_MODES.join(', ')}`);
+      }
+      if (goingLive && user.role !== 'superadmin') {
+        const readiness = await this.readiness.check(user.tenantId);
+        if (!readiness.ready) {
+          throw new BadRequestException({ message: 'The store is not ready to go live', missing: readiness.missing });
+        }
+      }
       config.operatingMode = body.operatingMode;
       if (body.operatingMode === 'learning' && !config.learningStartedAt) {
         config.learningStartedAt = new Date();
@@ -96,6 +114,15 @@ export class StoreConfigController {
         config.learningNotifiedAt = null;
       }
     }
-    return this.configRepo.save(config);
+    const saved = await this.configRepo.save(config);
+    if (goingLive) void this.announceGoLive(user.tenantId);
+    return saved;
+  }
+
+  private async announceGoLive(tenantId: string): Promise<void> {
+    const [tenant]: Array<{ name: string; slug: string }> = await this.configRepo.manager
+      .query(`SELECT name, slug FROM tenants WHERE id = $1`, [tenantId])
+      .catch(() => []);
+    await this.telegram.notifyPlatform(`🚀 Бот увімкнено: «${tenant?.name ?? tenantId}» (${tenant?.slug ?? '—'})`);
   }
 }

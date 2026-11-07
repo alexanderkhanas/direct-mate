@@ -67,13 +67,17 @@ export class TestingController {
     private readonly dataSource: DataSource,
   ) {}
 
-  // ─── Simulator endpoints ──────────────────────────────────────
+  // ─── Simulator endpoints (superadmin only) ────────────────────
+  //
+  // Scenario packs make paid model calls. Matching them to a store by slug
+  // would let a new store named like a scenario tenant run them.
 
   @Get('simulator/scenarios')
   async getSimulatorScenarios(
     @Req() req: Request & { user: JwtPayload },
     @CurrentUser() user: JwtPayload,
   ) {
+    this.assertSuperadmin(user);
     const visible = await filterScenariosForRequest(req, user.tenantId, this.dataSource);
     return visible.map(([key, s]) => ({
       key,
@@ -89,6 +93,7 @@ export class TestingController {
     @Req() req: Request & { user: JwtPayload },
     @CurrentUser() user: JwtPayload,
   ) {
+    this.assertSuperadmin(user);
     const visible = await filterScenariosForRequest(req, user.tenantId, this.dataSource);
     const entry = visible.find(([key]) => key === body.scenarioKey);
     if (!entry) throw new NotFoundException(`Scenario "${body.scenarioKey}" not found`);
@@ -102,6 +107,7 @@ export class TestingController {
     @Req() req: Request & { user: JwtPayload },
     @CurrentUser() user: JwtPayload,
   ) {
+    this.assertSuperadmin(user);
     const visible = await filterScenariosForRequest(req, user.tenantId, this.dataSource);
     const results = [];
     for (const [key, scenario] of visible) {

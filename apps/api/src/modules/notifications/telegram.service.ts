@@ -128,6 +128,13 @@ export class TelegramService {
     });
   }
 
+  /** A message to the founder's chat (`PLATFORM_TELEGRAM_CHAT_ID`); does nothing when unset, never throws. */
+  async notifyPlatform(text: string): Promise<void> {
+    const chatId = this.config.get<string>('telegram.platformChatId');
+    if (!chatId) return;
+    await this.sendMessage(chatId, text);
+  }
+
   /** Send once; never throws (logs the failure). */
   async sendMessage(chatId: string, text: string, parseMode?: 'HTML'): Promise<void> {
     await this.post(chatId, text, parseMode).catch((err) =>

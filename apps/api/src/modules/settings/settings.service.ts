@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { TenantSettings } from '../tenants/entities/tenant-settings.entity';
 import { ManagerExample } from './entities/manager-example.entity';
 import { UpdateSettingsDto } from './dto/update-settings.dto';
+import { CreateExampleDto } from './dto/create-example.dto';
 
 @Injectable()
 export class SettingsService {
@@ -41,16 +42,20 @@ export class SettingsService {
     return this.examplesRepo.find({ where: { tenantId, isActive: true } });
   }
 
-  async createExample(
-    tenantId: string,
-    data: Pick<ManagerExample, 'customerMessage' | 'managerReply' | 'scenario' | 'tags'>,
-  ): Promise<ManagerExample> {
-    const example = this.examplesRepo.create({ tenantId, ...data });
+  /** Fields are picked one by one: the caller's tenant can't be overridden from the body. */
+  async createExample(tenantId: string, dto: CreateExampleDto): Promise<ManagerExample> {
+    const example = this.examplesRepo.create({
+      tenantId,
+      customerMessage: dto.customerMessage,
+      managerReply: dto.managerReply,
+      scenario: dto.scenario ?? null,
+      tags: dto.tags ?? [],
+    });
     return this.examplesRepo.save(example);
   }
 
-  async deleteExample(id: string): Promise<{ success: boolean }> {
-    await this.examplesRepo.update(id, { isActive: false });
+  async deleteExample(tenantId: string, id: string): Promise<{ success: boolean }> {
+    await this.examplesRepo.update({ id, tenantId }, { isActive: false });
     return { success: true };
   }
 }

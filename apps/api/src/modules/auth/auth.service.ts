@@ -17,6 +17,8 @@ import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { JwtPayload } from '../../common/decorators/current-user.decorator';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
+import { TelegramService } from '../notifications/telegram.service';
+import { DEFAULT_BRAND_TONE, defaultWelcomeLine } from '../onboarding/store-defaults';
 
 @Injectable()
 export class AuthService {
@@ -26,6 +28,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly dataSource: DataSource,
     private readonly subscriptionsService: SubscriptionsService,
+    private readonly telegram: TelegramService,
   ) {}
 
   async login(dto: LoginDto): Promise<{ accessToken: string; user: Omit<User, 'passwordHash'> }> {
@@ -88,7 +91,7 @@ export class AuthService {
     let slug = this.slugify(dto.storeName);
 
     // 3. Transaction: create everything
-    return this.dataSource.transaction(async (manager) => {
+    const registered = await this.dataSource.transaction(async (manager) => {
       // Handle slug collision (retry up to 3 times)
       for (let attempt = 0; attempt < 3; attempt++) {
         const existing = await manager.findOne(Tenant, { where: { slug } });
@@ -121,15 +124,22 @@ export class AuthService {
       const settings = manager.create(TenantSettings, {
         tenantId: savedTenant.id,
         supportedLanguages: ['uk'],
-        brandTonePrompt: 'Warm, friendly, concise.',
+        brandTonePrompt: DEFAULT_BRAND_TONE,
       });
       await manager.save(settings);
 
-      // Create store config
+      // Create store config. Paused until the owner turns the bot on in the
+      // setup flow (set here, not as the column default: rows auto-created
+      // for older stores must not silently pause them).
       const storeConfig = manager.create(StoreConfig, {
         tenantId: savedTenant.id,
+        operatingMode: 'paused',
+        brandConfig: { welcomeLine: defaultWelcomeLine(dto.storeName) },
       });
       await manager.save(storeConfig);
+
+      // The trial commits with the store: a store with no plan row would count as active forever.
+      await this.subscriptionsService.createTrialForTenant(savedTenant.id, manager);
 
       // Generate JWT
       const payload: JwtPayload = {
@@ -149,18 +159,11 @@ export class AuthService {
         },
       };
 
-      // Create trial plan OUTSIDE the transaction — if Mono API is down,
-      // registration still succeeds and trial can be created manually later.
-      setTimeout(async () => {
-        try {
-          await this.subscriptionsService.createTrialForTenant(savedTenant.id);
-        } catch (err) {
-          console.error(`Trial creation failed for tenant ${savedTenant.id}:`, err);
-        }
-      }, 0);
-
       return result;
     });
+
+    void this.telegram.notifyPlatform(`🆕 Нова реєстрація: «${dto.storeName}» (${dto.email}), ${dto.businessType}`);
+    return registered;
   }
 
   private slugify(name: string): string {

@@ -12,12 +12,14 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([User, Tenant, TenantSettings, StoreConfig]),
     PassportModule,
     SubscriptionsModule,
+    NotificationsModule,
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 5 }]),
     JwtModule.registerAsync({
       imports: [ConfigModule],

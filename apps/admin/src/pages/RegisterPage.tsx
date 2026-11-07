@@ -7,16 +7,15 @@ import { Input } from '../components/ui/Input';
 import { useT } from '../i18n';
 
 const BUSINESS_TYPES = [
-  { value: 'beauty', label: 'Beauty & Cosmetics' },
-  { value: 'fashion', label: 'Fashion & Clothing' },
-  { value: 'barber', label: 'Barbershop & Hair' },
+  { value: 'fashion', labelKey: 'auth.business_fashion' },
+  { value: 'beauty', labelKey: 'auth.business_beauty' },
 ];
 
 export default function RegisterPage() {
   const navigate = useNavigate();
   const { t } = useT();
   const [storeName, setStoreName] = useState('');
-  const [businessType, setBusinessType] = useState('beauty');
+  const [businessType, setBusinessType] = useState('fashion');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -28,12 +27,12 @@ export default function RegisterPage() {
     setError('');
 
     if (password !== confirmPassword) {
-      setError('Passwords do not match');
+      setError(t('auth.passwords_mismatch'));
       return;
     }
 
     if (password.length < 8) {
-      setError('Password must be at least 8 characters');
+      setError(t('auth.password_too_short'));
       return;
     }
 
@@ -95,7 +94,7 @@ export default function RegisterPage() {
                 className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
               >
                 {BUSINESS_TYPES.map((bt) => (
-                  <option key={bt.value} value={bt.value}>{bt.label}</option>
+                  <option key={bt.value} value={bt.value}>{t(bt.labelKey)}</option>
                 ))}
               </select>
             </div>

@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { Repository, LessThanOrEqual } from 'typeorm';
+import { EntityManager, Repository, LessThanOrEqual } from 'typeorm';
 import { Cron } from '@nestjs/schedule';
 import { SubscriptionPlan } from './entities/subscription-plan.entity';
 import { SubscriptionUsage } from './entities/subscription-usage.entity';
@@ -39,19 +39,21 @@ export class SubscriptionsService {
 
   // ─── Trial creation ──────────────────────────────────────────────
 
-  async createTrialForTenant(tenantId: string): Promise<SubscriptionPlan> {
-    const existing = await this.planRepo.findOne({ where: { tenantId } });
+  /** Pass the registration transaction's manager so the trial commits with the store. */
+  async createTrialForTenant(tenantId: string, manager?: EntityManager): Promise<SubscriptionPlan> {
+    const repo = manager ? manager.getRepository(SubscriptionPlan) : this.planRepo;
+    const existing = await repo.findOne({ where: { tenantId } });
     if (existing) return existing;
 
     const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
-    const plan = this.planRepo.create({
+    const plan = repo.create({
       tenantId,
       planType: 'trial',
       status: 'active',
       trialEndsAt,
       conversationLimit: 1000, // Trial default; matches starter tier
     });
-    return this.planRepo.save(plan);
+    return repo.save(plan);
   }
 
   // ─── Plan status check (cached) ──────────────────────────────────

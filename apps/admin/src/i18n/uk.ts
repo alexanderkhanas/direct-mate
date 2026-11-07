@@ -90,6 +90,10 @@ export const uk = {
     have_account: 'Вже є акаунт?',
     email_taken: 'Цей email вже зареєстрований. Спробуйте увійти.',
     register_error: 'Помилка реєстрації. Спробуйте ще раз.',
+    business_fashion: 'Одяг і взуття',
+    business_beauty: 'Косметика і догляд',
+    passwords_mismatch: 'Паролі не збігаються',
+    password_too_short: 'Пароль має містити щонайменше 8 символів',
   },
 
   // Onboarding
@@ -431,6 +435,10 @@ export const uk = {
     go_live_confirm: 'Перейти в активний режим та увімкнути автоматичні відповіді?',
     learning_since: 'Навчання з {date}',
     saved: 'Збережено',
+    not_ready: 'Щоб увімкнути бота, спершу:',
+    requirement_instagram: 'підключіть Instagram',
+    requirement_products: 'додайте товари в наявності',
+    requirement_knowledge: 'заповніть «Що знає бот»',
   },
 
   // Testing (extended)

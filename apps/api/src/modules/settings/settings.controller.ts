@@ -4,6 +4,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser, JwtPayload } from '../../common/decorators/current-user.decorator';
 import { SettingsService } from './settings.service';
 import { UpdateSettingsDto } from './dto/update-settings.dto';
+import { CreateExampleDto } from './dto/create-example.dto';
 
 @ApiTags('settings')
 @UseGuards(JwtAuthGuard)
@@ -28,12 +29,12 @@ export class SettingsController {
   }
 
   @Post('examples')
-  createExample(@CurrentUser() user: JwtPayload, @Body() body: any) {
-    return this.settingsService.createExample(user.tenantId, body);
+  createExample(@CurrentUser() user: JwtPayload, @Body() dto: CreateExampleDto) {
+    return this.settingsService.createExample(user.tenantId, dto);
   }
 
   @Delete('examples/:id')
-  deleteExample(@Param('id') id: string) {
-    return this.settingsService.deleteExample(id);
+  deleteExample(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
+    return this.settingsService.deleteExample(user.tenantId, id);
   }
 }

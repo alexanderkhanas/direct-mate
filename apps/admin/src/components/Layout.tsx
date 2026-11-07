@@ -29,7 +29,8 @@ const navItems = [
   { to: '/catalog', key: 'nav.catalog', icon: Package },
   { to: '/connections', key: 'nav.connections', icon: Plug },
   { to: '/training', key: 'nav.training', icon: GraduationCap },
-  { to: '/simulator', key: 'nav.simulator', icon: Play },
+  // Scenario packs run paid model calls; owners get their own test chat in the setup flow.
+  { to: '/simulator', key: 'nav.simulator', icon: Play, superadminOnly: true },
   { to: '/content-linking', key: 'nav.content', icon: ImagePlus },
   { to: '/size-charts', key: 'nav.size_charts', icon: Ruler },
   { to: '/settings', key: 'nav.settings', icon: Settings },
@@ -80,7 +81,7 @@ export default function Layout() {
 
         {/* Nav */}
         <nav className="flex-1 px-3 py-3 space-y-0.5">
-          {navItems.map((item) => {
+          {navItems.filter((item) => !item.superadminOnly || isSuperadmin).map((item) => {
             const active = item.exact
               ? location.pathname === item.to
               : location.pathname.startsWith(item.to);

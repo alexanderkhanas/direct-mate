@@ -511,6 +511,8 @@ function OperatingModeSection() {
   });
 
   const currentMode: OperatingMode = config?.operatingMode ?? 'active';
+  // The API refuses to turn the bot on until the store has what it needs to answer.
+  const notReady: string[] = save.isError ? ((save.error as any)?.response?.data?.missing ?? []) : [];
 
   const modes: { value: OperatingMode; label: string; desc: string }[] = [
     { value: 'learning', label: t('operating_mode.learning'), desc: t('operating_mode.learning_desc') },
@@ -557,6 +559,12 @@ function OperatingModeSection() {
       )}
       {save.isSuccess && (
         <p className="text-xs text-emerald-600 mt-2">{t('operating_mode.saved')}</p>
+      )}
+      {notReady.length > 0 && (
+        <p className="text-xs text-red-600 mt-2">
+          {t('operating_mode.not_ready')}{' '}
+          {notReady.map((m) => t(`operating_mode.requirement_${m}`)).join(', ')}.
+        </p>
       )}
     </Card>
   );

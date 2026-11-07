@@ -8,9 +8,10 @@ export class RegisterDto {
   @MaxLength(100)
   storeName!: string;
 
-  @ApiProperty({ example: 'beauty', enum: ['fashion', 'beauty', 'barber'] })
+  // 'barber' stays a valid BusinessType for existing stores, but isn't offered at sign-up.
+  @ApiProperty({ example: 'fashion', enum: ['fashion', 'beauty'] })
   @IsString()
-  @IsIn(['fashion', 'beauty', 'barber'])
+  @IsIn(['fashion', 'beauty'])
   businessType!: string;
 
   @ApiProperty({ example: 'owner@store.com' })

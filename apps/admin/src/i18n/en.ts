@@ -90,6 +90,10 @@ export const en = {
     have_account: 'Already have an account?',
     email_taken: 'This email is already registered. Try signing in.',
     register_error: 'Registration failed. Please try again.',
+    business_fashion: 'Clothing & footwear',
+    business_beauty: 'Beauty & cosmetics',
+    passwords_mismatch: 'Passwords do not match',
+    password_too_short: 'Password must be at least 8 characters',
   },
 
   // Onboarding
@@ -431,6 +435,10 @@ export const en = {
     go_live_confirm: 'Switch to active mode and enable automatic replies?',
     learning_since: 'Learning since {date}',
     saved: 'Saved',
+    not_ready: 'To turn the bot on, first:',
+    requirement_instagram: 'connect Instagram',
+    requirement_products: 'add products that are in stock',
+    requirement_knowledge: 'fill in «What the bot knows»',
   },
 
   // Testing (extended)
