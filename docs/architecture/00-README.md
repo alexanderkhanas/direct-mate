@@ -34,8 +34,8 @@ One engine, many stores. Behaviour is configuration (`store_configs`, `response_
 |---|---|---|
 | [01](01-system-overview.md) | **System Overview** | Get the whole picture: containers, request paths, the six ways a message can enter the system |
 | [02](02-module-map.md) | **Module Map** | Find which module owns what; see the NestJS dependency graph and per-module cards |
-| [03](03-ai-engine.md) | **AI & Engine Layer** | Understand the classifier, template engine, policy engine, and every LLM call in the system |
-| [04](04-conversation-pipeline.md) | **Conversation Pipeline** | Debug or extend `ReplyEngineService` — the 10-stage pipeline, state machine, and memory model |
+| [03](03-ai-engine.md) | **AI & Engine Layer** *(superseded by the v2 agent)* | Understand the classifier, template engine, policy engine, and every LLM call in the system |
+| [04](04-conversation-pipeline.md) | **Conversation Pipeline** *(superseded by the v2 agent)* | Debug or extend `ReplyEngineService` — the 10-stage pipeline, state machine, and memory model |
 | [05](05-data-model.md) | **Data Model** | Write a query or a migration: 44 tables, the FK graph, jsonb shapes, migration history |
 | [06](06-integrations-and-channels.md) | **Integrations & Channels** | Work on Instagram, n8n, Shopify, Torgsoft, Telegram, Monobank, or Replicate |
 | [07](07-auth-and-tenancy.md) | **Auth & Multi-Tenancy** | Add an endpoint, or audit who can reach what |

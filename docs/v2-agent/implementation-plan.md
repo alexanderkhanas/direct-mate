@@ -2,7 +2,7 @@
 
 Nov 3, 2026 · Companion to [decisions.md](decisions.md), which records *why*. This document records *how* and in what order.
 
-**Status:** Phases 0–3 done (Nov 4, 2026); 3.5, product attributes and category browsing, done Nov 5; customer photos in context and Phase 4 (Instagram on the agent, injection hardening) done Nov 6, pending live-account testing. Phase 5 (cutover) next.
+**Status:** Phases 0–3 done (Nov 4, 2026); 3.5, product attributes and category browsing, done Nov 5; customer photos in context and Phase 4 (Instagram on the agent, injection hardening) done Nov 6, pending live-account testing. Phase 5 (cutover and deletion) done Nov 7; production go-live not yet done. Next: store onboarding, then the scenario rewrite and Phase 6.
 
 ## Context
 
@@ -589,6 +589,42 @@ Instagram DMs now run through the TurnRunner like every other caller. The old en
   - show agent steps in the conversation trace view.
 - **Docs:** rewrite root `CLAUDE.md`; most of Shipped and Technical Debt describe router internals that no longer exist. Mark `docs/architecture/03` and `04` as superseded.
 - **Memory:** update `project_direction.md`, which still says "AI classifies only, templates generate".
+
+**Result (Nov 7, 2026).** Done, with these decisions and differences:
+- **Deleted:**
+  - the reply engine, classifier, template and policy engines, and their tests;
+  - the template, phrase and FAQ endpoints;
+  - the template packs, and their seeding at sign-up and in the demo builders;
+  - the YAML runner with its run endpoints and admin Testing page;
+  - the classifier eval, `replay`, the message-ordering check, three template backfills, and the classifier model settings.
+
+  The 30 YAML scenarios were early route checks for the pilot store's lipstick catalog, not ported; git keeps them.
+- **Migration `RetireTemplateEngine`:**
+  - The template tables are **renamed to `archived_*`, not dropped.** Production stores' templates are the only record of their delivery and payment copy, which their knowledge docs are written from.
+  - Dropped: the old trace columns, the old memory columns on `conversation_state`, and `test_runs`.
+- **Comments run on the agent.** A small model (`INSTAGRAM_COMMENT_GATE_MODEL`) screens whether a comment asks the shop something. The comment is then saved into the commenter's DM conversation and answered as a normal turn, so their follow-up in Direct has the context. The reply goes out as one private reply, text only; the agent is told it can't send photos.
+- **Admin:**
+  - Templates and Testing pages removed.
+  - Settings has «What the bot knows» (notes, payment details, welcome and handoff lines) and «Sizes» (recommend or consult, ask measurements first, ranges).
+  - Handoff rules, AI fallback and the old flow form are gone.
+  - The trace view shows the model, usage and guard findings.
+- **Analytics funnel:** "products shown" counts agent catalog lookups, and "variant selected" counts order-draft items. Conversations from the old engine lose those two stages.
+- **`backfill:agent-config`** writes store notes and fixed lines onto the demo stores, filling only empty fields. men-demo-store got notes carried over from its templates, worded without discount words; see the next point.
+- **Found, not fixed:** `checkPromises` counts a promise word anywhere in the notes as an offer, even «знижок немає». Store owners will write exactly that during onboarding, so fix it there.
+- **packages/shared** needed no change; the intent and scenario enums lived in the API.
+- **Verified:**
+  - 216 unit tests pass, including 5 new comment-flow tests. The drop from 365 is the old engine's own tests.
+  - The API and admin build. The API boots with every module wired.
+  - The migration reverts and re-applies.
+  - The new Settings saves round-trip through the API.
+  - No conversation scenarios were re-run for this phase: the agent path itself didn't change, apart from comments.
+
+**Go-live in production (not done):**
+1. Merge `v2-agent` into `main`; the deploy runs the migrations, including `RetireTemplateEngine`.
+2. Run `backfill:prod:agent-config`, `backfill:prod:altamen-titles`, `backfill:prod:altamen-descriptions` and `backfill:prod:media-phash -- --tenant demo-altamen`, plus attribute extraction.
+3. Set `AGENT_MODEL` and `META_LOGIN_CONFIG_ID` in the production env.
+4. Every connected store reconnects through Unified Login.
+5. Production stores without a knowledge doc get one through onboarding.
 
 ### Phase 6: Model eval and tuning (Decisions 6–7)
 - **Judge:** `scripts/eval/ua-judge.ts` uses a stronger model to score each reply 1–5 on naturalness, register and russisms. Enabled with `simulate --judge`, with a per-scenario threshold.

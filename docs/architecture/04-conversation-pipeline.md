@@ -1,5 +1,7 @@
 # 04 — The Conversation Pipeline
 
+> **Superseded (Nov 2026).** This describes the classifier + template engine, deleted in v2 Phase 5. The agent that replaced it is described in the root `CLAUDE.md` ("How a reply is made") and `docs/v2-agent/implementation-plan.md`. Kept for history.
+
 ← [03 AI & Engine](03-ai-engine.md) · [Index](00-README.md) · Next: [05 Data Model](05-data-model.md)
 
 `ReplyEngineService` — 7,373 lines, 76 private methods, 18 handoff exit points. This is the file you

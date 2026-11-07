@@ -22,22 +22,21 @@ If you need to modify `packages/shared/src/enums.ts` or any shared interface:
 ## Before starting any task
 1. Read the relevant service file fully before making changes
 2. Check if a migration already covers what you need
-3. Run `tail -f apps/api/conversations.log | jq .` to understand current behavior
+3. For conversation behaviour, read a real turn first: the admin Trace tab, or a simulator output JSON
 
 ## Testing your changes
 ```bash
-# Reset conversations for clean test
-docker exec docker-postgres-1 psql -U postgres -d directmate -c "DELETE FROM audit_logs; DELETE FROM messages; DELETE FROM conversation_state; DELETE FROM conversations; DELETE FROM customers;"
+# Unit tests (free; also run by the pre-commit hook)
+cd apps/api && npm test
 
-# Run simulator
-cd apps/api && npm run simulate -- --scenario 
-
-# Replay last conversation
-cd apps/api && npm run replay
+# Simulator — costs model calls, so suggest it and run only when asked.
+# Scenarios clean up their own conversations; don't wipe tables first.
+cd apps/api && npm run simulate -- --scenario <key>
 ```
 
 ## Common pitfalls
 - SnakeNamingStrategy: entity props are camelCase, DB columns are snake_case
 - packages/shared must be compiled before API can use new enums
-- AssistantMemory changes need to be backward compatible (old conversations have old memory shape)
-- reply-engine.service.ts is ~1700 lines — read it fully before touching it
+- `ai` and `@ai-sdk/*` are ESM-only: a new jest suite that imports them needs the existing `transformIgnorePatterns`
+- Agent tools take refs from the model: resolve them through `CatalogReader.resolveProductRef` with the tenant id, never trust an id as given
+- `UPDATE … RETURNING` through `dataSource.query` returns `[rows, count]`: use `returnedRows()` (`common/db.ts`)

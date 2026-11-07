@@ -1,5 +1,7 @@
 # 03 — AI & Engine Layer
 
+> **Superseded (Nov 2026).** This describes the classifier + template engine, deleted in v2 Phase 5. The agent that replaced it is described in the root `CLAUDE.md` ("How a reply is made") and `docs/v2-agent/implementation-plan.md`. Kept for history.
+
 ← [02 Module Map](02-module-map.md) · [Index](00-README.md) · Next: [04 Conversation Pipeline](04-conversation-pipeline.md)
 
 Everything AI-related in DirectMate, and the deterministic machinery around it.

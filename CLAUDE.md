@@ -14,10 +14,12 @@ DirectMate should automate repetitive, low-risk interactions and escalate uncert
 
 ### Monorepo (npm workspaces)
 ```
-apps/api/        — NestJS backend (TypeORM, PostgreSQL, OpenAI)
+apps/api/        — NestJS backend (TypeORM, PostgreSQL, Vercel AI SDK v7 + OpenAI)
 apps/admin/      — React + Vite admin panel (TanStack Query, Tailwind, lucide-react)
 packages/shared/ — Shared enums/types (compiled to JS before API uses it)
 infra/docker/    — Docker Compose (Postgres on port 5433)
+infra/production/ — Production compose and env template
+docs/v2-agent/   — The agent rework: decisions and the phase-by-phase implementation plan
 ```
 
 ### Key architectural decisions
@@ -25,204 +27,135 @@ infra/docker/    — Docker Compose (Postgres on port 5433)
 - **Manual migrations** (no synchronize) — raw SQL in up/down
 - **packages/shared compiled to JS** — not imported as raw TS, workspace symlink resolves it
 - **npm workspaces** with `legacy-peer-deps=true` in .npmrc
+- **Node 22.** `ai` v7 and `@ai-sdk/openai` are ESM-only; the CommonJS API loads them through Node's require(esm), and jest transforms them (`transformIgnorePatterns`).
 - **n8n for external orchestration** (Shopify/OpenCart sync workflows) — calls backend internal endpoints
 - **InternalApiKeyGuard** for n8n-facing endpoints (`x-internal-key` header)
 - **JwtAuthGuard** for admin-facing endpoints
-- **Demo tenant isolation** — `tenants.is_demo BOOLEAN`. Demo
-  traffic uses one of two tenants: `slug='demo-women-clothes'`
-  (clothing vertical, after_search_offered strategy) or
-  `slug='demo-cosmetics'` (cosmetics vertical, before_search
-  strategy). The legacy `slug='demo'` was hard-deleted in Phase 4
-  seed; do not reintroduce it. Analytics queries must filter
-  `is_demo=false`. `ordersService` creates no orders for is_demo
-  tenants (tech debt: explicit guard pending). Frontend `/demo/message`
-  takes optional `tenantSlug` (defaults to `demo-women-clothes`),
-  rate limiter keys on `(ip, tenantSlug)` so both tabs have
-  independent quota.
+- **Demo tenant isolation** — `tenants.is_demo BOOLEAN`. The public demo widget (`/demo/message`) takes an
+  optional `tenantSlug` (default `demo-women-clothes`); the rate limiter keys on `(ip, tenantSlug)`. Demo
+  turns run in `demo` mode: orders are placed in the DB so the conversation stays truthful, but nothing
+  leaves the system (no Telegram, no n8n). Analytics queries must filter `is_demo=false`.
 
 ### Database
 - PostgreSQL in Docker, port **5433** (5432 taken by another project)
 - Container name: `docker-postgres-1`, user: `postgres`, db: `directmate`
-- Seed script uses raw SQL (`AppDataSource.query()`) to avoid SnakeNamingStrategy issues
+- Seed scripts use raw SQL (`AppDataSource.query()`) to avoid SnakeNamingStrategy issues
+- `archived_response_templates`, `archived_phrase_blocks`, `archived_faq_items`: the old template engine's
+  tables, read-only. Kept because production stores' templates are the only record of their delivery and
+  payment copy. Drop once every store has a knowledge doc.
 
 ### External services
-- **OpenAI** — GPT-5.4-mini for classification, GPT-5.4 for handoff verification
-- **Meta Instagram API** — webhooks + messaging via `graph.instagram.com/v21.0`
+- **OpenAI** — the agent model (`AGENT_MODEL`, gpt-6.1-terra in use), moderation on replies
+  (omni-moderation, free), vision for photo matching, product attribute extraction, the comment screen
+- **Meta** — Instagram API with Unified Login: webhooks + messaging via `graph.facebook.com/v27.0` (see below)
+- **Replicate** — CLIP image embeddings for photo matching
+- **Telegram** — handoff notifications to managers
 - **n8n** — local Docker instance on port 5678, API key auth
 - **Shopify** — GraphQL Admin API (2024-07) via n8n workflows
 - **OpenCart** — REST API via n8n workflows
 
-## Current State — What's Built
+## How a reply is made — the v2 agent
 
-### Backend (apps/api)
-- Auth (JWT + passport-jwt), tenant/user model
-- Full database schema (18+ tables) with initial migration
-- Instagram webhook handler with debouncing (5s), message_edit fallback, echo filtering
-- **Template-based reply engine** with slot-filling flow, AI classification only
-- **Business-type-aware engine routing** — `flow_config.businessType` (`'clothing' | 'cosmetics'`) drives
-  per-vertical pre-qualify and template selection. Independent of strategy.
-- **`preQualifyStrategy` field** (`'before_search' | 'after_search_offered'`) — orthogonal to businessType.
-  Defaults: clothing demo → `after_search_offered` (browse + offer size help), cosmetics demo → `before_search`
-  (ask skin type immediately). Yes/no detection on offer responses uses `classifier.slotAction`
-  (`'confirmation'` / `'rejection'`); negative reply gets a hardcoded short ack (no LLM call).
-- **Multi-tenant demo** — 2 demo tenants seeded via per-vertical builders:
-  `demo-women-clothes` (18 clothing products, 3 size charts) and `demo-cosmetics` (10 cosmetics products,
-  13 variant images served from `/uploads/cosmetics/`). Both `is_demo=true`. Old single `demo` tenant
-  was deleted via `seed-demo-women-clothes.ts` Phase 4 transition step.
-- **Templates as code** for demo tenants — TypeScript files at `apps/api/src/scripts/seed/templates/`
-  (base + clothing + cosmetics) are the single source of truth. `getTemplatesForBusinessType()` merges
-  base + vertical at seed time. Production tenants still author templates in DB via the admin panel.
-- Product catalog with multi-strategy search (ILIKE + trigram fuzzy on title/category)
-- Availability service with stock checking
-- Crypto service (AES-256-GCM) for encrypting access tokens
-- Shopify connection (manual token paste, encrypted storage)
-- Screenshot training pipeline (GPT-4o vision extraction, conversation grouping, review/approve workflow)
-- Privacy policy page for Meta app requirements
-- Conversation logging to `conversations.log`
+**The model reads the conversation, calls tools for facts and actions, and writes the reply. Code owns
+prices, stock, order state, payment details and handoff.** There are no intents, templates or routing
+rules: the classifier + template engine was deleted in Phase 5 (Nov 2026). History and rationale:
+`docs/v2-agent/implementation-plan.md` and the decisions doc it links.
 
-### Admin Panel (apps/admin)
-- Login, Dashboard, Conversations, Catalog, Connections, Training, Templates, Settings, Logs pages
-- Settings: brand tone editor, handoff rules, manager examples (Q&A pairs)
-- Templates: CRUD for response templates, phrase blocks, FAQ items with scenario badges
-- Connections: Instagram + Shopify connection management
-- Training: screenshot upload with drag-and-drop, extraction review with chat-style transcript display
+### Turn pipeline — `TurnRunner` (`apps/api/src/modules/conversations/turn-runner.service.ts`)
+Every caller goes through it: Instagram DMs and comments, the demo widget, the manual reply API, the
+admin simulator and Live DM console, the CLI simulator.
+1. **Lease** the conversation (`processing_until`, atomic `UPDATE … RETURNING`). Someone else holds it → `busy`.
+2. **Gates:** store `paused`, conversation in human control → skip. Customer over
+   `AGENT_MAX_CUSTOMER_MESSAGES_PER_HOUR` (60) → announced handoff (`rate_limited`).
+3. **History** (`HistoryBuilder`): the current conversation, time-gap markers, the previous conversation's
+   last messages as context, the customer's recent orders, and up to 10 customer photos (resized to
+   1024px, sent to the model as images).
+4. **Media** (`MediaContextResolver`): a story/post reply, shared post, comment or photo is matched to a
+   product (mapping table, pHash, then vision) and becomes a note to the agent.
+5. **Agent** (`AgentService.runTurn`): a tool loop, then the **guards**. A failed check regenerates once
+   with the violations fed back; a second grounding failure is an announced handoff.
+6. **Supersede:** on Instagram, a reply is dropped if the customer wrote again meanwhile, and re-run once.
+7. **Commit by mode** and save every outbound message:
 
-### n8n Workflows (deployed)
-- **Shopify: Catalog Sync** — GraphQL, paginated, every 30min
-- **Shopify: Inventory Poll Sync** — GraphQL, every 10min
-- **Shopify: Connection Health Check** — every 15min
-- **OpenCart: Catalog Sync** — REST API with session auth, paginated
-- **OpenCart: Inventory Poll Sync** — REST API, paginated
-- **OpenCart: Connection Health Check** — API login verification
+| Mode | Used by | Effects |
+|---|---|---|
+| `live` | Instagram, manual API | Everything, including Telegram and n8n order sync |
+| `demo` | demo widget, simulator, admin console | Orders placed and payment marked in the DB; nothing leaves the system; a handoff doesn't pause the chat |
+| `dry_run` | learning mode | Nothing committed; messages and staged effects are returned and traced |
 
-## AI Architecture — Template-Based with Slot-Filling
+8. **Trace** to `conversation_traces` (agent steps, guard results, model, usage). Any exception or
+   timeout becomes an announced handoff, never a partial reply.
 
-### Core principle
-**AI classifies only. Templates generate replies. Slot-filling drives the conversation.**
+The runner, not the model, owns two fixed lines: the **welcome line** (the AI-assistant disclosure, once per
+customer per 30 days) and the **handoff line** appended to every handoff.
 
-### Reply engine flow
-```
-message → Classifier (AI: intent + entities + slotAction)
-  → Policy Engine (escalation check)
-  → Product Search (if entities contain product/category)
-  → Selection State Machine (manage product → variant → confirmation slots)
-  → Template Engine (pick template by scenario, interpolate {variables})
-  → If no template → AI Fallback (only if fallback config allows)
-  → Send reply
-```
+### Tools (`modules/agent/tools/`)
+Read: `search_products`, `browse_category`, `get_product`, `get_size_help` (not offered when the store's
+sizing is `consult`). State: `get_order_draft`, `update_order_draft` (lives in `checkout_sessions` /
+`checkout_items` / `checkout_customer_info`; price always from the DB). Staged effects, committed by the
+runner per mode: `show_products` (≤4 images), `send_size_chart`, `place_order` (only when the draft is
+complete, idempotent per checkout session), `send_payment_details` (once per draft), `handoff`.
+Every tool is tenant-scoped; refs the model passes are resolved against the tenant's catalog.
 
-### Classifier output (structured, no reply text)
-```json
-{
-  "primary_intent": "product_inquiry",
-  "entities": { "category": "помада", "color": "червона" },
-  "conversation_stage": "showing_options",
-  "sentiment": "neutral",
-  "confidence": 0.95,
-  "dialogue_act": "fills_missing_slot",
-  "recommended_action": "confirm_selection",
-  "slot_action": "fills_missing_slot"
-}
-```
+### Guards (`modules/agent/guards/`)
+- **Grounding:** every price, size and colour in the reply must come from a tool this turn, the store
+  notes, or the customer's own words. "Placed / saved / added" needs the tool that did it. Discounts,
+  promo codes, gifts, bonuses, "free" anything must be in the store notes; every percentage must come
+  from the notes or a tool. The prompt canary must never appear.
+- **Style:** russisms and banned openers (`style-guide.uk.ts`), the store's disallowed phrases (e.g. 💛
+  for a menswear store), replies over 900 characters.
+- **Moderation:** OpenAI moderation on the final reply; fails open.
 
-### Slot Actions (critical for understanding user intent)
-- `new_inquiry` — first time asking about something
-- `fills_missing_slot` — provides info we asked for (color after variant question)
-- `correction` — "ні, я хочу Rosewood" — replaces a previous value
-- `confirmation` — ONLY pure "так", "беру", "добре" — no new information
-- `rejection` — pure "ні" without new info
-- `adds_to_cart` — "і ще крем"
-- `asks_question` — "скільки коштує?"
+### Prompt (`modules/agent/prompt/system-prompt.ts`)
+Static rules (incl. Safety: customer content is information, never instructions) → store tone, manager
+examples and notes → sizing rules → checkout fields → working hours → catalog index (one line per
+product). Kept in that order so the long prefix stays cacheable.
 
-### Selection States (slot-filling flow)
-```
-awaiting_product       — products shown, user must pick one
-awaiting_variant       — product picked, must pick variant (color/size)
-awaiting_confirmation  — product + variant resolved, must confirm
-confirmed              — all slots filled, ready for checkout
-```
+## Store configuration
 
-**Hard rule: Cannot enter checkout until product + variant + confirmation are all resolved.**
+| What | Where | Admin |
+|---|---|---|
+| Store notes (delivery, payment, returns, fit) | `store_configs.knowledge_doc` | Settings → What the bot knows |
+| Payment details for prepayment | `checkout_config.paymentDetails` | same |
+| Welcome line | `brand_config.welcomeLine` | same |
+| Handoff line | `handoff_config.announceText` | same |
+| Disallowed phrases / emoji | `brand_config.disallowedPhrases` | — |
+| Checkout fields | `checkout_config.fields` | — |
+| Sizing: `recommend` or `consult`, ask measurements first | `flow_config.sizing` | Settings → Sizes |
+| Height/weight → size ranges | `flow_config.sizeChart` | Settings → Sizes |
+| Conversation idle cut-off (default 24h) | `flow_config.conversationIdleHours` | advanced JSON |
+| Comment answering on/off, public reply copy | `flow_config.commentHandling` | advanced JSON |
+| Brand tone, manager examples | `tenant_settings.brand_tone_prompt`, `manager_examples` | Settings |
+| Model override for one store | `tenant_settings.ai_settings.model` | — |
+| Operating mode: `active` / `learning` / `paused` | `store_configs.operating_mode` | Settings |
 
-### Variant Matching (hybrid 5-strategy)
-1. Exact match
-2. Partial/contains ("червон" in "Ягідно-червоний")
-3. Normalized match (accent/case insensitive)
-4. Word overlap ("червоний" matches "Ягідно-червоний")
-5. Fuzzy (Levenshtein distance ≤ 3)
+`AgentStoreSettingsService` reads and validates all of it (zod; a malformed value falls back to the
+default). Size charts are images in `size_charts`, picked by brand/category.
 
-**No fallback to first variant.** If no confident match → ask user to clarify.
+## Channels
 
-### Template System
-Templates are store-configurable with variables:
-```json
-{
-  "scenario": "show_price",
-  "blocks": ["Ціна на {product_name} — {price} 💛"],
-  "required_variables": ["product_name", "price"]
-}
-```
+### Instagram (`modules/channels/instagram/`)
+- **Webhook:** every POST must carry a valid `X-Hub-Signature-256` (Meta app secret); others get 401.
+- **Intake:** each message is saved on arrival, deduped by `mid` (unique index). Attachments are kept:
+  photos copied to `uploads/` (`CustomerMediaService`), video/voice/files/story mentions labelled for the
+  agent, quote-replies carry the quoted text. Edits (`message_edit`) are ingested as messages.
+- **Reply timer:** each message pushes `conversations.reply_due_at` 5s out (`INSTAGRAM_DEBOUNCE_MS`); a 1s
+  poller claims due conversations atomically (`FOR UPDATE SKIP LOCKED`).
+- **Delivery** (`InstagramSender`): images first, then text split at Instagram's **1,000-byte** limit
+  (~500 Cyrillic characters). Every returned id goes into `instagram_sent_mids`. A failed send is marked
+  `delivery_status='failed'` (left out of the agent's history) and hands off to a manager.
+- **Echoes:** ours if the id is in `instagram_sent_mids`, the `app_id` is ours, or the text equals a recent
+  bot message (rechecked after 3s). Anything else is a manager reply: the bot pauses (takeover,
+  auto-resume after 30 min).
+- **Comments** (`InstagramCommentService`): on a feed post linked to a product, a small model
+  (`INSTAGRAM_COMMENT_GATE_MODEL`) screens whether the comment asks the shop something. If so, the
+  comment is saved into the commenter's DM conversation and answered as a normal agent turn, sent as one
+  **private reply** (text only — photos are dropped), then a short public reply points to Direct.
+- **Learning mode:** turns run as `dry_run`; the learning observer records bot drafts next to manager replies.
 
-Available variables:
-```
-{product_name}, {category}, {color}, {size}, {price}
-{product_list}, {variants}, {variant_type}, {variant_list}, {variant_name}
-{customer_name}, {phone}, {city}, {delivery_branch}
-{order_summary}, {reason}, {matched_variant_id}
-```
-
-### Scenarios (template scenarios with Ukrainian labels)
-```
-greeting                      — Привітання
-show_products                 — Показ товарів
-show_price                    — Показ ціни
-show_products_with_size       — Показ товарів (розмір відомий) (опц., fallback → show_products)
-show_price_with_variants      — Показ ціни + варіанти (опц., fallback → show_price)
-recommend_product             — Рекомендація товару
-ask_recommendation_from_shown — Рекомендація зі списку
-confirm_selection             — Підтвердження вибору
-confirm_last_in_stock         — Останній доступний варіант (опц., fallback → confirm_selection)
-decline_selection             — Відмова від вибору (опц., fallback → hardcoded "Окей 💛 Як визначитесь — пишіть.")
-ask_variant_choice            — Вибір варіанту
-collect_checkout_info         — Збір даних для замовлення
-confirm_order                 — Підтвердження замовлення
-order_confirmed_ask_delivery  — Запит даних доставки
-answer_delivery               — Відповідь про доставку
-answer_payment                — Відповідь про оплату
-out_of_stock                  — Немає в наявності
-product_not_found             — Товар не знайдено
-```
-
-### Engine modules
-```
-apps/api/src/modules/engine/
-  classifier.service.ts       — AI classification only (OpenAI function calling)
-  template-engine.service.ts  — Template selection, variable interpolation, stage gates
-  policy-engine.service.ts    — Escalation rules, confidence thresholds
-  store-config.controller.ts  — CRUD for templates, phrase blocks, FAQ, store config
-  entities/                   — StoreConfig, ResponseTemplate, PhraseBlock, FaqItem
-```
-
-## Key Configurations (Per Store)
-
-Each store configures via `store_configs` table (jsonb columns):
-
-1. **Brand Config** — language, formality, emoji policy, allowed/disallowed phrases
-2. **Flow Config** — enabled stages, transitions, progression
-3. **Checkout Config** — fields to collect (ПІБ, телефон, місто, НП), collection style
-4. **Escalation Config** — always-escalate intents, confidence thresholds, sentiment triggers
-5. **Recommendation Config** — mode (single/top-3), attribute priority
-6. **Handoff Config** — notification channel (Telegram), pause behavior, summary
-7. **Fallback Config** — `strict_templates_only` / `template_first_with_safe_fallback`
-
-Templates, phrase blocks, and FAQ items are separate tables per tenant.
-
-## Screenshot Training Pipeline
-
-1. Upload screenshots → GPT-4o vision extracts transcripts, phrases, voice signals
-2. Grouping step clusters fragments into conversations
-3. Review/approve in admin panel
-4. Approved data → converted to templates, phrases, training examples
+### Demo widget, simulator, manual API
+`modules/demo/` (debounce buffer, rate limiter, daily budget per model), `modules/testing/` (admin
+Simulator page, Live DM console with photo upload), `POST /conversation/reply` (manual).
 
 ## Meta/Instagram Setup
 
@@ -245,474 +178,106 @@ Templates, phrase blocks, and FAQ items are separate tables per tenant.
 - Verify token: `directmate_verify_a3f7b9c2e1d4`
 - Token stored encrypted in `connections` table
 - Both sender and receiver must be app testers in development mode (Instagram Tester role, accepted on instagram.com)
-- Message debouncing: 5s window, collects multiple messages before processing
 
-## Known Issues / TODOs
+## Testing
 
-### Critical — Next Steps
-- **Test selection flow end-to-end** — variant matching, corrections, checkout gate
-- **Order persistence** — save orders to DB, create draft order in Shopify
-- **Manager reply detection** — detect is_echo from manager, pause bot
-
-### Shipped
-- **A SIZE-only correction re-scopes the list on screen; a COLOUR correction searches the DB.**
-  `isNarrowingSlotFill` (`reply-engine.service.ts`) admits `slotAction='correction'` only when the
-  turn carries a size and **no** colour. The asymmetry is the whole point: `extractSearchKeywords`
-  emits `productName` and `color` — **a size is never a keyword** — so «мені потрібен XL, а не L»
-  routed to the DB gets an empty query, 0 rows, and a `product_not_found` handoff, while the answer
-  sat in `lastPresentedProducts` the whole time. Colour has a working DB path, and narrowing it in
-  memory would hide black items that weren't in the shown list.
-  - **The engine gate is inert without the classifier block.** It fires only on `correction`; that
-    is what `SIZE ALREADY ESTABLISHED` (gated on `memory.lastAction && memory.recommendedSize`)
-    pins. Ship prompt and gate together. Its PRECEDENCE line hands a bare size to
-    `alternativesOfferedRule` — both blocks are live from turn 2 on any `before_search` +
-    measurements tenant, because `recommendedSize` is sticky.
-  - Cause of record: the correction rendered `ask_recommendation_from_shown`, which **pre-selects**
-    `lastPresentedProducts[0]` (`updateMemoryFromAction` case `recommend`), so the next «так» bought
-    a shirt the customer never chose. Recommendation copy in all three packs is a **question** now,
-    and `{reason}` is gone — nothing ever wrote it, so it always rendered the same hardcoded
-    «чудова якість та гарні відгуки». Scenario coverage: `..._size_correction_after_recommendation`
-    (rewritten from turn 3 on), `demo_altamen_recommendation_is_a_question`, and 8 deterministic
-    `isNarrowingSlotFill` cases in `reply-engine.predicate.spec.ts`.
-  - **`lastPresentedProducts[].rawVariants` is SIZE-SCOPED whenever the tenant recommends a size**,
-    so a size correction must NOT be answered from it. `toPresented` (`~:2638`) writes it from
-    `productData` *after* the `recommendedSize` search filter (`~:2330`) has pruned it — the stored
-    matrix holds that one size only, and narrowing it to a different size matches nothing, every
-    time, on exactly the tenants where size corrections happen. `narrowShownProductsBySize`
-    hydrates the SHOWN ids instead (`availabilityService.findAllByProductIds`, one query): no
-    keyword search, no exposure to the category leak, plus live stock and images. The colour /
-    `fills_missing_slot` path still filters in memory — its substrate is fine, and changing it
-    would perturb tenants that work today. Cause of record: the correction to XL rendered
-    `narrowing_no_match` against a catalog where every shown shirt had XL.
-  - **The in-memory narrow must re-hydrate images.** `narrowLastPresentedInMemory` rebuilds
-    `ProductSearchResult` rows from memory, which carries no image data, so both levels come back
-    `imageUrl: null` and every template-engine image site bottoms out at `product.imageUrl` → a
-    text-only re-show. `AvailabilityService.loadProductImages` is public for this: two batched
-    `product_id = ANY($1)` queries, ids from memory.
-  - `handleNarrowingNoMatch` returns before `buildResponse`, so it logs its own `reply` event. An
-    early-returning branch that doesn't leaves NOTHING in `conversations.log` between two
-    classifications, which is how a wrong `narrowing_no_match` hid inside a green-looking run. Any
-    new early return that emits a customer-visible reply should do the same.
-  - **`narrowing_no_match` asks a question, so something must answer it.** «Пошукати ширше в
-    каталозі?» was unanswerable — nothing read `lastAction='narrow_no_match'`. Now
-    `handleNarrowingNoMatch` parks `memory.pendingNarrowBroaden` + the one-shot `narrowBroadenAsked`,
-    and `handleNarrowBroadenChoice` (block 4.36, beside `handleCartRemovalChoice` and for the same
-    reason — a bare «так» left to reach `resolveShortReply` reads as confirming a product) turns a
-    yes into a real search via `armBroadenSearch`. A reply that answers neither yes nor no clears the
-    wait and routes normally but LEAVES the guard set, so a second empty narrow broadens silently
-    instead of re-asking. The guard is scoped to that EPISODE: it clears on an explicit yes/no, on
-    any narrow that finds something, and in the greeting reset. Left sticky it would silently disable
-    the question for the rest of the conversation after one ignored ask.
-  - `narrowShownProductsBySize` returns **`null` for "cannot narrow"** and `[]` for "nothing carries
-    that size" — legacy `lastPresentedProducts` entries have no `productId`, and the field documents
-    readers as fail-closed to a fresh search. Collapsing the two told customers «серед показаних
-    такого немає» on the strength of an empty id list.
-  - `findAllByProductIds` bounds the PRODUCT count and orders explicitly. A `take()` there is one
-    global LIMIT over joined rows, so a single variant-heavy product (demo-altamen's «Сорочка льон»
-    is 11 colours × 6 sizes = 66 variants) can eat the budget and leave the rest of the list partial
-    — reported to the customer as "doesn't carry that size", differently on each run.
-  - `ctx.broadenNarrowing` is deliberately **transient**. Writing the size to `memory.recommendedSize`
-    instead would switch on size-suppressed rendering for the rest of the conversation off the back
-    of a one-off "have you got this in XL?". It also suppresses the `lastPresentedProducts`
-    re-narrowing in the search path — "search wider" means the shown products are exactly the ones
-    that failed, and narrowing back to them hands the size filter an empty set.
-- **`show_products_with_size` is an optional variant of `show_products`, hooked inside
-  `renderScenario`, not routed by action.** When `memory.recommendedSize` is set, `renderScenario`
-  tries it first and falls back to the plain list if the tenant hasn't authored it. Hooked at the
-  render layer so it covers every path that reaches `show_products` — the first-presentation force
-  and the several `pickScenario` returns included. Copy: «Ось що є в наявності для розміру {size}:».
-  - **Gated on `listIsScopedToSize(productData, recommendedSize)`, NOT on `recommendedSize` alone.**
-    The search-path size filter stands down whenever `entities.productName` is set — and the
-    classifier writes the bare category noun there — so «Покажіть сорочки» yields an UNFILTERED list
-    with a size sitting in memory. The predicate asks the data («does every in-stock variant still on
-    this list carry that size?») instead of trusting the flag. `formatProductList`'s `suppressSizes`
-    had the same bug independently and now shares the predicate: it was hiding the size column on
-    full lists, so the customer saw neither the sizes nor any reason why.
-  - **Not a second `show_products` template at a higher priority.** The anti-repetition filter drops
-    recently-used templates *before* priority is read (`:314-318`), so a P95 sized template used on
-    one turn silently demotes the next turn to the P90 plain one and the header flips on and off
-    mid-browse. Worth knowing generally: **priority does not reliably win over recency today.**
-  - `{size}` is filled from `recommendedSize` **only for this scenario** (`:281`-style scoped
-    tweak). A general `{size}` fallback would change ROUTING, not just wording: `ask_color_for_size`
-    and `recommend_size` both list `size` in `required_variables`, so they would become viable on
-    turns where they are not today.
-  - Checklist for any future `show_products` sibling — miss one and it fails silently:
-    `allProductScenarios` (images), `skipVariantUpdate` (or it latches a variant the customer never
-    picked), `scenarioToAction`, `PRODUCTISH_PRIMARIES`, and the admin's `SCENARIO_LABELS` /
-    `SCENARIO_COLORS`. The `after_search_offered` offer-suffix gate needs no entry: it requires
-    `!memory.recommendedSize`, so it and the sized variant are mutually exclusive by construction.
-  - Cosmetics deliberately has no sized template — that vertical sets `recommendedSkinType`, never
-    `recommendedSize`, so the scenario can never fire there.
-- **`flow_config.productListStyle: 'compact' | 'detailed'`** (default `detailed`) decides how
-  `formatProductList` renders `{product_list}`. Compact is one line per product —
-  «1. Сорочка льон — 3300 грн · 4 кольори» — and it is what a phone-sized DM needs: the real
-  demo-altamen turn-2 list went **496 chars / 19 lines → 256 / 5**. Pinned by
-  `template-engine.measure.spec.ts`; the branch matrix by `template-engine.format.spec.ts`.
-  - **Opt-in per tenant, never global.** Compact changes customer-facing copy, and `luxespace` /
-    `clothes-store` / `showcase-women-clothes` neither asked for it nor have scenarios written
-    against it. Only `demo-altamen` sets it today.
-  - Titles and prices render **verbatim** — they are what the customer quotes back and what
-    `narrowByProductName` matches on. Only the variant *enumeration* collapses.
-  - **A ragged size matrix renders NO sizes.** When colours carry different size sets (Reglan:
-    Блакитний L,M vs Темно-синій S–2XL) a union or an «S–XL» range would promise stock that
-    doesn't exist. Colour count only; `ask_variant_choice` shows the real matrix once a product
-    is chosen. Uniform matrices do append the size list.
-  - A single colour is NAMED, not counted — «1 колір» reads as a rendering bug. Counts go through
-    `colorCountPhrase` (`color-i18n.ts`), which is three-way (1 / 2-4 / 5+) with the 11-14 teens
-    exception. A single colour the TITLE already states is dropped entirely
-    («Футболка базова біла · Білий» is the product's own name read back). `titleStatesColor`
-    compares **stemmed tokens**, not substrings: «Білий» stems to «біл», three characters, and a
-    substring test would fire on anything containing those letters — token-stem equality lets
-    «біла» match while «синтетика» can never match «син». Cross-script pairs (title `MOKKO`,
-    colour «Мокко») are not matched; that is a known gap, not a bug to chase.
-  - Compact inlines the price for a ONE-product list instead of «Усі по X.» — "усі" has nothing
-    to range over. Detailed still emits it; that copy is live on production tenants.
-  - **The LLM-reformat alternative was considered and rejected** (~+50% LLM spend, roughly doubles
-    time-to-reply on top of a 1.4-1.5s classify, inverts "AI classifies only", bypasses the
-    compile-time 💛 guard at runtime, and makes every `replyContains` assertion flaky). Revisit
-    only if some catalog proves genuinely un-templatable.
-- **Alta Men titles are normalized in the LOADER, not the JSON.** `normalizeProductTitle`
-  (`seed/data/altamen-products.ts`) strips the stripped-SKU remnant the source's «NAME - SKU»
-  format left behind (16 titles ended in ` -` or ` - 05.30.70.51`) and sentence-cases the 66
-  ALL-CAPS entries. `altamen-products-merged.json` stays byte-identical to the scrape so the
-  transform stays reviewable; `backfill-altamen-titles.ts` pushes it onto already-seeded tenants,
-  keyed on `external_product_id` (the title is the thing changing, so matching on it would work
-  exactly once).
-  - **Sentence case is derived, not chosen.** Every capitalized Cyrillic token across the 62
-    mixed-case titles is the first word of its title, and «Трикотажний костюм тенор» keeps the
-    model name lowercase — that is the store's own house style. Mixed-case titles pass through
-    untouched; Latin tokens keep their casing, with `SANTORINI`/`PREMIUM`/`PRIVE` canonicalised so
-    one model doesn't present two spellings to `narrowByProductName`.
-  - **Stripping the code can COLLIDE.** «СОРОЧКА ЛЬОН У БЛАКИТНУ СМУЖКУ -» and «… - 1022404» are
-    two different colourways; without the code they are one string, and two products sharing a
-    display title breaks `narrowByProductName` and lets `titlesEqual` pair one product's name with
-    the other's price. `getAltamenProducts` detects collisions and keeps the code on just those
-    entries.
-- **`{product_name}` and `{price}` must come from the same product.** `buildVariableMap` resolved the
-  name from memory (`selectedProductTitle` → `lastPresentedProducts[0]`) and then assigned the price
-  **unconditionally** from `productData[0]`, so a recommendation could quote one product's name at
-  another product's price. Name precedence is unchanged; the price now follows the name (same product
-  + live stock → `productData`, else the matching `lastPresentedProducts` entry, else unresolved with
-  a warn-level log). Comparison goes through the module-level `titlesEqual` — exact, not
-  `namesTheSameThing`/`titlesOverlap`: both sides are `products.title`, so anything looser only
-  produces false positives, and a false positive here quotes the wrong price.
-- **`isPivotToDifferentProduct` is the single definition of "the customer changed their mind."** A pivot = the turn names a product whose title doesn't bidirectionally-substring-match `memory.selectedProductTitle`, OR a category that differs from `memory.selectedCategory`. Block **4.6c** (`reply-engine.service.ts`, right after 4.6) acts on it: clear the selection via `clearSelectionForNewProduct` (the same field list `adds_to_cart` uses), drop the cart item they walked away from, and drop size/colour entities the customer didn't actually type this turn (`entityEchoedInText`).
-  - **Do NOT use `titlesOverlap` for this.** That helper strips `TITLE_GENERIC_NOUNS` (сорочка, футболка, куртка…) and returns true when either side tokenizes to empty — it exists to *preserve* a lock when the customer types a bare generic noun. Feeding it «сорочку» answers "same product" and defeats the pivot check on the exact turn it exists for.
-  - **Gated on `slotAction ∈ {new_inquiry, correction}`** and `!input.mediaReference`. A pure "так"/"ні" is never a pivot — a spuriously leaked category on a confirmation turn would otherwise wipe `selectedVariantId` and break the cart add. `classifyMessage` runs *before* media resolution, so a story reply must not be able to wipe the cart before the photo has named its product.
-  - **The clear is not optional.** Making a pivot search without it is worse than the bug: `selectedVariantId` still points at the *previous* product's variant, 5.5c is skipped (it requires no variant), the search's upgrade check promotes to `awaiting_confirmation`, and the bot offers "Сорочка з льону, M — оформлюємо?" carrying a jeans variant id into `buildOrderPayload`.
-  - **Cart removal is deliberately conservative**: only when the cart holds exactly one item AND it is the current selection. The classifier only ever hands us the product pivoted *to* («Шорти»), never the one cancelled, so a 2+ item cart is ambiguous → `ask_cart_removal` asks, parks the pivot in `memory.pendingPivot`, and `handleCartRemovalChoice` replays it on the answer. Guessing there could delete the item they still want.
-  - Cause-of-record: `men_demo_history_leak_pivot` (pivot → `product_not_found` handoff, shirt never searched for) and `men_demo_checkout_abandon_pivot` (cancelled jeans shipped in the order).
-- **A browse that names nothing gets the catalog, not a human.** «Що у вас є?» classifies as `category_browse` with no entities → no keywords → `searchProducts` returns **before ever calling the DB** (there is no empty-query search) → the 0-results guard escalated the customer's opening message. `maybeShowCategories` now renders `show_categories` from `ctx.categories` (already loaded every turn, zero new queries) at both `product_not_found` sites. It keys on **"named nothing", not "found nothing"** — «У вас є худі?» names a product, finds none, and must keep escalating. A category menu, not a product sample: five arbitrary items out of luxespace's 282 reads as broken.
-- **Handoffs are announced, never silent.** `doHandoff` ALWAYS emits a customer-visible reply: an optional context line from the caller ("Секунду, уточню наявність") plus an announce line that names the transfer ("Передаю розмову менеджеру — він відповість вам тут найближчим часом 💛"). The announce is tenant-authorable via the `handoff_ack` template, with a hardcoded fallback. **This supersedes the old silent-handoff convention** (bot escalates without telling the customer, manager slides into the same thread as one brand voice). That rule made sense when the bot had few exit points; with 18 `doHandoff` call sites it produced dead air on most escalations, and it was only ever enforced by accident — `reply` defaulted to `null` and 15 of 18 callers passed no message.
-  - The engine owns handoff copy. **Senders must not author their own.** `instagram.service.ts` used to discard `result.reply` and send a hardcoded "checking" line, so the engine's per-reason copy never reached a customer and production disagreed with the demo widget (which does pass `result.reply` through, and therefore showed the dead air). It now sends `result.reply.text`.
-  - Product position: the bot discloses it is an AI assistant (`conversation_start_greeting` already says so), and human managers take over when it escalates. Telling the customer that transfer is happening is honest, and in the demo it *is* the pitch — a prospect watching the escalation fire is watching the headline feature work.
-  - Note the AI-fallback system prompt still carries `NEVER say "contact manager"` (rule 5). That stays: the fallback is supposed to ANSWER. A fallback reply that deflects to a manager is a *fake* handoff — no escalation recorded, no Telegram ping. Real escalation goes through `doHandoff`, which announces.
-- **The conversation-start greeting is prepended in `withTrace`, not after `buildResponse`.** It must
-  lead the bot's FIRST message of a conversation, whichever block produces it. `process()` has ~15
-  reply-emitting return paths and only one is `buildResponse`, so while the welcome lived at the bottom
-  of `process()` every early return on turn 1 — the pre-qualify question, a size chart, a media match, a
-  0-row handoff — skipped it, and the greeting then landed on top of the bot's *second* message.
-  Centralized in `maybePrependWelcome`, called from `withTrace` for the same reason `markReplied` is:
-  one funnel, no per-call-site drift. Cause of record: `before_search` asks height/weight on turn 1, so
-  «Вітаю, з вами AI-асистент» surfaced *after* it. Keeps both existing skips — `greeting` intent (the
-  `greeting` scenario owns that flow; avoids a double «Вітаю») and results with no reply text.
-- **`before_search` pre-qualify asks in EVERY case except a resolved media reference.** The gate
-  (`reply-engine.service.ts` ~1575, clothing; ~1780, cosmetics) skips only on: `!mediaProductData`
-  (story/post reply or screenshot whose product we resolved — we already know what they want),
-  `entities.size` present (they told us their size), no product intent (a bare «Привіт» gets a
-  greeting), and the usual mid-flow guards (cart, orderCreated, awaiting_variant/confirmation).
-  - **`entities.productName` must NOT suppress it under `before_search`.** The classifier writes the
-    bare *category noun* into `productName` — «Хочу замовити футболку» → `'Футболка'` — so that
-    short-circuit silently disabled the setting for every realistic opener, and non-deterministically
-    (the field is sometimes omitted), which made it look random rather than off. `after_search_offered`
-    keeps the skip: there the question is an offer appended *after* results, and offering size help to
-    someone who already named a model is noise. This is why the term is
-    `(strategy === 'before_search' || !entities.productName)` and not a flat removal.
-  - Cause-of-record: `demo-altamen` configured `before_search` and never once asked for height/weight.
-    Guarded by the `pre-qualify gate` unit suite in `reply-engine.service.spec.ts` (6 cases incl. the
-    `after_search_offered` scope guard) — the gate had **zero** coverage before; every older
-    pre-qualify test targets `maybeMidFlowSizeHelp`, which runs *before* it.
-- **A size the customer STATES beats the size the chart inferred.** `recommendedSize` is sticky
-  (cleared only by the greeting / post-order resets) and silently drives the 5.5d variant filter,
-  5.5b-2 + 5.5c early-resolve and the size-suppressed rendering — so a stale value quietly decides the
-  whole order. Three places now honour a stated size:
-  - **Answering the question with a size.** The gate's size term is `(awaitingPreQualify ||
-    !entities.size)`: a size in the OPENING turn means we needn't ask, but once we HAVE asked,
-    «У мене розмір L» is a legitimate answer and must reach branch (a). Previously it was blocked, so
-    pre-qualify stayed pending, the size was dropped and the turn fell to AI fallback — which also
-    leaked a hardcoded 💛 into a men's store. Branch (a) takes `entities.size` as `recommendedSize`
-    and deliberately does NOT set `lastAction='recommended_size'`: echoing «За вашими параметрами ваш
-    розмір — L» at someone who just said L is absurd.
-  - **Correcting it later** («мені потрібен XL, а не L») — `syncRecommendedSizeWithStatedSize`, called
-    between pre-qualify and search so the new size reaches the filters. It only ever UPDATES an
-    existing value, never invents one: creating `recommendedSize` from a passing mention («а в XL є?»)
-    would switch on size-suppressed rendering for tenants that never ran pre-qualify. It also
-    requires a STATEMENT (`slotAction !== 'asks_question'` — «а в XL є, для брата?» asks about a
-    size, it doesn't adopt one) and requires the size to appear in what the customer actually TYPED
-    (`entityEchoedInText`, the same history-leak defence 4.6c uses — the classifier carries
-    `entities.size` forward on nearly every turn). Without both, one stray turn permanently rewrote a
-    field that steers the rest of the conversation. Guarded by the
-    `syncRecommendedSizeWithStatedSize` suite in `reply-engine.predicate.spec.ts`.
-  - **Not re-asking for it.** 5.5c's colour-matched branch resolves straight to the known size when
-    that colour carries it, instead of routing to `ask_size_for_color`. Companion to the 5.5b-2
-    `userSize ?? selectedSize ?? recommendedSize` chain — same rule, different entry point.
-  - Guards: `demo_altamen_size_correction_after_recommendation` (ordered the rejected size before the
-    fix) and `demo_altamen_states_size_instead_of_measurements`.
-  - Still open: a size correction while a colour is already locked (Чорний, L → «а можна XL?») drops
-    the colour and re-asks it — the documented `slotAction='correction'` state-hygiene debt below.
-- **`memory.recommendedSize` must never prune a product the customer NAMED.** The search-path filter
-  (`reply-engine.service.ts` ~2220) runs *before* `narrowByProductName`, and its "don't over-prune"
-  guard counts **products, not names** — so a named product lacking the recommended size is deleted and
-  a *different* product that happens to carry that size gets locked instead. Guarded by
-  `!entities.productName`. Size filtering stays on for open browses, where "show me what fits" is the
-  point. Collecting measurements on nearly every conversation (above) made this go from rare to default.
-  - Companion: 5.5d's `confirm_last_in_stock` now also requires the **unfiltered** variant list to be a
-    single variant, otherwise a size-filtered collapse told customers «остання позиція в наявності»
-    while every other size was in stock.
-  - Companion: 5.5b-2's early-resolve reads `userSize ?? memory.selectedSize ?? memory.recommendedSize`
-    (was `memory.selectedSize` only). A colour+size message («Темно-сині, розмір L») was resolving the
-    colour and then *asking* for the size the customer had just given.
-  - Companion: template-engine's `suppressSizes` (3 sites) now requires a colour axis to actually exist.
-    On a size-only product it collapsed `{variant_list}` to `''`, `hasRequiredVariables` rejected the
-    template, and the turn fell through to AI fallback / handoff.
-- **Telegram handoff notifications** — wired and live. Manager gets a Telegram message when the bot escalates a conversation. Channel + behavior configured per-tenant via `flow_config.handoff` (notification channel, pause-on-handoff, summary template).
-- **Customer photo matching via pHash** — when a customer attaches an image in DM, [`InstagramContentService.matchCustomerPhoto`](apps/api/src/modules/channels/instagram/instagram-content.service.ts) first tries a 64-bit dHash lookup against `product_media.phash`. Hamming distance ≤ 5 → resolve product (deterministic, no LLM cost, no false positives on visually similar items). Tied minimums or above-threshold → fall through to the existing GPT-4o-mini vision flow against linked instagram_media_mappings, then to handoff. Hashes are computed at sync time in [`catalog.service.ts`](apps/api/src/modules/catalog/catalog.service.ts) when product_media rows are inserted.
-
-### Important
-- Long-lived Instagram token exchange (current tokens expire in ~1 hour)
-- Multi-product orders (cart with multiple items before checkout)
-- Product search: also search in `description` field
-- Cross-sell templates after order confirmation
-- Admin panel analytics dashboard (conversion, automation rate, response time)
-
-### Technical Debt
-- **`entities.productName` holds a category noun, not a product name.** «Хочу замовити футболку» →
-  `productName: 'Футболка'`; «шорти» → `'Шорти'`. Every engine gate that reads this field as "did the
-  customer name a *specific* model?" is answering "did they mention clothing at all?". The pre-qualify
-  gate is defended (see Shipped), but the same field is trusted by `isPivotToDifferentProduct`, the
-  focus gate, `narrowByProductName` and `shouldSearchProducts`. Proper fix is a classifier rule
-  ("a bare category noun is a category, not a productName") — deferred because it needs
-  `npm run eval:classifier` and stays probabilistic, whereas engine gates are deterministic and
-  traceable. Add a few-shot before trusting the field in any new gate.
-- **Naming a model inside a generic-token category resolves the wrong product.** In «Футболки / Поло»
-  every title contains «футболка», so post-search narrowing (recency + `lastPresentedProducts`) picks by
-  overlap instead of honouring the model name: «Футболка двобортна хакі розмір L» came back as
-  «ВʼЯЗАНА СОРОЧКА-ФУТБОЛКА БЕЖЕВА». The structural fix is running `narrowByProductName` *ahead* of the
-  category/recency narrowings, which changes search identity for every tenant — not attempted. Standing
-  red bug guard: `demo_altamen_tshirt_order`.
-- **«Які розміри є у футболки X?» ESCALATES TO A HUMAN on a tenant with no size charts.** The
-  classifier reads it as `size_chart_request` (a request for a measurement TABLE), so
-  `handleSizeChartRequest` runs, finds no chart — `demo-altamen` is a `measurements` tenant with
-  zero `size_charts` rows — and hits the `size_chart_not_available` handoff, while the answer (the
-  product's in-stock sizes) sits in the catalog. Standing red bug guard:
-  `demo_altamen_asks_sizes_of_named_product`; its green sibling
-  `demo_altamen_asks_colours_of_named_product` pins the colour question, which works.
-  - Fix shape, deferred to its own PR: in `handleSizeChartRequest`, before the no-chart
-    `doHandoff`, answer from the catalog when a product is resolvable and has a size axis — the
-    same principle as `canAnswerFromFocusedProduct` guarding the two `product_not_found` handoffs.
-    Render through `renderCustomScenario(…, 'show_product_sizes', {…})` with EXPLICIT variables
-    (the `ask_cart_removal` pattern) so it bypasses `buildVariableMap` — see the next bullet for
-    why that matters. Second layer: the SIZE CHART vs AVAILABILITY block (`classifier.service.ts`
-    ~:1047) covers «у вас є розмір М?» but has no case for *which* sizes exist.
-  - **An earlier version of this entry blamed `suppressSizes`. That was wrong** — the turn never
-    reaches the renderer. Recorded because the wrong cause was plausible enough to be written down
-    twice: check the trace before trusting a predicted cause.
-- **`suppressSizes` at the `{variants}` / `{variant_list}` sites is still flag-based.**
-  `template-engine.service.ts` ~:932 and ~:995 read `!!memory.recommendedSize && hasColourAxis`,
-  not the data — and the search-path size filter stands down whenever `entities.productName` is
-  set, so a named-product turn hydrates every size while the renderer believes the size is settled
-  and hides it. Same bug `listIsScopedToSize` already fixed for `formatProductList`; the fix is to
-  gate both sites on that predicate. Deferred because those variables are also read by the
-  media-link and two-step variant flows, so it needs a sweep over `demo-women-clothes` +
-  `men-demo-store`. Latent today (nothing routes there), but it would re-hide the sizes the fix
-  above resolves — which is why that fix passes variables explicitly.
-- **Cart abandon = 4.6c, and it is remove-if-named, else ask.** «джинси не треба — покажіть шорти» abandons the jeans and pivots to shorts. Handling:
-  - **Removal cue** (`не треба`/`не хочу`/`прибери`/…, the `REMOVE_CUES` list computed above 4.6): a removal phrasing is never an *add*, but the classifier labels it `adds_to_cart` about as often as `correction`. Coerce `adds_to_cart → correction` on a cue up front, and stand 4.6b (keep-only) down on it, so it always reaches 4.6c. Deliberately NOT bare «ні» — «ні, давайте тільки Color Veil» is keep-only (`cart_abandon_pick_new`).
-  - **remove-if-named** (`matchCartItems(cart, rawMessage)`, matched against the RAW message never `entities` — the classifier leaks `entities.category` from history): exactly one cart item named → remove it and consume its `productName` so the pivot searches the *category*, not the removed product. A named PIVOT target not in the cart matches nothing → falls through. Two items sharing a token → matches both → refuses to guess → ask.
-  - **else**: a 2+-item cart with nothing named is genuinely ambiguous (the classifier only hands us the product pivoted *to*, «Шорти», never the cancelled one) → `ask_cart_removal`, park the pivot in `memory.pendingPivot`, `handleCartRemovalChoice` replays it on the answer. `cartRemovalAsked` is the one-shot loop guard.
-  - The removal ack («Прибрала {title} із замовлення 💛») is prepended AFTER both the template and AI-fallback branches — the pivot search sometimes lands in AI fallback, which would otherwise speak its own inconsistent removal wording.
-  - The clean long-term fix is still a classifier signal (`removes_from_cart` slot action or `removedProduct` entity) so the raw-text matching can go. Deferred — classifier changes need `npm run eval:classifier`. Cause-of-record: `men_demo_multi_item_cart_abandon_asks` / `_named_removes`.
-  - Residual gap this leaves: if the customer IGNORES the removal question and jumps straight to «оформлюємо», `handleCartRemovalChoice` finds no matching item, clears the waiting state, and the checkout proceeds with the un-removed item still in the cart. Deliberate — the alternative is re-asking, which risks a loop, and treating an unrelated reply as an answer is how you delete the item the customer still wanted. The classifier signal above closes this too; until then it is a 2+-item-cart-only edge.
-- **Three partial-reset field lists now exist** — the greeting reset, the post-order reset, and `clearSelectionForNewProduct`. Keeping three in sync is exactly the drift that produced the `selectedCategory` bug. Promote to one `resetSelection(memory, ctx, { keepCart, keepPreQualify })` when a fourth appears.
-- **A gate that means "what did the customer ask for" must read `ctx.classifierIntent`, not `classification.primaryIntent`.** Engine blocks rewrite `primaryIntent` mid-turn (pre-qualify coerces to `category_browse`; 5.5 rewrites to `variant_not_available`/`out_of_stock`), so a late gate reading the live value is reading the engine's own bookkeeping, not the customer. Cause of record: «у мене сильна алергія на парабени» classifies `product_inquiry`, gets coerced to `category_browse` by the cosmetics pre-qualify block, and reached `maybeShowCategories` — answering an allergy concern with a category menu instead of escalating (`cosmetics_handoff_safety`).
-- **Product-name equality is a word-SUBSET test (`namesTheSameThing`), not substring and not `titlesOverlap`.** Both cheaper tests shipped bugs: substring called «Silk Color Помада» and «Silk Color Collection Помада» different products and emptied a cart; `titlesOverlap` matches on any shared token and called «Color Veil Terracotta» the same product as «Silk Color Collection Помада» on the strength of the word *color*. `titlesOverlap` remains correct for its own job (preserving a lock when the customer types a bare generic noun) — don't unify them.
-- `memory.selectedCategory` is set to `entities.category ?? searchKeywords[0]` (`reply-engine.service.ts` ~2262), so on a productName-only search it holds a **product name**, not a category. `isPivotToDifferentProduct` compares an incoming category against it, so a polluted value can read as a pivot. Contained today by gating 4.6c on `slotAction ∈ {new_inquiry, correction}` — the only turns where a fresh search is right anyway — but the field should be made honest (store the resolved product's real `product.category`, which `findAllByProductId` already returns).
-- `apps/api/dist/` files were tracked in git (now gitignored)
-- `17841400073793607` webhook entries logged as "No connected Instagram account" — second IG Business Account ID, harmless but noisy
-- ConnectionsPage has pre-existing TypeScript errors
-- Some `as any` casts on TypeORM jsonb column updates
-- Shopify sync stores colors in `size` field (selectedOptions[0] → size mapping)
-- `DemoMessageBufferService` duplicates production buffer logic in `instagram.service.ts`; refactor to a shared service when per-tenant debounce config or a second channel arrives
-- Add a `tenant.is_demo` guard inside `ordersService.createFromConversation()` as belt-and-braces. Current demo path explicitly skips order creation, but a defensive refusal at the orders layer would prevent a future code path from accidentally persisting a demo order
-- Multi-process deployments break the in-memory demo buffer (the `Map` is per-process and the same `sessionKey` could land on different workers). Move to Redis when scaling beyond a single replica
-- Demo session story is mostly working in 3.1 because `findOrCreateConversation` reuses by `(tenantId, customerId, channel='demo', channelAccountId=sessionKey)`. Step 3.2 adds explicit session TTL/expiry, server-issued sessionKeys, an in-widget "Start new conversation" button, and rate-limit tracking that survives sessionKey rotation
-- `DemoBudgetService.chargeEstimate` charges classifier on every demo call and fallback at p=0.20 because `ReplyEngineService` exposes no per-call token usage. Overcounts ~2× on fallback. Replace with real per-call usage telemetry when `ReplyEngineService` plumbs `usage.prompt_tokens` / `completion_tokens` from the OpenAI SDK response
-- `DemoRateLimiterService` uses a per-process in-memory `Map` — same multi-process gap as the demo buffer; fold into the same Redis migration when scaling beyond a single replica
-- `app.set('trust proxy', true)` in `apps/api/src/main.ts` is permissive — accepts any `X-Forwarded-For`. Tighten to a fixed hop count or a specific subnet once the deploy topology is fixed (Cloudflare → nginx → Node)
-- E2E test scaffold (`apps/api/test/jest-e2e.json`, `test/tsconfig.json`, `test/setup-env.ts`, `test/demo/setup.ts`) currently only covers the `/demo` endpoint. Other modules (auth, conversations, channels) have no e2e coverage. Reuse the same config when a second module needs e2e tests
-- `preQualifyStrategy` is implemented for clothing + cosmetics business types. Default per vertical: clothing→`after_search_offered`, cosmetics→`before_search`. Per-tenant override via `flow_config.preQualifyStrategy`. Yes/no answer to the offer suffix is detected via `classifier.slotAction` (`'confirmation'` / `'rejection'`). Negative response gets a hardcoded short ack ("Окей 💛 Як визначитесь — пишіть") instead of an AI-generated reply (deviation from Phase 6 spec — see next bullet).
-- **Negative-offer reply is hardcoded, not AI-generated**, contrary to the Phase 6 spec's "route to AI fallback" framing. Reasoning: the response space is tiny (one-line ack), determinism + zero LLM cost outweigh tonal variation. If we later want variation per brand voice, we can promote `decline_offer` to a template scenario (one DB row per tenant) — that's still cheaper than per-request LLM.
-- Yes/no offer detection uses `classifier.slotAction` — there is no dedicated `confirmed`/`negated` value on `primaryIntent`, so `slotAction.confirmation`/`rejection` is the canonical classifier-driven yes/no signal (zero regex, zero keyword lists). If yes/no detection becomes unreliable in the wild, add a dedicated few-shot example block to the classifier system prompt for the offer-response context.
-- `ask_size_choice` template assumes `{variant_list}` interpolates available sizes when user picked a color/style without a size. If a user-picked-variant flow is added that exposes a different shape (e.g. an `available_sizes` variable distinct from `variant_list`), the template engine variable resolution needs the new var added to its known-keys list.
-- Cosmetics demo image URLs are downloaded into `apps/api/test-assets/cosmetics/` from public CDNs (Ukrainian e-commerce sites). Risk of CDN rotation. If images break, the seed log will report `! image source missing: ...` and the `product_media.url` rows still get inserted — the broken image becomes a missing visual in the demo widget but does not break flow. Re-download from alternate sources via curl if any URL rots.
-- `variants.color` and `variants.size` columns are semantically reused for non-clothing verticals. Cosmetics demo stores Маска variants ("Зволожуюча/Очищувальна/Освітлююча") in `color` and SPF variants ("SPF 30/SPF 50") in `size`. Known schema overload. When a third + fourth non-clothing vertical lands (sport supplements: dose × flavor; etc.), refactor to typed `attribute_1`/`attribute_2` columns with optional labels — separate PR.
-- `DemoService.onModuleInit` resolves all `is_demo=true` tenants once at boot into an in-memory `Map<slug, tenantId>`. Seeding new demo tenants requires an API restart for the controller to see them. Acceptable now; revisit if we ever do hot-add tenants. The deploy order is therefore: migrations → seed → restart api.
-- `flow_config` is still typed as `Record<string, unknown>` on `StoreConfig`; reads use `(flowConfig as any).preQualifyStrategy` / `.businessType` etc. Defining a typed `FlowConfig` interface (with `businessType`, `preQualifyStrategy`, `preQualify`, `sizeChart`, `sizeChartMappings`) in `apps/api/src/modules/engine/entities/store-config.entity.ts` is a separate cleanup PR. Knock-on: the simulator's `flowConfigOverride` field is also `Record<string, unknown>`.
-- Templates code-as-source-of-truth applies to demo tenants ONLY. Production tenants (`clothes-store`, `pilot`, future paying customers) still author templates in DB via the admin panel. Future: extend the code-source pattern to a "starter pack" for new production tenants — they fork from a vertical preset and edit in admin. Until then: any change to production-tenant templates must go through admin UI / direct DB edit, NOT the seed/templates/ files.
-- `entities.size` field has no canonical-value constraint. The classifier could extract any string into `entities.size` because the tool definition at `apps/api/src/modules/engine/classifier.service.ts` (`CLASSIFY_MESSAGE_TOOL.parameters.entities.properties.size`) is `{ type: 'string' }` with no description or enum. The `pendingOfferRule` few-shot rule guards the immediate hazard (don't extract "розмір" as size when answering an offer) but a broader fix — adding a `description` enumerating canonical sizes (XS/S/M/L/XL + numeric 36-50) — would harden every size-extracting context. Defer until a second symptom appears.
-- If cosmetics ever flips to `after_search_offered` (via `flow_config.preQualifyStrategy` override or future product decision), mirror the clothing `pendingOfferRule` for skin-type offer responses (e.g. "допоможіть з типом шкіри" / "підкажіть з вибором" should map to `slot_action='confirmation'`). Currently cosmetics defaults to `before_search` so the offer-suffix path never fires, but it's the same regression class — the classifier needs an explicit conditional rule + memory-context signal whenever an offer is pending.
-- Per-variant images for clothing demo are not seeded. Mango Сукня міді and other women-clothes items use a single product-level `imageUrl`; all variants share it. The new `ask_variant_choice` image fallback gracefully falls back to the product image, so the visual is just one image instead of N. To showcase per-variant images on the Жіночий одяг tab, populate `apps/api/src/scripts/seed/data/clothing-women-products.ts` variant entries with per-variant `imageFile` (one per color, optionally per (color, size)) and download corresponding test-assets. Cosmetics already does this for masks.
-- `MessageBubble.tsx` caps `imageUrls` at 4 visible images (`images.slice(0, 4)`). Variants 5+ are dropped from the visual but still listed in the `{variant_list}` template text. Acceptable while max candidate variants per turn ≤4. If a catalog with >4 candidate variants per choice ever appears, swap the 2-col grid for a horizontally scrollable carousel.
-- Cosmetics doesn't have partial-variant templates (`ask_size_for_color` / `ask_color_for_size`). When a future cosmetics product introduces two variant axes (e.g., scent × SPF), engine routes to those scenarios but cosmetics templates don't exist → falls back to `ask_variant_choice`. Acceptable degradation; add cosmetics-specific templates if a two-axis cosmetics SKU ships.
-- `slotAction='correction'` does not reset `memory.selectedColor` / `memory.selectedSize` in the general case. The branch at `apps/api/src/modules/conversations/reply-engine.service.ts:1056-1060` only clears `selectedVariantId`/`selectedVariantName`. The partial-variant flow defends with explicit clears of the opposite axis inside 5.5c match-failure branches; a broader fix (clear both axes in the correction branch itself) was deferred. Audit broader correction handling for memory state hygiene as a separate cleanup.
-- Media-link axis-scoping memory (`memory.selectedColor`, `memory.variantStep`, `memory.mediaLinkSizes`, `memory.mediaLinkOtherColors`) is written by `handleColorLinkedMedia` at `reply-engine.service.ts:886-924` and MUST be cleared by every 5.5m branch that downgrades routing away from `confirm_color_variant_in_stock`. Centralized in `clearMediaLinkAxisScoping`. Five 5.5m branches currently call it (empty-caption coerce, dimension-exists → ask_variant_choice, variant_not_available, auto-select single, multi-variant else); any new 5.5m branch must call it too. Without the clear, template-engine's `variantStep==='size'` branch at `template-engine.service.ts:842-850` filters `{variant_list}` to the linked color's sizes only and renders into a body that promises colors ("є в кольорах: S, M, L") — the sweater-photo prod bug class. Companion to the `slotAction='correction'` entry above: same shape, different memory keys.
-- Color equality in `reply-engine.service.ts` MUST go through `colorsOverlap(a, b)` (the canonical helper next to `translateColor`), not raw `a.toLowerCase() === b.toLowerCase()`. Raw equality silently fails when (a) a tenant's catalog stores variants in English while classifier emits Ukrainian (mixed-language catalogs from Torgsoft/Shopify imports — `luxespace`, `clothes-store` likely affected), or (b) `handleColorLinkedMedia` writes `memory.selectedColor` from `instagram_media_mappings.linked_color` in one language form against a catalog stored in another. Four call sites currently use the helper: 5.5a-pre `colorMissing` (`reply-engine.service.ts:2207-2212`), 5.5b-2 `sizesForColor` filter and `exactVariant` find (`:2509`, `:2518`), and `handleColorLinkedMedia.colorMatchedInStock`/`otherColorsInStock` (`:899-906`). Three sites at L2452, L2470, L2488-2490 use raw `.toLowerCase()` equality but both sides originate from the same DB `v.color` column (via `uniqueColors`) so language mismatch is impossible by construction — left as-is. Size equality stays raw lowercase: sizes have no translation table and the convention is consistent ("S/M/L/XL").
-- Classifier history-leak defense is engine-side only. `5.5m` (`reply-engine.service.ts:1455-1517`) treats `ready_to_order` as a selection-intent so media-resolved product turns route correctly when the customer says "Хочу замовити X" with a story_reply attachment; `5.5c` match-failure (`reply-engine.service.ts:2608-2660`) sanity-checks `userColor`/`userSize` against the resolved product's variants (via `colorsOverlap` for color, case-insensitive equality for size) before persisting them to `memory.selectedColor`/`memory.selectedSize`. If the leaked axis doesn't exist on the product, both fields are cleared and routing falls through to `ask_variant_choice`. The classifier itself still leaks `entities.color/size/customerName/phone/city` from history when a new product is mentioned mid-conversation — verified in prod conv `05d802e7-5182-436f-a45e-742e3f9c11b4`. Higher-leverage follow-up: add a few-shot to `CLASSIFY_MESSAGE_TOOL` system prompt instructing "when current turn is about a different product than prior turn, do not carry color/size/customer-info forward." Deferred because engine gates are deterministic and observable; classifier changes need offline evaluation. Also: leaked `customerName/phone/city` are NOT yet defended at the engine layer — they only matter at order-creation time and the existing `create_draft_order` path doesn't re-key on them. Surface a `checkout-data-hygiene` audit if a future stale-name order ships.
-- The `skipVariantUpdate` deny-list at `reply-engine.service.ts:2960-2978` lists scenarios that don't latch `selectedVariantId` on the post-render hook. Every new non-confirming scenario must be added explicitly or the post-render hook latches `templateResult.matchedVariantId` (populated by template-engine's variable resolution) even though the user hasn't actually picked a variant — corrupting state on the next turn. Same brittleness applies to the conditional downgrade in `updateMemoryFromAction` case `'show_products'` at `:4296-4311`: any new fallthrough scenario (renders without a confirmed user choice) must be considered there too. Current entries: `variant_not_available`, `ask_variant_choice`, `ask_size_for_color`, `ask_color_for_size`, `confirm_color_variant_in_stock`, `show_products`, `show_price_with_variants` (7 — one short of the promote threshold). Promote both sites to an explicit allow-list pattern (`SCENARIOS_THAT_COMMIT_TO_VARIANT`) when a third fallthrough scenario joins OR when the deny-list reaches 8+ entries. Companion to `clearMediaLinkAxisScoping` and `colorsOverlap` — same class of "engine state hygiene on fallthrough renders". Cause-of-record: prod conv `77e61632-2505-467a-b619-2d6788792c7c`.
-- **`flow_config.sizeHelpMode`** (`'chart' | 'measurements'`) decides how a tenant answers "допоможіть з розміром". `'chart'` sends the size-chart image and asks which size; `'measurements'` asks height/weight and recommends a size. Resolved once in `resolveSizeHelpMode` and honoured at **three** call sites that all used to hardcode the measurements path: `maybeMidFlowSizeHelp` (unprompted size question), the `preQualify` offer-accepted branch (`reply-engine.service.ts` ~1259, the `after_search_offered` suffix path — this one is easy to miss, the mid-flow branch never sees the turn because the offer suffix makes it a `confirmation`), and `handleSizeChartRequest`'s help-style branch. Any new size-help entry point must call the resolver too. When unset, the mode is inferred for backward compatibility: `measurements` if `preQualify.enabled` + a non-empty numeric `sizeChart`, else `chart`. `'measurements'` without usable ranges degrades to `'chart'` rather than asking for a height it cannot map.
-- Chart mode delegates to `handleSizeChartRequest` by coercing `primaryIntent='size_chart_request'` (it already ran earlier in `process()` without firing, so re-entry is side-effect free) instead of duplicating brand/category resolution, the `show_size_chart` template, audit and the no-chart handoff. It is gated on `sizeChartsService.listForTenant()` being non-empty — without that check, tenants with neither charts nor ranges (`luxespace`, `clothes-store`) would newly hand off on every "порадьте розмір" via `size_chart_not_available`.
-- `sendSizeChartAndAskSize` sets `selectionState='awaiting_variant'` + `awaitingField='size_selection'` but deliberately **does not** set `variantStep='size'`. That value asserts "colour already chosen": 5.5b-2's size branch requires `memory.selectedColor` (`reply-engine.service.ts:2763`) and template-engine filters `{variant_list}` to that colour, so on a size-only product the branch is skipped and the customer's "M" falls through to `ask_variant_choice`. Same axis-scoping hazard as `clearMediaLinkAxisScoping`.
-- Size-help detection is a keyword allowlist (`['розмір','зріст','вага']`) on raw text plus `primaryIntent==='ask_recommendation'`. **The classifier is behaving correctly here** — `classifier.service.ts:566-567` explicitly instructs "порадьте розмір" → `ask_recommendation`, reserving `size_chart_request` for explicit table asks. The defect is that `ask_recommendation` conflates "recommend a product" with "recommend a size", and `INTENT_TO_SCENARIO` maps it unconditionally to `recommend_product`. The engine disambiguates on the keyword before template selection. Coverage gap: phrasings with no size word ("що мені підійде?", "який мені брати?") still render `recommend_product`. The stem list (`порад`, `підібра`) is deliberately excluded — it over-fires on "що порадите для пляжу?". Promote to a structured classifier signal (`size_help_request` intent, or an `isSizeQuestion` entity) if this surfaces in prod logs. Cause of record: prod trace `f73b4cc1` on `men-demo-store` (size question → product blurb).
-- **Focus gate** — `isVariantQuestionOnFocusedProduct` in `reply-engine.service.ts` suppresses the fresh search when a product is already in focus (`memory.selectedProductId`) and the classifier emits a variant entity (size/color) with no new product identifier. `searchAndFilterProducts` then hydrates `productData` via `availabilityService.findAllByProductId` and 5.5 answers from the product's own variants. The predicate is keyed on **entity shape, not an intent allowlist** — the same turn classifies as `availability_check` / `product_inquiry` / `ask_price` / `confirm_choice` depending on phrasing. `correction` and `adds_to_cart` are excluded (both legitimately pivot to another product; `correction` also relies on the `needsSearch` branch to clear `selectedVariantId`). Do NOT pre-filter the hydrated product by the user's requested variant — an out-of-stock ask would collapse to 0 rows and land back in the handoff. Cause-of-record: prod trace `37fb5032` ("Є розмір М?" → `product_not_found` handoff with M in stock).
-- **`entities.category` is NOT treated as a pivot when it equals the focused product's category.** The classifier carries category forward from history on nearly every turn — a bare "M" reply comes back as `{category:'Сорочки', size:'M'}` — so rejecting any category would disable the focus gate for exactly the turns it exists to catch (verified in the simulator). Only a *different* category counts as a pivot. This makes `memory.selectedCategory` load-bearing, which is why the post-order reset and media pre-seed must keep it truthful.
-- Both `product_not_found` handoff sites (`searchAndFilterProducts` post-search, and `buildResponse` no-template) are guarded by `canAnswerFromFocusedProduct` = focus-gate predicate **AND** non-empty `memory.availableVariants`. Deliberately narrower than "a product is in focus": an early cut keyed on `memory.selectedProductId` alone swallowed a genuine category-pivot escalation ("А спідниці чорні є?" → 0 rows) into AI fallback. A pivot with 0 rows still escalates; so does a focused-product question whose hydration failed (product deactivated → no variants in memory). Regression scenario: `demo_women_category_question_still_searches`.
-- The media pre-seed in `searchAndFilterProducts` now writes `memory.selectionState` (`awaiting_confirmation` for a single in-stock variant, else `awaiting_variant`) and refreshes `memory.selectedCategory` from the resolved product. It only fills `selectionState` when undefined, so `handleColorLinkedMedia` (which runs earlier and sets `awaiting_variant` + `variantStep='size'`) is never clobbered. Previously a story/post reply left a product in focus with **no selection state**, so every gate keyed on `selectionState` silently missed.
-- `memory.selectedCategory` is cleared in the post-order reset. It survived before and then acted as a silent post-search filter on the next inquiry (a story reply about a shirt, after a jeans order, filtered subsequent searches to jeans). The `adds_to_cart` new-product branch always cleared it; only the reset path omitted it.
-- `show_price_with_variants` is an **optional** scenario: `maybeOfferVariantsWithPrice` (called at the top of `buildResponse`) rewrites `primaryIntent`/`recommendedAction` when the priced product has >1 in-stock variant and none is chosen. It deliberately **mutates no memory** — the tenant may not have authored the template, in which case `renderScenario` falls back to plain `show_price` and the post-render hook derives state from the scenario that actually rendered (`scenarioToAction` maps it to `ask_variant_choice`, so success → `awaiting_variant`, fallback → `order_decision`). Setting `selectionState` up front would strand the fallback render in `awaiting_variant` after a reply that never asked for a variant. `variantStep` is likewise left unset; template-engine's generic branch derives `{variant_type}`/`{variant_list}` from the product's own axes. Copy omits `{variant_type}` on purpose: for a two-axis product the list renders grouped (`Cream: S, M, L`) while `detectVariantType` reports a single axis (`Розміри`).
-- Prod demo tenants (including **Men Demo Store**) are not all reproducible from this repo's seed builders, and a reseed hard-deletes with CASCADE (taking conversations). `npm run backfill:price-variants` (`backfill:prod:price-variants` compiled) inserts `show_price_with_variants` in place, scoped to `tenants.is_demo = true` — slug-agnostic, idempotent, and leaves production tenants' DB-authored templates alone. Reuse this shape for future demo-only template additions rather than reseeding.
-- `enforceStageGates` checkout-blocked redirect at `apps/api/src/modules/engine/template-engine.service.ts:441` routes to plain `ask_variant_choice` when `selectedVariantId` is missing, ignoring `memory.selectedColor` / `memory.selectedSize` partial state. Low-probability path (user skips variant resolution and attempts checkout) but should ideally route to `ask_size_for_color` / `ask_color_for_size` matching partial state. Address if the edge surfaces in real flow.
-- `5.5c` block in `reply-engine.service.ts` has 4 sites writing `memory.availableVariants` (lines around 1516, 1543, plus this PR's match-failure path). Centralized in `buildAvailableVariantsList` private helper to prevent drift; promote to a shared utility if another caller appears outside 5.5c.
-- Per-variant images for clothing demo are not seeded (still). The new `ask_color_for_size` flow benefits when each variant has its own `imageUrl` — engine attaches one image per candidate (Red+M, Black+M). Today's clothing demo seed has only product-level images, so the multi-image grid renders just the product photo. To showcase per-color images on the Жіночий одяг tab, populate `apps/api/src/scripts/seed/data/clothing-women-products.ts` variant entries with per-color `imageFile`. Cosmetics already does this for masks.
-- ~~`extraReplies` only consumed by the demo path.~~ **Fixed.** The production Instagram replier iterates `result.extraReplies` at `apps/api/src/modules/channels/instagram/instagram.service.ts:801-816`, sending each bubble's images (best-effort) then its text (retried) after the primary reply. Multi-bubble flows — size-chart auto-attach, welcome-prepend — reach Instagram customers.
-- Color/size inflection in clothing partial-variant templates AND skin-type inflection in cosmetics templates. Templates render `{color}`, `{size}`, and `{skin_type}` directly from classifier entities or memory — no Ukrainian morphological agreement. Strings like "Mango Сукня міді в Red" mix languages; "Mango Сукня міді червона" / "жирна шкіри" are ungrammatical when classifier extracts the accusative form. A single dedicated PR with a UA-form lookup table (per axis: color/size/skin type, per case: nominative / accusative / genitive / locative) would address both demos. Defer until copy quality becomes a customer-facing concern.
-- `getBrandAndCategoryForProduct` adds two DB queries per partial-variant size-asking turn (one for brand+category, one for chart resolution). Both are indexed and the gate fires only when trigger conditions match (single-product context + size-asking scenario), not every turn. Real cost is much lower than per-turn. Monitor demo logs; cache by `(tenantId, productId) → {brand, category}` for the conversation lifetime only if perf data shows measurable impact.
-- Simulator assertion type `SimulatorTurnExpect` now exposes `extraReplyCount` and `extraReplyImageContains` for follow-up bubbles. Mirror these into any new assertion fields if the engine ever emits richer per-extra metadata (e.g. per-extra scenario/template id).
-- Demo widget Instagram reply context is scripted-playback only. Live mode never sets `turn.instagramContext`. If marketing wants a "try this flow live" affordance with a seeded media context, the live-send path would need to forward `mediaReference` to the engine and the demo widget would need a way to attach a starting context to the customer's first message. Out of scope for the current marketing affordance.
-- Inline Instagram preview in `MessageBubble` is approximation, not pixel-perfect Instagram. Story uses `aspect-[3/4]` and a single white duration bar (no multi-segment story progression chrome). Real Instagram heart icon, paper plane, three-dot menu are omitted. Tighter fidelity is a future styling polish PR if marketing reviews and wants exact match.
-- `product_variants.image_url` is a dead column in the demo seed path. Real per-variant images live in `product_media` keyed by `(product_id, color)`. Two consumer paths now implement the `colorImageMap` pattern independently — `catalog.service.ts:107-141` (admin listing) and `availability.service.ts` (reply engine). If a third consumer is added, replicate the pattern; risk grows with consumer count. Resolution options for a dedicated cleanup PR: (A) extract a shared utility `resolveVariantImageMap(productIds)` for all consumers; (B) populate `product_variants.image_url` at seed/ingest time and drop `product_media` color-keyed rows; (C) drop `product_variants.image_url` column entirely. Pick one before adding a 3rd consumer.
-- Color matching in `colorImageMap` depends on case normalization (`toLowerCase()` on both sides). Demo seed normalizes color values during insertion, so the lookup works there. Production ingestion paths (n8n Shopify / OpenCart connectors) MUST normalize color casing during catalog sync — otherwise the lookup silently misses and falls back to the product-level image. No error raised; just wrong-image rendering. Verify n8n connector normalization when production tenants onboard.
-- Engine has a defensive gate at `reply-engine.service.ts` 5.5c for the `slotAction='confirmation' + entities.color/size` edge case. Pattern: classifier prompt was updated to disambiguate "давайте/беру + specifics" → `fills_missing_slot` (not `confirmation`), but the engine retains a belt-and-braces gate so misclassifications still route correctly. If similar non-determinism patterns surface (other `slotAction` values producing wrong routing), prefer extending engine gates over relying solely on classifier prompt updates. Two-layer defense for routing robustness; the regression scenario `clothing_offer_accept_with_product_specifics` guards this case.
-- Body measurements (height/weight) are NOT extracted as classifier entities. The mid-flow size-help branch at `reply-engine.service.ts` `maybeMidFlowSizeHelp` relies on `looksLikePreQualifyData` (regex on raw text in the 30–250 plausible range) plus a strict size-context keyword allowlist `['розмір','зріст','вага']` to detect size queries. Generic recommend stems (`порад`, `порекоменд`, `підказа`, `підібра`) are deliberately excluded from the allowlist because they would over-fire on non-size suggestions like "що порадите для пляжу?". Coverage gap: phrasings like "порадьте розмір" without the word `розмір` would under-fire and fall through to the existing recommendation/AI-fallback path — degraded but not broken. If false-positive/false-negative rates surface in production logs, promote `bodyMeasurements: { height?, weight? }` to the classifier entity schema (CLASSIFY_MESSAGE_TOOL.parameters.entities) so the engine has a structured signal instead of regex + keyword stems.
+- **Unit tests** (`cd apps/api && npm test`): mock models, free, run on every commit by the pre-commit hook.
+- **Simulator** (`npm run simulate`): real model calls through the same `TurnRunner`, in `demo` mode
+  against the local DB. **It costs money — suggest the command; run it only when asked.** Scenario packs
+  live in `apps/api/src/scripts/scenarios/<tenant>/`. Assertions check outcomes, not wording:
+  `handoff`, `handoffReason`, `orderDraft`, `orderPlaced`, `paymentDetailsSent`, `toolCalled`,
+  `replyContains`, `replyMentionsSize/Color`, `shortlist`, `replyMaxChars`; implicitly, the guards
+  passed and the step cap wasn't hit. `advanceHours` tests conversation boundaries; `image` sends a
+  photo; `expectedFailure` marks a known bug.
+- Scenarios written for the old engine still run: `mapLegacyExpect` (`modules/testing/scenario-assertions.ts`)
+  drops their route-only checks and lists them per turn. They are due a rewrite to outcome checks before
+  the Phase 6 model comparison.
+- `scenarios/demo-altamen/attacks.ts` is the prompt-injection pack: run it after any prompt or model change.
+- Tenants the seeds can rebuild: `demo-altamen`, `demo-women-clothes`, `demo-cosmetics`. The packs for
+  `clothes-store`, `luxespace`, `pilot`, `men-demo-store` and `showcase-women-clothes` need those
+  tenants' data locally (copied from prod).
 
 ## Issue Triage Protocol
 
-When encountering a conversation issue, ALWAYS classify it first 
-before fixing:
-
-1. **Bug** — code doesn't do what the architecture intended 
-   (missing memory write, wrong variable, typo). Quick fix.
-   
-2. **AI went wrong** — classifier returned wrong intent/slotAction/
-   entities. Fix by improving prompt, adding examples, or enriching 
-   context.
-
-3. **Architectural** — the design can't handle this case (missing 
-   state, no template for scenario, flow doesn't support this 
-   path). Needs refactor/plan.
-
-State the classification before proposing a fix. This prevents 
-over-engineering bugs and under-engineering architectural gaps.
-
-### Investigation order for any issue
-
-1. Reproduce in simulator first: `npm run simulate -- --tenant 
-   <slug> --message "<text>"`
-2. Read the trace output — engine emits structured trace at every 
-   pipeline stage
-3. If classification is wrong → AI went wrong path
-4. If classification correct but engine takes wrong action → 
-   reread reply-engine.service.ts:46-57 (process() entry point) 
-   and walk through the steps
-5. If state machine is in unexpected selectionState → check the 
-   transitions in the 5.5 selection block (reply-engine flow)
-6. Only after #1-5 done, propose a fix
-
 When encountering a conversation issue, ALWAYS classify it first before fixing:
 
-1. **Bug** — code doesn't do what the architecture intended (missing memory write, wrong variable, typo). Quick fix.
-2. **AI went wrong** — classifier returned wrong intent/slotAction/entities. Fix by improving prompt, adding examples, or enriching context.
-3. **Architectural** — the design can't handle this case (missing state, no template for scenario, flow doesn't support this path). Needs refactor/plan.
+1. **Bug** — code doesn't do what the architecture intended (a tool returns the wrong data, a guard
+   misfires, a missing write). Quick fix.
+2. **The model went wrong** — it picked the wrong tool, skipped one, misread the conversation or ignored
+   a rule, while the tools gave it what it needed. Fix with the prompt, a tool description, or what a
+   tool returns (a note in the tool output is often more reliable than a prompt rule).
+3. **Architectural** — the design can't handle the case (missing data, no tool for it, a store setting
+   that doesn't exist). Needs a plan.
 
-State the classification before proposing a fix. This prevents over-engineering bugs and under-engineering architectural gaps.
+State the classification before proposing a fix.
+
+### Investigation order
+1. Read the turn's trace: admin → Conversations → Trace tab (copy as markdown), or the simulator's output
+   JSON. It has every tool call with its input and output, the guard findings per attempt, and the
+   history the agent was given.
+2. Reproduce in the simulator: `npm run simulate -- --tenant <slug> --message "<text> || <next turn>"`.
+3. Tool output wrong or missing → bug or architectural. Tool output right, reply wrong → the model.
+4. A handoff with reason `unsure` usually means a tool gave the model something it couldn't use — check
+   the last tool result before blaming the prompt.
+
+## Demo stores and seeds
+
+- **Builders** (`apps/api/src/scripts/seed/builders/<vertical>-builder.ts`) build a demo tenant end to end:
+  tenant, settings, store config with knowledge doc and fixed lines, catalog, media, size charts. Common
+  primitives live in `tenant-builder.ts`. Entry scripts (`seed-demo-<vertical>.ts`) delete the tenant by
+  slug (CASCADE — conversations go too), assert no orphans, then build.
+- **Store notes as code** for demo stores: `seed/knowledge/*.ts` (+ `demo-store-copy.ts` for the welcome,
+  handoff and fake payment lines). Production stores edit theirs in the admin panel.
+- **Backfills instead of reseeding** for stores that hold conversations: `backfill:agent-config` (store notes
+  and lines onto demo stores, fills only empty fields), `backfill:altamen-titles`,
+  `backfill:altamen-descriptions`, `backfill:media-phash`. Each has a `:prod:` variant that runs the
+  compiled script.
+- **men-demo-store** (cold-outreach demo) can't be rebuilt from this repo. `snapshot:men-demo`,
+  `verify:men-demo`, `restore:men-demo` guard its configuration.
+- **showcase-women-clothes** is synced from prod (`scripts/sync-showcase-from-prod.sh`). Never reseed it locally.
+- `DemoService` loads `is_demo` tenants at boot: after seeding a new demo tenant, restart the API.
+  Deploy order: migrations → seed/backfill → restart.
 
 ## Production patterns to replicate
 
-When building any new caller of ReplyEngineService (demo, batch 
-processor, future channels), replicate the production pattern from 
-`instagram.service.ts:606-622`:
+A new caller of the agent (a channel, a batch job) calls `TurnRunner.run({ tenantId, conversationId, mode,
+source, … })` after saving the customer's message. The runner loads history from the DB itself. Pick the
+mode for the side effects you want; never add `isDemo`-style flags inside the agent. Set `source` (a
+`TraceSource`) so every trace says where it came from.
 
-```typescript
-const recentMessages = (await conversationsService.findById(
-  conversationId
-)).messages.slice(-10).map(m => ({ role: m.role, text: m.text }));
+## Known issues / tech debt
 
-await replyEngineService.process({
-  tenantId,
-  conversationId,
-  messageText: combinedText,    // joined buffer texts if debounced
-  state: freshState,             // load fresh from DB before call
-  recentMessages,                // last 10 from DB at call time
-  mediaReference,                // optional, omit for text-only
-});
-```
-
-Critical: recentMessages is loaded from DB AT CALL TIME, not 
-cached, not empty. The engine relies on this to maintain 
-conversation context across debounced messages.
-
-When implementing a new caller, do NOT pass `isDemo` flags or 
-similar branches into ReplyEngineService — keep it pure. Suppress 
-side effects at the caller boundary (skip order dispatch, skip 
-Telegram, skip Meta send) rather than instructing the engine to 
-behave differently.
-
-### Templates code-as-source-of-truth (demo tenants only)
-
-For demo tenants, response templates live in TypeScript files at
-`apps/api/src/scripts/seed/templates/{base,clothing,cosmetics}/index.ts`
-and are inserted into `response_templates` rows by the seed scripts.
-`getTemplatesForBusinessType('clothing' | 'cosmetics')` merges base
-+ vertical with vertical-wins-on-collision dedup. Production tenants
-keep their templates DB-authored via the admin panel; this pattern
-is for showcase tenants only. To add a new vertical, drop a new
-folder under `seed/templates/<vertical>/index.ts`, add the vertical
-to `getTemplatesForBusinessType`, write a builder + entry-point seed
-script (see Builders pattern below), and follow
-`docs/onboarding-new-business-type.md`.
-
-### Builders pattern
-
-Each demo vertical has a builder at
-`apps/api/src/scripts/seed/builders/<vertical>-builder.ts` that
-orchestrates the full insert pipeline (tenant + settings + store_config
-+ catalog + media + size_charts + templates). Common primitives —
-`deleteTenantBySlug`, `assertNoOrphans`, `createTenant`,
-`createTenantSettings`, `createStoreConfig`, `seedCatalog`,
-`copyImages`, `seedProductMedia`, `seedResponseTemplates` — live in
-`tenant-builder.ts`. Each entry-point script
-(`seed-demo-<vertical>.ts`) does:
-1. `deleteTenantBySlug(ds, '<slug>')` (CASCADE)
-2. `assertNoOrphans(ds, ['<slug>'])` (defensive)
-3. `build<Vertical>Tenant(ds, opts)`
-This idempotency pattern lets seeds re-run safely.
-
-### Strategy-aware engine flow
-
-`handlePreQualify` is a thin dispatcher reading
-`flow_config.businessType` and routing to
-`handlePreQualifyClothing` or `handlePreQualifyCosmetics`. Each
-handler reads `flow_config.preQualifyStrategy` and either:
-- `before_search` → ask pre-qualify question, return prompt
-- `after_search_offered` → fall through, `buildResponse` appends a
-  per-vertical offer suffix when the rendered scenario is
-  `show_products` and the user hasn't supplied the relevant entity
-- `awaitingPreQualifyAnswer` flag drives the next-turn yes/no path;
-  `classifyOfferAnswer` uses `slotAction.confirmation`/`rejection`
-  with NO regex/keyword matching (purely classifier-driven).
-
-When a new businessType is added, add `handlePreQualify<Vertical>`
-mirroring the existing two and extend the `handlePreQualify`
-dispatcher.
+- **Store notes:** production stores (`clothes-store`, `luxe-space`, `pilot`) have no knowledge doc yet —
+  that is the onboarding work. Until then the agent hands off delivery and payment questions there.
+- **Promise check reads negations in the notes as offers:** a note saying «знижок немає» counts as the
+  store offering discounts. Write notes without promise words, or fix `checkPromises` to skip negated
+  sentences in the notes.
+- **Number-sized products** (trousers 42–58, jeans 30–38, shoes) get no size recommendation: the
+  height/weight ranges are one letter-size table per store. Per-category charts come with onboarding.
+- **Comment private replies are text only;** the agent is told, but a staged photo is silently dropped.
+- **Live Instagram checks still pending on Unified Login:** echo `app_id`, `entry.id` shape, the
+  3-message burst and manager takeover on a real account.
+- Three local tenants (`clothes-store`, `men-demo-store`, `luxe-space`) share one IG account id;
+  `findByExternalAccountId` has no ordering, so a live DM lands in any of them. Keep one connected.
+- men-demo-store's brand tone says "Never reveal you are AI", which contradicts its welcome line.
+- Demo budget config is still named after the old models (`DEMO_BUDGET_CENTS_GPT54_MINI` / `…_GPT54`) and
+  only caps those two; other agent models fall back to the mini cap.
+- Demo buffer, demo rate limiter: per-process in-memory `Map`s. Move to Redis before running more than one replica.
+- `app.set('trust proxy', true)` in `main.ts` accepts any `X-Forwarded-For`; tighten once the deploy
+  topology is fixed (Cloudflare → nginx → Node).
+- E2E tests (`apps/api/test/`) cover only `/demo`.
+- `flow_config` is `Record<string, unknown>` on the entity; the agent reads it through zod schemas in
+  `store-settings.service.ts`. Some jsonb updates still use `as any`.
+- `variants.color` / `variants.size` are reused for non-clothing axes (cosmetics: mask type in `color`,
+  SPF in `size`). Move to typed attribute columns when a third vertical lands.
+- `product_variants.image_url` is a dead column; per-colour images live in `product_media` keyed by
+  `(product_id, color)` and two consumers build the map independently (`catalog.service.ts`,
+  `availability.service.ts`). Colour matching there lowercases both sides — catalog sync must keep
+  colour casing consistent.
+- Shopify sync stores colours in the `size` field (`selectedOptions[0]`).
+- Cosmetics demo images come from public CDNs into `test-assets/cosmetics/`; a rotted URL shows as a
+  missing image, not a failure.
+- `MessageBubble.tsx` (demo widget) shows at most 4 images per message.
 
 ## Dev Commands
 
@@ -723,39 +288,44 @@ cd infra/docker && docker compose up -d
 # Run migrations
 cd apps/api && npx ts-node -r tsconfig-paths/register ../../node_modules/typeorm/cli.js migration:run -d src/database/data-source.ts
 
-# Start backend (dev)
+# Start backend / admin (dev)
 cd apps/api && npm run dev
-
-# Start admin panel (dev)
 cd apps/admin && npm run dev
-
-# Seed database
-cd apps/api && npm run seed
 
 # Build shared package
 cd packages/shared && npm run build
 
-# Reset conversations
-docker exec docker-postgres-1 psql -U postgres -d directmate -c "DELETE FROM audit_logs; DELETE FROM messages; DELETE FROM conversation_state; DELETE FROM conversations; DELETE FROM customers;"
+# Seed demo stores
+cd apps/api && npm run seed:demo:altamen        # also :women-clothes, :cosmetics
+cd apps/api && npm run backfill:agent-config -- --dry
 
-# Replay last conversation (debugging tool)
-cd apps/api && npm run replay
-cd apps/api && npm run replay -- --last 3
-cd apps/api && npm run replay -- --id <uuid>
+# Simulator (costs model calls)
+cd apps/api && npm run simulate -- --list
+cd apps/api && npm run simulate -- --scenario <key>
+cd apps/api && npm run simulate -- --tenant demo-altamen --message "Привіт || а чорна є?"
 
-# Check conversation logs
-cat apps/api/conversations.log | jq .
-tail -f apps/api/conversations.log | jq .
+# One-off agent turn / product attributes
+cd apps/api && npm run agent:try
+cd apps/api && npm run attributes:extract -- --tenant demo-altamen
+
+# Unit tests (free)
+cd apps/api && npm test
 ```
 
 ## Environment Variables (apps/api/.env)
 
 ```
 NODE_ENV, PORT, DATABASE_URL, JWT_SECRET, JWT_EXPIRES_IN
-META_APP_ID, META_APP_SECRET, META_WEBHOOK_VERIFY_TOKEN
-OPENAI_API_KEY, OPENAI_MODEL (gpt-5.4-mini), OPENAI_FALLBACK_MODEL (gpt-5.4)
-ENCRYPTION_KEY (64-char hex)
-INTERNAL_API_KEY
+META_APP_ID, META_APP_SECRET, META_WEBHOOK_VERIFY_TOKEN, META_LOGIN_CONFIG_ID, INSTAGRAM_OAUTH_REDIRECT_URI
+APP_BASE_URL, BACKEND_BASE_URL, ADMIN_BASE_URL
+OPENAI_API_KEY, OPENAI_VISION_MODEL
+AGENT_MODEL, AGENT_MAX_STEPS, AGENT_TIMEOUT_MS, AGENT_REASONING_EFFORT, AGENT_TEMPERATURE
+AGENT_MAX_CUSTOMER_MESSAGES_PER_HOUR, AGENT_MODERATION, JUDGE_MODEL
+INSTAGRAM_DEBOUNCE_MS, INSTAGRAM_COMMENT_GATE_MODEL
+ATTRIBUTES_MODEL, ATTRIBUTES_REASONING_EFFORT, ATTRIBUTES_WORKER_ENABLED
+TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, TELEGRAM_BOT_USERNAME
+DEMO_DEBOUNCE_MS, DEMO_MAX_MESSAGE_LENGTH, DEMO_RATE_LIMIT_SESSIONS_PER_HOUR, DEMO_BUDGET_CENTS_GPT54_MINI, DEMO_BUDGET_CENTS_GPT54
+ENCRYPTION_KEY (64-char hex), INTERNAL_API_KEY, ANTHROPIC_API_KEY (Phase 6)
 ```
 
 ## File Conventions
