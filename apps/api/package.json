@@ -34,6 +34,8 @@
     "backfill:prod:altamen-titles": "node dist/scripts/backfill-altamen-titles.js",
     "backfill:altamen-descriptions": "ts-node -r tsconfig-paths/register src/scripts/backfill-altamen-descriptions.ts",
     "backfill:prod:altamen-descriptions": "node dist/scripts/backfill-altamen-descriptions.js",
+    "backfill:agent-config": "ts-node -r tsconfig-paths/register src/scripts/backfill-agent-store-config.ts",
+    "backfill:prod:agent-config": "node dist/scripts/backfill-agent-store-config.js",
     "backfill:media-phash": "ts-node -r tsconfig-paths/register src/scripts/backfill-media-phash.ts",
     "backfill:prod:media-phash": "node dist/scripts/backfill-media-phash.js",
     "snapshot:men-demo": "ts-node -r tsconfig-paths/register src/scripts/snapshot-demo-tenant.ts --slug men-demo-store --export",
