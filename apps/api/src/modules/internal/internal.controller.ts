@@ -3,6 +3,7 @@ import { ApiTags } from '@nestjs/swagger';
 import { InternalApiKeyGuard } from '../../common/guards/internal-api-key.guard';
 import { IntegrationsService } from '../integrations/integrations.service';
 import { CatalogService } from '../catalog/catalog.service';
+import { CatalogIndexService } from '../agent/catalog/catalog-index.service';
 import { SyncTriggerDto } from './dto/sync-trigger.dto';
 import { SyncJobStatusDto } from './dto/sync-job-status.dto';
 import { CatalogImportDto } from './dto/catalog-import.dto';
@@ -16,6 +17,7 @@ export class InternalController {
   constructor(
     private readonly integrationsService: IntegrationsService,
     private readonly catalogService: CatalogService,
+    private readonly catalogIndex: CatalogIndexService,
   ) {}
 
   /** Verify that connectionId belongs to tenantId. Throws if mismatch. */
@@ -88,6 +90,8 @@ export class InternalController {
 
     try {
       const result = await this.catalogService.importCatalog(dto.tenantId, dto.products);
+      // The agent's catalog list is cached; without this it lags an import by up to 5 minutes.
+      this.catalogIndex.invalidate(dto.tenantId);
       await this.integrationsService.markJobDone(job.id, result as any);
       return { success: true, jobId: job.id, ...result };
     } catch (err: any) {

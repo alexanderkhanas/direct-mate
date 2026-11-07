@@ -18,6 +18,8 @@ import { AuditModule } from './modules/audit/audit.module';
 import { InternalModule } from './modules/internal/internal.module';
 import { ScreenshotTrainingModule } from './modules/screenshot-training/screenshot-training.module';
 import { EngineModule } from './modules/engine/engine.module';
+import { CatalogFeedsModule } from './modules/catalog-feeds/catalog-feeds.module';
+import { OnboardingModule } from './modules/onboarding/onboarding.module';
 import { TestingModule } from './modules/testing/testing.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AdminModule } from './modules/admin/admin.module';
@@ -53,6 +55,8 @@ import { HealthController } from './health.controller';
     InternalModule,
     ScreenshotTrainingModule,
     EngineModule,
+    CatalogFeedsModule,
+    OnboardingModule,
     TestingModule,
     NotificationsModule,
     AdminModule,

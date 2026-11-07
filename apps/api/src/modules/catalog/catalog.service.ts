@@ -9,6 +9,7 @@ import { Category } from './entities/category.entity';
 import { SearchProductsDto } from './dto/search-products.dto';
 import { ImageHashService } from './image-hash.service';
 import { ProductStatus } from '@direct-mate/shared';
+import { returnedRows } from '../../common/db';
 
 /**
  * Shape of a product as it arrives at importCatalog. Mirrors
@@ -38,6 +39,11 @@ export interface ImportProductInput {
   searchKeywords?: string | null;
   /** Single image URL (Torgsoft style). Coexists with images[] for legacy connectors. */
   image?: string;
+  /**
+   * Merged into `products.metadata` (e.g. `url`: the product page, from a
+   * feed). Omitted = left alone, so connectors that don't send it don't wipe it.
+   */
+  metadata?: Record<string, unknown>;
   status?: string;
   variants: Array<{
     externalVariantId: string;
@@ -64,9 +70,28 @@ export interface ImportCatalogResult {
   productsArchived: number;
   variantsCreated: number;
   variantsUpdated: number;
+  /** Variants of this source missing from the payload whose stock was set to 0 (`idPrefix` imports only). */
+  variantsZeroed: number;
   categoriesCreated: number;
   errors: string[];
 }
+
+export interface ImportCatalogOptions {
+  /**
+   * The ids this source owns, e.g. `feed:`. Archiving and stock zeroing stay
+   * inside them, so a feed never archives products another connector
+   * imported. Without it every product with an external id is in scope (the
+   * single-source n8n connectors).
+   */
+  idPrefix?: string;
+  /** Archive in-scope products missing from the payload. Default true; a feed that shrank suspiciously turns it off. */
+  archiveMissing?: boolean;
+}
+
+/** Products per transaction: short transactions, and a failure costs one chunk, not the import. */
+const IMPORT_CHUNK = 50;
+/** Image downloads for new photos run this many at a time. */
+const HASH_CONCURRENCY = 4;
 
 // Fields on Product that the sync owns + diffs against incoming payload.
 const PRODUCT_DIFF_FIELDS = [
@@ -263,64 +288,140 @@ export class CatalogService {
 
   /**
    * Bulk upsert products + variants + stock + categories from a connector
-   * (n8n / Torgsoft). Idempotent diff-based: same payload twice produces
-   * zero writes.
+   * (n8n, a product feed). Idempotent and diff-based: the same payload twice
+   * produces zero writes.
    *
-   * Pipeline (single transaction):
-   *   1. Resolve incoming category names → category rows (insert new ones)
-   *   2. SELECT existing products by (tenant, external_product_id), diff
-   *      against incoming, INSERT new + UPDATE only changed
-   *   3. Per product: diff variants by external_variant_id, INSERT new +
-   *      UPDATE only changed
-   *   4. Per product: replace product_categories junction rows to match
-   *      incoming category set
-   *   5. Per product: replace product_media if incoming `images` set
-   *   6. Per variant: upsert stock balance when inventoryQty present
-   *   7. Archive: products with this tenant marked active in DB but not in
-   *      incoming payload → status='archived'
-   *
-   * (1)–(6) run inside a single TX so a partial failure rolls back. (7)
-   * runs inside the same TX too — archival should not happen if the
-   * upsert fails halfway.
+   *   1. Category names → rows (one transaction, case-insensitive).
+   *   2. Photos not stored yet are downloaded and hashed (pHash), before any
+   *      transaction opens: downloads inside one held locks for minutes.
+   *   3. Products in chunks of IMPORT_CHUNK, one transaction each: diff
+   *      products and variants by external id, stock, categories, photos
+   *      diffed by URL (an unchanged photo keeps its pHash and CLIP vector,
+   *      so an hourly feed doesn't re-download or re-embed anything).
+   *   4. After every chunk: archive in-scope products missing from the
+   *      payload, and (with `idPrefix`) set stock 0 on the source's variants
+   *      that disappeared, so a size dropped from a feed stops being sold.
    */
   async importCatalog(
     tenantId: string,
     products: ImportProductInput[],
+    opts: ImportCatalogOptions = {},
   ): Promise<ImportCatalogResult> {
-    return this.dataSource.transaction(async (mgr) =>
-      this.importCatalogTx(mgr, tenantId, products),
+    const result: ImportCatalogResult = {
+      productsCreated: 0,
+      productsUpdated: 0,
+      productsArchived: 0,
+      variantsCreated: 0,
+      variantsUpdated: 0,
+      variantsZeroed: 0,
+      categoriesCreated: 0,
+      errors: [],
+    };
+
+    const categoryNames = new Set<string>();
+    for (const p of products) {
+      for (const name of p.categories ?? []) if (name && name.trim()) categoryNames.add(name.trim());
+    }
+    const categoryByLower = await this.dataSource.transaction((mgr) =>
+      this.upsertCategories(mgr, tenantId, categoryNames, (delta) => {
+        result.categoriesCreated += delta;
+      }),
     );
+
+    const hashes = await this.hashNewImages(tenantId, products);
+
+    for (let i = 0; i < products.length; i += IMPORT_CHUNK) {
+      const chunk = products.slice(i, i + IMPORT_CHUNK);
+      try {
+        const r = await this.dataSource.transaction((mgr) =>
+          this.importChunk(mgr, tenantId, chunk, categoryByLower, hashes),
+        );
+        result.productsCreated += r.productsCreated;
+        result.productsUpdated += r.productsUpdated;
+        result.variantsCreated += r.variantsCreated;
+        result.variantsUpdated += r.variantsUpdated;
+        result.errors.push(...r.errors);
+      } catch (err) {
+        // A chunk-level failure means part of the payload never landed:
+        // archiving against it would hide products that are still sold.
+        result.errors.push(`products ${i + 1}–${i + chunk.length}: ${(err as Error).message}`);
+        opts = { ...opts, archiveMissing: false };
+      }
+    }
+
+    const incomingProductIds = products.map((p) => p.externalProductId);
+    if (opts.archiveMissing !== false && incomingProductIds.length > 0) {
+      const qb = this.dataSource
+        .createQueryBuilder()
+        .update(Product)
+        .set({ status: ProductStatus.Archived })
+        .where('tenant_id = :tenantId', { tenantId })
+        .andWhere('status = :active', { active: ProductStatus.Active })
+        .andWhere('external_product_id IS NOT NULL')
+        .andWhere('external_product_id NOT IN (:...ids)', { ids: incomingProductIds });
+      if (opts.idPrefix) qb.andWhere('external_product_id LIKE :prefix', { prefix: `${opts.idPrefix}%` });
+      result.productsArchived = (await qb.execute()).affected ?? 0;
+    }
+    if (opts.idPrefix && incomingProductIds.length > 0) {
+      const incomingVariantIds = products.flatMap((p) => (p.variants ?? []).map((v) => v.externalVariantId));
+      const zeroed = returnedRows<{ id: string }>(await this.dataSource.query(
+        `UPDATE stock_balances sb
+            SET available_qty = 0, last_synced_at = now()
+           FROM product_variants v
+          WHERE sb.variant_id = v.id AND v.tenant_id = $1
+            AND v.external_variant_id LIKE $2
+            AND NOT (v.external_variant_id = ANY($3))
+            AND sb.available_qty <> 0
+        RETURNING sb.id`,
+        [tenantId, `${opts.idPrefix}%`, incomingVariantIds],
+      ));
+      result.variantsZeroed = zeroed.length;
+    }
+
+    this.logger.log(
+      `Catalog import: created=${result.productsCreated} updated=${result.productsUpdated} ` +
+        `archived=${result.productsArchived} variantsCreated=${result.variantsCreated} ` +
+        `variantsUpdated=${result.variantsUpdated} variantsZeroed=${result.variantsZeroed} ` +
+        `categoriesCreated=${result.categoriesCreated} errors=${result.errors.length}`,
+    );
+    return result;
   }
 
-  private async importCatalogTx(
+  /** pHashes for the payload's photo URLs this store doesn't have yet. */
+  private async hashNewImages(tenantId: string, products: ImportProductInput[]): Promise<Map<string, string | null>> {
+    const wanted = new Set(products.flatMap((p) => (p.images !== undefined ? this.collectImageRows(p).map((r) => r.url) : [])));
+    const hashes = new Map<string, string | null>();
+    if (wanted.size === 0) return hashes;
+    const known: Array<{ url: string }> = await this.dataSource.query(
+      `SELECT DISTINCT pm.url FROM product_media pm JOIN products p ON p.id = pm.product_id
+        WHERE p.tenant_id = $1 AND pm.url = ANY($2)`,
+      [tenantId, [...wanted]],
+    );
+    for (const row of known) wanted.delete(row.url);
+    const queue = [...wanted];
+    const worker = async () => {
+      for (let url = queue.shift(); url !== undefined; url = queue.shift()) {
+        hashes.set(url, await this.imageHashService.hashFromUrl(url));
+      }
+    };
+    await Promise.all(Array.from({ length: HASH_CONCURRENCY }, worker));
+    return hashes;
+  }
+
+  private async importChunk(
     mgr: EntityManager,
     tenantId: string,
     products: ImportProductInput[],
-  ): Promise<ImportCatalogResult> {
+    categoryByLower: Map<string, Category>,
+    hashes: Map<string, string | null>,
+  ): Promise<Pick<ImportCatalogResult, 'productsCreated' | 'productsUpdated' | 'variantsCreated' | 'variantsUpdated' | 'errors'>> {
     const errors: string[] = [];
     let productsCreated = 0;
     let productsUpdated = 0;
     let variantsCreated = 0;
     let variantsUpdated = 0;
-    let categoriesCreated = 0;
 
-    // ── 1. Categories ──────────────────────────────────────────────────
-    const allCategoryNames = new Set<string>();
-    for (const p of products) {
-      for (const name of p.categories ?? []) {
-        if (name && name.trim()) allCategoryNames.add(name.trim());
-      }
-    }
-    const categoryByLower = await this.upsertCategories(
-      mgr,
-      tenantId,
-      allCategoryNames,
-      (delta) => {
-        categoriesCreated += delta;
-      },
-    );
-
-    // ── 2. Products: load existing for diff ────────────────────────────
+    // ── Products: load existing for diff ───────────────────────────────
     const incomingExternalIds = products.map((p) => p.externalProductId);
     const existingProductsRaw = incomingExternalIds.length
       ? await mgr.find(Product, {
@@ -335,7 +436,7 @@ export class CatalogService {
       if (ep.externalProductId) existingByExternal.set(ep.externalProductId, ep);
     }
 
-    // ── 3. Per-product upsert + dependent rows ─────────────────────────
+    // ── Per-product upsert + dependent rows ────────────────────────────
     // SAVEPOINT per product: a failed row only rolls its own statements
     // back, so the outer txn stays healthy and Postgres does not poison
     // every subsequent command with "current transaction is aborted".
@@ -345,31 +446,42 @@ export class CatalogService {
       await mgr.query(`SAVEPOINT ${sp}`);
       try {
         const existing = existingByExternal.get(p.externalProductId);
-        const desired = this.toProductRow(tenantId, p);
+        const desired: Partial<Product> = this.toProductRow(tenantId, p);
+        // metadata is merged, not replaced, and only when the source sends it.
+        const metadata =
+          p.metadata === undefined ? undefined : { ...((existing?.metadata as Record<string, unknown>) ?? {}), ...p.metadata };
 
         let productId: string;
         if (!existing) {
-          const inserted = await mgr.save(Product, mgr.create(Product, desired));
+          const inserted = await mgr.save(
+            Product,
+            mgr.create(Product, { ...desired, ...(metadata && { metadata }) } as Partial<Product>),
+          );
           productId = inserted.id;
           productsCreated++;
         } else {
           productId = existing.id;
-          if (this.diffProduct(existing, desired)) {
+          const metadataChanged =
+            metadata !== undefined && JSON.stringify(metadata) !== JSON.stringify(existing.metadata ?? {});
+          if (this.diffProduct(existing, desired) || metadataChanged) {
             // `as any` mirrors the existing upsertProduct cast — TypeORM's
             // QueryDeepPartialEntity is strict about jsonb columns and
             // rejects our flat Partial<Product> shape.
-            await mgr.update(Product, existing.id, this.pickProductUpdate(desired) as any);
+            await mgr.update(Product, existing.id, {
+              ...this.pickProductUpdate(desired),
+              ...(metadataChanged && { metadata }),
+            } as any);
             productsUpdated++;
           }
         }
 
-        // 3a. Variants
+        // Variants
         const vCounts = await this.upsertVariants(mgr, tenantId, productId, p.variants ?? []);
         variantsCreated += vCounts.created;
         variantsUpdated += vCounts.updated;
         for (const e of vCounts.errors) errors.push(`product ${p.externalProductId}: ${e}`);
 
-        // 3b. Stock (per variant, only when inventoryQty set).
+        // Stock (per variant, only when inventoryQty set).
         // Negative qty (Torgsoft oversold/backorder convention) → 0 so
         // downstream availability queries see a clean "out of stock"
         // signal rather than negative numbers.
@@ -379,7 +491,7 @@ export class CatalogService {
           await this.upsertStockBalanceTx(mgr, productId, v.externalVariantId, qty);
         }
 
-        // 3c. product_categories junction — replace to match input
+        // product_categories junction — replace to match input
         await this.syncProductCategories(
           mgr,
           productId,
@@ -388,44 +500,17 @@ export class CatalogService {
             .filter((c): c is Category => !!c),
         );
 
-        // 3d. product_media — replace whenever the connector explicitly
-        // sends an `images` field, even if it's an empty array. n8n's
-        // FTP-existence filter is authoritative: an empty list means
-        // "we checked the source and there are no real photos for this
-        // product, drop any stale rows". Treat the absence of the
-        // `images` field (`undefined`) as "no signal" so legacy
-        // connectors that don't pipe images through don't get wiped.
+        // product_media — only when the connector sends an `images` field,
+        // even an empty one: n8n's FTP-existence filter is authoritative, so
+        // an empty list means "no real photos, drop stale rows". Absent
+        // (`undefined`) means "no signal" and leaves the rows alone.
         //
-        // pHash is computed inline (fast, no native crash class) and
-        // powers Stage 1 of customer-photo lookup. CLIP embeddings
-        // (`clip_embedding`) are LEFT NULL here on purpose — the
-        // `ProductMediaEmbedder` background worker picks pending rows
-        // up and fills them in asynchronously. CLIP previously ran
-        // inline via `Promise.all(rows.map(embedFromUrl))`; that
-        // pattern hammered the same onnxruntime session with
-        // concurrent inference and SIGSEGV'd the api process under
-        // catalog-import load. Decoupling means a slow / unstable
-        // CLIP can never block or crash the sync hot path.
-        if (p.images !== undefined) {
-          await mgr.delete(ProductMedia, { productId });
-          const rows = this.collectImageRows(p);
-          const phashes = await Promise.all(
-            rows.map((img) => this.imageHashService.hashFromUrl(img.url)),
-          );
-          for (let i = 0; i < rows.length; i++) {
-            await mgr.save(
-              ProductMedia,
-              mgr.create(ProductMedia, {
-                productId,
-                ...rows[i],
-                phash: phashes[i],
-                clipEmbedding: null,
-              }),
-            );
-          }
-        }
+        // Diffed by URL: a photo still in the payload keeps its row, so its
+        // pHash and its CLIP vector (filled later by ProductMediaEmbedder,
+        // never inline: concurrent inference used to crash the process) stay.
+        if (p.images !== undefined) await this.syncMedia(mgr, productId, this.collectImageRows(p), hashes);
 
-        // 3e. last_synced_at — bumped unconditionally on every successful
+        // last_synced_at — bumped unconditionally on every successful
         // touch, independent of `updated_at`. The diff-skip optimization
         // above means `updated_at` only ticks when a real field changed;
         // this column tracks "last seen in feed" for the UI.
@@ -443,37 +528,32 @@ export class CatalogService {
       }
     }
 
-    // ── 4. Archive products no longer in payload ───────────────────────
-    let productsArchived = 0;
-    if (incomingExternalIds.length > 0) {
-      const archived = await mgr
-        .createQueryBuilder()
-        .update(Product)
-        .set({ status: ProductStatus.Archived })
-        .where('tenant_id = :tenantId', { tenantId })
-        .andWhere('status = :active', { active: ProductStatus.Active })
-        .andWhere('external_product_id IS NOT NULL')
-        .andWhere('external_product_id NOT IN (:...ids)', { ids: incomingExternalIds })
-        .execute();
-      productsArchived = archived.affected ?? 0;
+    return { productsCreated, productsUpdated, variantsCreated, variantsUpdated, errors };
+  }
+
+  /** Make the product's photos match `desired`, keeping rows (and their hashes) whose URL didn't change. */
+  private async syncMedia(
+    mgr: EntityManager,
+    productId: string,
+    desired: Array<{ url: string; color: string | null; sortOrder: number }>,
+    hashes: Map<string, string | null>,
+  ): Promise<void> {
+    const existing = await mgr.find(ProductMedia, { where: { productId } });
+    const byUrl = new Map(existing.map((m) => [m.url, m]));
+    const unique = [...new Map(desired.map((d) => [d.url, d])).values()];
+    const keep = new Set(unique.map((d) => d.url));
+
+    const stale = existing.filter((m) => !keep.has(m.url)).map((m) => m.id);
+    if (stale.length > 0) await mgr.delete(ProductMedia, stale);
+    for (const d of unique) {
+      const row = byUrl.get(d.url);
+      if (!row) {
+        const phash = hashes.has(d.url) ? hashes.get(d.url)! : await this.imageHashService.hashFromUrl(d.url);
+        await mgr.save(ProductMedia, mgr.create(ProductMedia, { productId, ...d, phash, clipEmbedding: null }));
+      } else if (row.color !== d.color || row.sortOrder !== d.sortOrder) {
+        await mgr.update(ProductMedia, row.id, { color: d.color, sortOrder: d.sortOrder });
+      }
     }
-
-    this.logger.log(
-      `Catalog import: created=${productsCreated} updated=${productsUpdated} ` +
-        `archived=${productsArchived} variantsCreated=${variantsCreated} ` +
-        `variantsUpdated=${variantsUpdated} categoriesCreated=${categoriesCreated} ` +
-        `errors=${errors.length}`,
-    );
-
-    return {
-      productsCreated,
-      productsUpdated,
-      productsArchived,
-      variantsCreated,
-      variantsUpdated,
-      categoriesCreated,
-      errors,
-    };
   }
 
   // ── helpers ───────────────────────────────────────────────────────────
@@ -496,8 +576,13 @@ export class CatalogService {
     const existingByLower = new Map<string, Category>();
     for (const c of existing) existingByLower.set(c.name.toLowerCase(), c);
 
+    // «Верхній одяг» and «верхній одяг» in one payload are one category; the
+    // unique index is on lower(name), so inserting both would fail the import.
+    const byLower = new Map<string, string>();
+    for (const name of names) if (!byLower.has(name.toLowerCase())) byLower.set(name.toLowerCase(), name);
+
     const toInsert: Category[] = [];
-    for (const name of names) {
+    for (const name of byLower.values()) {
       const lower = name.toLowerCase();
       const hit = existingByLower.get(lower);
       if (hit) {

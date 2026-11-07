@@ -70,7 +70,8 @@ function ConnectShopifyForm({ onSuccess, onCancel }: { onSuccess: () => void; on
 
   return (
     <Card>
-      <p className="text-sm font-medium text-gray-700 mb-3">{t('connections_ext.connect_shopify_store')}</p>
+      <p className="text-sm font-medium text-gray-700 mb-1">{t('connections_ext.connect_shopify_store')}</p>
+      <p className="text-xs text-gray-500 mb-3">{t('connections_ext.shopify_token_help')}</p>
       <div className="space-y-3">
         <Input
           label={t('connections.shop_domain')}

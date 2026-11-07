@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:g="http://base.google.com/ns/1.0" version="2.0">
+  <channel>
+    <title>Alta Men</title>
+    <link>https://altamen.example</link>
+    <item>
+      <g:id>1001-M</g:id>
+      <g:title>Сорочка льон біла M</g:title>
+      <g:description><![CDATA[<p>Легка сорочка з <b>льону</b>&nbsp;для літа.</p>]]></g:description>
+      <g:link>https://altamen.example/p/sorochka-lon</g:link>
+      <g:image_link>https://cdn.example/lon-white-1.jpg</g:image_link>
+      <g:additional_image_link>https://cdn.example/lon-white-2.jpg</g:additional_image_link>
+      <g:availability>in_stock</g:availability>
+      <g:price>3300.00 UAH</g:price>
+      <g:sale_price>2900.00 UAH</g:sale_price>
+      <g:brand>ALTA MEN</g:brand>
+      <g:gtin>4820000000011</g:gtin>
+      <g:item_group_id>1001</g:item_group_id>
+      <g:color>Білий</g:color>
+      <g:size>M</g:size>
+      <g:gender>male</g:gender>
+      <g:product_type>Чоловікам &gt; Одяг &gt; Сорочки</g:product_type>
+    </item>
+    <item>
+      <g:id>1001-L</g:id>
+      <g:title>Сорочка льон біла L</g:title>
+      <g:link>https://altamen.example/p/sorochka-lon</g:link>
+      <g:image_link>https://cdn.example/lon-white-1.jpg</g:image_link>
+      <g:availability>out_of_stock</g:availability>
+      <g:price>3300.00 UAH</g:price>
+      <g:item_group_id>1001</g:item_group_id>
+      <g:color>Білий</g:color>
+      <g:size>L</g:size>
+    </item>
+    <item>
+      <g:id>1001-BLK-M</g:id>
+      <g:title>Сорочка льон чорна M</g:title>
+      <g:image_link>https://cdn.example/lon-black.jpg</g:image_link>
+      <g:availability>in stock</g:availability>
+      <g:price>3300 UAH</g:price>
+      <g:item_group_id>1001</g:item_group_id>
+      <g:color>Чорний</g:color>
+      <g:size>M</g:size>
+    </item>
+    <item>
+      <g:id>2002</g:id>
+      <g:title>Ремінь шкіряний</g:title>
+      <g:image_link>https://cdn.example/belt.jpg</g:image_link>
+      <g:availability>in_stock</g:availability>
+      <g:price>1 200,00 UAH</g:price>
+      <g:product_type>Аксесуари</g:product_type>
+    </item>
+    <item>
+      <g:id>3003</g:id>
+      <g:title>Шарф без ціни</g:title>
+      <g:availability>in_stock</g:availability>
+    </item>
+  </channel>
+</rss>

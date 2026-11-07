@@ -102,7 +102,11 @@ export class StoreConfigController {
       if (goingLive && user.role !== 'superadmin') {
         const readiness = await this.readiness.check(user.tenantId);
         if (!readiness.ready) {
-          throw new BadRequestException({ message: 'The store is not ready to go live', missing: readiness.missing });
+          // `details` is what AllExceptionsFilter passes through to the client.
+          throw new BadRequestException({
+            message: 'The store is not ready to go live',
+            details: { missing: readiness.missing },
+          });
         }
       }
       config.operatingMode = body.operatingMode;

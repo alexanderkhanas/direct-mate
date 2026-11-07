@@ -49,6 +49,7 @@ describe('CatalogService.importCatalog (integration)', () => {
       tenantRepo.create({
         slug: FRESH('cat-import'),
         name: 'Catalog Import Test',
+        businessType: 'fashion',
       } as Partial<Tenant>),
     );
     tenantId = tenant.id;
@@ -197,8 +198,9 @@ describe('CatalogService.importCatalog (integration)', () => {
     const r = await catalogService.importCatalog(tenantId, [p1, p2]);
     expect(r.categoriesCreated).toBe(1);
 
+    // Other cases in this suite leave their categories behind; count only this one.
     const cats = await categoryRepo.find({ where: { tenantId } });
-    expect(cats).toHaveLength(1);
+    expect(cats.filter((c) => c.name.toLowerCase() === 'верхній одяг')).toHaveLength(1);
 
     await productRepo.delete({ tenantId });
     await categoryRepo.delete({ tenantId });
@@ -268,5 +270,80 @@ describe('CatalogService.importCatalog (integration)', () => {
 
     await productRepo.delete({ tenantId });
     await categoryRepo.delete({ tenantId });
+  });
+
+  it('keeps a photo whose URL is unchanged, with its hashes, and replaces only what changed', async () => {
+    const p = makeProduct({
+      image: undefined,
+      images: [{ url: 'https://cdn.test/a.jpg' }, { url: 'https://cdn.test/b.jpg' }],
+    });
+    await catalogService.importCatalog(tenantId, [p]);
+    const product = await productRepo.findOneOrFail({ where: { tenantId, externalProductId: p.externalProductId } });
+    // Stand in for the background embedder having processed photo a.
+    await dataSource.query(
+      `UPDATE product_media SET phash = 'abcdabcdabcdabcd', clip_embedding = '\\x01'::bytea WHERE product_id = $1 AND url = $2`,
+      [product.id, 'https://cdn.test/a.jpg'],
+    );
+
+    await catalogService.importCatalog(tenantId, [
+      { ...p, images: [{ url: 'https://cdn.test/a.jpg' }, { url: 'https://cdn.test/c.jpg' }] },
+    ]);
+    const media: Array<{ url: string; phash: string | null; has_clip: boolean }> = await dataSource.query(
+      `SELECT url, phash, clip_embedding IS NOT NULL AS has_clip FROM product_media WHERE product_id = $1 ORDER BY sort_order`,
+      [product.id],
+    );
+    expect(media).toEqual([
+      { url: 'https://cdn.test/a.jpg', phash: 'abcdabcdabcdabcd', has_clip: true },
+      { url: 'https://cdn.test/c.jpg', phash: null, has_clip: false },
+    ]);
+
+    await productRepo.delete({ tenantId });
+  });
+
+  it("with idPrefix, archives only that source's missing products and zeroes its removed variants", async () => {
+    const other = makeProduct({ externalProductId: FRESH('shopify') });
+    const feedProduct = (id: string, variantIds: string[]) =>
+      makeProduct({
+        externalProductId: `feed:${id}`,
+        variants: variantIds.map((v) => ({ externalVariantId: `feed:${v}`, size: v, price: 100, inventoryQty: 3 })),
+      });
+    await catalogService.importCatalog(tenantId, [other]);
+    await catalogService.importCatalog(tenantId, [feedProduct('f1', ['f1-m', 'f1-l']), feedProduct('f2', ['f2-m'])], {
+      idPrefix: 'feed:',
+    });
+
+    const r = await catalogService.importCatalog(tenantId, [feedProduct('f1', ['f1-m'])], { idPrefix: 'feed:' });
+    expect(r.productsArchived).toBe(1);
+    expect(r.variantsZeroed).toBe(2); // f1-l, and f2-m with its archived product
+
+    const status = async (externalProductId: string) =>
+      (await productRepo.findOneOrFail({ where: { tenantId, externalProductId } })).status;
+    expect(await status(other.externalProductId)).toBe(ProductStatus.Active);
+    expect(await status('feed:f2')).toBe(ProductStatus.Archived);
+    const [stock]: Array<{ available_qty: number }> = await dataSource.query(
+      `SELECT sb.available_qty FROM stock_balances sb JOIN product_variants v ON v.id = sb.variant_id
+        WHERE v.tenant_id = $1 AND v.external_variant_id = 'feed:f1-l'`,
+      [tenantId],
+    );
+    expect(stock.available_qty).toBe(0);
+
+    // A feed that shrank suspiciously runs with archiveMissing: false.
+    const shrunk = await catalogService.importCatalog(tenantId, [], { idPrefix: 'feed:', archiveMissing: false });
+    expect(shrunk.productsArchived).toBe(0);
+
+    await productRepo.delete({ tenantId });
+  });
+
+  it('merges metadata and writes nothing when it is unchanged', async () => {
+    const p = makeProduct({ metadata: { url: 'https://shop.test/p/1' } });
+    await catalogService.importCatalog(tenantId, [p]);
+    expect((await catalogService.importCatalog(tenantId, [p])).productsUpdated).toBe(0);
+
+    const r = await catalogService.importCatalog(tenantId, [{ ...p, metadata: { url: 'https://shop.test/p/2' } }]);
+    expect(r.productsUpdated).toBe(1);
+    const saved = await productRepo.findOneOrFail({ where: { tenantId, externalProductId: p.externalProductId } });
+    expect(saved.metadata).toMatchObject({ url: 'https://shop.test/p/2' });
+
+    await productRepo.delete({ tenantId });
   });
 });

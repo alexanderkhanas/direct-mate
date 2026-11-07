@@ -6,6 +6,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import sharp = require('sharp');
 import { readFile } from 'fs/promises';
 import { uploadPath } from '../../common/uploads';
+import { safeFetch } from '../../common/safe-fetch';
 
 /**
  * Computes a 64-bit dHash (difference hash) from images. Used to detect
@@ -35,13 +36,13 @@ export class ImageHashService {
     try {
       const local = uploadPath(url);
       if (local) return await this.hashFromBuffer(await readFile(local));
-      const res = await fetch(url);
-      if (!res.ok) {
+      // safeFetch: catalog photo URLs come from store owners' feeds.
+      const res = await safeFetch(url, { timeoutMs: 15_000, maxBytes: 20 * 1024 * 1024 });
+      if (res.status < 200 || res.status >= 300) {
         this.logger.warn(`hashFromUrl: ${url} → HTTP ${res.status}`);
         return null;
       }
-      const buf = Buffer.from(await res.arrayBuffer());
-      return await this.hashFromBuffer(buf);
+      return await this.hashFromBuffer(res.body);
     } catch (err: any) {
       this.logger.warn(`hashFromUrl(${url}) failed: ${err.message ?? err}`);
       return null;

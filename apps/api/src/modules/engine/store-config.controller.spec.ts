@@ -24,7 +24,7 @@ describe('StoreConfigController go-live', () => {
     const { controller, repo } = setup('paused', ['products', 'knowledge']);
     const err = await controller.updateConfig(OWNER, { operatingMode: 'active' }).catch((e) => e);
     expect(err).toBeInstanceOf(BadRequestException);
-    expect(err.getResponse()).toMatchObject({ missing: ['products', 'knowledge'] });
+    expect(err.getResponse()).toMatchObject({ details: { missing: ['products', 'knowledge'] } });
     expect(repo.save).not.toHaveBeenCalled();
   });
 

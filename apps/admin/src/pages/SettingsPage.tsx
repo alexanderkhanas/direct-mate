@@ -512,7 +512,7 @@ function OperatingModeSection() {
 
   const currentMode: OperatingMode = config?.operatingMode ?? 'active';
   // The API refuses to turn the bot on until the store has what it needs to answer.
-  const notReady: string[] = save.isError ? ((save.error as any)?.response?.data?.missing ?? []) : [];
+  const notReady: string[] = save.isError ? ((save.error as any)?.response?.data?.error?.details?.missing ?? []) : [];
 
   const modes: { value: OperatingMode; label: string; desc: string }[] = [
     { value: 'learning', label: t('operating_mode.learning'), desc: t('operating_mode.learning_desc') },

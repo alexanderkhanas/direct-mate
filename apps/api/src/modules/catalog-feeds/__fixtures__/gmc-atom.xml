@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:google="http://base.google.com/ns/1.0">
+  <title>Shop</title>
+  <entry>
+    <google:id>A-1-S</google:id>
+    <title>Футболка базова синя S</title>
+    <link href="https://shop.example/t-shirt"/>
+    <google:price>650 UAH</google:price>
+    <google:availability>in_stock</google:availability>
+    <google:image_link>https://cdn.example/tee-blue.jpg</google:image_link>
+  </entry>
+  <entry>
+    <google:id>A-1-M</google:id>
+    <title>Футболка базова синя M</title>
+    <link href="https://shop.example/t-shirt"/>
+    <google:price>650 UAH</google:price>
+    <google:availability>in_stock</google:availability>
+    <google:image_link>https://cdn.example/tee-blue.jpg</google:image_link>
+  </entry>
+</feed>

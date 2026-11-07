@@ -8,6 +8,7 @@ import { Input } from '../components/ui/Input';
 import { LoadingState } from '../components/ui/Spinner';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ProductAttributesEditor } from '../components/catalog/ProductAttributesEditor';
+import { ProductSourcePanel } from '../components/catalog/ProductSourcePanel';
 import { cn } from '../lib/cn';
 import { useT } from '../i18n';
 
@@ -163,6 +164,8 @@ export default function CatalogPage() {
         <h1 className="text-2xl font-semibold text-gray-900">{t('catalog.title')}</h1>
         <p className="text-sm text-gray-500 mt-1">{t('catalog.subtitle')}</p>
       </div>
+
+      <ProductSourcePanel />
 
       <div className="flex gap-3">
         <Input

@@ -18,6 +18,8 @@ export enum ConnectionType {
   Shopify = 'shopify',
   WooCommerce = 'woocommerce',
   GoogleSheets = 'google_sheets',
+  /** A product feed URL (Google Merchant XML, YML or the Google Sheet template), re-synced hourly. */
+  ProductFeed = 'product_feed',
 }
 
 export enum ConnectionStatus {

@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<yml_catalog date="2026-11-07 10:00">
+  <shop>
+    <name>Тест магазин</name>
+    <currencies><currency id="UAH" rate="1"/></currencies>
+    <categories>
+      <category id="1">Одяг</category>
+      <category id="12" parentId="1">Сукні</category>
+    </categories>
+    <offers>
+      <offer id="501" available="true" group_id="50">
+        <url>https://shop.example/sukня-midi</url>
+        <price>1499</price>
+        <oldprice>1999</oldprice>
+        <currencyId>UAH</currencyId>
+        <categoryId>12</categoryId>
+        <picture>https://cdn.example/dress-red-1.jpg</picture>
+        <picture>https://cdn.example/dress-red-2.jpg</picture>
+        <name>Сукня міді червона S</name>
+        <name_ua>Сукня міді червона S</name_ua>
+        <vendor>Mango</vendor>
+        <vendorCode>DR-50</vendorCode>
+        <description_ua><![CDATA[Сукня міді з <i>віскози</i>]]></description_ua>
+        <param name="Колір">Червоний</param>
+        <param name="Розмір">S</param>
+        <quantity_in_stock>3</quantity_in_stock>
+      </offer>
+      <offer id="502" available="false" group_id="50">
+        <price>1499</price>
+        <oldprice>1999</oldprice>
+        <categoryId>12</categoryId>
+        <picture>https://cdn.example/dress-red-1.jpg</picture>
+        <name>Сукня міді червона M</name>
+        <param name="Колір">Червоний</param>
+        <param name="Розмір">M</param>
+      </offer>
+      <offer id="601" available="true">
+        <price>899</price>
+        <categoryId>1</categoryId>
+        <picture>https://cdn.example/scarf.jpg</picture>
+        <name>Шарф кашемір</name>
+      </offer>
+    </offers>
+  </shop>
+</yml_catalog>

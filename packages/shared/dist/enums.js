@@ -22,6 +22,8 @@ var ConnectionType;
     ConnectionType["Shopify"] = "shopify";
     ConnectionType["WooCommerce"] = "woocommerce";
     ConnectionType["GoogleSheets"] = "google_sheets";
+    /** A product feed URL (Google Merchant XML, YML or the Google Sheet template), re-synced hourly. */
+    ConnectionType["ProductFeed"] = "product_feed";
 })(ConnectionType || (exports.ConnectionType = ConnectionType = {}));
 var ConnectionStatus;
 (function (ConnectionStatus) {
