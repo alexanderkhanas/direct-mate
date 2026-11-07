@@ -43,61 +43,84 @@ function BrandToneSection({ settings }: { settings: TenantSettings }) {
   );
 }
 
-function HandoffRulesSection({ settings }: { settings: TenantSettings }) {
+/**
+ * What the agent answers from besides the catalog, and the fixed lines it
+ * sends. Each is stored on the store config; an empty field clears it.
+ */
+function KnowledgeSection() {
   const { t } = useT();
   const qc = useQueryClient();
-  const [maxFailed, setMaxFailed] = useState(
-    settings.handoffRules?.maxFailedTurns ?? 2,
-  );
-  const [freshness, setFreshness] = useState(
-    settings.handoffRules?.stockFreshnessMinutes ?? 10,
-  );
-  const [sentiment, setSentiment] = useState(
-    settings.handoffRules?.negativeSentimentEscalation ?? true,
-  );
 
+  const { data: config } = useQuery<any>({
+    queryKey: ['store-config'],
+    queryFn: () => api.get('/engine/config').then((r) => r.data),
+  });
+
+  const [notes, setNotes] = useState('');
+  const [paymentDetails, setPaymentDetails] = useState('');
+  const [welcomeLine, setWelcomeLine] = useState('');
+  const [handoffLine, setHandoffLine] = useState('');
+
+  useEffect(() => {
+    if (!config) return;
+    setNotes(config.knowledgeDoc ?? '');
+    setPaymentDetails(config.checkoutConfig?.paymentDetails ?? '');
+    setWelcomeLine(config.brandConfig?.welcomeLine ?? '');
+    setHandoffLine(config.handoffConfig?.announceText ?? '');
+  }, [config]);
+
+  // `null` clears a key: the API merges these objects, so an omitted key would be kept.
   const save = useMutation({
     mutationFn: () =>
-      api.patch('/settings', {
-        handoffRules: {
-          maxFailedTurns: maxFailed,
-          stockFreshnessMinutes: freshness,
-          negativeSentimentEscalation: sentiment,
-        },
+      api.patch('/engine/config', {
+        knowledgeDoc: notes,
+        checkoutConfig: { paymentDetails: paymentDetails.trim() || null },
+        brandConfig: { welcomeLine: welcomeLine.trim() || null },
+        handoffConfig: { announceText: handoffLine.trim() || null },
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['settings'] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['store-config'] }),
   });
 
   return (
     <Card>
-      <h2 className="text-sm font-semibold text-gray-900 mb-4">{t('settings.handoff_rules')}</h2>
+      <h2 className="text-sm font-semibold text-gray-900 mb-1">{t('settings_ext.knowledge_title')}</h2>
+      <p className="text-xs text-gray-500 mb-4">{t('settings_ext.knowledge_desc')}</p>
       <div className="space-y-4">
-        <Input
-          label={t('settings_ext.max_failed_turns')}
-          type="number"
-          min={1}
-          max={10}
-          value={maxFailed}
-          onChange={(e) => setMaxFailed(Number(e.target.value))}
-          className="max-w-xs"
-        />
-        <Input
-          label={t('settings_ext.stock_freshness')}
-          type="number"
-          min={1}
-          value={freshness}
-          onChange={(e) => setFreshness(Number(e.target.value))}
-          className="max-w-xs"
-        />
-        <label className="flex items-center gap-2.5 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={sentiment}
-            onChange={(e) => setSentiment(e.target.checked)}
-            className="h-4 w-4 rounded border-gray-300 text-gray-900 focus:ring-gray-900"
+        <div>
+          <Textarea
+            label={t('settings_ext.store_notes')}
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            rows={12}
+            placeholder={t('settings_ext.store_notes_placeholder')}
           />
-          <span className="text-sm text-gray-700">{t('settings_ext.escalate_negative')}</span>
-        </label>
+          <p className="text-xs text-gray-400 mt-1">{t('settings_ext.store_notes_desc')}</p>
+        </div>
+        <div>
+          <Textarea
+            label={t('settings_ext.payment_details')}
+            value={paymentDetails}
+            onChange={(e) => setPaymentDetails(e.target.value)}
+            rows={4}
+          />
+          <p className="text-xs text-gray-400 mt-1">{t('settings_ext.payment_details_desc')}</p>
+        </div>
+        <div>
+          <Input
+            label={t('settings_ext.welcome_line')}
+            value={welcomeLine}
+            onChange={(e) => setWelcomeLine(e.target.value)}
+          />
+          <p className="text-xs text-gray-400 mt-1">{t('settings_ext.welcome_line_desc')}</p>
+        </div>
+        <div>
+          <Input
+            label={t('settings_ext.handoff_line')}
+            value={handoffLine}
+            onChange={(e) => setHandoffLine(e.target.value)}
+          />
+          <p className="text-xs text-gray-400 mt-1">{t('settings_ext.handoff_line_desc')}</p>
+        </div>
       </div>
       <div className="flex items-center gap-3 mt-4">
         <Button onClick={() => save.mutate()} loading={save.isPending} size="sm">
@@ -119,14 +142,7 @@ interface SizeRangeRow {
 }
 
 /** flow_config keys the form models. Everything else round-trips via the advanced editor. */
-const KNOWN_FLOW_KEYS = [
-  'preQualify',
-  'preQualifyStrategy',
-  'variants',
-  'businessType',
-  'sizeHelpMode',
-  'sizeChart',
-];
+const KNOWN_FLOW_KEYS = ['sizing', 'sizeChart'];
 
 function sizeChartToRows(chart: unknown): SizeRangeRow[] {
   if (!chart || typeof chart !== 'object') return [];
@@ -154,7 +170,7 @@ function rowsToSizeChart(rows: SizeRangeRow[]): Record<string, unknown> | undefi
   return Object.keys(chart).length > 0 ? chart : undefined;
 }
 
-function FlowConfigSection() {
+function SizingSection() {
   const { t } = useT();
   const qc = useQueryClient();
 
@@ -163,13 +179,8 @@ function FlowConfigSection() {
     queryFn: () => api.get('/engine/config').then(r => r.data),
   });
 
-  const [preQualifyEnabled, setPreQualifyEnabled] = useState(false);
-  const [preQualifyPrompt, setPreQualifyPrompt] = useState('');
-  const [preQualifyFields, setPreQualifyFields] = useState<string[]>([]);
-  const [preQualifyStrategy, setPreQualifyStrategy] = useState<'before_search' | 'after_search_offered'>('after_search_offered');
-  const [variantMode, setVariantMode] = useState('single');
-  const [businessType, setBusinessType] = useState('');
-  const [sizeHelpMode, setSizeHelpMode] = useState('');
+  const [advice, setAdvice] = useState<'recommend' | 'consult'>('recommend');
+  const [askFirst, setAskFirst] = useState(false);
   const [sizeRows, setSizeRows] = useState<SizeRangeRow[]>([]);
   const [advancedJson, setAdvancedJson] = useState('');
   const [advancedError, setAdvancedError] = useState<string | null>(null);
@@ -177,15 +188,10 @@ function FlowConfigSection() {
   useEffect(() => {
     if (config) {
       const fc = (config.flowConfig ?? {}) as any;
-      setPreQualifyEnabled(fc.preQualify?.enabled ?? false);
-      setPreQualifyPrompt(fc.preQualify?.prompt ?? '');
-      setPreQualifyFields(fc.preQualify?.fields ?? []);
-      setPreQualifyStrategy(fc.preQualifyStrategy ?? 'after_search_offered');
-      setVariantMode(fc.variants?.askSequence?.length > 1 ? 'two_step' : 'single');
-      setBusinessType(fc.businessType ?? '');
-      setSizeHelpMode(fc.sizeHelpMode ?? '');
+      setAdvice(fc.sizing?.advice === 'consult' ? 'consult' : 'recommend');
+      setAskFirst(fc.sizing?.askMeasurementsFirst === true);
       setSizeRows(sizeChartToRows(fc.sizeChart));
-      // Keys the form doesn't model (sizeChartMappings, handoff, …) stay
+      // Keys the form doesn't model (commentHandling, conversationIdleHours, …) stay
       // editable as raw JSON so a save can never silently drop them.
       const rest = Object.fromEntries(
         Object.entries(fc).filter(([k]) => !KNOWN_FLOW_KEYS.includes(k)),
@@ -215,20 +221,8 @@ function FlowConfigSection() {
       return api.patch('/engine/config', {
         flowConfig: {
           ...advanced,
-          businessType: businessType || null,
-          preQualify: {
-            enabled: preQualifyEnabled,
-            prompt: preQualifyPrompt || null,
-            fields: preQualifyFields.length > 0 ? preQualifyFields : null,
-          },
-          preQualifyStrategy,
-          sizeHelpMode: sizeHelpMode || null,
+          sizing: { advice, askMeasurementsFirst: askFirst },
           sizeChart: rowsToSizeChart(sizeRows) ?? null,
-          variants: variantMode === 'two_step' ? {
-            primaryOption: 'color',
-            secondaryOption: 'size',
-            askSequence: ['color', 'size'],
-          } : null,
         },
       });
     },
@@ -251,101 +245,32 @@ function FlowConfigSection() {
   const updateRow = (i: number, patch: Partial<SizeRangeRow>) =>
     setSizeRows(rows => rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
 
-  const FIELD_OPTIONS = [
-    { value: 'height', label: t('settings_ext.field_height') },
-    { value: 'weight', label: t('settings_ext.field_weight') },
-    { value: 'skin_type', label: t('settings_ext.field_skin_type') },
-    { value: 'age', label: t('settings_ext.field_age') },
-  ];
-
   return (
     <Card>
-      <h2 className="text-sm font-semibold text-gray-900 mb-4">{t('settings_ext.conversation_flow')}</h2>
+      <h2 className="text-sm font-semibold text-gray-900 mb-4">{t('settings_ext.sizing_title')}</h2>
       <div className="space-y-5">
-        {/* Business type — drives vertical routing in the engine */}
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1.5">{t('settings_ext.business_type')}</label>
+          <label className="block text-xs font-medium text-gray-600 mb-1.5">{t('settings_ext.sizing_advice')}</label>
           <select
-            value={businessType}
-            onChange={e => setBusinessType(e.target.value)}
+            value={advice}
+            onChange={e => setAdvice(e.target.value as 'recommend' | 'consult')}
             className="px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 max-w-xs"
           >
-            <option value="">{t('settings_ext.business_type_unset')}</option>
-            <option value="clothing">{t('settings_ext.business_type_clothing')}</option>
-            <option value="cosmetics">{t('settings_ext.business_type_cosmetics')}</option>
+            <option value="recommend">{t('settings_ext.sizing_recommend')}</option>
+            <option value="consult">{t('settings_ext.sizing_consult')}</option>
           </select>
-          <p className="text-xs text-gray-400 mt-1">{t('settings_ext.business_type_desc')}</p>
+          <p className="text-xs text-gray-400 mt-1">{t('settings_ext.sizing_advice_desc')}</p>
         </div>
 
-        {/* Pre-qualification */}
-        <div>
-          <label className="flex items-center gap-2.5 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={preQualifyEnabled}
-              onChange={e => setPreQualifyEnabled(e.target.checked)}
-              className="h-4 w-4 rounded border-gray-300 text-gray-900 focus:ring-gray-900"
-            />
-            <span className="text-sm text-gray-700">{t('settings_ext.ask_customer_info')}</span>
-          </label>
-
-          {preQualifyEnabled && (
-            <div className="mt-3 ml-6 space-y-3">
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1.5">{t('settings_ext.pre_qualify_strategy')}</label>
-                <select
-                  value={preQualifyStrategy}
-                  onChange={e => setPreQualifyStrategy(e.target.value as 'before_search' | 'after_search_offered')}
-                  className="px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 max-w-xs"
-                >
-                  <option value="after_search_offered">{t('settings_ext.strategy_after_search_offered')}</option>
-                  <option value="before_search">{t('settings_ext.strategy_before_search')}</option>
-                </select>
-                <p className="text-xs text-gray-400 mt-1">{t('settings_ext.pre_qualify_strategy_desc')}</p>
-              </div>
-              <Input
-                label={t('settings_ext.pre_qualify_prompt')}
-                value={preQualifyPrompt}
-                onChange={e => setPreQualifyPrompt(e.target.value)}
-                placeholder="\u041f\u0456\u0434\u043a\u0430\u0436\u0456\u0442\u044c \u0432\u0430\u0448 \u0437\u0440\u0456\u0441\u0442 \u0442\u0430 \u0432\u0430\u0433\u0443, \u0449\u043e\u0431 \u043f\u0456\u0434\u0456\u0431\u0440\u0430\u0442\u0438 \u0440\u043e\u0437\u043c\u0456\u0440 \ud83d\udc9b"
-              />
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1.5">{t('settings_ext.fields_to_collect')}</label>
-                <div className="flex flex-wrap gap-2">
-                  {FIELD_OPTIONS.map(f => (
-                    <label key={f.value} className="flex items-center gap-1.5 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={preQualifyFields.includes(f.value)}
-                        onChange={e => {
-                          if (e.target.checked) setPreQualifyFields([...preQualifyFields, f.value]);
-                          else setPreQualifyFields(preQualifyFields.filter(x => x !== f.value));
-                        }}
-                        className="h-3.5 w-3.5 rounded border-gray-300 text-gray-900 focus:ring-gray-900"
-                      />
-                      <span className="text-sm text-gray-600">{f.label}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Size help mode */}
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1.5">{t('settings_ext.size_help_mode')}</label>
-          <select
-            value={sizeHelpMode}
-            onChange={e => setSizeHelpMode(e.target.value)}
-            className="px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 max-w-xs"
-          >
-            <option value="">{t('settings_ext.size_help_mode_auto')}</option>
-            <option value="chart">{t('settings_ext.size_help_mode_chart')}</option>
-            <option value="measurements">{t('settings_ext.size_help_mode_measurements')}</option>
-          </select>
-          <p className="text-xs text-gray-400 mt-1">{t('settings_ext.size_help_mode_desc')}</p>
-        </div>
+        <label className="flex items-center gap-2.5 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={askFirst}
+            onChange={e => setAskFirst(e.target.checked)}
+            className="h-4 w-4 rounded border-gray-300 text-gray-900 focus:ring-gray-900"
+          />
+          <span className="text-sm text-gray-700">{t('settings_ext.ask_measurements_first')}</span>
+        </label>
 
         {/* Size ranges (height/weight → size) */}
         <div>
@@ -426,24 +351,10 @@ function FlowConfigSection() {
           </Button>
         </div>
 
-        {/* Variant selection mode */}
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1.5">{t('settings_ext.variant_selection_mode')}</label>
-          <select
-            value={variantMode}
-            onChange={e => setVariantMode(e.target.value)}
-            className="px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 max-w-xs"
-          >
-            <option value="single">{t('settings_ext.single_step')}</option>
-            <option value="two_step">{t('settings_ext.two_step')}</option>
-          </select>
-          <p className="text-xs text-gray-400 mt-1">{t('settings_ext.color_size_desc')}</p>
-        </div>
-
         {/* Advanced: any flow_config key the form above doesn't model */}
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1.5">{t('settings_ext.advanced_engine_config')}</label>
-          <p className="text-xs text-gray-400 mb-2">{t('settings_ext.advanced_engine_config_desc')}</p>
+          <label className="block text-xs font-medium text-gray-600 mb-1.5">{t('settings_ext.advanced_config')}</label>
+          <p className="text-xs text-gray-400 mb-2">{t('settings_ext.advanced_config_desc')}</p>
           <Textarea
             value={advancedJson}
             onChange={e => setAdvancedJson(e.target.value)}
@@ -574,58 +485,6 @@ function ExamplesSection() {
             </p>
           )}
         </div>
-      )}
-    </Card>
-  );
-}
-
-function AiFallbackSection() {
-  const { t } = useT();
-  const qc = useQueryClient();
-
-  const { data: config } = useQuery<any>({
-    queryKey: ['store-config'],
-    queryFn: () => api.get('/engine/config').then((r) => r.data),
-  });
-
-  const fallbackMode = (config?.fallbackConfig as any)?.mode ?? 'template_first_with_safe_fallback';
-  const allowed = fallbackMode !== 'strict_templates_only';
-
-  const toggle = useMutation({
-    mutationFn: (enable: boolean) =>
-      api.patch('/engine/config', {
-        fallbackConfig: {
-          mode: enable ? 'template_first_with_safe_fallback' : 'strict_templates_only',
-        },
-      }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['store-config'] }),
-  });
-
-  return (
-    <Card>
-      <h2 className="text-sm font-semibold text-gray-900 mb-1">{t('settings_ext.ai_fallback_title')}</h2>
-      <p className="text-xs text-gray-500 mb-4">{t('settings_ext.ai_fallback_desc')}</p>
-      <label className="flex items-center gap-3 cursor-pointer">
-        <button
-          role="switch"
-          aria-checked={allowed}
-          onClick={() => toggle.mutate(!allowed)}
-          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${
-            allowed ? 'bg-gray-900' : 'bg-gray-200'
-          }`}
-        >
-          <span
-            className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
-              allowed ? 'translate-x-4' : 'translate-x-1'
-            }`}
-          />
-        </button>
-        <span className="text-sm text-gray-700">
-          {allowed ? t('settings_ext.ai_fallback_on') : t('settings_ext.ai_fallback_off')}
-        </span>
-      </label>
-      {toggle.isSuccess && (
-        <p className="text-xs text-emerald-600 mt-2">{t('settings.saved')}</p>
       )}
     </Card>
   );
@@ -921,9 +780,8 @@ export default function SettingsPage() {
       </div>
       <OperatingModeSection />
       <BrandToneSection settings={data} />
-      <FlowConfigSection />
-      <AiFallbackSection />
-      <HandoffRulesSection settings={data} />
+      <KnowledgeSection />
+      <SizingSection />
       <ExamplesSection />
       <SubscriptionSection />
       <DeleteAccountSection />

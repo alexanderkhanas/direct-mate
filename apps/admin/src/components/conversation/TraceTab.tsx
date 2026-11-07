@@ -16,15 +16,6 @@ import { LoadingState } from '../ui/Spinner';
 // Mirrors apps/api/src/modules/conversations/entities/conversation-trace.entity.ts.
 // Kept inline because the surface is admin-only and the shape is allowed
 // to evolve without a versioned contract.
-interface OpenAiCall {
-  model: string;
-  promptTokens: number;
-  completionTokens: number;
-  latencyMs: number;
-  requestId?: string | null;
-  source?: string;
-}
-
 interface ConversationTrace {
   id: string;
   traceId: string;
@@ -35,19 +26,46 @@ interface ConversationTrace {
   completedAt: string | null;
   durationMs: number | null;
   decision: 'reply' | 'handoff' | 'create_draft_order' | 'error';
-  templateScenario: string | null;
   handoffReason: string | null;
   traceSteps: string[];
-  stageTimings: Record<string, number | undefined>;
-  classifierOutput: Record<string, unknown> | null;
-  openaiRequestIds: string[] | null;
-  openaiCalls: OpenAiCall[] | null;
-  memoryBefore: Record<string, unknown> | null;
-  memoryAfter: Record<string, unknown> | null;
   /** `images`: customer photos the model saw with that message (agent turns). */
   recentMessages: Array<{ role: string; text: string | null; images?: string[] }> | null;
   outboundReply: string | null;
   error: { name: string; message: string; stack?: string; stage?: string } | null;
+  model: string | null;
+  usage: TraceUsage | null;
+  guardResults: { attempts?: GuardAttempt[] } | null;
+}
+
+interface TraceUsage {
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  durationMs?: number;
+}
+
+/** One draft of the reply and what the guards found in it; a second attempt means a retry. */
+interface GuardAttempt {
+  text: string;
+  grounding: Array<{ kind: string; value?: string }>;
+  style: Array<{ kind: string; value?: string }>;
+}
+
+function usageLine(t: ConversationTrace): string | null {
+  const u = t.usage;
+  if (!t.model && !u) return null;
+  const parts = [t.model ?? 'model?'];
+  if (u?.inputTokens != null) {
+    parts.push(`in ${u.inputTokens}${u.cachedInputTokens ? ` (${u.cachedInputTokens} cached)` : ''}`);
+  }
+  if (u?.outputTokens != null) parts.push(`out ${u.outputTokens}`);
+  return parts.join(' · ');
+}
+
+function guardFindings(t: ConversationTrace): string[] {
+  return (t.guardResults?.attempts ?? []).flatMap((a, i) =>
+    [...a.grounding, ...a.style].map((v) => `attempt ${i + 1}: ${v.kind}${v.value ? ` «${v.value}»` : ''}`),
+  );
 }
 
 function decisionVariant(d: ConversationTrace['decision']): 'active' | 'closed' | 'default' {
@@ -87,7 +105,8 @@ function traceToMarkdown(t: ConversationTrace): string {
   lines.push('');
   lines.push(`- **started**: ${fmtTime(t.startedAt)}`);
   lines.push(`- **duration**: ${fmtMs(t.durationMs)}`);
-  if (t.templateScenario) lines.push(`- **template**: ${t.templateScenario}`);
+  const usage = usageLine(t);
+  if (usage) lines.push(`- **model**: ${usage}`);
   if (t.handoffReason) lines.push(`- **handoff_reason**: ${t.handoffReason}`);
   lines.push('');
 
@@ -130,36 +149,8 @@ function traceToMarkdown(t: ConversationTrace): string {
     lines.push('```');
   }
 
-  if (t.stageTimings && Object.keys(t.stageTimings).length) {
-    lines.push('**Stage timings:**');
-    lines.push('```json');
-    lines.push(JSON.stringify(t.stageTimings, null, 2));
-    lines.push('```');
-  }
-
-  if (t.classifierOutput) {
-    lines.push('**Classifier output:**');
-    lines.push('```json');
-    lines.push(JSON.stringify(t.classifierOutput, null, 2));
-    lines.push('```');
-  }
-
-  if (t.memoryBefore) {
-    lines.push('**Memory (before):**');
-    lines.push('```json');
-    lines.push(JSON.stringify(t.memoryBefore, null, 2));
-    lines.push('```');
-  }
-
-  if (t.memoryAfter) {
-    lines.push('**Memory (after):**');
-    lines.push('```json');
-    lines.push(JSON.stringify(t.memoryAfter, null, 2));
-    lines.push('```');
-  }
-
   if (t.recentMessages && t.recentMessages.length) {
-    lines.push('**Recent messages (classifier context):**');
+    lines.push('**History given to the agent:**');
     lines.push('```');
     t.recentMessages.forEach((m) =>
       lines.push(`${m.role}: ${m.text ?? '(empty)'}${m.images?.length ? ` [photos: ${m.images.join(', ')}]` : ''}`),
@@ -167,68 +158,15 @@ function traceToMarkdown(t: ConversationTrace): string {
     lines.push('```');
   }
 
-  if (t.openaiCalls && t.openaiCalls.length) {
-    lines.push('**OpenAI calls:**');
+  const findings = guardFindings(t);
+  if (findings.length) {
+    lines.push('**Guard findings:**');
     lines.push('```');
-    t.openaiCalls.forEach((c) => {
-      lines.push(
-        `${c.source ?? '-'}  ${c.model}  tokens=${c.promptTokens}+${c.completionTokens}  ${fmtMs(c.latencyMs)}  req=${c.requestId ?? '-'}`,
-      );
-    });
+    findings.forEach((f) => lines.push(f));
     lines.push('```');
   }
 
   return lines.join('\n');
-}
-
-interface StageBarProps {
-  timings: Record<string, number | undefined>;
-  totalMs: number | null;
-}
-
-function StageBar({ timings, totalMs }: StageBarProps) {
-  const stages = Object.entries(timings)
-    .filter(([k, v]) => k.endsWith('_ms') && typeof v === 'number' && v > 0)
-    .map(([k, v]) => ({ name: k.replace(/_ms$/, ''), ms: v as number }));
-  if (stages.length === 0) return null;
-  const measuredTotal = stages.reduce((s, x) => s + x.ms, 0);
-  const denom = Math.max(measuredTotal, totalMs ?? 0, 1);
-  return (
-    <div className="space-y-1.5">
-      <div className="flex w-full h-2 rounded-full overflow-hidden bg-gray-100">
-        {stages.map((s, i) => {
-          const pct = (s.ms / denom) * 100;
-          const palette = [
-            'bg-violet-500',
-            'bg-sky-500',
-            'bg-emerald-500',
-            'bg-amber-500',
-            'bg-rose-500',
-          ];
-          return (
-            <div
-              key={s.name}
-              className={`${palette[i % palette.length]}`}
-              style={{ width: `${pct}%` }}
-              title={`${s.name}: ${fmtMs(s.ms)}`}
-            />
-          );
-        })}
-      </div>
-      <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-500">
-        {stages.map((s) => (
-          <span key={s.name}>
-            <span className="font-medium text-gray-700">{s.name}</span> {fmtMs(s.ms)}
-          </span>
-        ))}
-        {totalMs != null && (
-          <span className="ml-auto">
-            <span className="font-medium text-gray-700">total</span> {fmtMs(totalMs)}
-          </span>
-        )}
-      </div>
-    </div>
-  );
 }
 
 interface CollapseProps {
@@ -279,12 +217,6 @@ function TraceCard({ trace, selected, onToggleSelect }: TraceCardProps) {
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
               <Badge variant={decisionVariant(trace.decision)}>{trace.decision}</Badge>
-              {trace.templateScenario && (
-                <span className="text-xs text-gray-500">
-                  template:{' '}
-                  <span className="font-medium text-gray-700">{trace.templateScenario}</span>
-                </span>
-              )}
               {trace.handoffReason && (
                 <span className="text-xs text-gray-500">
                   handoff:{' '}
@@ -333,9 +265,14 @@ function TraceCard({ trace, selected, onToggleSelect }: TraceCardProps) {
         </div>
       )}
 
-      <div className="px-4 py-3 border-b border-gray-100">
-        <StageBar timings={trace.stageTimings} totalMs={trace.durationMs} />
-      </div>
+      {usageLine(trace) && (
+        <div className="px-4 py-2 border-b border-gray-100 flex flex-wrap gap-x-3 text-xs text-gray-500">
+          <span>{usageLine(trace)}</span>
+          <span className="ml-auto">
+            <span className="font-medium text-gray-700">total</span> {fmtMs(trace.durationMs)}
+          </span>
+        </div>
+      )}
 
       <Collapse
         title="Trace steps"
@@ -368,33 +305,9 @@ function TraceCard({ trace, selected, onToggleSelect }: TraceCardProps) {
         </Collapse>
       )}
 
-      {trace.classifierOutput && (
-        <Collapse title="Classifier output">
-          <pre className="text-[11px] font-mono text-gray-700 bg-gray-50 rounded-md p-2.5 overflow-x-auto">
-            {JSON.stringify(trace.classifierOutput, null, 2)}
-          </pre>
-        </Collapse>
-      )}
-
-      {trace.memoryBefore && (
-        <Collapse title="Memory (before)">
-          <pre className="text-[11px] font-mono text-gray-700 bg-gray-50 rounded-md p-2.5 overflow-x-auto">
-            {JSON.stringify(trace.memoryBefore, null, 2)}
-          </pre>
-        </Collapse>
-      )}
-
-      {trace.memoryAfter && (
-        <Collapse title="Memory (after)">
-          <pre className="text-[11px] font-mono text-gray-700 bg-gray-50 rounded-md p-2.5 overflow-x-auto">
-            {JSON.stringify(trace.memoryAfter, null, 2)}
-          </pre>
-        </Collapse>
-      )}
-
       {trace.recentMessages && trace.recentMessages.length > 0 && (
         <Collapse
-          title="Recent messages (classifier context)"
+          title="History given to the agent"
           badge={
             <span className="text-[10px] text-gray-400 font-normal normal-case tracking-normal">
               ({trace.recentMessages.length})
@@ -423,39 +336,13 @@ function TraceCard({ trace, selected, onToggleSelect }: TraceCardProps) {
         </Collapse>
       )}
 
-      {trace.openaiCalls && trace.openaiCalls.length > 0 && (
-        <Collapse
-          title="OpenAI calls"
-          badge={
-            <span className="text-[10px] text-gray-400 font-normal normal-case tracking-normal">
-              (tokens: {trace.stageTimings?.openai_total_tokens ?? 0})
-            </span>
-          }
-        >
-          <table className="w-full text-[11px] font-mono text-gray-700">
-            <thead>
-              <tr className="text-left text-gray-400 border-b border-gray-100">
-                <th className="py-1 pr-3 font-medium">source</th>
-                <th className="py-1 pr-3 font-medium">model</th>
-                <th className="py-1 pr-3 font-medium text-right">prompt</th>
-                <th className="py-1 pr-3 font-medium text-right">comp</th>
-                <th className="py-1 pr-3 font-medium text-right">latency</th>
-                <th className="py-1 font-medium">req-id</th>
-              </tr>
-            </thead>
-            <tbody>
-              {trace.openaiCalls.map((c, i) => (
-                <tr key={i} className="border-b border-gray-50 last:border-b-0">
-                  <td className="py-1 pr-3">{c.source ?? '—'}</td>
-                  <td className="py-1 pr-3">{c.model}</td>
-                  <td className="py-1 pr-3 text-right">{c.promptTokens}</td>
-                  <td className="py-1 pr-3 text-right">{c.completionTokens}</td>
-                  <td className="py-1 pr-3 text-right">{fmtMs(c.latencyMs)}</td>
-                  <td className="py-1 truncate max-w-[200px]">{c.requestId ?? '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {guardFindings(trace).length > 0 && (
+        <Collapse title="Guard findings">
+          <ul className="space-y-0.5 font-mono text-[11px] text-amber-800">
+            {guardFindings(trace).map((f, i) => (
+              <li key={i}>{f}</li>
+            ))}
+          </ul>
         </Collapse>
       )}
 

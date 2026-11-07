@@ -133,11 +133,6 @@ export interface TenantSettings {
     start: string;
     end: string;
   } | null;
-  handoffRules: {
-    maxFailedTurns: number;
-    stockFreshnessMinutes: number;
-    negativeSentimentEscalation: boolean;
-  } | null;
 }
 
 export interface AuditLog {
@@ -216,76 +211,3 @@ export interface ExtractedVoiceSignal {
   approvalStatus: string;
 }
 
-export interface ResponseTemplate {
-  id: string;
-  scenario: string;
-  stage: string | null;
-  blocks: string[];
-  requiredVariables: string[];
-  toneTags: string[];
-  priority: number;
-  active: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface PhraseBlock {
-  id: string;
-  type: string;
-  text: string;
-  scenarioTags: string[];
-  active: boolean;
-  createdAt: string;
-}
-
-export interface FaqItem {
-  id: string;
-  questionTags: string[];
-  answerTemplate: string;
-  active: boolean;
-  createdAt: string;
-}
-
-// ─── Testing ──────────────────────────────────────────────────────
-
-export interface TestRun {
-  id: string;
-  status: 'running' | 'completed' | 'failed';
-  totalScenarios: number;
-  passedScenarios: number;
-  failedScenarios: number;
-  startedAt: string;
-  completedAt: string | null;
-  scenarios?: TestRunScenario[];
-}
-
-export interface TestRunScenario {
-  id: string;
-  scenarioName: string;
-  scenarioFile: string;
-  status: 'pending' | 'running' | 'passed' | 'failed';
-  reviewStatus: 'pending' | 'approved' | 'needs_fix';
-  reviewComment: string | null;
-  steps: TestStep[];
-  durationMs: number | null;
-  errorMessage: string | null;
-}
-
-export interface TestStep {
-  stepIndex: number;
-  customerMessage: string;
-  botReply: string | null;
-  scenario: string | null;
-  templateId: string | null;
-  memory: Record<string, unknown>;
-  assertions: TestAssertion[];
-  passed: boolean;
-  failReason?: string;
-}
-
-export interface TestAssertion {
-  type: string;
-  expected: unknown;
-  actual: unknown;
-  passed: boolean;
-}

@@ -10,8 +10,6 @@ import SettingsPage from './pages/SettingsPage';
 import LogsPage from './pages/LogsPage';
 import CatalogPage from './pages/CatalogPage';
 import TrainingPage from './pages/TrainingPage';
-import TemplatesPage from './pages/TemplatesPage';
-import TestingPage from './pages/TestingPage';
 import SimulatorPage from './pages/SimulatorPage';
 import OrdersPage from './pages/OrdersPage';
 import ContentLinkingPage from './pages/ContentLinkingPage';
@@ -59,8 +57,6 @@ export default function App() {
           <Route path="catalog" element={<CatalogPage />} />
           <Route path="connections" element={<ConnectionsPage />} />
           <Route path="training" element={<TrainingPage />} />
-          <Route path="templates" element={<TemplatesPage />} />
-          <Route path="testing" element={<TestingPage />} />
           <Route path="simulator" element={<SimulatorPage />} />
           <Route path="content-linking" element={<ContentLinkingPage />} />
           <Route path="size-charts" element={<SizeChartsPage />} />
