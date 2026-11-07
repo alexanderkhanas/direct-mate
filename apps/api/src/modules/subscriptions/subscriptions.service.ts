@@ -7,6 +7,27 @@ import { SubscriptionPlan } from './entities/subscription-plan.entity';
 import { SubscriptionUsage } from './entities/subscription-usage.entity';
 import { SubscriptionPlanConfig } from './entities/subscription-plan-config.entity';
 import { MonoPaymentService } from './mono-payment.service';
+import { TelegramService } from '../notifications/telegram.service';
+
+export const TRIAL_DAYS = 14;
+export const TRIAL_CONVERSATIONS = 200;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Reminders to the owner's Telegram (the chats that get handoff notifications). */
+const TRIAL_TEXT = {
+  days: (n: number, url: string) =>
+    `⏳ Пробний період DirectMate закінчується ${n === 1 ? 'завтра' : `через ${n} дні`}. ` +
+    `Щоб бот і далі відповідав клієнтам, оберіть тариф: ${url}`,
+  conv80: (used: number, limit: number, url: string) =>
+    `📈 Бот уже провів ${used} з ${limit} безкоштовних розмов. Коли вони закінчаться, він перестане відповідати — ` +
+    `оберіть тариф заздалегідь: ${url}`,
+  conv100: (limit: number, url: string) =>
+    `Безкоштовні розмови закінчилися (${limit} з ${limit}). Бот більше не відповідає клієнтам — повідомлення чекають ` +
+    `на менеджерів. Оберіть тариф, щоб увімкнути його знову: ${url}`,
+  expired: (url: string) =>
+    'Пробний період закінчився. Бот більше не відповідає клієнтам — повідомлення чекають на менеджерів. ' +
+    `Оберіть тариф, щоб увімкнути його знову: ${url}`,
+};
 
 @Injectable()
 export class SubscriptionsService {
@@ -22,6 +43,7 @@ export class SubscriptionsService {
     private readonly configRepo: Repository<SubscriptionPlanConfig>,
     private readonly monoService: MonoPaymentService,
     private readonly config: ConfigService,
+    private readonly telegram: TelegramService,
   ) {}
 
   async getPlanConfigs(): Promise<SubscriptionPlanConfig[]> {
@@ -45,15 +67,88 @@ export class SubscriptionsService {
     const existing = await repo.findOne({ where: { tenantId } });
     if (existing) return existing;
 
-    const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+    // Not started: the clock and the conversation count begin at go-live (startTrial).
     const plan = repo.create({
       tenantId,
       planType: 'trial',
       status: 'active',
-      trialEndsAt,
-      conversationLimit: 1000, // Trial default; matches starter tier
+      trialEndsAt: null,
+      trialStartedAt: null,
+      conversationLimit: TRIAL_CONVERSATIONS,
     });
     return repo.save(plan);
+  }
+
+  /**
+   * The owner turned the bot on: the free trial starts now, for TRIAL_DAYS or
+   * TRIAL_CONVERSATIONS conversations, whichever comes first. Does nothing for
+   * a trial already running or a paid plan.
+   */
+  async startTrial(tenantId: string): Promise<void> {
+    const plan = await this.planRepo.findOne({ where: { tenantId } });
+    if (!plan || plan.planType !== 'trial' || plan.trialStartedAt) return;
+    const now = new Date();
+    plan.trialStartedAt = now;
+    plan.trialEndsAt = new Date(now.getTime() + TRIAL_DAYS * DAY_MS);
+    plan.conversationLimit = TRIAL_CONVERSATIONS;
+    plan.status = 'active';
+    await this.planRepo.save(plan);
+    this.invalidateCache(tenantId);
+  }
+
+  /**
+   * Whether the bot may take on a NEW conversation: a running trial stops at
+   * its conversation limit (the conversation that reaches it is the last).
+   * Paid plans aren't capped here; the limit is shown, not enforced.
+   */
+  async hasRoomForConversation(tenantId: string): Promise<boolean> {
+    const plan = await this.planRepo.findOne({ where: { tenantId } });
+    if (!plan || plan.planType !== 'trial' || !plan.trialStartedAt) return true;
+    return (await this.trialConversations(tenantId, plan.trialStartedAt)) < (plan.conversationLimit ?? TRIAL_CONVERSATIONS);
+  }
+
+  /**
+   * A conversation got its first live reply: count it, and remind or end the
+   * trial when it crosses 80% or 100% of its conversations.
+   */
+  async recordConversation(tenantId: string): Promise<void> {
+    await this.incrementConversationCount(tenantId);
+    const plan = await this.planRepo.findOne({ where: { tenantId } });
+    if (!plan || plan.planType !== 'trial' || !plan.trialStartedAt) return;
+    const limit = plan.conversationLimit ?? TRIAL_CONVERSATIONS;
+    const used = await this.trialConversations(tenantId, plan.trialStartedAt);
+    if (used >= limit) {
+      plan.status = 'expired';
+      await this.planRepo.save(plan);
+      this.invalidateCache(tenantId);
+      await this.remindOnce(plan, 'conv_100', TRIAL_TEXT.conv100(limit, this.billingUrl()));
+    } else if (used >= limit * 0.8) {
+      await this.remindOnce(plan, 'conv_80', TRIAL_TEXT.conv80(used, limit, this.billingUrl()));
+    }
+  }
+
+  /** Conversations the bot answered live since the trial started (not the owner's test chat). */
+  private async trialConversations(tenantId: string, since: Date): Promise<number> {
+    const [row]: Array<{ n: number }> = await this.planRepo.manager.query(
+      `SELECT count(DISTINCT m.conversation_id)::int AS n
+         FROM messages m JOIN conversations c ON c.id = m.conversation_id
+        WHERE c.tenant_id = $1 AND c.channel = 'instagram'
+          AND m.direction = 'outbound' AND m.role = 'assistant' AND m.created_at >= $2`,
+      [tenantId, since],
+    );
+    return row?.n ?? 0;
+  }
+
+  /** Sends to the store's linked Telegram chats, once per reminder. */
+  private async remindOnce(plan: SubscriptionPlan, key: string, text: string): Promise<void> {
+    if (plan.remindersSent?.includes(key)) return;
+    plan.remindersSent = [...(plan.remindersSent ?? []), key];
+    await this.planRepo.update(plan.id, { remindersSent: plan.remindersSent });
+    await this.telegram.sendToTenant(plan.tenantId, text).catch(() => undefined);
+  }
+
+  private billingUrl(): string {
+    return `${this.config.get<string>('app.adminUrl') ?? 'http://localhost:5173'}/settings#subscription`;
   }
 
   // ─── Plan status check (cached) ──────────────────────────────────
@@ -66,6 +161,11 @@ export class SubscriptionsService {
     if (!plan) {
       this.activePlanCache.set(tenantId, { active: true, expiresAt: Date.now() + 5 * 60 * 1000 });
       return true; // No plan row yet (pre-subscription era tenants) → allow
+    }
+    // A trial waiting for go-live: the bot is paused anyway, and the owner's test chat must work.
+    if (plan.planType === 'trial' && !plan.trialStartedAt && plan.status === 'active') {
+      this.activePlanCache.set(tenantId, { active: true, expiresAt: Date.now() + 5 * 60 * 1000 });
+      return true;
     }
 
     const now = new Date();
@@ -89,6 +189,10 @@ export class SubscriptionsService {
     usage: { used: number; limit: number | null; percentUsed: number | null };
     planConfig: SubscriptionPlanConfig | null;
     trialDaysRemaining: number | null;
+    /** Whether the bot may answer customers on this plan right now. */
+    active: boolean;
+    /** False while a trial waits for go-live. */
+    trialStarted: boolean;
   }> {
     const plan = await this.planRepo.findOne({ where: { tenantId } });
     const usage = await this.getCurrentUsage(tenantId);
@@ -99,7 +203,13 @@ export class SubscriptionsService {
       trialDaysRemaining = Math.max(0, Math.ceil((plan.trialEndsAt.getTime() - Date.now()) / (24 * 60 * 60 * 1000)));
     }
 
-    const used = usage?.conversationCount ?? 0;
+    // A trial counts its conversations since go-live, not per calendar month.
+    const used =
+      plan?.planType === 'trial'
+        ? plan.trialStartedAt
+          ? await this.trialConversations(tenantId, plan.trialStartedAt)
+          : 0
+        : (usage?.conversationCount ?? 0);
     const limit = plan?.conversationLimit ?? null;
 
     return {
@@ -111,6 +221,8 @@ export class SubscriptionsService {
       },
       planConfig,
       trialDaysRemaining,
+      active: await this.isActive(tenantId),
+      trialStarted: plan?.planType !== 'trial' || !!plan?.trialStartedAt,
     };
   }
 
@@ -273,7 +385,17 @@ export class SubscriptionsService {
       plan.status = 'expired';
       await this.planRepo.save(plan);
       this.invalidateCache(plan.tenantId);
+      await this.remindOnce(plan, 'expired', TRIAL_TEXT.expired(this.billingUrl()));
       this.logger.log(`Trial expired for tenant ${plan.tenantId}`);
+    }
+
+    // Reminders before the end, for trials that started at go-live.
+    const running = await this.planRepo.find({ where: { planType: 'trial', status: 'active' } });
+    for (const plan of running) {
+      if (!plan.trialEndsAt || !plan.trialStartedAt) continue;
+      const daysLeft = (plan.trialEndsAt.getTime() - Date.now()) / DAY_MS;
+      if (daysLeft <= 1) await this.remindOnce(plan, 'days_1', TRIAL_TEXT.days(1, this.billingUrl()));
+      else if (daysLeft <= 3) await this.remindOnce(plan, 'days_3', TRIAL_TEXT.days(3, this.billingUrl()));
     }
 
     if (expired.length > 0) {

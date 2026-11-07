@@ -200,6 +200,16 @@ function GoLiveStep({ status, onChanged }: { status: OnboardingStatus; onChanged
     },
   });
   const telegramDone = status.steps.find((s) => s.key === 'telegram')?.state === 'done';
+  const { data: plan } = useQuery<{ plan: { planType: string } | null; trialStarted: boolean }>({
+    queryKey: ['subscription-plan'],
+    queryFn: () => api.get('/subscriptions/plan').then((r) => r.data),
+  });
+  const { data: plans } = useQuery<Array<{ planType: string; price: number }>>({
+    queryKey: ['available-plans'],
+    queryFn: () => api.get('/subscriptions/plans').then((r) => r.data),
+  });
+  const cheapest = plans?.length ? Math.min(...plans.map((p) => p.price)) / 100 : null;
+  const trialAhead = plan?.plan?.planType === 'trial' && !plan.trialStarted;
   const live = status.operatingMode === 'active' || status.operatingMode === 'learning';
 
   return (
@@ -216,6 +226,11 @@ function GoLiveStep({ status, onChanged }: { status: OnboardingStatus; onChanged
         })}
       </ul>
       {!telegramDone && <p className="text-xs text-amber-700 mb-4">{t('setup.telegram_warning')}</p>}
+      {trialAhead && cheapest !== null && (
+        <p className="text-sm text-gray-700 bg-violet-50 rounded-lg px-3 py-2 mb-4">
+          {t('setup.trial_terms', { price: cheapest.toLocaleString('uk-UA') })}
+        </p>
+      )}
       {live ? (
         <p className="text-sm text-emerald-700">{t(`setup.already_${status.operatingMode}`)}</p>
       ) : (

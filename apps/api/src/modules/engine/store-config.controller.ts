@@ -10,6 +10,7 @@ import {
 import { StoreConfig } from './entities/store-config.entity';
 import { OnboardingReadiness } from '../onboarding/onboarding-readiness.service';
 import { OnboardingService } from '../onboarding/onboarding.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { TelegramService } from '../notifications/telegram.service';
 
 const OPERATING_MODES = ['learning', 'active', 'paused'] as const;
@@ -25,6 +26,7 @@ export class StoreConfigController {
     private readonly readiness: OnboardingReadiness,
     private readonly telegram: TelegramService,
     private readonly onboarding: OnboardingService,
+    private readonly subscriptions: SubscriptionsService,
   ) {}
 
   // ─── Store Config ──────────────────────────────────────────────
@@ -121,7 +123,11 @@ export class StoreConfigController {
       }
     }
     const saved = await this.configRepo.save(config);
-    if (goingLive) void this.announceGoLive(user.tenantId);
+    if (goingLive) {
+      // The free trial runs from the moment the bot answers customers, not from sign-up.
+      await this.subscriptions.startTrial(user.tenantId);
+      void this.announceGoLive(user.tenantId);
+    }
     // Turned on, or set to watch first: either way setup is over.
     if (body.operatingMode === 'active' || body.operatingMode === 'learning') {
       await this.onboarding.markCompleted(user.tenantId);

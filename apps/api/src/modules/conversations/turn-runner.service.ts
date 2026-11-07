@@ -68,7 +68,7 @@ export interface TurnHandoff {
 
 export interface TurnRunResult {
   status: 'replied' | 'handed_off' | 'skipped' | 'busy' | 'superseded';
-  skipReason?: 'paused' | 'human_in_control' | 'nothing_to_answer';
+  skipReason?: 'paused' | 'human_in_control' | 'nothing_to_answer' | 'subscription_inactive';
   /** In send order. Already saved as outbound messages unless the mode is dry_run. */
   messages: OutgoingMessage[];
   handoff: TurnHandoff | null;
@@ -150,6 +150,7 @@ export class TurnRunner {
     let conversation: ConversationRow | null = null;
     let history: AgentHistoryEntry[] = [];
     let firstReply = false;
+    let newConversation = false;
     try {
       conversation = await this.loadConversation(input);
       settings = await this.storeSettings.load(input.tenantId);
@@ -161,12 +162,12 @@ export class TurnRunner {
       }
 
       firstReply = !(await this.botWroteRecently(conversation.customer_id));
-      if (!(await this.subscriptions.isActive(input.tenantId))) {
-        return this.finish(input, conversation, settings, history, startedAt, traceId, {
-          reply: null,
-          handoff: { reason: 'subscription_expired', summaryForManager: null },
-          firstReply,
-        });
+      // Unpaid: the bot goes quiet and messages wait for the managers, as
+      // before DirectMate. No reply, no handoff line, nothing the customer sees.
+      if (!(await this.subscriptions.isActive(input.tenantId))) return this.skipped('subscription_inactive', traceId);
+      newConversation = input.mode === 'live' && !(await this.botRepliedIn(conversation.id));
+      if (newConversation && !(await this.subscriptions.hasRoomForConversation(input.tenantId))) {
+        return this.skipped('subscription_inactive', traceId);
       }
       if (input.mode === 'live') {
         const limit = this.maxMessagesPerHour();
@@ -223,12 +224,19 @@ export class TurnRunner {
         return { status: 'superseded', messages: [], handoff: null, committed: empty, agent: agentResult, traceId };
       }
 
-      return this.finish(input, conversation, settings, history, startedAt, traceId, {
+      const result = await this.finish(input, conversation, settings, history, startedAt, traceId, {
         reply: agentResult.reply,
         handoff: agentResult.handoff,
         firstReply,
         agentResult,
       });
+      // A conversation the bot took on counts toward the plan (and ends a trial at its limit).
+      if (newConversation && result.messages.length > 0) {
+        void this.subscriptions.recordConversation(input.tenantId).catch((e) =>
+          this.logger.warn(`Counting the conversation failed: ${(e as Error).message}`),
+        );
+      }
+      return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`Turn failed for conversation ${input.conversationId}: ${message}`);
@@ -398,6 +406,15 @@ export class TurnRunner {
    * isn't a new acquaintance: welcome only when the bot hasn't written to this
    * customer, in any conversation, for WELCOME_AGAIN_AFTER_DAYS.
    */
+  /** Whether the bot has answered in this conversation before (a new one counts toward the plan). */
+  private async botRepliedIn(conversationId: string): Promise<boolean> {
+    const rows = await this.dataSource.query(
+      `SELECT 1 FROM messages WHERE conversation_id = $1 AND role = $2 LIMIT 1`,
+      [conversationId, MessageRole.Assistant],
+    );
+    return rows.length > 0;
+  }
+
   private async botWroteRecently(customerId: string): Promise<boolean> {
     const rows = await this.dataSource.query(
       `SELECT 1 FROM messages m JOIN conversations c ON c.id = m.conversation_id

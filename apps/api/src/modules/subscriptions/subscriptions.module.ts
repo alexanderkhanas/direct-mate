@@ -6,9 +6,10 @@ import { SubscriptionPlanConfig } from './entities/subscription-plan-config.enti
 import { SubscriptionsService } from './subscriptions.service';
 import { SubscriptionsController } from './subscriptions.controller';
 import { MonoPaymentService } from './mono-payment.service';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([SubscriptionPlan, SubscriptionUsage, SubscriptionPlanConfig])],
+  imports: [TypeOrmModule.forFeature([SubscriptionPlan, SubscriptionUsage, SubscriptionPlanConfig]), NotificationsModule],
   controllers: [SubscriptionsController],
   providers: [SubscriptionsService, MonoPaymentService],
   exports: [SubscriptionsService],

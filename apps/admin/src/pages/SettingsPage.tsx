@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Trash2, Crown, ArrowRight, Check } from 'lucide-react';
 import { api } from '../lib/api';
 import { TenantSettings } from '../types';
@@ -100,10 +100,11 @@ function SubscriptionSection() {
   const qc = useQueryClient();
 
   const { data: planData } = useQuery<{
-    plan: { planType: string; status: string; trialEndsAt: string | null; currentPeriodEnd: string | null } | null;
+    plan: { planType: string; status: string; trialEndsAt: string | null; trialStartedAt: string | null; currentPeriodEnd: string | null } | null;
     usage: { used: number; limit: number | null; percentUsed: number | null };
     planConfig: { displayName: string; price: number; conversationLimit: number | null } | null;
     trialDaysRemaining: number | null;
+    trialStarted: boolean;
   }>({
     queryKey: ['subscription-plan'],
     queryFn: () => api.get('/subscriptions/plan').then(r => r.data),
@@ -128,6 +129,16 @@ function SubscriptionSection() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['subscription-plan'] }),
   });
 
+  // Monobank sends the owner back to /settings?subscription=success after paying.
+  const [paid, setPaid] = useState(false);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('subscription') !== 'success') return;
+    setPaid(true);
+    qc.invalidateQueries({ queryKey: ['subscription-plan'] });
+    window.history.replaceState({}, '', window.location.pathname + '#subscription');
+  }, [qc]);
+
   const plan = planData?.plan;
   const usage = planData?.usage;
   const trialDays = planData?.trialDaysRemaining;
@@ -139,7 +150,12 @@ function SubscriptionSection() {
     : 'bg-gray-100 text-gray-500';
 
   return (
+    <div id="subscription">
     <Card>
+      {paid && <p className="text-sm text-emerald-700 bg-emerald-50 rounded-lg px-3 py-2 mb-4">{t('settings_ext.payment_received')}</p>}
+      {plan?.planType === 'trial' && !planData?.trialStarted && (
+        <p className="text-sm text-gray-600 bg-gray-50 rounded-lg px-3 py-2 mb-4">{t('settings_ext.trial_not_started')}</p>
+      )}
       <div className="flex items-center gap-2 mb-4">
         <Crown className="h-4 w-4 text-amber-500" />
         <h2 className="text-sm font-semibold text-gray-900">{t('settings_ext.subscription_title')}</h2>
@@ -232,6 +248,7 @@ function SubscriptionSection() {
       )}
       {cancel.isSuccess && <p className="text-xs text-gray-500 mt-1">{t('settings_ext.cancel_success')}</p>}
     </Card>
+    </div>
   );
 }
 

@@ -23,6 +23,14 @@ export class SubscriptionPlan {
   @Column({ type: 'timestamptz', nullable: true })
   trialEndsAt!: Date | null;
 
+  /** When the owner turned the bot on; null while the trial waits for go-live. */
+  @Column({ type: 'timestamptz', nullable: true })
+  trialStartedAt!: Date | null;
+
+  /** Reminders already sent (`days_3`, `days_1`, `conv_80`, `conv_100`, `expired`), so each goes once. */
+  @Column({ type: 'text', array: true, default: '{}' })
+  remindersSent!: string[];
+
   @Column({ type: 'timestamptz', nullable: true })
   currentPeriodStart!: Date | null;
 

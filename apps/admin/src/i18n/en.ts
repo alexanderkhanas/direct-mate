@@ -96,6 +96,13 @@ export const en = {
     password_too_short: 'Password must be at least 8 characters',
   },
 
+  // Plan banner
+  plan_banner: {
+    trial: 'Free trial: {days} days and {conversations} conversations left.',
+    inactive: "The bot isn't answering customers: the trial or the paid period has ended. Messages wait for your managers.",
+    choose_plan: 'Choose a plan',
+  },
+
   // Self-serve setup
   setup: {
     title: 'Set up your AI agent',
@@ -140,6 +147,7 @@ export const en = {
     ready_products: 'Products in stock',
     ready_knowledge: '«What the bot knows» filled in',
     telegram_warning: "Telegram isn't linked: when the bot hands a conversation to a manager, nobody will be notified.",
+    trial_terms: '14 days or 200 conversations free — starting now. Then from {price} UAH/month.',
     go_live: 'Turn the bot on',
     watch_first: 'Watch first',
     watch_first_desc: '«Watch first»: the bot drafts replies but doesn’t send them, and managers reply as usual.',
@@ -410,6 +418,8 @@ export const en = {
     delete_account_confirm_label: 'Type DELETE to confirm',
     delete_account_confirm: 'Permanently delete',
     delete_account_error: 'Failed to delete account. Please try again or contact support.',
+    payment_received: 'Payment received — thank you! The bot is answering customers.',
+    trial_not_started: 'Your free trial starts when you turn the bot on: 14 days or 200 conversations.',
     subscription_title: 'Subscription',
     trial_days_left: 'days left on trial',
     trial_expired: 'Trial has expired',

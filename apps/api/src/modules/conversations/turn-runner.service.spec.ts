@@ -26,6 +26,8 @@ function agentResult(over: Partial<AgentTurnResult> = {}): AgentTurnResult {
 }
 
 function setup(opts: {
+  subscriptionActive?: boolean;
+  trialHasRoom?: boolean;
   leaseFree?: boolean;
   botReplied?: boolean;
   status?: ConversationStatus;
@@ -70,6 +72,11 @@ function setup(opts: {
     notifyNewOrder: jest.fn(async () => undefined),
   };
   const traces = { persistAgentTurn: jest.fn(async () => undefined) };
+  const subscriptions = {
+    isActive: jest.fn(async () => opts.subscriptionActive ?? true),
+    hasRoomForConversation: jest.fn(async () => opts.trialHasRoom ?? true),
+    recordConversation: jest.fn(async () => undefined),
+  };
 
   const runner = new TurnRunner(
     dataSource as never,
@@ -79,7 +86,7 @@ function setup(opts: {
     { resolve: async () => ({ notes: [], messageText: '', productId: null }) } as never,
     agent as never,
     { load: async () => ({ ...SETTINGS, ...opts.settings }) } as never,
-    { isActive: async () => true } as never,
+    subscriptions as never,
     drafts as never,
     { triggerExternalSync: jest.fn() } as never,
     telegram as never,
@@ -87,7 +94,7 @@ function setup(opts: {
   );
   const run = (mode: TurnMode = 'demo') =>
     runner.run({ tenantId: 't1', conversationId: 'c1', mode, source: 'simulator_cli' });
-  return { run, queries, saved, conversations, agent, drafts, telegram, traces };
+  return { run, queries, saved, conversations, agent, drafts, telegram, traces, subscriptions };
 }
 
 describe('TurnRunner', () => {
@@ -101,6 +108,31 @@ describe('TurnRunner', () => {
     expect((await setup({ settings: { operatingMode: 'paused' } }).run()).skipReason).toBe('paused');
     expect((await setup({ status: ConversationStatus.HumanInControl }).run()).skipReason).toBe('human_in_control');
     expect((await setup({ status: ConversationStatus.HumanInControl }).run('dry_run')).status).toBe('replied');
+  });
+
+  it('goes quiet when the plan is unpaid: no reply, no handoff line, nothing the customer sees', async () => {
+    const t = setup({ subscriptionActive: false });
+    const result = await t.run('live');
+    expect(result).toMatchObject({ status: 'skipped', skipReason: 'subscription_inactive', messages: [], handoff: null });
+    expect(t.agent.runTurn).not.toHaveBeenCalled();
+    expect(t.saved).toEqual([]);
+  });
+
+  it("doesn't take on a new conversation once the trial's conversations are used up", async () => {
+    const t = setup({ trialHasRoom: false });
+    expect((await t.run('live')).skipReason).toBe('subscription_inactive');
+    expect(t.agent.runTurn).not.toHaveBeenCalled();
+  });
+
+  it('counts a conversation the bot took on live, and not demo or test ones', async () => {
+    const live = setup();
+    await live.run('live');
+    await new Promise((r) => setImmediate(r));
+    expect(live.subscriptions.recordConversation).toHaveBeenCalledWith('t1');
+
+    const demo = setup();
+    await demo.run('demo');
+    expect(demo.subscriptions.recordConversation).not.toHaveBeenCalled();
   });
 
   it('saves the products the reply was about with the reply, for later turns', async () => {

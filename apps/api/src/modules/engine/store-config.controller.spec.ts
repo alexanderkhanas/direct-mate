@@ -16,8 +16,15 @@ function setup(mode: string, missing: string[] = []) {
   const readiness = { check: jest.fn(async () => ({ ready: missing.length === 0, missing })) };
   const telegram = { notifyPlatform: jest.fn(async () => undefined) };
   const onboarding = { markCompleted: jest.fn(async () => undefined) };
-  const controller = new StoreConfigController(repo as never, readiness as never, telegram as never, onboarding as never);
-  return { controller, repo, readiness, telegram };
+  const subscriptions = { startTrial: jest.fn(async () => undefined) };
+  const controller = new StoreConfigController(
+    repo as never,
+    readiness as never,
+    telegram as never,
+    onboarding as never,
+    subscriptions as never,
+  );
+  return { controller, repo, readiness, telegram, subscriptions };
 }
 
 describe('StoreConfigController go-live', () => {
@@ -29,10 +36,11 @@ describe('StoreConfigController go-live', () => {
     expect(repo.save).not.toHaveBeenCalled();
   });
 
-  it('turns on a ready store and tells the founder', async () => {
-    const { controller, telegram } = setup('paused');
+  it('turns on a ready store, starts its free trial and tells the founder', async () => {
+    const { controller, telegram, subscriptions } = setup('paused');
     const saved = await controller.updateConfig(OWNER, { operatingMode: 'active' });
     expect(saved.operatingMode).toBe('active');
+    expect(subscriptions.startTrial).toHaveBeenCalledWith('t1');
     await new Promise((r) => setImmediate(r));
     expect(telegram.notifyPlatform).toHaveBeenCalledWith(expect.stringContaining('Alta'));
   });

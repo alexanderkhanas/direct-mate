@@ -136,6 +136,7 @@ export default function Layout() {
       {/* Main */}
       <main className="flex-1 overflow-y-auto">
         <SetupBanner />
+        <PlanBanner />
         <div className="max-w-5xl mx-auto px-8 py-8">
           <Outlet />
         </div>
@@ -206,6 +207,39 @@ function SetupBanner() {
       <Link to="/onboarding" className="font-medium underline">
         {t('setup.banner_link')}
       </Link>
+    </div>
+  );
+}
+
+/** During the trial: what's left. When the plan has lapsed: that the bot is silent, and where to pay. */
+function PlanBanner() {
+  const { t } = useT();
+  const { data } = useQuery<{
+    plan: { planType: string; status: string } | null;
+    usage: { used: number; limit: number | null };
+    trialDaysRemaining: number | null;
+    trialStarted: boolean;
+    active: boolean;
+  }>({
+    queryKey: ['subscription-plan'],
+    queryFn: () => api.get('/subscriptions/plan').then((r) => r.data),
+    staleTime: 60_000,
+  });
+  if (!data?.plan) return null;
+  if (!data.active) {
+    return (
+      <div className="bg-red-50 border-b border-red-100 px-8 py-2.5 text-sm text-red-800 flex items-center gap-3">
+        <span>{t('plan_banner.inactive')}</span>
+        <Link to="/settings#subscription" className="font-medium underline">{t('plan_banner.choose_plan')}</Link>
+      </div>
+    );
+  }
+  if (data.plan.planType !== 'trial' || !data.trialStarted) return null;
+  const left = data.usage.limit !== null ? Math.max(0, data.usage.limit - data.usage.used) : null;
+  return (
+    <div className="bg-violet-50 border-b border-violet-100 px-8 py-2 text-xs text-violet-800 flex items-center gap-3">
+      <span>{t('plan_banner.trial', { days: data.trialDaysRemaining ?? 0, conversations: left ?? '∞' })}</span>
+      <Link to="/settings#subscription" className="font-medium underline">{t('plan_banner.choose_plan')}</Link>
     </div>
   );
 }
