@@ -1,12 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import {
-  AlertCircle,
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Copy,
-} from 'lucide-react';
+import { AlertCircle, Check, ChevronDown, ChevronRight, Copy } from '../icons';
 import { api } from '../../lib/api';
 import { Card } from '../ui/Card';
 import { Badge } from '../ui/Badge';

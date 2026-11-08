@@ -6,7 +6,7 @@ import { Conversation } from '../types';
 import { Badge } from '../components/ui/Badge';
 import { LoadingState } from '../components/ui/Spinner';
 import { EmptyState } from '../components/ui/EmptyState';
-import { MessageSquare } from 'lucide-react';
+import { MessageSquare } from '../components/icons';
 import { cn } from '../lib/cn';
 import { useT } from '../i18n';
 

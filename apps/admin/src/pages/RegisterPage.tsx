@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
-import { Check, ChevronLeft, Eye, EyeOff, MessageCircle } from 'lucide-react';
+import { Check, ChevronLeft, Eye, EyeOff, MessageCircle } from '../components/icons';
 import { api } from '../lib/api';
 import { useT } from '../i18n';
 import { Alert, Field, IconButton, SetupButton, TextInput } from '../components/setup/ui';

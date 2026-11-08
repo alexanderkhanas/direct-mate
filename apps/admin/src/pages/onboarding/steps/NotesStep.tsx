@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check } from 'lucide-react';
+import { Check } from '../../../components/icons';
 import { api } from '../../../lib/api';
 import { useT } from '../../../i18n';
 import { useMediaQuery } from '../../../lib/useMediaQuery';

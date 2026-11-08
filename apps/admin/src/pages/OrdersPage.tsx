@@ -1,16 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import {
-  ShoppingCart,
-  ChevronDown,
-  ChevronUp,
-  Package,
-  User,
-  Phone,
-  MapPin,
-  Building2,
-  ExternalLink,
-} from 'lucide-react';
+import { ShoppingCart, ChevronDown, ChevronUp, Package, User, Phone, MapPin, Building2, ExternalLink } from '../components/icons';
 import { api } from '../lib/api';
 import { Order } from '../types';
 import { Card } from '../components/ui/Card';

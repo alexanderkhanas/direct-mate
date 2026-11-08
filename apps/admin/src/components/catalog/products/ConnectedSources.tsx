@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { RefreshCw } from 'lucide-react';
+import { RefreshCw } from '../../icons';
 import { useT } from '../../../i18n';
 import { usePlural } from '../../../lib/plural';
 import { cn } from '../../../lib/cn';

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, useEffect } from 'react';
-import { Plus, Trash2 } from 'lucide-react';
+import { Plus, Trash2 } from '../icons';
 import { api } from '../../lib/api';
 import { TenantSettings, ManagerExample } from '../../types';
 import { Card } from '../ui/Card';

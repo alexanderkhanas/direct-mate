@@ -1,4 +1,4 @@
-import { AlertTriangle, ChevronDown } from 'lucide-react';
+import { AlertTriangle, ChevronDown } from '../../icons';
 import { useT } from '../../../i18n';
 import { usePlural } from '../../../lib/plural';
 import type { FeedWarning, LinkSource } from './api';

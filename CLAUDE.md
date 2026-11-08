@@ -341,6 +341,8 @@ ENCRYPTION_KEY (64-char hex), INTERNAL_API_KEY, ANTHROPIC_API_KEY (Phase 6)
 - Controllers: `@UseGuards(JwtAuthGuard)`, `@CurrentUser()` decorator for tenant context
 - Services: constructor injection, `@InjectRepository()` for TypeORM repos
 - Admin pages: TanStack Query for data, Tailwind for styling, existing UI components in `components/ui/`
+- Icons: only from `components/icons.tsx` (Google Material Symbols Rounded, weight 300, imported as SVG components;
+  brand logos inline). Never import an icon library directly.
 - Setup flow (`/onboarding`, full-screen, outside `<Layout>`): the shell is `pages/onboarding/SetupShell.tsx`; each step in
   `pages/onboarding/steps/` hands its one primary action to the footer with `useSetupStep()`. Primitives (buttons,
   alerts, chips, sheets) are in `components/setup/ui.tsx`, colours are the `dm-*` Tailwind tokens, strings live in

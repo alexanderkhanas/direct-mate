@@ -1,20 +1,6 @@
 import { useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import {
-  Zap,
-  Play,
-  PlayCircle,
-  Upload,
-  ChevronDown,
-  ChevronRight,
-  CheckCircle2,
-  XCircle,
-  Loader2,
-  MessageSquare,
-  Brain,
-  Image,
-  AlertTriangle,
-} from 'lucide-react';
+import { Zap, Play, PlayCircle, Upload, ChevronDown, ChevronRight, CheckCircle2, XCircle, Loader2, MessageSquare, Brain, Image, AlertTriangle } from '../components/icons';
 import { api } from '../lib/api';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';

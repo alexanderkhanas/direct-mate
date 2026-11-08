@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Loader2, Send, Sparkle } from 'lucide-react';
+import { Loader2, Send, Sparkle } from '../../icons';
 import { useT } from '../../../i18n';
 import { cn } from '../../../lib/cn';
 import { Alert } from '../../setup/ui';

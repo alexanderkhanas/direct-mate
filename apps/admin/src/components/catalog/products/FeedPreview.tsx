@@ -1,5 +1,5 @@
 import { useId, useState } from 'react';
-import { ImageIcon, Loader2 } from 'lucide-react';
+import { ImageIcon, Loader2 } from '../../icons';
 import { useT } from '../../../i18n';
 import { usePlural } from '../../../lib/plural';
 import { cn } from '../../../lib/cn';

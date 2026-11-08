@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Package, ChevronDown, ChevronRight } from 'lucide-react';
+import { Package, ChevronDown, ChevronRight } from '../components/icons';
 import { api } from '../lib/api';
 import type { ProductRow } from '../types';
 import { Card } from '../components/ui/Card';

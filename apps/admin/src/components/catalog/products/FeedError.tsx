@@ -1,5 +1,5 @@
 import { useId, type FormEvent, type ReactNode } from 'react';
-import { Download, ExternalLink } from 'lucide-react';
+import { Download, ExternalLink } from '../../icons';
 import { useT } from '../../../i18n';
 import { Alert, TextInput, buttonClass } from '../../setup/ui';
 import { SetUpForMeButton } from '../../onboarding/SetUpForMeButton';

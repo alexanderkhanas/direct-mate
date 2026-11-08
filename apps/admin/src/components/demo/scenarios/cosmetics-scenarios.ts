@@ -1,9 +1,9 @@
 import { createElement } from 'react';
-import { Zap, Sparkles, Layers, ShieldCheck, Camera, Image as ImageIcon } from 'lucide-react';
+import { Zap, Sparkles, Layers, ShieldCheck, Camera, Image as ImageIcon } from '../../icons';
 import { Scenario } from '../types';
 
 const iconClass = 'h-3.5 w-3.5';
-const ICON_QUICK = createElement(Zap, { className: iconClass, strokeWidth: 2.5 });
+const ICON_QUICK = createElement(Zap, { className: iconClass });
 const ICON_SKIN = createElement(Sparkles, { className: iconClass });
 const ICON_VARIANT = createElement(Layers, { className: iconClass });
 const ICON_SAFETY = createElement(ShieldCheck, { className: iconClass });

@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { MessageSquare, ArrowLeft } from 'lucide-react';
+import { MessageSquare, ArrowLeft } from '../components/icons';
 
 function LegalFooter() {
   return (

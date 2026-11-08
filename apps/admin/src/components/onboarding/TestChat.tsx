@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowUp, ImagePlus, RotateCcw, X } from 'lucide-react';
+import { ArrowUp, ImagePlus, RotateCcw, X } from '../icons';
 import { api } from '../../lib/api';
 import { cn } from '../../lib/cn';
 import { useT } from '../../i18n';

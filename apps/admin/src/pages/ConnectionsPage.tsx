@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Instagram, ShoppingBag, Plug, Plus, Trash2 } from 'lucide-react';
+import { Instagram, Plug, Trash2, Shopify } from '../components/icons';
 import { api } from '../lib/api';
 import { Card } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
@@ -89,7 +89,7 @@ function ConnectShopifyForm({ onSuccess, onCancel }: { onSuccess: () => void; on
 
 function ConnectionIcon({ type }: { type: string }) {
   if (type === 'instagram') return <Instagram className="h-4 w-4 text-pink-500" />;
-  if (type === 'shopify') return <ShoppingBag className="h-4 w-4 text-green-600" />;
+  if (type === 'shopify') return <Shopify className="h-4 w-4 text-green-600" />;
   return <Plug className="h-4 w-4 text-gray-500" />;
 }
 
@@ -172,7 +172,7 @@ export default function ConnectionsPage() {
             size="sm"
             onClick={() => setShowForm(showForm === 'shopify' ? null : 'shopify')}
           >
-            <ShoppingBag className="h-4 w-4" />
+            <Shopify className="h-4 w-4" />
             {t('connections.shopify')}
           </Button>
         </div>

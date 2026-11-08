@@ -90,7 +90,7 @@ function DoneAlert({ flow }: { flow: ProductSourceFlow }) {
   );
 }
 
-/** A short «Ваш бот уже вміє»: the account, the products (fresh after an import), and the next step. */
+/** A short «Налаштовуємо AI-агента»: the account, the products (fresh after an import), and the next step. */
 function BotSkills({ flow }: { flow: ProductSourceFlow }) {
   const { t } = useT();
   const plural = usePlural();
@@ -103,15 +103,16 @@ function BotSkills({ flow }: { flow: ProductSourceFlow }) {
         <SkillRow state="done" label={t('setup_products.skill_account', { store: status.store.name })} />
         <SkillRow
           state="done"
-          label={plural(flow.products.total, 'setup_products.skill_products')}
+          label={t('setup_products.skill_products')}
+          trailing={<span className="whitespace-nowrap text-xs text-dm-muted">{plural(flow.products.total, 'setup_shell.products')}</span>}
           fresh={flow.justImported}
           freshLabel={t('setup_products.fresh')}
         />
         {knowledge &&
           (knowledge.state === 'done' ? (
-            <SkillRow state="done" label={t('setup_products.skill_knowledge_done')} />
+            <SkillRow state="done" label={t('setup_products.skill_knowledge')} />
           ) : (
-            <SkillRow state="todo" n={knowledge.n} label={t('setup_products.skill_knowledge_todo')} onClick={() => goTo('knowledge')} />
+            <SkillRow state="todo" n={knowledge.n} label={t('setup_products.skill_knowledge')} onClick={() => goTo('knowledge')} />
           ))}
       </div>
     </div>

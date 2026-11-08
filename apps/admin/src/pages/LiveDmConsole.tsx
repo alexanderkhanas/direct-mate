@@ -1,15 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import {
-  Send,
-  RotateCcw,
-  Image as ImageIcon,
-  ChevronDown,
-  ChevronRight,
-  Loader2,
-  MessageSquare,
-  X,
-} from 'lucide-react';
+import { Send, RotateCcw, Image as ImageIcon, ChevronDown, ChevronRight, Loader2, MessageSquare, X } from '../components/icons';
 import { api } from '../lib/api';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';

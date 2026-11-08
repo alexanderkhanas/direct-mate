@@ -1,4 +1,4 @@
-import { ShieldAlert, BellRing, Send, Bookmark, Copy, User } from 'lucide-react';
+import { ShieldAlert, BellRing, Send, Bookmark, Copy, User } from '../icons';
 import { DisplayedTurn } from './types';
 
 interface MessageBubbleProps {
@@ -81,16 +81,16 @@ export function MessageBubble({ turn, brandName }: MessageBubbleProps) {
           <div className="flex items-center gap-2.5">
             <div className="flex flex-col gap-2">
               <div className="w-9 h-9 rounded-full bg-gray-700/90 flex items-center justify-center">
-                <Send className="h-4 w-4 text-white" strokeWidth={2} />
+                <Send className="h-4 w-4 text-white" />
               </div>
               <div className="w-9 h-9 rounded-full bg-gray-700/90 flex items-center justify-center">
-                <Bookmark className="h-4 w-4 text-white" strokeWidth={2} />
+                <Bookmark className="h-4 w-4 text-white" />
               </div>
             </div>
             <div className="flex flex-col w-[200px] rounded-2xl overflow-hidden shadow-sm">
               <div className="bg-gray-800 px-3 py-2 flex items-center gap-2">
                 <div className="w-7 h-7 rounded-full bg-gray-600 flex items-center justify-center shrink-0">
-                  <User className="h-4 w-4 text-gray-400" strokeWidth={2} />
+                  <User className="h-4 w-4 text-gray-400" />
                 </div>
                 <span className="text-white text-[13px] font-medium truncate">
                   {brandToHandle(brandName)}
@@ -103,7 +103,7 @@ export function MessageBubble({ turn, brandName }: MessageBubbleProps) {
                   className="w-full h-full object-contain"
                   loading="lazy"
                 />
-                <Copy className="absolute top-2 right-2 h-4 w-4 text-white drop-shadow-md" strokeWidth={2.5} />
+                <Copy className="absolute top-2 right-2 h-4 w-4 text-white drop-shadow-md" />
               </div>
             </div>
           </div>

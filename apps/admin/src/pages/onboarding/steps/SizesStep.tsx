@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronRight, Plus, Ruler, Trash2 } from 'lucide-react';
+import { ChevronRight, Plus, Ruler, Trash2 } from '../../../components/icons';
 import { api } from '../../../lib/api';
 import { useT } from '../../../i18n';
 import { Alert, ChoiceCard, IconButton, SectionTitle, SetupButton, Skeleton, StepTitle, Switch } from '../../../components/setup/ui';

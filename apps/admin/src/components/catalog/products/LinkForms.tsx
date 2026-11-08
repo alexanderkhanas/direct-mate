@@ -1,5 +1,5 @@
 import { useId, type FormEvent, type ReactNode } from 'react';
-import { Download, ExternalLink } from 'lucide-react';
+import { Download, ExternalLink } from '../../icons';
 import { useT } from '../../../i18n';
 import { Field, TextInput, Tick, buttonClass } from '../../setup/ui';
 import { SHEET_CSV_TEMPLATE, SHEET_TEMPLATE_URL } from './api';

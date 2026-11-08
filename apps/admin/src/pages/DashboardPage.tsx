@@ -1,13 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import {
-  MessageSquare,
-  AlertTriangle,
-  Bot,
-  ShoppingBag,
-  TrendingUp,
-  Clock,
-} from 'lucide-react';
+import { MessageSquare, AlertTriangle, Bot, ShoppingBag, TrendingUp, Clock } from '../components/icons';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   BarChart, Bar, Cell,

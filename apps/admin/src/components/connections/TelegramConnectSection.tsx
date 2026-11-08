@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { Send, CheckCircle, ExternalLink, Trash2 } from 'lucide-react';
+import { CheckCircle, ExternalLink, Trash2, Telegram } from '../icons';
 import { api } from '../../lib/api';
 import { Card } from '../ui/Card';
 import { Badge } from '../ui/Badge';
@@ -48,7 +48,7 @@ export function TelegramConnectSection() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="h-9 w-9 rounded-lg bg-blue-50 flex items-center justify-center">
-              <Send className="h-4 w-4 text-blue-500" />
+              <Telegram className="h-4 w-4 text-blue-500" />
             </div>
             <div>
               <div className="flex items-center gap-2">
@@ -100,7 +100,7 @@ export function TelegramConnectSection() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="h-9 w-9 rounded-lg bg-blue-50 flex items-center justify-center">
-              <Send className="h-4 w-4 text-blue-500" />
+              <Telegram className="h-4 w-4 text-blue-500" />
             </div>
             <div>
               <div className="flex items-center gap-2">
@@ -132,7 +132,7 @@ export function TelegramConnectSection() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="h-9 w-9 rounded-lg bg-gray-100 flex items-center justify-center">
-            <Send className="h-4 w-4 text-gray-500" />
+            <Telegram className="h-4 w-4 text-gray-500" />
           </div>
           <div>
             <p className="text-sm font-medium text-gray-900">{t('connections.telegram')}</p>

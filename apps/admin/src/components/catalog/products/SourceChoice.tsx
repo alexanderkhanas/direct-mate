@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { ChevronRight, FileSpreadsheet, Globe, Package, Plug, RefreshCw, ShoppingBag } from 'lucide-react';
+import { ChevronRight, Globe, Package, Plug, RefreshCw, GoogleSheets, Shopify } from '../../icons';
 import { useT } from '../../../i18n';
 import { cn } from '../../../lib/cn';
 import { Badge } from '../../setup/ui';
@@ -9,9 +9,9 @@ import type { SourcePick } from './useProductSource';
 type IconKind = SourcePick | 'other' | 'catalog';
 
 const ICONS: Record<IconKind, { Icon: typeof Globe; tint: string }> = {
-  sheet: { Icon: FileSpreadsheet, tint: 'bg-dm-green-bg text-dm-green' },
+  sheet: { Icon: GoogleSheets, tint: 'bg-dm-green-bg text-dm-green' },
   feed: { Icon: Globe, tint: 'bg-dm-bubble text-dm-ink2' },
-  shopify: { Icon: ShoppingBag, tint: 'bg-dm-bubble text-dm-ink2' },
+  shopify: { Icon: Shopify, tint: 'bg-dm-bubble text-dm-ink2' },
   other: { Icon: Plug, tint: 'bg-blue-50 text-blue-600' },
   catalog: { Icon: Package, tint: 'bg-dm-bubble text-dm-ink2' },
 };

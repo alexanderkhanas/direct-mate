@@ -1,14 +1,6 @@
 import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  Upload,
-  Ruler,
-  Trash2,
-  Plus,
-  Star,
-  X,
-  Image as ImageIcon,
-} from 'lucide-react';
+import { Upload, Ruler, Trash2, Plus, Star, X, Image as ImageIcon } from '../components/icons';
 import { api } from '../lib/api';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';

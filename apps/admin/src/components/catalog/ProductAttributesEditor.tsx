@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { RefreshCw } from 'lucide-react';
+import { RefreshCw } from '../icons';
 import { api } from '../../lib/api';
 import type { ProductRow } from '../../types';
 import { Badge, Button, Input, Select } from '../ui';

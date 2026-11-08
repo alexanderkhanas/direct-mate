@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
-import { Instagram } from 'lucide-react';
+import { Instagram } from '../icons';
 import { api } from '../../lib/api';
 import { Button } from '../ui/Button';
 import { useT } from '../../i18n';

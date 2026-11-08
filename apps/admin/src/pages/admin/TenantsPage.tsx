@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Store, Instagram, ShoppingBag, Send, MessageSquare, ShoppingCart, ChevronRight } from 'lucide-react';
+import { Store, Instagram, MessageSquare, ShoppingCart, ChevronRight, Shopify, Telegram } from '../../components/icons';
 import { api } from '../../lib/api';
 import { Card } from '../../components/ui/Card';
 import { Badge } from '../../components/ui/Badge';
@@ -65,10 +65,10 @@ export default function TenantsPage() {
                       <Instagram className={`h-3.5 w-3.5 ${tenant.connections.find((c: any) => c.type === 'instagram')?.status === 'connected' ? 'text-pink-500' : 'text-gray-300'}`} />
                     )}
                     {tenant.connections?.some((c: any) => c.type === 'shopify') && (
-                      <ShoppingBag className={`h-3.5 w-3.5 ${tenant.connections.find((c: any) => c.type === 'shopify')?.status === 'connected' ? 'text-green-500' : 'text-gray-300'}`} />
+                      <Shopify className={`h-3.5 w-3.5 ${tenant.connections.find((c: any) => c.type === 'shopify')?.status === 'connected' ? 'text-green-500' : 'text-gray-300'}`} />
                     )}
                     {tenant.connections?.some((c: any) => c.type === 'telegram') && (
-                      <Send className="h-3.5 w-3.5 text-blue-500" />
+                      <Telegram className="h-3.5 w-3.5 text-blue-500" />
                     )}
                     <span className="text-xs text-gray-400">
                       {tenant.slug}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { SlidersHorizontal } from 'lucide-react';
+import { SlidersHorizontal } from '../../../components/icons';
 import { useT } from '../../../i18n';
 import { useMediaQuery } from '../../../lib/useMediaQuery';
 import { SetupButton, Sheet, StepTitle } from '../../../components/setup/ui';

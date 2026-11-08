@@ -1,4 +1,4 @@
-import { Loader2 } from 'lucide-react';
+import { Loader2 } from '../../icons';
 import { useT } from '../../../i18n';
 import { cn } from '../../../lib/cn';
 import { usePlural } from '../../../lib/plural';

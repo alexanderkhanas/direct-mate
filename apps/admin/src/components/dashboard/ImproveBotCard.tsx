@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronRight, Sparkles, X } from 'lucide-react';
+import { ChevronRight, Sparkles, X } from '../icons';
 import { useT } from '../../i18n';
 import { IconButton, Tick } from '../setup/ui';
 import { apiState, type ApiStepKey, type OnboardingStatus } from '../../pages/onboarding/steps';

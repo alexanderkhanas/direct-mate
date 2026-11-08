@@ -9,7 +9,7 @@ import {
   type TextareaHTMLAttributes,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, Check, CheckCircle2, Info, Loader2, Minus, X, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Info, Loader2, X, XCircle } from '../icons';
 import { cn } from '../../lib/cn';
 import { useT } from '../../i18n';
 
@@ -316,6 +316,27 @@ export function NewTag({ children, className }: { children: ReactNode; className
 
 // ─── Step states ────────────────────────────────────────────
 
+/**
+ * The ✓ inside ticks and checkboxes. A control mark, not an icon: drawn with a
+ * bold stroke, because a weight-300 Material glyph is too faint at 13–15 px.
+ */
+export function CheckMark({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={className}>
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+/** The – inside a skipped step's tick. */
+function MinusMark({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" aria-hidden="true" className={className}>
+      <path d="M5 12h14" />
+    </svg>
+  );
+}
+
 export type TickState = 'done' | 'now' | 'todo' | 'skip';
 
 /** The round state mark: done ✓, current and upcoming (numbered), skipped –. */
@@ -334,9 +355,9 @@ export function Tick({ state, n, size = 22, className }: { state: TickState; n?:
       )}
     >
       {state === 'done' ? (
-        <Check className="h-[13px] w-[13px]" strokeWidth={3} />
+        <CheckMark className="h-[13px] w-[13px]" />
       ) : state === 'skip' ? (
-        <Minus className="h-[13px] w-[13px]" strokeWidth={3} />
+        <MinusMark className="h-[13px] w-[13px]" />
       ) : (
         n
       )}
@@ -344,7 +365,7 @@ export function Tick({ state, n, size = 22, className }: { state: TickState; n?:
   );
 }
 
-/** One «Ваш бот уже вміє» row: a step phrased as what the bot can do; clickable when it links to its step. */
+/** One «Налаштовуємо AI-агента» row: a setup step and its state; clickable when it links to its step. */
 export function SkillRow({
   state,
   n,
@@ -478,7 +499,7 @@ export function CheckRow({
           checked ? 'border-blue-600 bg-blue-600' : 'border-dm-line2 bg-white',
         )}
       >
-        {checked && <Check className="h-[15px] w-[15px]" strokeWidth={3} />}
+        {checked && <CheckMark className="h-[15px] w-[15px]" />}
       </span>
       <span className="flex min-w-0 flex-col gap-0.5">
         <span className="text-[15px] font-medium text-dm-ink">{children}</span>

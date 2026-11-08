@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useState } from 'react';
-import { Check, ChevronDown, Info, RotateCcw } from 'lucide-react';
+import { Check, ChevronDown, Info, RotateCcw } from '../icons';
 import { useT } from '../../i18n';
 import { cn } from '../../lib/cn';
 import { usePlural } from '../../lib/plural';
@@ -10,7 +10,7 @@ import { apiState, type OwnerStepKey } from '../../pages/onboarding/steps';
 import { Avatar, TestChat, useResetTestChat, useTestChatWaiting } from './TestChat';
 import { ToneEditor } from './ToneEditor';
 
-// ─── Skills: the steps, phrased as what the bot can do (Handoff §5) ──────
+// ─── «Налаштовуємо AI-агента»: the steps as plain rows; the tick shows the state ──────
 
 const STEP_SKILLS = ['products', 'knowledge', 'sizes', 'test', 'tone', 'instagram', 'telegram'] as const;
 type StepSkill = (typeof STEP_SKILLS)[number];
@@ -32,6 +32,8 @@ interface Skill {
   label: string;
   state: TickState;
   done: boolean;
+  /** Muted detail on the right once done: «64 товари», «@handle». */
+  meta?: string;
   /** The step this row opens; none for the account row. */
   step?: OwnerStepKey;
   n?: number;
@@ -80,12 +82,11 @@ function useSkills(): Skill[] {
     present.filter((key) => apiState(status, key) === 'done'),
   );
 
-  const label = (key: StepSkill, done: boolean): string => {
-    if (!done) return t(`setup_bot.skill_${key}_todo`);
-    if (key === 'products') return plural(status.store.products.total, 'setup_bot.skill_products');
-    if (key === 'instagram' && status.store.instagram) return t('setup_bot.skill_instagram', { handle: status.store.instagram });
-    if (key === 'instagram') return t('setup_bot.skill_instagram_plain');
-    return t(`setup_bot.skill_${key}`);
+  const meta = (key: StepSkill, done: boolean): string | undefined => {
+    if (!done) return undefined;
+    if (key === 'products') return plural(status.store.products.total, 'setup_shell.products');
+    if (key === 'instagram' && status.store.instagram) return `@${status.store.instagram}`;
+    return undefined;
   };
 
   const rows = present.map((key): Skill => {
@@ -95,11 +96,13 @@ function useSkills(): Skill[] {
     const current = step === active;
     return {
       key,
-      label: label(key, done),
+      label: t(`setup_bot.skill_${key}`),
+      meta: meta(key, done),
       state: done ? 'done' : current ? 'now' : state === 'skipped' ? 'skip' : 'todo',
       done,
       step,
-      n: steps.find((s) => s.key === step)?.n,
+      // Tone and Telegram live inside steps 4 and 6: no number, or each number would show twice.
+      n: key === 'tone' || key === 'telegram' ? undefined : steps.find((s) => s.key === step)?.n,
       current,
       fresh: fresh.has(key),
     };
@@ -125,6 +128,7 @@ function SkillList({ skills, onNavigate, className }: { skills: Skill[]; onNavig
           fresh={skill.fresh}
           freshLabel={t('setup_bot.fresh')}
           current={skill.current}
+          trailing={skill.meta ? <span className="whitespace-nowrap text-xs text-dm-muted">{skill.meta}</span> : undefined}
           onClick={
             skill.step
               ? () => {
@@ -144,7 +148,6 @@ function SkillsHeading({ className }: { className?: string }) {
   return (
     <div className={cn('flex min-w-0 flex-col gap-0.5', className)}>
       <h2 className="text-[17px] font-semibold leading-[1.3] text-dm-ink">{t('setup_bot.skills_title')}</h2>
-      <span className="text-[13px] text-dm-muted">{t('setup_bot.skills_hint')}</span>
     </div>
   );
 }
@@ -235,7 +238,7 @@ function SheetHeader() {
   );
 }
 
-/** «Уже вміє 2 з 7»: chips when collapsed, the full clickable list when open. */
+/** «Готово 2 з 7»: chips when collapsed, the full clickable list when open. */
 function SkillsSummary({ skills, onNavigate }: { skills: Skill[]; onNavigate: () => void }) {
   const { t } = useT();
   const [expanded, setExpanded] = useState(false);

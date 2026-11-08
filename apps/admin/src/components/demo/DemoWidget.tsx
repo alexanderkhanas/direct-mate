@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { RotateCcw, Lightbulb, ShoppingBag } from 'lucide-react';
+import { RotateCcw, Lightbulb, ShoppingBag } from '../icons';
 import type { AxiosError } from 'axios';
 import { ScenarioChooser } from './ScenarioChooser';
 import { MessageBubble } from './MessageBubble';

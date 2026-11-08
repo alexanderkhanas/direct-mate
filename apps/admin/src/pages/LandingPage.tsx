@@ -1,18 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { analytics } from '../lib/analytics';
-import {
-  MessageSquare,
-  Image,
-  ShoppingBag,
-  BarChart3,
-  ArrowRight,
-  Bot,
-  Zap,
-  Shield,
-  Shirt,
-  Sparkles,
-} from 'lucide-react';
+import { MessageSquare, Image, ShoppingBag, BarChart3, ArrowRight, Bot, Zap, Shield, Shirt, Sparkles } from '../components/icons';
 import { useT } from '../i18n';
 import { Tabs } from '../components/ui/Tabs';
 import { getScenariosForTenant, type DemoTenantSlug } from '../components/demo/scenarios';

@@ -1,27 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  LayoutDashboard,
-  MessageSquare,
-  Plug,
-  Settings,
-  ScrollText,
-  Package,
-  LogOut,
-  GraduationCap,
-  Play,
-  ShoppingCart,
-  ImagePlus,
-  Store,
-  BarChart3,
-  Globe,
-  Ruler,
-  Menu,
-  X,
-  AlertCircle,
-  Power,
-} from 'lucide-react';
+import { LayoutDashboard, MessageSquare, Plug, Settings, ScrollText, Package, LogOut, GraduationCap, Play, ShoppingCart, ImagePlus, Store, BarChart3, Globe, Ruler, Menu, X, AlertCircle, Power } from './icons';
 import { api } from '../lib/api';
 import { cn } from '../lib/cn';
 import { usePlural } from '../lib/plural';
@@ -198,10 +178,7 @@ function SidebarBody({
                   : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50',
               )}
             >
-              <item.icon
-                className={cn('h-4 w-4', active ? 'text-gray-900' : 'text-gray-400')}
-                strokeWidth={active ? 2.5 : 2}
-              />
+              <item.icon className={cn('h-4 w-4', active ? 'text-gray-900' : 'text-gray-400')} filled={active} />
               {t(item.key)}
             </Link>
           );

@@ -1,9 +1,9 @@
 import { createElement } from 'react';
-import { Zap, Ruler, Table, UserCircle, Camera, Image as ImageIcon } from 'lucide-react';
+import { Zap, Ruler, Table, UserCircle, Camera, Image as ImageIcon } from '../../icons';
 import { Scenario } from '../types';
 
 const iconClass = 'h-3.5 w-3.5';
-const ICON_QUICK = createElement(Zap, { className: iconClass, strokeWidth: 2.5 });
+const ICON_QUICK = createElement(Zap, { className: iconClass });
 const ICON_RULER = createElement(Ruler, { className: iconClass });
 const ICON_CHART = createElement(Table, { className: iconClass });
 const ICON_HANDOFF = createElement(UserCircle, { className: iconClass });

@@ -1,5 +1,5 @@
 import type { FormEvent } from 'react';
-import { ChevronDown, Info } from 'lucide-react';
+import { ChevronDown, Info } from '../../icons';
 import { useT } from '../../../i18n';
 import { Alert, Field, TextInput } from '../../setup/ui';
 import { SetUpForMeButton } from '../../onboarding/SetUpForMeButton';

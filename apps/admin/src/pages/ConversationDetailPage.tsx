@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, AlertTriangle, MessageSquare, Activity } from 'lucide-react';
+import { ArrowLeft, AlertTriangle, MessageSquare, Activity } from '../components/icons';
 import { api } from '../lib/api';
 import { ConversationDetail } from '../types';
 import { Badge } from '../components/ui/Badge';

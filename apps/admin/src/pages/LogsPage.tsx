@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { ScrollText } from 'lucide-react';
+import { ScrollText } from '../components/icons';
 import { api } from '../lib/api';
 import { AuditLog } from '../types';
 import { Card } from '../components/ui/Card';

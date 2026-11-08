@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { Bell, ExternalLink, Loader2, Plus, Send } from 'lucide-react';
+import { Bell, ExternalLink, Loader2, Plus, Telegram } from '../../icons';
 import { api } from '../../../lib/api';
 import { cn } from '../../../lib/cn';
 import { useT } from '../../../i18n';
@@ -109,7 +109,7 @@ export function TelegramCard() {
       ) : (
         <div className="ml-12 flex flex-col items-start gap-2.5">
           <SetupButton variant="secondary" onClick={start} loading={connect.isPending} className={CARD_BUTTON}>
-            {!connect.isPending && <Send className="h-4 w-4" aria-hidden="true" />}
+            {!connect.isPending && <Telegram className="h-4 w-4" aria-hidden="true" />}
             {t('setup_launch.tg_connect')}
           </SetupButton>
           <p className="text-[13px] text-dm-amber">{t('setup_launch.tg_warning')}</p>

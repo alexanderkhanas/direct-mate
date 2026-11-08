@@ -1,17 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  Upload,
-  Image,
-  X,
-  CheckCircle2,
-  XCircle,
-  Sparkles,
-  Clock,
-  FileCheck,
-  Wand2,
-  Bot,
-} from 'lucide-react';
+import { Upload, Image, X, CheckCircle2, XCircle, Sparkles, Clock, FileCheck, Wand2, Bot } from '../components/icons';
 import { api } from '../lib/api';
 import {
   ScreenshotImportJob,

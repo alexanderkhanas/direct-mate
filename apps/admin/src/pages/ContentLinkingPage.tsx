@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ImagePlus, Link2, Unlink, Trash2, RefreshCw, Check, Image, Film, LayoutGrid, ExternalLink, Search, X, Package, Plus } from 'lucide-react';
+import { ImagePlus, Link2, Unlink, Trash2, RefreshCw, Check, Image, Film, LayoutGrid, ExternalLink, Search, X, Package, Plus } from '../components/icons';
 import { api } from '../lib/api';
 import { Card } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';

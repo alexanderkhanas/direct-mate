@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ComponentType } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ChevronDown, ChevronLeft, MessageCircle, X } from 'lucide-react';
+import { ChevronDown, ChevronLeft, MessageCircle, X } from '../../components/icons';
 import { useT } from '../../i18n';
 import { cn } from '../../lib/cn';
 import { usePlural } from '../../lib/plural';
@@ -194,7 +194,7 @@ function DesktopTopBar({ onOpenBot }: { onOpenBot: () => void }) {
   );
 }
 
-/** «Крок 2 з 6 · Навчити»: on phones it opens the steps sheet; on desktop it's a plain eyebrow. */
+/** «Крок 2 з 6 · Навчання»: on phones it opens the steps sheet; on desktop it's a plain eyebrow. */
 function StepLine({ onOpen }: { onOpen: () => void }) {
   const { t } = useT();
   const { steps, current } = useSetup();

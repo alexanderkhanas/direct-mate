@@ -1,10 +1,9 @@
 import { useEffect, useId, useState, type ReactNode } from 'react';
 import { useMutation } from '@tanstack/react-query';
-import { Check } from 'lucide-react';
 import { api } from '../../../lib/api';
 import { cn } from '../../../lib/cn';
 import { useT } from '../../../i18n';
-import { Alert, StepTitle } from '../../../components/setup/ui';
+import { Alert, StepTitle, CheckMark } from '../../../components/setup/ui';
 import { SetUpForMeButton } from '../../../components/onboarding/SetUpForMeButton';
 import { useSetup, useSetupStep } from '../SetupContext';
 import { storeInitial } from '../SetupShell';
@@ -199,7 +198,7 @@ function CheckBox({ on, className }: { on: boolean; className?: string }) {
         className,
       )}
     >
-      {on && <Check className="h-[15px] w-[15px]" strokeWidth={3} />}
+      {on && <CheckMark className="h-[15px] w-[15px]" />}
     </span>
   );
 }

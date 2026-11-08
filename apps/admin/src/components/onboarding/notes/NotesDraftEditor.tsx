@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { RotateCcw } from 'lucide-react';
+import { RotateCcw } from '../../icons';
 import { useT } from '../../../i18n';
 import { cn } from '../../../lib/cn';
 import { Field, NewTag, SetupButton, TextArea } from '../../setup/ui';

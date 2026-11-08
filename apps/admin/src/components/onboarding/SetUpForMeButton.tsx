@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { LifeBuoy } from 'lucide-react';
+import { LifeBuoy } from '../icons';
 import { api } from '../../lib/api';
 import { useT } from '../../i18n';
 import { cn } from '../../lib/cn';

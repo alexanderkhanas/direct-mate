@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link, Navigate } from 'react-router-dom';
-import { Check, ChevronRight, MessageCircle, Sparkles } from 'lucide-react';
+import { Check, ChevronRight, MessageCircle, Sparkles } from '../../components/icons';
 import { api } from '../../lib/api';
 import { useT } from '../../i18n';
 import { LoadingState } from '../../components/ui/Spinner';
@@ -57,7 +57,7 @@ export default function SuccessPage() {
             aria-label={t('setup_launch.done_medal')}
             className="grid h-[88px] w-[88px] flex-none place-items-center rounded-full bg-dm-green-bg text-dm-green-icon shadow-[0_0_0_10px_#F3FBF6,0_0_0_20px_#F9FDFA] lg:h-[104px] lg:w-[104px]"
           >
-            <Check className="h-10 w-10" strokeWidth={2.5} aria-hidden="true" />
+            <Check className="h-10 w-10" aria-hidden="true" />
           </span>
           <h1 className="mt-5 text-[26px] font-semibold leading-[1.15] tracking-[-0.015em] text-balance lg:mt-6 lg:text-[40px]">{title}</h1>
           {lead && <p className="max-w-[300px] text-[15px] text-dm-muted text-pretty lg:max-w-[560px] lg:text-lg">{lead}</p>}

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { Trash2, Crown, ArrowRight, Check } from 'lucide-react';
+import { Trash2, Crown, ArrowRight, Check } from '../components/icons';
 import { api } from '../lib/api';
 import { TenantSettings } from '../types';
 import { Card } from '../components/ui/Card';
