@@ -48,7 +48,16 @@ describe('the Sizes section', () => {
     expect(section).toContain('get_size_help');
     expect(section).toContain('100%');
     expect(section).toContain('Hand off only when they say yes');
-    expect(section).not.toContain('height and weight, unless');
+    expect(section).not.toContain("Before suggesting clothes, ask the customer's height and weight");
+  });
+
+  it("asks for the measurements the product's chart lists, then calls get_size_help again with them", () => {
+    const section = sizes(SETTINGS);
+    expect(section).toContain('call get_size_help with the product first');
+    expect(section).toContain('ask for exactly the ones get_size_help lists');
+    expect(section).toContain('not height and weight, unless it lists them');
+    expect(section).toContain('call it again with the numbers');
+    expect(section).toContain('offer both, or the larger');
   });
 
   it('collects measurements and hands off when sizes need a manager', () => {
@@ -57,10 +66,16 @@ describe('the Sizes section', () => {
     expect(section).not.toContain('get_size_help');
   });
 
-  it('asks measurements first when the store wants that', () => {
-    expect(sizes({ ...SETTINGS, sizing: { advice: 'recommend', askMeasurementsFirst: true } })).toContain(
-      "Before suggesting clothes, ask the customer's height and weight",
-    );
+  it("asks first for the measurements get_size_help lists when the store wants that, not height and weight", () => {
+    const section = sizes({ ...SETTINGS, sizing: { advice: 'recommend', askMeasurementsFirst: true } });
+    expect(section).toContain("Before suggesting clothes, ask for the customer's measurements: the ones get_size_help lists");
+    expect(section).not.toContain("ask the customer's height and weight");
+  });
+
+  it('asks height and weight first for a manager when sizes need one', () => {
+    const section = sizes({ ...SETTINGS, sizing: { advice: 'consult', askMeasurementsFirst: true } });
+    expect(section).toContain("Before suggesting clothes, ask the customer's height and weight");
+    expect(section).not.toContain('get_size_help');
   });
 });
 

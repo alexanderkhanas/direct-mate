@@ -94,7 +94,7 @@ function buildAgent(
       loadProducts: async () => [SHIRT],
     } as never,
     { search: async () => ({ ids: [SHIRT.id], total: 1 }) } as never,
-    { resolveForContext: async () => null, getBrandAndCategoryForProduct: async () => ({}), publicUrl: (p: string) => p } as never,
+    { resolveForContext: async () => null, listForTenant: async () => [], publicUrl: (p: string) => p } as never,
     { getCurrentDraft: async () => opts.draft ?? null, update: jest.fn() } as never,
     { load: async (url: string) => opts.photos?.[url] ?? null } as never,
     { flaggedCategories: async (t: string) => (opts.flagged && t.includes(opts.flagged) ? ['harassment'] : []) } as never,

@@ -96,6 +96,7 @@ import ms_visibility from '@material-symbols/svg-300/rounded/visibility.svg?reac
 import ms_visibility_off from '@material-symbols/svg-300/rounded/visibility_off.svg?react';
 import ms_wand_stars from '@material-symbols/svg-300/rounded/wand_stars.svg?react';
 import ms_warning from '@material-symbols/svg-300/rounded/warning.svg?react';
+import ms_edit from '@material-symbols/svg-300/rounded/edit.svg?react';
 
 /*
  * Every icon in the admin comes from here: Google's Material Symbols, Rounded,
@@ -231,6 +232,7 @@ export const Wand2 = material(ms_wand_stars);
 export const X = material(ms_close);
 export const XCircle = material(ms_cancel);
 export const Zap = material(ms_bolt);
+export const Pencil = material(ms_edit);
 
 // ─── Brand logos ────────────────────────────────────────────
 

@@ -6,6 +6,7 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import type { SizeChartStatus, SizeChartTable } from './size-chart-table';
 
 @Entity('size_charts')
 @Index(['tenantId'])
@@ -30,6 +31,17 @@ export class SizeChart {
 
   @Column({ type: 'boolean', default: false })
   isDefault!: boolean;
+
+  /** The chart read into data; null for an image-only chart. */
+  @Column({ type: 'jsonb', nullable: true })
+  table!: SizeChartTable | null;
+
+  @Column({ type: 'text', default: 'image' })
+  status!: SizeChartStatus;
+
+  /** Send the chart's picture to the customer with a recommendation. */
+  @Column({ type: 'boolean', default: true })
+  sendImage!: boolean;
 
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt!: Date;

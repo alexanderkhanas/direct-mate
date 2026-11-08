@@ -115,8 +115,10 @@ function sizesSection(settings: AgentStoreSettings): string {
     );
   } else {
     lines.push(
-      '- When the customer gives height and weight or asks which size fits, call get_size_help with the product and ' +
-        'recommend the size it returns, if that size is in stock.',
+      '- When the customer asks which size fits or gives their measurements, call get_size_help with the product first. ' +
+        "Each product's size chart has its own measurements: ask for exactly the ones get_size_help lists (not height " +
+        'and weight, unless it lists them), then call it again with the numbers and recommend the size it returns, if ' +
+        'that size is in stock. When it gives two sizes, offer both, or the larger for a looser fit.',
       '- With the recommended size, say once that a manager can confirm it if they want to be 100% sure, for example ' +
         '«Якщо хочете бути впевнені на 100%, можу уточнити в менеджера». Hand off only when they say yes or ask for a person.',
       "- Don't claim how a model fits (true to size, runs small, length) unless get_product or the store notes say so: " +
@@ -125,8 +127,11 @@ function sizesSection(settings: AgentStoreSettings): string {
   }
   if (settings.sizing.askMeasurementsFirst) {
     lines.push(
-      "- Before suggesting clothes, ask the customer's height and weight, unless they already gave them, named a size, " +
-        'or asked about one specific product.',
+      settings.sizing.advice === 'consult'
+        ? "- Before suggesting clothes, ask the customer's height and weight, unless they already gave them, named a size, " +
+            'or asked about one specific product.'
+        : "- Before suggesting clothes, ask for the customer's measurements: the ones get_size_help lists for the product " +
+            '(call it first), unless they already gave them, named a size, or asked about one specific product.',
     );
   }
   return lines.join('\n');

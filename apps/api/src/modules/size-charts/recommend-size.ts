@@ -1,9 +1,7 @@
 /**
  * Height/weight → size, from the numeric ranges a store keeps in
- * `flow_config.sizeChart` (size charts in `size_charts` are images only).
- *
- * Shared by the v2 agent's `get_size_help` tool and the old reply engine, so
- * both recommend the same size for the same measurements.
+ * `flow_config.sizeChart`. The agent's `get_size_help` falls back to these
+ * when no checked chart in `size_charts` covers the product (`chart-match.ts`).
  */
 
 export interface SizeRange {

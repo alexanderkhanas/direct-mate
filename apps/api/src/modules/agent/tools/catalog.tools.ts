@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { colorsMatch, findColorWords } from '../../../common/color-i18n';
 import { sortSizes } from '../../../common/format';
 import { recommendSize } from '../../size-charts/recommend-size';
+import { formatRange, matchSize, type GivenMeasurements } from '../../size-charts/chart-match';
+import type { SizeChartTable } from '../../size-charts/size-chart-table';
 import { ATTRIBUTE_VALUES, ListedAttribute } from '../../catalog/attributes/product-attributes';
 import { findSizes, normSize, sameSize } from '../catalog/catalog-format';
 import type { AgentProduct } from '../catalog/catalog-reader.service';
@@ -163,19 +165,33 @@ export function getProductTool(deps: AgentToolDeps, scope: ToolScope) {
   });
 }
 
+/** Measurements the customer gave, as get_size_help takes them: cm, weight in kg. */
+const measurementsInput = z.object({
+  chest: z.number().min(40).max(200).optional().describe('Chest or bust girth.'),
+  waist: z.number().min(30).max(200).optional().describe('Waist girth.'),
+  hips: z.number().min(40).max(200).optional().describe('Hip girth.'),
+  height: z.number().min(50).max(230).optional(),
+  weight: z.number().min(3).max(250).optional().describe('Body weight in kg.'),
+  inseam: z.number().min(20).max(130).optional().describe('Inside leg length.'),
+  foot: z.number().min(8).max(40).optional().describe('Foot length.'),
+});
+
 export function getSizeHelpTool(deps: AgentToolDeps, scope: ToolScope, settings: AgentStoreSettings) {
   return tool({
     description:
-      "Recommend a size from the customer's height and weight using this store's size ranges, and say " +
-      'whether a size chart image exists. Call it when the customer gives their height or weight or asks ' +
-      'which size fits. Pass productRef when a product is being discussed: the answer then says whether the ' +
-      'recommended size is in stock for it.',
+      "Which size fits, from the product's size chart. Call it with the product when the customer asks which " +
+      'size fits or gives measurements. Without measurements it lists the ones to ask for (the chart decides: ' +
+      'chest, waist, hips… or height and weight). Call it again with the numbers the customer gave and recommend ' +
+      'the size it returns. It also says whether that size is in stock and whether a size chart picture can be sent.',
     inputSchema: z.object({
       productRef: z.string().optional(),
+      measurements: measurementsInput
+        .optional()
+        .describe("The customer's measurements in cm (weight in kg), only the ones they gave."),
       heightCm: z.number().int().min(80).max(230).optional(),
       weightKg: z.number().int().min(20).max(250).optional(),
     }),
-    execute: async ({ productRef, heightCm, weightKg }) => {
+    execute: async ({ productRef, measurements, heightCm, weightKg }) => {
       let product: AgentProduct | undefined;
       if (productRef) {
         const resolved = await deps.catalog.resolveProductRef(scope.tenantId, productRef);
@@ -187,36 +203,69 @@ export function getSizeHelpTool(deps: AgentToolDeps, scope: ToolScope, settings:
       const inStockSizes = product
         ? sortSizes([...new Set(product.variants.filter((v) => v.available > 0 && v.size).map((v) => v.size!))])
         : undefined;
-      const chartImage = await deps.sizeCharts.resolveForContext(scope.tenantId, {
-        brand: product?.brand,
-        category: product?.category,
-      });
+      // The product's own chart: the most specific one covering it. Only a checked one gives the size (a
+      // broader checked chart never stands in for it); any chart can be sent as a picture.
+      const picked = await deps.sizeCharts.resolveForContext(scope.tenantId, product ? { productId: product.id } : {});
+      const sizeChartImage = !!picked?.sendImage;
+
+      if (picked?.status === 'ready' && picked.table?.measurements.some((m) => m.key !== 'other')) {
+        const given: GivenMeasurements = {
+          ...(heightCm ? { height: heightCm } : {}),
+          ...(weightKg ? { weight: weightKg } : {}),
+          ...measurements,
+        };
+        return { source: 'chart' as const, ...chartAnswer(picked.name, picked.table, given, product, inStockSizes, sizeChartImage) };
+      }
+      // For the trace: why the product's chart gave no size.
+      const unread =
+        picked && picked.status !== 'ready'
+          ? {
+              chartReason: `The size chart «${picked.name}» for this product is ${
+                picked.status === 'draft' ? 'read but not checked by the store yet' : 'a picture only, not read yet'
+              }, so it gives no size.`,
+            }
+          : {};
+
+      if (!product && !chart && (await deps.sizeCharts.listForTenant(scope.tenantId)).some((c) => c.status === 'ready')) {
+        return {
+          source: 'none' as const,
+          available: false,
+          sizeChartImage,
+          note: "This store's size charts depend on the product: ask which item the customer means, then call get_size_help with its productRef.",
+        };
+      }
 
       // Ranges in S–3XL say nothing about trousers in 48–58 or jeans in 30–38,
       // and letter-to-number conversions differ between brands. The answer is
       // the size the customer wears in this product's own system.
       if (chart && product && !product.variants.some((v) => Object.keys(chart).some((s) => sameSize(s, v.size)))) {
         return {
+          source: 'ranges' as const,
+          ...unread,
           available: false,
           ...(inStockSizes && { inStockSizes }),
-          sizeChartImage: !!chartImage,
+          sizeChartImage,
           note:
             "The store's height and weight ranges don't cover this product's sizes, so there is no recommendation. " +
             "Don't ask for height and weight and don't convert a letter size into these. Ask which of the sizes in " +
             'stock the customer usually wears' +
-            (chartImage ? ', and offer the size chart if they are not sure' : '') +
+            (sizeChartImage ? ', and offer the size chart if they are not sure' : '') +
             '. If they still can\'t tell, hand off with what they told you.',
         };
       }
 
       const recommended = chart && (heightCm || weightKg) ? recommendSize({ heightCm, weightKg }, chart) : null;
-      if (!chart && !chartImage) {
+      if (!chart && !sizeChartImage) {
         return {
+          source: 'none' as const,
+          ...unread,
           available: false,
           note: 'This store has no size ranges or size chart. Do not guess a size; hand off if the customer needs one.',
         };
       }
       return {
+        source: chart ? ('ranges' as const) : ('none' as const),
+        ...unread,
         available: true,
         recommendedSize: recommended,
         ...(recommended && inStockSizes && {
@@ -230,13 +279,104 @@ export function getSizeHelpTool(deps: AgentToolDeps, scope: ToolScope, settings:
             weightKg: `${r.weightMin}–${r.weightMax}`,
           })),
         }),
-        sizeChartImage: !!chartImage,
+        sizeChartImage,
         ...(!recommended && chart && !(heightCm || weightKg) && {
           note: 'Ask for height and weight to recommend a size.',
         }),
       };
     },
   });
+}
+
+/**
+ * get_size_help from a chart the owner checked: without the chart's
+ * measurements, what to ask and the chart itself; with them, the size
+ * (`chart-match.ts`), whether it's in stock, and what to say about a split
+ * or a measurement outside the size.
+ */
+function chartAnswer(
+  name: string,
+  table: SizeChartTable,
+  given: GivenMeasurements,
+  product: AgentProduct | undefined,
+  inStockSizes: string[] | undefined,
+  sizeChartImage: boolean,
+) {
+  const stock = inStockSizes ? { inStockSizes } : {};
+  const askFor = table.measurements
+    .filter((m) => m.key !== 'other')
+    .map((m) => ({ measurement: m.key, label: m.label, unit: m.unit }));
+  const labels = (keys: string[]) =>
+    keys.map((k) => table.measurements.find((m) => m.key === k)?.label ?? k).join(', ');
+
+  // A chart in 42–58 scoped onto a product sold in S–XL can't name its size.
+  const productSizes = product?.variants.map((v) => v.size).filter((s): s is string => !!s) ?? [];
+  if (productSizes.length > 0 && !productSizes.some((s) => table.rows.some((r) => sameSize(r.size, s)))) {
+    return {
+      available: false,
+      ...stock,
+      sizeChartImage,
+      note:
+        "This product's size chart is in a different size system, so there is no recommendation. Ask which of the " +
+        'sizes in stock the customer usually wears' +
+        (sizeChartImage ? ', and offer the size chart if they are not sure' : '') +
+        ". If they still can't tell, hand off with what they told you.",
+    };
+  }
+
+  const match = matchSize(table, given);
+  if (match.kind === 'none') {
+    const unused = Object.keys(given).filter((k) => !askFor.some((a) => a.measurement === k));
+    return {
+      available: true,
+      chart: { name, askFor },
+      sizes: table.rows.map((r) => ({
+        size: r.size,
+        ...Object.fromEntries(
+          table.measurements.flatMap((m) => {
+            const range = r.values[m.key];
+            return range ? [[m.key, formatRange(range)]] : [];
+          }),
+        ),
+      })),
+      ...stock,
+      sizeChartImage,
+      note:
+        (unused.length > 0 ? `This chart doesn't use ${unused.join(' or ')}. ` : '') +
+        `Ask the customer for exactly these measurements, in cm (weight in kg): ${labels(askFor.map((a) => a.measurement))}. ` +
+        'Then call get_size_help again with them.',
+    };
+  }
+  if (match.kind === 'out_of_range') {
+    return {
+      available: true,
+      chart: { name },
+      recommendedSize: null,
+      ...stock,
+      sizeChartImage,
+      note: "These measurements are outside this product's size chart. Don't name a size: say so kindly and offer to ask a manager.",
+    };
+  }
+
+  const size = match.size;
+  const inStock = inStockSizes?.some((s) => sameSize(s, size));
+  const missing = askFor.map((a) => a.measurement).filter((k) => !match.matchedOn.includes(k));
+  const notes = [
+    match.between && `The measurements are between ${match.between[0]} and ${match.between[1]}: offer both, or ${size} for a looser fit.`,
+    ...match.outside.map((o) => `${labels([o.key])} ${o.value} is outside ${size} (${formatRange(o.range)}).`),
+    missing.length > 0 && `Based on ${labels(match.matchedOn)} only; ${labels(missing)} would make it surer.`,
+    inStock === false && `${size} is out of stock for this product.`,
+  ].filter(Boolean);
+  return {
+    available: true,
+    chart: { name },
+    recommendedSize: size,
+    ...(match.between && { between: match.between }),
+    ...(inStock !== undefined && { recommendedInStock: inStock }),
+    ...stock,
+    sizeChartImage,
+    ...(notes.length > 0 && { note: notes.join(' ') }),
+  };
 }
 
 export function sendSizeChartTool(deps: AgentToolDeps, scope: ToolScope) {
@@ -247,14 +387,17 @@ export function sendSizeChartTool(deps: AgentToolDeps, scope: ToolScope) {
       'chart is chosen.',
     inputSchema: z.object({ productRef: z.string().optional() }),
     execute: async ({ productRef }) => {
-      let context: { brand?: string | null; category?: string | null } = {};
+      let context: { productId?: string } = {};
       if (productRef) {
         const resolved = await deps.catalog.resolveProductRef(scope.tenantId, productRef);
         if ('error' in resolved) return { ok: false, error: resolved.error };
-        context = await deps.sizeCharts.getBrandAndCategoryForProduct(scope.tenantId, resolved.id);
+        context = { productId: resolved.id };
       }
       const chart = await deps.sizeCharts.resolveForContext(scope.tenantId, context);
       if (!chart) return { ok: false, error: 'This store has no size chart image.' };
+      if (!chart.sendImage) {
+        return { ok: false, note: "This store doesn't send its size chart as a picture. Don't say you're sending one." };
+      }
       const staged: StagedEffect = {
         type: 'send_size_chart',
         imageUrl: deps.sizeCharts.publicUrl(chart.imagePath),

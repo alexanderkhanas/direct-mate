@@ -7,6 +7,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -14,36 +15,53 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiTags } from '@nestjs/swagger';
 import { diskStorage } from 'multer';
-import { extname, join } from 'path';
+import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import {
   CurrentUser,
   JwtPayload,
 } from '../../common/decorators/current-user.decorator';
-import { SizeChartsService } from './size-charts.service';
+import { SizeChartsService, type UpdateSizeChartDto } from './size-charts.service';
+import { SizeChartReaderService } from './size-chart-reader.service';
 
 const uploadsDir = join(process.cwd(), 'uploads');
+
+/** The extension comes from the type, not the file's name, so a saved chart always matches `uploads/<uuid>.<ext>`. */
+const EXTENSIONS: Record<string, string> = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/jpg': '.jpg',
+  'image/webp': '.webp',
+};
 
 const storage = diskStorage({
   destination: uploadsDir,
   filename: (_req, file, cb) => {
-    const unique = randomUUID();
-    const ext = extname(file.originalname);
-    cb(null, `${unique}${ext}`);
+    cb(null, `${randomUUID()}${EXTENSIONS[file.mimetype] ?? '.jpg'}`);
   },
 });
+
+/** `?brands=a,b` (or the param repeated) → ['a', 'b']. */
+function listParam(value: string | string[] | undefined): string[] {
+  const parts = Array.isArray(value) ? value : value ? [value] : [];
+  return parts.flatMap((p) => p.split(',')).map((s) => s.trim()).filter(Boolean);
+}
 
 @ApiTags('size-charts')
 @UseGuards(JwtAuthGuard)
 @ApiBearerAuth()
 @Controller('size-charts')
 export class SizeChartsController {
-  constructor(private readonly sizeChartsService: SizeChartsService) {}
+  constructor(
+    private readonly sizeChartsService: SizeChartsService,
+    private readonly reader: SizeChartReaderService,
+  ) {}
 
+  /** Every chart with `productCount`: the active products its scope covers. */
   @Get()
   list(@CurrentUser() user: JwtPayload) {
-    return this.sizeChartsService.listForTenant(user.tenantId);
+    return this.sizeChartsService.listWithCounts(user.tenantId);
   }
 
   @Get('brands')
@@ -56,14 +74,32 @@ export class SizeChartsController {
     return this.sizeChartsService.listTenantCategories(user.tenantId);
   }
 
+  /** `{ count, total }`: active products a scope would cover. Empty lists mean «all». */
+  @Get('match-count')
+  matchCount(
+    @CurrentUser() user: JwtPayload,
+    @Query('brands') brands?: string | string[],
+    @Query('categories') categories?: string | string[],
+  ) {
+    return this.sizeChartsService.matchCount(user.tenantId, {
+      brands: listParam(brands),
+      categories: listParam(categories),
+    });
+  }
+
+  /** Active products with and without a ready chart. */
+  @Get('coverage')
+  coverage(@CurrentUser() user: JwtPayload) {
+    return this.sizeChartsService.coverage(user.tenantId);
+  }
+
   @Post('upload')
   @ApiConsumes('multipart/form-data')
   @UseInterceptors(
     FileInterceptor('file', {
       storage,
       fileFilter: (_req, file, cb) => {
-        const allowed = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
-        if (!allowed.includes(file.mimetype)) {
+        if (!EXTENSIONS[file.mimetype]) {
           return cb(
             new BadRequestException(`Unsupported file type: ${file.mimetype}`),
             false,
@@ -99,18 +135,23 @@ export class SizeChartsController {
     return this.sizeChartsService.create(user.tenantId, body);
   }
 
+  /**
+   * Reads the chart's image into a table with a vision model and saves it as
+   * a draft. Synchronous; usually a few seconds. Errors carry
+   * `details.reason`: `image_missing`, `not_a_chart` or `read_failed`.
+   */
+  @Post(':id/read')
+  async read(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
+    const sizes = await this.sizeChartsService.sizesInScope(user.tenantId, id);
+    return this.reader.read(user.tenantId, id, sizes);
+  }
+
+  /** Scope, name and image as before, plus `table`, `status` (draft | ready) and `sendImage`. */
   @Patch(':id')
   update(
     @CurrentUser() user: JwtPayload,
     @Param('id') id: string,
-    @Body()
-    body: {
-      name?: string;
-      imagePath?: string;
-      categories?: string[];
-      brands?: string[];
-      isDefault?: boolean;
-    },
+    @Body() body: UpdateSizeChartDto,
   ) {
     return this.sizeChartsService.update(user.tenantId, id, body);
   }

@@ -44,6 +44,18 @@ export default () => ({
     batch: parseInt(process.env.ATTRIBUTES_WORKER_BATCH ?? '10', 10),
     backoffMinutes: parseInt(process.env.ATTRIBUTES_WORKER_BACKOFF_MIN ?? '30', 10),
   },
+  // Reads an uploaded size chart image into a table (size-charts/size-chart-reader).
+  // Needs vision; one call per chart the owner uploads.
+  sizeCharts: {
+    model: process.env.SIZE_CHART_MODEL || process.env.ATTRIBUTES_MODEL || 'gpt-6.1-terra',
+    reasoningEffort: process.env.SIZE_CHART_REASONING_EFFORT || 'low',
+  },
+  // Reads a store's recent Instagram DMs once at setup (onboarding/history).
+  // On for the API; the CLI scripts that boot AppModule turn it off, so a
+  // simulator run never spends the app's Meta budget or claims a store.
+  historyImport: {
+    workerEnabled: process.env.HISTORY_IMPORT_WORKER_ENABLED !== 'false',
+  },
   agent: {
     // v2 tool-calling agent (docs/v2-agent). The model id picks the provider;
     // a store can override it with tenant_settings.ai_settings.model.

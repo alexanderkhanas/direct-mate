@@ -27,7 +27,7 @@ interface StepLike {
 // The output keys tools use (`tools/product-shapes.ts`, `tools/order.tools.ts`).
 // A value under one of these keys, anywhere in a result, is a fact.
 const PRICE_KEYS = new Set(['price', 'maxPrice', 'regularPrice', 'lineTotal', 'total']);
-const SIZE_KEYS = new Set(['size', 'sizesInStock', 'inStockSizes', 'outOfStockSizes', 'recommendedSize']);
+const SIZE_KEYS = new Set(['size', 'sizesInStock', 'inStockSizes', 'outOfStockSizes', 'recommendedSize', 'between']);
 const COLOR_KEYS = new Set(['color', 'colorsInStock']);
 const TITLE_KEYS = new Set(['title']);
 export const PERCENT = /(\d{1,3}(?:[.,]\d)?)\s?%/g;

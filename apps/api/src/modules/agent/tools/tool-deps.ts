@@ -7,7 +7,7 @@ import type { CatalogSearch } from '../catalog/catalog-search';
 export interface AgentToolDeps {
   catalog: CatalogReader;
   search: CatalogSearch;
-  sizeCharts: Pick<SizeChartsService, 'resolveForContext' | 'getBrandAndCategoryForProduct' | 'publicUrl'>;
+  sizeCharts: Pick<SizeChartsService, 'resolveForContext' | 'listForTenant' | 'publicUrl'>;
   drafts: Pick<OrderDraftService, 'getCurrentDraft' | 'update'>;
 }
 
