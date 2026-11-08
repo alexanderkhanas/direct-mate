@@ -4,7 +4,7 @@
  * inside «Спробуйте бота» and Telegram inside «Увімкнути бота».
  */
 
-export type ApiStepKey = 'products' | 'knowledge' | 'sizes' | 'test' | 'tone' | 'instagram' | 'telegram' | 'live';
+export type ApiStepKey = 'products' | 'instagram' | 'knowledge' | 'sizes' | 'test' | 'tone' | 'telegram' | 'live';
 export type StepState = 'todo' | 'done' | 'skipped';
 
 // Mirrors apps/api/src/modules/onboarding/onboarding.service.ts.
@@ -28,12 +28,13 @@ export type StageKey = 'teach' | 'check' | 'launch';
 
 export const STAGES: StageKey[] = ['teach', 'check', 'launch'];
 
+// Instagram comes early, in «Навчання»: its history drafts the notes and the tone. The bot stays off until «live».
 const OWNER_STEPS: Array<{ key: OwnerStepKey; stage: StageKey; skippable: boolean }> = [
   { key: 'products', stage: 'teach', skippable: false },
+  { key: 'instagram', stage: 'teach', skippable: false },
   { key: 'knowledge', stage: 'teach', skippable: false },
   { key: 'sizes', stage: 'teach', skippable: true },
   { key: 'test', stage: 'check', skippable: true },
-  { key: 'instagram', stage: 'launch', skippable: false },
   { key: 'live', stage: 'launch', skippable: false },
 ];
 

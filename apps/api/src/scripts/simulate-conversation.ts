@@ -22,6 +22,7 @@
  */
 
 import 'reflect-metadata';
+import './no-background-workers';
 import { NestFactory } from '@nestjs/core';
 import { DataSource } from 'typeorm';
 import * as fs from 'fs';

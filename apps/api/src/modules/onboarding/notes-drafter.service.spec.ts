@@ -30,7 +30,7 @@ function setup(model: MockLanguageModelV4, stored: Record<string, unknown> = {})
   const writes: Array<{ sql: string; params: unknown[] }> = [];
   const query = jest.fn(async (sql: string, params: unknown[]) => {
     if (sql.includes('FROM tenants WHERE id')) return [{ name: 'Alta', business_type: 'fashion' }];
-    if (sql.includes("history_import->'facts'")) return [{ facts: null }];
+    if (sql.includes("history_import->'facts'")) return [{ facts: stored.facts ?? null }];
     if (sql.includes('SELECT o.notes_draft')) return [{ notes_draft: stored.draft ?? null, interview: stored.interview ?? null, feed_url: null }];
     writes.push({ sql, params });
     return [];
@@ -143,6 +143,72 @@ describe('NotesDrafterService', () => {
     await setup(model, { draft }).service.chat('t1', 'Все, начебто');
     const instructions = JSON.stringify(model.doGenerateCalls[0].prompt);
     expect(instructions).toMatch(/Sections still empty\\n- Контакти\\n\\n/);
+  });
+
+  it('drafts from the Instagram history facts alone and says so, grouped by section with counts', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        text(
+          JSON.stringify({
+            delivery: '- Нова Пошта, відправка за 1–2 дні.',
+            payment: '- Накладений платіж або передоплата на картку.',
+            returns: null,
+            sizes: null,
+            contacts: null,
+            other: null,
+            paymentDetails: null,
+            checkoutFields: ['fullName', 'phone', 'city', 'novaPoshtaBranch'],
+            businessHours: [{ day: 'mon', hours: '10:00-19:00' }],
+            sizingAdvice: 'recommend',
+            questions: ['Чи можна обміняти товар?'],
+          }),
+        ),
+      ],
+    });
+    const facts = [
+      { section: 'payment', text: 'Накладений платіж або передоплата на картку', count: 2 },
+      { section: 'delivery', text: 'Відправляємо Новою Поштою за 1–2 дні', count: 7 },
+      { section: 'hours', text: 'Відповідаємо з 10:00 до 19:00', count: 3 },
+      'старий формат, рядок без розділу',
+    ];
+    const { draft, messages } = await setup(model, { facts }).service.draft('t1', {});
+
+    expect(readWebsiteMock).not.toHaveBeenCalled();
+    const prompt = JSON.stringify(model.doGenerateCalls[0].prompt);
+    expect(prompt).toContain('### Delivery\\n- Відправляємо Новою Поштою за 1–2 дні (7 conversations)');
+    expect(prompt).toContain('### Working hours\\n- Відповідаємо з 10:00 до 19:00 (3 conversations)');
+    expect(prompt).not.toContain('старий формат');
+    expect(draft.businessHours).toEqual({ mon: '10:00-19:00' });
+    expect(messages[0].text).toMatch(/^Чернетку складено з ваших переписок: доставка, оплата, години роботи\. Перевірте її\./);
+    expect(messages[0].text).not.toMatch(/склала|склав/);
+    expect(messages[0].text).toContain('Чи можна обміняти товар?');
+  });
+
+  it('keeps the website as the source when there are history facts too', async () => {
+    readWebsiteMock.mockResolvedValue([{ url: 'https://alta.example/dostavka', text: 'Нова Пошта.' }]);
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        text(
+          JSON.stringify({
+            delivery: '- Нова Пошта.',
+            payment: null,
+            returns: null,
+            sizes: null,
+            contacts: null,
+            other: null,
+            paymentDetails: null,
+            checkoutFields: [],
+            businessHours: null,
+            sizingAdvice: null,
+            questions: [],
+          }),
+        ),
+      ],
+    });
+    const facts = [{ section: 'delivery', text: 'Нова Пошта', count: 1 }];
+    const { messages } = await setup(model, { facts }).service.draft('t1', { websiteUrl: 'https://alta.example' });
+    expect(JSON.stringify(model.doGenerateCalls[0].prompt)).toContain('Нова Пошта (one conversation)');
+    expect(messages[0].text).toContain('з вашого сайту: доставка');
   });
 
   it('writes the notes, checkout details and payment details into the store on save', async () => {

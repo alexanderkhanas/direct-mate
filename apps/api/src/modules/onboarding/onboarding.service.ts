@@ -67,9 +67,9 @@ interface StoreRow {
   operating_mode: string | null;
   flow_business: string | null;
   knowledge: boolean;
-  sizing_set: boolean;
+  sizing_consult: boolean;
   has_ranges: boolean;
-  size_charts: boolean;
+  ready_chart: boolean;
   telegram: boolean;
   brand_tone_prompt: string | null;
   steps_skipped: string[] | null;
@@ -103,9 +103,9 @@ export class OnboardingService {
       `SELECT t.name, t.business_type, sc.operating_mode,
               sc.flow_config->>'businessType' AS flow_business,
               length(btrim(coalesce(sc.knowledge_doc, ''))) > 0 AS knowledge,
-              coalesce(sc.flow_config ? 'sizing', false) AS sizing_set,
+              coalesce(sc.flow_config->'sizing'->>'advice' = 'consult', false) AS sizing_consult,
               coalesce(jsonb_typeof(sc.flow_config->'sizeChart') = 'object', false) AS has_ranges,
-              EXISTS (SELECT 1 FROM size_charts WHERE tenant_id = t.id) AS size_charts,
+              EXISTS (SELECT 1 FROM size_charts WHERE tenant_id = t.id AND status = 'ready') AS ready_chart,
               (coalesce(jsonb_array_length(CASE WHEN jsonb_typeof(sc.handoff_config->'telegramChatIds') = 'array'
                                                 THEN sc.handoff_config->'telegramChatIds' END), 0) > 0
                OR coalesce(sc.handoff_config->>'telegramChatId', '') <> '') AS telegram,
@@ -134,13 +134,14 @@ export class OnboardingService {
       products: !readiness.missing.includes('products'),
       knowledge: row.knowledge,
       tone: !!row.history_import?.applied || (!!tone && tone !== DEFAULT_BRAND_TONE && tone !== OLD_DEFAULT_TONE),
-      sizes: row.sizing_set || row.has_ranges || row.size_charts,
+      // A chart the bot can read, «Немає сітки» (a manager advises), or the older height/weight ranges.
+      sizes: row.ready_chart || row.sizing_consult || row.has_ranges,
       telegram: row.telegram,
       test: !!row.tested_at,
       live: row.operating_mode === 'active' || row.operating_mode === 'learning',
     };
-    // Teach, then check, then launch: the bot can be tried before Instagram is connected.
-    const keys: OnboardingStepKey[] = ['products', 'knowledge', ...(clothing ? (['sizes'] as const) : []), 'test', 'tone', 'instagram', 'telegram', 'live'];
+    // Instagram comes early: its history drafts the notes and the tone. The bot stays off until «live».
+    const keys: OnboardingStepKey[] = ['products', 'instagram', 'knowledge', ...(clothing ? (['sizes'] as const) : []), 'test', 'tone', 'telegram', 'live'];
     const skipped = new Set(row.steps_skipped ?? []);
     return {
       completed: !!row.completed_at,

@@ -5,6 +5,7 @@ import { useT } from '../../i18n';
 import { IconButton, Tick } from '../setup/ui';
 import { apiState, type ApiStepKey, type OnboardingStatus } from '../../pages/onboarding/steps';
 import { getTokenPayload } from '../../lib/auth';
+import { useHistoryImport } from '../onboarding/historyImport';
 
 /** Per store: a superadmin switching stores, or two stores in one browser, each get their own card. */
 const dismissedKey = () => `dm-improve-bot-dismissed:${getTokenPayload()?.tenantId ?? 'store'}`;
@@ -35,6 +36,10 @@ export function ImproveBotCard({ status }: { status: OnboardingStatus }) {
     const state = apiState(status, item.step);
     return state !== null && state !== 'done';
   });
+  const toneOpen = !dismissed && items.some((item) => item.step === 'tone');
+  // A tone read from the owner's chats is waiting for approval: say so on the tone row.
+  const { data: history } = useHistoryImport({ enabled: toneOpen });
+  const toneFromChats = history?.import?.status === 'done' && !history.import.applied;
   if (dismissed || items.length === 0) return null;
 
   const dismiss = () => {
@@ -67,7 +72,7 @@ export function ImproveBotCard({ status }: { status: OnboardingStatus }) {
           <li key={item.step}>
             <Link to={item.to} className="flex min-h-11 items-center gap-3 rounded-xl px-2.5 text-sm text-dm-ink transition-colors hover:bg-dm-sunken">
               <Tick state="todo" />
-              <span className="min-w-0 flex-1">{t(item.label)}</span>
+              <span className="min-w-0 flex-1">{t(item.step === 'tone' && toneFromChats ? 'setup_history.improve_tone' : item.label)}</span>
               <ChevronRight className="h-4 w-4 flex-none text-dm-faint" aria-hidden="true" />
             </Link>
           </li>

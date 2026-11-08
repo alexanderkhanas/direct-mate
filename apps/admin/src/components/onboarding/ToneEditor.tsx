@@ -1,11 +1,22 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, Plus, Trash2 } from '../icons';
+import { Check, CheckCircle2, Plus, Sparkles, Trash2 } from '../icons';
 import { api } from '../../lib/api';
+import { cn } from '../../lib/cn';
 import { useT } from '../../i18n';
 import type { ManagerExample, TenantSettings } from '../../types';
-import { Alert, Field, IconButton, SectionTitle, SetupButton, Skeleton, Suggest, TextArea } from '../setup/ui';
+import { Alert, Chip, Field, IconButton, SectionTitle, SetupButton, Skeleton, Suggest, TextArea } from '../setup/ui';
 import { useOptionalSetup } from '../../pages/onboarding/SetupContext';
+import type { OnboardingStatus } from '../../pages/onboarding/steps';
+import {
+  AGENT_EXAMPLES,
+  HISTORY_EXAMPLE_TAG,
+  HISTORY_KEY,
+  useHistoryImport,
+  type HistoryExample,
+  type HistoryImport,
+  type HistoryImportView,
+} from './historyImport';
 
 /** The quick toggles; each adds or removes its phrase (`setup_bot.tone_<key>_phrase`) in the tone text. */
 const TONE_CHIPS = ['vy', 'ty', 'short', 'emoji', 'warm', 'business'] as const;
@@ -25,7 +36,9 @@ function withoutPhrase(text: string, phrase: string): string {
  * «Як звучить бот»: the store's tone (quick toggles plus free text) and the
  * owner's example replies. Shown in the desktop panel on the test step and in
  * a sheet opened from «Тон». The tone saves with its own button, not the
- * step's primary; examples save as they're added.
+ * step's primary; examples save as they're added. When the owner's Instagram
+ * chats have been read, a «З ваших переписок» card above offers the tone and
+ * replies found there.
  */
 export function ToneEditor({
   withTitle,
@@ -85,6 +98,8 @@ export function ToneEditor({
         <p className="text-sm text-dm-muted">{t('setup_bot.tone_lead')}</p>
       )}
 
+      <FromChats />
+
       {settings.isError ? (
         <Alert tone="error" title={t('setup_bot.tone_load_failed_title')}>
           {t('setup_bot.tone_load_failed_text')}
@@ -140,6 +155,154 @@ export function ToneEditor({
         </SetupButton>
       </div>
     </div>
+  );
+}
+
+/** The «З ваших переписок» card while there's something to approve, then one line saying it was applied. */
+function FromChats() {
+  const { t } = useT();
+  const { data } = useHistoryImport();
+  const imp = data?.import;
+  if (imp?.status !== 'done') return null;
+  if (imp.applied) {
+    return (
+      <p role="status" className="flex items-center gap-2.5 rounded-[14px] border border-dm-green-line bg-dm-green-bg px-3.5 py-3 text-sm text-dm-green">
+        <CheckCircle2 className="h-5 w-5 flex-none" aria-hidden="true" />
+        {t('setup_history.tone_applied')}
+      </p>
+    );
+  }
+  return <FromChatsCard imp={imp} />;
+}
+
+/**
+ * The tone (editable), what was noticed (chips) and example replies (each can
+ * be removed) from the owner's chats. «Застосувати» makes them the store's and
+ * counts the tone step as done.
+ */
+function FromChatsCard({ imp }: { imp: HistoryImport }) {
+  const { t } = useT();
+  const qc = useQueryClient();
+  const setup = useOptionalSetup();
+  const [tone, setTone] = useState(imp.tone ?? '');
+  const [removed, setRemoved] = useState<ReadonlySet<number>>(new Set());
+  const examples = imp.examples ?? [];
+  const traits = imp.traits ?? [];
+  const kept = examples.filter((_, i) => !removed.has(i));
+  // The agent reads 8 examples and the owner's own come first, so history gets only what's left.
+  const saved = useQuery<ManagerExample[]>({
+    queryKey: ['examples'],
+    queryFn: () => api.get('/settings/examples').then((r) => r.data),
+  });
+  const own = (saved.data ?? []).filter((e) => !e.tags?.includes(HISTORY_EXAMPLE_TAG)).length;
+  const room = Math.max(0, AGENT_EXAMPLES - own);
+
+  const apply = useMutation({
+    mutationFn: (body: { tone: string; examples: HistoryExample[] }) =>
+      api.post<OnboardingStatus>('/onboarding/history/apply', body).then((r) => r.data),
+    onSuccess: (status) => {
+      qc.setQueryData(['onboarding-status'], status);
+      qc.setQueryData<HistoryImportView>(HISTORY_KEY, (old) => (old?.import ? { ...old, import: { ...old.import, applied: true } } : old));
+      void qc.invalidateQueries({ queryKey: HISTORY_KEY });
+      void qc.invalidateQueries({ queryKey: ['settings'] });
+      void qc.invalidateQueries({ queryKey: ['examples'] });
+      void setup?.refresh();
+    },
+  });
+
+  const toggle = (i: number) =>
+    setRemoved((old) => {
+      const next = new Set(old);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
+
+  return (
+    <section aria-labelledby="from-chats-title" className="flex flex-col gap-3.5 rounded-2xl border border-blue-200 bg-[#FAFCFF] p-3.5">
+      <div className="flex items-start gap-3">
+        <span className="grid h-9 w-9 flex-none place-items-center rounded-xl bg-blue-50 text-blue-600" aria-hidden="true">
+          <Sparkles className="h-5 w-5" />
+        </span>
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <h3 id="from-chats-title" className="text-[15px] font-semibold text-dm-ink">
+            {t('setup_history.tone_title')}
+          </h3>
+          <p className="text-[13px] text-dm-muted">{t('setup_history.tone_lead')}</p>
+        </div>
+      </div>
+
+      {traits.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium text-dm-ink2">{t('setup_history.tone_traits')}</span>
+          <ul className="flex flex-wrap gap-1.5">
+            {traits.map((trait) => (
+              <li key={trait}>
+                <Chip tone="accent">{trait}</Chip>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <Field label={t('setup_history.tone_label')}>
+        {({ id }) => <TextArea id={id} rows={4} value={tone} onChange={(e) => setTone(e.target.value)} />}
+      </Field>
+
+      {examples.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <span className="text-sm font-medium text-dm-ink2">{t('setup_history.tone_examples')}</span>
+          {examples.map((ex, i) => {
+            const off = removed.has(i);
+            return (
+              <div key={i} className={cn('flex flex-col gap-2 rounded-2xl border border-dm-line bg-white py-3 pl-3.5 pr-2', off && 'bg-dm-sunken')}>
+                <div className={cn('flex flex-col gap-2 pr-1.5', off && 'opacity-50')}>
+                  <div className="flex flex-col gap-0.5">
+                    <span className="text-[13px] text-dm-muted">{t('setup_bot.example_customer')}</span>
+                    <span className="whitespace-pre-wrap break-words text-[15px] text-dm-ink">{ex.customer}</span>
+                  </div>
+                  <div className="flex flex-col gap-0.5">
+                    <span className="text-[13px] text-dm-muted">{t('setup_bot.example_you')}</span>
+                    <span className="whitespace-pre-wrap break-words text-[15px] text-dm-ink">{ex.manager}</span>
+                  </div>
+                </div>
+                <div className="-my-1 flex items-center justify-between gap-2">
+                  <span className="text-[13px] text-dm-muted">{off && t('setup_history.tone_example_removed')}</span>
+                  <button
+                    type="button"
+                    onClick={() => toggle(i)}
+                    aria-label={`${t(off ? 'setup_history.tone_example_keep_label' : 'setup_history.tone_example_remove_label')} ${i + 1}`}
+                    className="inline-flex h-11 items-center rounded-xl px-2.5 text-sm font-medium text-blue-800 hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-100"
+                  >
+                    {t(off ? 'setup_history.tone_example_keep' : 'setup_history.tone_example_remove')}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+          {saved.data && kept.length > room && (
+            <p className="text-[13px] text-dm-muted">
+              {room > 0 ? t('setup_history.tone_examples_room', { n: room }) : t('setup_history.tone_examples_full')}
+            </p>
+          )}
+        </div>
+      )}
+
+      {apply.isError && (
+        <Alert tone="error" title={t('setup_history.tone_apply_failed_title')}>
+          {t('setup_history.tone_apply_failed_text')}
+        </Alert>
+      )}
+      <SetupButton
+        variant="dark"
+        block
+        onClick={() => apply.mutate({ tone: tone.trim(), examples: kept })}
+        loading={apply.isPending}
+        disabled={!tone.trim() && kept.length === 0}
+      >
+        {t('setup_history.tone_apply')}
+      </SetupButton>
+    </section>
   );
 }
 

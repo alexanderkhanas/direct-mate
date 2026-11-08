@@ -4,6 +4,8 @@ import notes from './setup/notes';
 import bot from './setup/bot';
 import launch from './setup/launch';
 import outside from './setup/outside';
+import sizes from './setup/sizes';
+import history from './setup/history';
 
 export const en = {
   // Navigation
@@ -559,27 +561,6 @@ export const en = {
     no_results: 'No results yet. Run a scenario or upload a JSON file.',
   },
 
-  size_charts: {
-    title: 'Size charts',
-    subtitle: 'Upload size chart images and link them to brands and categories. The bot sends the right chart when a customer asks.',
-    add: 'Add chart',
-    new_chart: 'New size chart',
-    edit_chart: 'Edit size chart',
-    image: 'Image',
-    name: 'Name',
-    name_placeholder: 'e.g. Zara t-shirts',
-    brands: 'Brands',
-    categories: 'Categories',
-    is_default: 'Default',
-    is_default_hint: 'used when no brand/category context is available',
-    drop_image: 'Drop an image or click to choose',
-    uploading: 'Uploading…',
-    replace: 'Replace',
-    default: 'Default',
-    empty_title: 'No charts yet',
-    empty_desc: 'Add your first size chart so the bot can send it.',
-    confirm_delete: 'Delete this size chart?',
-  },
   // Setup flow, one file per area (i18n/setup/*.ts)
   setup_shell: shell.en,
   setup_products: products.en,
@@ -587,4 +568,6 @@ export const en = {
   setup_bot: bot.en,
   setup_launch: launch.en,
   setup_outside: outside.en,
+  setup_sizes: sizes.en,
+  setup_history: history.en,
 };

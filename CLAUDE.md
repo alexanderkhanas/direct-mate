@@ -46,7 +46,8 @@ docs/v2-agent/   — The agent rework: decisions and the phase-by-phase implemen
 
 ### External services
 - **OpenAI** — the agent model (`AGENT_MODEL`, gpt-6.1-terra in use), moderation on replies
-  (omni-moderation, free), vision for photo matching, product attribute extraction, the comment screen
+  (omni-moderation, free), vision for photo matching, product attribute extraction, reading size charts,
+  the comment screen
 - **Meta** — Instagram API with Unified Login: webhooks + messaging via `graph.facebook.com/v27.0` (see below)
 - **Replicate** — CLIP image embeddings for photo matching
 - **Telegram** — handoff notifications to managers
@@ -130,7 +131,11 @@ product). Kept in that order so the long prefix stays cacheable.
 | Operating mode: `active` / `learning` / `paused` | `store_configs.operating_mode` | Settings |
 
 `AgentStoreSettingsService` reads and validates all of it (zod; a malformed value falls back to the
-default). Size charts are images in `size_charts`, picked by brand/category.
+default). Size charts (`size_charts`) are an image plus, once a vision model has read it
+(`POST /size-charts/:id/read`) and the owner has checked it, a table of sizes × measurements
+(`status` image → draft → ready). Each chart covers brands × categories (empty = all); per product
+the most specific one wins, and `get_size_help` recommends from it only when it is ready (a broader
+ready chart never stands in); otherwise from the height/weight ranges in `flow_config.sizeChart`.
 
 ## Channels
 
@@ -152,6 +157,23 @@ default). Size charts are images in `size_charts`, picked by brand/category.
   comment is saved into the commenter's DM conversation and answered as a normal agent turn, sent as one
   **private reply** (text only — photos are dropped), then a short public reply points to Direct.
 - **Learning mode:** turns run as `dry_run`; the learning observer records bot drafts next to manager replies.
+
+### Instagram history import (setup)
+- Instagram is setup step 2. With the owner's consent (a switch on that step), recent DMs are read once to draft
+  the store notes, the tone and up to 8 reply examples: `modules/onboarding/history/`. Endpoints under
+  `/onboarding/history`; state in `tenant_onboarding.history_import` (only the conclusions; raw messages, the token
+  and usernames are never stored).
+- **One app-wide queue** (a 1-minute cron, one store at a time, an advisory lock across processes): Meta's
+  message-read budget is per app, not per store. ~30 conversations × 20 messages per store. The last `x-app-usage`
+  reading and any pause live in `app_state` (`instagram_history_budget`): at 75 % or on code 4 the whole queue waits
+  an hour, with no polling. `HISTORY_IMPORT_WORKER_ENABLED` turns the cron off (the CLI scripts do). Limits and costs
+  measured: `docs/v2-agent/ig-conversation-history.md`.
+- Only replies a person wrote become examples: before the store connected, every shop reply; after, only those whose
+  mid matches a saved `manager` message (an echo). Before the analysis call, `redact.ts` removes phones (UA and
+  international), emails, cards, IBAN, Nova Poshta numbers, street addresses, participant usernames and names after a
+  greeting; a customer message with delivery data or a full name becomes «[дані для доставки]». Names written
+  elsewhere in a message can slip through, so the owner reviews the examples before «Застосувати». Notes facts feed
+  the notes draft, which the owner saves. Consent off stops a running read and clears everything drawn from it.
 
 ### Demo widget, simulator, manual API
 `modules/demo/` (debounce buffer, rate limiter, daily budget per model), `modules/testing/` (admin
@@ -258,8 +280,13 @@ mode for the side effects you want; never add `isDemo`-style flags inside the ag
 - **Promise check reads negations in the notes as offers:** a note saying «знижок немає» counts as the
   store offering discounts. Write notes without promise words, or fix `checkPromises` to skip negated
   sentences in the notes.
-- **Number-sized products** (trousers 42–58, jeans 30–38, shoes) get no size recommendation: the
-  height/weight ranges are one letter-size table per store. Per-category charts come with onboarding.
+- **Number-sized products** (trousers 42–58, jeans 30–38, shoes) get a size recommendation only from a
+  ready size chart that covers them: the height/weight ranges are one letter-size table per store.
+- **Instagram history import:** Live mode needs Advanced Access to `instagram_manage_messages` (App Review). The
+  read budget is shared by every store, so two stores connecting in the same hour may wait for the next hour.
+  Replies sent by other auto-reply tools (ManyChat and similar) look like a person's in history and can't be told
+  apart. After the store connects, a reply counts as a person's only if its echo was saved as a `manager` message.
+  Not yet run end to end against a live account.
 - **Comment private replies are text only;** the agent is told, but a staged photo is silently dropped.
 - **Live Instagram checks still pending on Unified Login:** echo `app_id`, `entry.id` shape, the
   3-message burst and manager takeover on a real account.
@@ -329,6 +356,8 @@ AGENT_MODEL, AGENT_MAX_STEPS, AGENT_TIMEOUT_MS, AGENT_REASONING_EFFORT, AGENT_TE
 AGENT_MAX_CUSTOMER_MESSAGES_PER_HOUR, AGENT_MODERATION, JUDGE_MODEL
 INSTAGRAM_DEBOUNCE_MS, INSTAGRAM_COMMENT_GATE_MODEL
 ATTRIBUTES_MODEL, ATTRIBUTES_REASONING_EFFORT, ATTRIBUTES_WORKER_ENABLED
+HISTORY_IMPORT_WORKER_ENABLED (the Instagram history import cron; default on, the CLI scripts turn it off)
+SIZE_CHART_MODEL (vision; reads uploaded size charts, defaults to ATTRIBUTES_MODEL), SIZE_CHART_REASONING_EFFORT (default low)
 TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, TELEGRAM_BOT_USERNAME
 DEMO_DEBOUNCE_MS, DEMO_MAX_MESSAGE_LENGTH, DEMO_RATE_LIMIT_SESSIONS_PER_HOUR, DEMO_BUDGET_CENTS_GPT54_MINI, DEMO_BUDGET_CENTS_GPT54
 ENCRYPTION_KEY (64-char hex), INTERNAL_API_KEY, ANTHROPIC_API_KEY (Phase 6)

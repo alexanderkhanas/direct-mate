@@ -12,12 +12,15 @@ const SKELETON: Array<{ section: 'delivery' | 'payment' | 'returns'; lines: stri
   { section: 'returns', lines: ['w-[86%]', 'w-[40%]'] },
 ];
 
+const SOURCE_LABEL = { text: 'setup_notes.your_text', website: 'setup_notes.your_website', history: 'setup_history.drafting_source' };
+const DRAFTING_TEXT = { text: 'setup_notes.drafting_text', website: 'setup_notes.drafting_website', history: 'setup_history.drafting_text' };
+
 /**
- * While the notes are drafted from pasted text or a website (board m21, up to
- * a minute): what the owner gave, one plain line about what's happening, and
- * skeleton section cards.
+ * While the notes are drafted from pasted text, a website or the owner's
+ * Instagram chats (board m21, up to a minute): what the owner gave, one plain
+ * line about what's happening, and skeleton section cards.
  */
-export function NotesDrafting({ way, source }: { way: 'text' | 'website'; source: string }) {
+export function NotesDrafting({ way, source }: { way: 'text' | 'website' | 'history'; source: string }) {
   const { t } = useT();
   const plural = usePlural();
   return (
@@ -25,10 +28,10 @@ export function NotesDrafting({ way, source }: { way: 'text' | 'website'; source
       <Card>
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center justify-between gap-3">
-            <span className="text-sm font-medium text-dm-ink2">{t(way === 'text' ? 'setup_notes.your_text' : 'setup_notes.your_website')}</span>
+            <span className="text-sm font-medium text-dm-ink2">{t(SOURCE_LABEL[way])}</span>
             {way === 'text' && <span className="text-[13px] text-dm-muted">{plural(source.length, 'setup_notes.chars')}</span>}
           </div>
-          <p className={cn('text-sm leading-normal text-dm-ink2', way === 'text' ? 'line-clamp-3 whitespace-pre-line' : 'break-all')}>{source}</p>
+          <p className={cn('text-sm leading-normal text-dm-ink2', way === 'text' ? 'line-clamp-3 whitespace-pre-line' : way === 'website' && 'break-all')}>{source}</p>
         </div>
       </Card>
 
@@ -36,7 +39,7 @@ export function NotesDrafting({ way, source }: { way: 'text' | 'website'; source
         <Loader2 className="h-5 w-5 flex-none animate-spin" aria-hidden="true" />
         <div className="flex min-w-0 flex-col gap-0.5">
           <b className="text-[15px] font-semibold">{t('setup_notes.drafting_title')}</b>
-          <p className="text-sm text-dm-ink2">{t(way === 'text' ? 'setup_notes.drafting_text' : 'setup_notes.drafting_website')}</p>
+          <p className="text-sm text-dm-ink2">{t(DRAFTING_TEXT[way])}</p>
         </div>
       </div>
 

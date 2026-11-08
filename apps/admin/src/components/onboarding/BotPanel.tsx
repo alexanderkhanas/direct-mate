@@ -12,7 +12,7 @@ import { ToneEditor } from './ToneEditor';
 
 // ─── «Налаштовуємо AI-агента»: the steps as plain rows; the tick shows the state ──────
 
-const STEP_SKILLS = ['products', 'knowledge', 'sizes', 'test', 'tone', 'instagram', 'telegram'] as const;
+const STEP_SKILLS = ['products', 'instagram', 'knowledge', 'sizes', 'test', 'tone', 'telegram'] as const;
 type StepSkill = (typeof STEP_SKILLS)[number];
 type SkillKey = 'account' | StepSkill;
 

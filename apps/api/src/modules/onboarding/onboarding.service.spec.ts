@@ -9,9 +9,9 @@ const ROW = {
   operating_mode: 'paused',
   flow_business: null,
   knowledge: true,
-  sizing_set: false,
+  sizing_consult: false,
   has_ranges: false,
-  size_charts: false,
+  ready_chart: false,
   telegram: false,
   brand_tone_prompt: DEFAULT_BRAND_TONE,
   steps_skipped: ['telegram'],
@@ -37,14 +37,14 @@ describe('OnboardingService.status', () => {
   it('reads each step from the store and keeps skips for the optional ones', async () => {
     const { svc } = service();
     const status = await svc.status('t1');
-    // Teach, check, launch: the owner tries the bot before connecting Instagram.
+    // Instagram early: its history drafts the notes and the tone.
     expect(status.steps.map((s) => [s.key, s.state, s.blocking])).toEqual([
       ['products', 'todo', true],
+      ['instagram', 'done', true],
       ['knowledge', 'done', true],
       ['sizes', 'todo', false], // a clothing store
       ['test', 'todo', false],
       ['tone', 'todo', false], // the registration default isn't a choice the owner made
-      ['instagram', 'done', true],
       ['telegram', 'skipped', false],
       ['live', 'todo', false],
     ]);
@@ -55,6 +55,14 @@ describe('OnboardingService.status', () => {
       feedUrl: 'https://alta.example/feed.xml',
       products: { total: 64, inStock: 51 },
     });
+  });
+
+  it('counts sizes done for a chart the bot can read, «Немає сітки», or the older ranges — not an image-only chart', async () => {
+    const sizes = async (row: Record<string, unknown>) => (await service(row).svc.status('t1')).steps.find((s) => s.key === 'sizes')?.state;
+    expect(await sizes({})).toBe('todo');
+    expect(await sizes({ ready_chart: true })).toBe('done');
+    expect(await sizes({ sizing_consult: true })).toBe('done');
+    expect(await sizes({ has_ranges: true })).toBe('done');
   });
 
   it('has no sizes step for a beauty store, and counts an own tone as done', async () => {

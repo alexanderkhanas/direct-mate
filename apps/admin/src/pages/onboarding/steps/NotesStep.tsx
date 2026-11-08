@@ -10,6 +10,8 @@ import { NotesStart } from '../../../components/onboarding/notes/NotesStart';
 import { NotesDrafting } from '../../../components/onboarding/notes/NotesDrafting';
 import { NotesChat } from '../../../components/onboarding/notes/NotesChat';
 import { NotesDraftEditor } from '../../../components/onboarding/notes/NotesDraftEditor';
+import { HistoryNotice } from '../../../components/onboarding/notes/HistoryNotice';
+import { factSections, historyPhase, useHistoryImport } from '../../../components/onboarding/historyImport';
 import {
   KEY_SECTIONS,
   changedKeys,
@@ -35,7 +37,8 @@ type DraftBody = Record<string, never> | { text: string } | { websiteUrl: string
 
 /**
  * «Що знає бот»: the store notes the bot answers delivery, payment and returns
- * questions from. Three ways in (interview, pasted text, website) → a draft →
+ * questions from. Three ways in (interview, pasted text, website), plus the
+ * owner's Instagram chats once they've been read → a draft →
  * a short chat with the assistant beside the editable draft → save.
  * Phones and 1024–1279 px show the chat and the draft as two tabs; ≥1280 px
  * shows them side by side.
@@ -53,9 +56,21 @@ export default function NotesStep() {
   });
   const notes = notesQuery.data;
 
+  // While the chats are being read, the start screen says so and checks back every few seconds.
+  const history = useHistoryImport({ poll: true });
+  const historyImport = history.data?.import;
+  const historySections =
+    historyPhase(historyImport) === 'done' && factSections(historyImport).length > 0
+      ? factSections(historyImport)
+          .map((s) => t(`setup_history.section_${s}`))
+          .join(', ')
+      : null;
+
   // undefined until the saved draft has been read; null means no draft yet (the start screen).
   const [draft, setDraft] = useState<NotesDraft | null | undefined>(undefined);
-  const [way, setWay] = useState<NotesWay>('interview');
+  // The chats come first once they've given something to draft from, until the owner picks another way.
+  const [picked, setPicked] = useState<NotesWay | null>(null);
+  const way: NotesWay = picked ?? (historySections ? 'history' : 'interview');
   const [text, setText] = useState('');
   const [website, setWebsite] = useState('');
   const [message, setMessage] = useState('');
@@ -158,7 +173,8 @@ export default function NotesStep() {
   });
 
   const begin = () => {
-    if (way === 'interview') start.mutate({});
+    // The drafter takes the chats' terms by itself, so the history way sends nothing.
+    if (way === 'interview' || way === 'history') start.mutate({});
     else if (way === 'text' && text.trim()) start.mutate({ text: text.trim() });
     else if (way === 'website' && website.trim()) start.mutate({ websiteUrl: withScheme(website.trim()) });
   };
@@ -208,7 +224,9 @@ export default function NotesStep() {
             primary:
               way === 'interview'
                 ? { label: t('setup_notes.start'), onClick: begin, loading: start.isPending, disabled: view === 'loading' }
-                : { label: t('setup_notes.make_draft'), onClick: begin, disabled: !(way === 'text' ? text : website).trim() },
+                : way === 'history'
+                  ? { label: t('setup_notes.make_draft'), onClick: begin, disabled: view === 'loading' }
+                  : { label: t('setup_notes.make_draft'), onClick: begin, disabled: !(way === 'text' ? text : website).trim() },
           },
   );
 
@@ -239,7 +257,10 @@ export default function NotesStep() {
     return (
       <>
         <StepTitle title={t('setup_notes.title')} />
-        <NotesDrafting way={way === 'text' ? 'text' : 'website'} source={way === 'text' ? text.trim() : withScheme(website.trim())} />
+        <NotesDrafting
+          way={way === 'text' || way === 'history' ? way : 'website'}
+          source={way === 'text' ? text.trim() : way === 'history' ? t('setup_history.way_history_desc', { sections: historySections ?? '' }) : withScheme(website.trim())}
+        />
       </>
     );
   }
@@ -248,7 +269,7 @@ export default function NotesStep() {
     return (
       <NotesStart
         way={way}
-        onWay={setWay}
+        onWay={setPicked}
         text={text}
         onText={setText}
         website={website}
@@ -256,6 +277,8 @@ export default function NotesStep() {
         onSubmit={begin}
         failed={start.isError}
         hasNotes={apiState(status, 'knowledge') === 'done'}
+        historySections={historySections}
+        notice={<HistoryNotice view={history.data} />}
       />
     );
   }

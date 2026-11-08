@@ -4,6 +4,8 @@ import notes from './setup/notes';
 import bot from './setup/bot';
 import launch from './setup/launch';
 import outside from './setup/outside';
+import sizes from './setup/sizes';
+import history from './setup/history';
 
 export const uk = {
   // Navigation
@@ -559,27 +561,6 @@ export const uk = {
     no_results: 'Результатів ще немає. Запустіть сценарій або завантажте JSON.',
   },
 
-  size_charts: {
-    title: 'Розмірні сітки',
-    subtitle: 'Завантажте зображення розмірних сіток і привʼяжіть до брендів та категорій. Бот сам надішле потрібну сітку клієнту.',
-    add: 'Додати сітку',
-    new_chart: 'Нова розмірна сітка',
-    edit_chart: 'Редагувати сітку',
-    image: 'Зображення',
-    name: 'Назва',
-    name_placeholder: 'Наприклад: Zara футболки',
-    brands: 'Бренди',
-    categories: 'Категорії',
-    is_default: 'За замовчуванням',
-    is_default_hint: 'використовується коли немає контексту бренду/категорії',
-    drop_image: 'Перетягніть зображення або натисніть для вибору',
-    uploading: 'Завантаження…',
-    replace: 'Замінити',
-    default: 'За замовчуванням',
-    empty_title: 'Жодної сітки',
-    empty_desc: 'Додайте першу розмірну сітку, щоб бот міг її надсилати.',
-    confirm_delete: 'Видалити цю розмірну сітку?',
-  },
   // Setup flow, one file per area (i18n/setup/*.ts)
   setup_shell: shell.uk,
   setup_products: products.uk,
@@ -587,4 +568,6 @@ export const uk = {
   setup_bot: bot.uk,
   setup_launch: launch.uk,
   setup_outside: outside.uk,
+  setup_sizes: sizes.uk,
+  setup_history: history.uk,
 };

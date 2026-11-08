@@ -1,10 +1,20 @@
-import { useEffect, useId, useState, type ReactNode } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { CheckCircle2, Clock, Info, Loader2, ShieldCheck } from '../../../components/icons';
 import { api } from '../../../lib/api';
 import { cn } from '../../../lib/cn';
 import { useT } from '../../../i18n';
-import { Alert, StepTitle, CheckMark } from '../../../components/setup/ui';
+import { Alert, StepTitle, CheckMark, Switch, TextLink } from '../../../components/setup/ui';
 import { SetUpForMeButton } from '../../../components/onboarding/SetUpForMeButton';
+import {
+  HISTORY_KEY,
+  factSections,
+  historyPhase,
+  useHistoryImport,
+  useStartHistoryImport,
+  type HistoryImport,
+  type HistoryImportView,
+} from '../../../components/onboarding/historyImport';
 import { useSetup, useSetupStep } from '../SetupContext';
 import { storeInitial } from '../SetupShell';
 
@@ -24,23 +34,55 @@ function reasonKey(reason: string | null): string {
 }
 
 /**
- * Instagram (boards m50, m51): what to check before the Facebook login, the
- * login itself, what went wrong when Meta sends the owner back, and the
- * connected account.
+ * Instagram (boards m50, m51), right after products: what to check before the
+ * Facebook login, whether to read recent chats (they draft the notes and the
+ * tone), the login itself, what went wrong when Meta sends the owner back, and
+ * the connected account with the reading's progress. The bot stays off until
+ * the last step; «Підключити пізніше» moves on without connecting.
  */
 export default function InstagramStep() {
   const { t } = useT();
-  const { status, oauth } = useSetup();
+  const qc = useQueryClient();
+  const { status, oauth, goNext } = useSetup();
   const connected = !status.readiness.missing.includes('instagram');
   const failed = oauth && !oauth.ok ? reasonKey(oauth.reason) : null;
 
+  const history = useHistoryImport({ poll: true });
+  const imp = history.data?.import ?? null;
+  // On by default; a choice saved earlier wins until the owner flips it here.
+  const [consentPick, setConsentPick] = useState<boolean | null>(null);
+  const consent = consentPick ?? imp?.consent ?? true;
+
   const start = useMutation({
-    mutationFn: () =>
-      api.post<{ redirectUrl: string }>('/connections/instagram/oauth/start', { returnTo: 'onboarding' }).then((r) => r.data),
+    mutationFn: async () => {
+      // Saved before the login, so the reading can start as soon as Meta sends the owner back. Only a
+      // choice that's known: one the owner made here, or the saved one (or the default) once it's loaded,
+      // never the default while that's still loading or failed to load. Not a reason to stop the login:
+      // «Прочитати переписки» asks again later.
+      if (consentPick !== null || history.isSuccess) {
+        await api.post('/onboarding/history/consent', { read: consent }).catch(() => undefined);
+      }
+      return api.post<{ redirectUrl: string }>('/connections/instagram/oauth/start', { returnTo: 'onboarding' }).then((r) => r.data);
+    },
     onSuccess: ({ redirectUrl }) => {
       window.location.href = redirectUrl;
     },
   });
+
+  const requestImport = useMutation({
+    mutationFn: () => api.post<HistoryImportView>('/onboarding/history/import').then((r) => r.data),
+    onSuccess: (view) => qc.setQueryData(HISTORY_KEY, view),
+  });
+
+  // Connected with consent and nothing asked for yet (back from Meta, or a reload): queue the reading, once.
+  const shouldRequest = connected && !!history.data?.instagramConnected && !!imp?.consent && historyPhase(imp) === 'none';
+  const requested = useRef(false);
+  const { mutate: request } = requestImport;
+  useEffect(() => {
+    if (!shouldRequest || requested.current) return;
+    requested.current = true;
+    request();
+  }, [shouldRequest, request]);
 
   // Back from Facebook via the browser's back button, Safari restores the page as it was (spinner on): reset it.
   const { reset } = start;
@@ -60,13 +102,20 @@ export default function InstagramStep() {
           // Stays busy until the browser leaves for Meta.
           loading: start.isPending || start.isSuccess,
         },
+    // The step stays to do; the go-live step sends the owner back here.
+    secondary: connected ? null : { label: t('setup_history.later'), onClick: goNext },
   });
 
   const showHelp = !connected && (failed !== null || start.isError);
+  // Connected: whether the chats are (being) read, once that's known.
+  const reads = connected ? !history.data || !!imp?.consent : consent;
 
   return (
     <>
-      <StepTitle title={t('setup.step_instagram')} lead={failed && !connected ? undefined : t('setup_launch.ig_lead')} />
+      <StepTitle
+        title={t('setup.step_instagram')}
+        lead={failed && !connected ? undefined : t(reads ? 'setup_history.ig_lead' : 'setup_history.ig_lead_no_read')}
+      />
 
       {start.isError && (
         <Alert tone="error" title={t('setup_launch.ig_error_start_title')}>
@@ -79,14 +128,28 @@ export default function InstagramStep() {
         </Alert>
       )}
 
+      <Alert tone="info" icon={<ShieldCheck className="mt-px h-5 w-5 flex-none" aria-hidden="true" />} title={t('setup_history.ig_safe')} />
+
       {connected ? (
-        <Alert tone="success" title={t('setup_launch.ig_connected')}>
-          {status.store.instagram && `@${status.store.instagram}`}
-        </Alert>
-      ) : failed === 'multiple_accounts' ? (
-        <MetaAccountsExample shop={status.store.instagram ?? status.store.name} />
+        <>
+          <Alert tone="success" title={t('setup_launch.ig_connected')}>
+            {status.store.instagram && `@${status.store.instagram}`}
+          </Alert>
+          {history.data && (
+            <ImportLine imp={imp} offerRead={historyPhase(imp) === 'none' && (!imp?.consent || requestImport.isError)} />
+          )}
+        </>
       ) : (
-        <Preflight />
+        <>
+          <div className="flex items-center gap-3 rounded-[14px] border border-dm-line bg-white p-3.5">
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <span className="text-[15px] font-medium text-dm-ink">{t('setup_history.consent_title')}</span>
+              <span className="text-sm text-dm-muted">{t('setup_history.consent_note')}</span>
+            </div>
+            <Switch checked={consent} onChange={setConsentPick} label={t('setup_history.consent_title')} />
+          </div>
+          {failed === 'multiple_accounts' ? <MetaAccountsExample shop={status.store.instagram ?? status.store.name} /> : <Preflight />}
+        </>
       )}
 
       {showHelp && (
@@ -100,6 +163,60 @@ export default function InstagramStep() {
         />
       )}
     </>
+  );
+}
+
+/**
+ * The reading's progress under the connected account, in one line. With no
+ * consent (connected before, or the switch was off), or after a failure, a
+ * link starts it (again).
+ */
+function ImportLine({ imp, offerRead }: { imp: HistoryImport | null; offerRead: boolean }) {
+  const { t } = useT();
+  const read = useStartHistoryImport();
+  const phase = historyPhase(imp);
+  const link = (
+    <div className="flex flex-col text-sm">
+      <TextLink onClick={() => read.mutate()} disabled={read.isPending} className="inline-flex min-h-11 items-center self-start">
+        {t('setup_history.read_link')}
+      </TextLink>
+      {read.isError && (
+        <p role="alert" className="text-dm-red">
+          {t('setup_history.read_failed')}
+        </p>
+      )}
+    </div>
+  );
+
+  if (phase === 'none') return offerRead ? link : null;
+
+  const sections = factSections(imp);
+  const doneKey =
+    sections.includes('delivery') && sections.includes('payment')
+      ? 'status_done_terms'
+      : sections.includes('delivery')
+        ? 'status_done_delivery'
+        : sections.includes('payment')
+          ? 'status_done_payment'
+          : 'status_done_tone';
+  const line: Record<Exclude<typeof phase, 'none'>, { icon: ReactNode; text: string }> = {
+    reading: { icon: <Loader2 className="h-5 w-5 flex-none animate-spin text-blue-600" />, text: t('setup_history.status_reading') },
+    done: { icon: <CheckCircle2 className="h-5 w-5 flex-none text-dm-green-icon" />, text: t(`setup_history.${doneKey}`) },
+    limited: { icon: <Clock className="h-5 w-5 flex-none text-dm-muted" />, text: t('setup_history.status_limited') },
+    waiting: { icon: <Clock className="h-5 w-5 flex-none text-dm-muted" />, text: t('setup_history.status_waiting') },
+    empty: { icon: <Info className="h-5 w-5 flex-none text-dm-muted" />, text: t('setup_history.status_empty') },
+    failed: { icon: <Info className="h-5 w-5 flex-none text-dm-muted" />, text: t('setup_history.status_failed') },
+  };
+  return (
+    <div className="flex flex-col gap-1">
+      <p role="status" className="flex items-start gap-2.5 text-[15px] text-dm-ink2">
+        <span aria-hidden="true" className="mt-px">
+          {line[phase].icon}
+        </span>
+        {line[phase].text}
+      </p>
+      {phase === 'failed' && link}
+    </div>
   );
 }
 

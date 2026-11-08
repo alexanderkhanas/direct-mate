@@ -1,7 +1,6 @@
 // Setup strings: launch (Instagram, turning the bot on, the success screen, sign-up). `en` must have the same keys as `uk`.
 const uk = {
   // Instagram step
-  ig_lead: 'Підключіть акаунт, у якому відповідатиме бот. Він нікому не напише, доки ви не увімкнете його на наступному кроці.',
   ig_check_title: 'Перед входом перевірте',
   ig_check_professional: 'Акаунт професійний — бізнес або автор',
   ig_check_professional_how: 'Instagram → Налаштування → Тип акаунта та інструменти → Перейти на професійний акаунт. Займає хвилину.',
@@ -106,7 +105,6 @@ const uk = {
 
 const en: typeof uk = {
   // Instagram step
-  ig_lead: "Connect the account the bot will answer in. It won't message anyone until you turn it on in the next step.",
   ig_check_title: 'Before you sign in, check',
   ig_check_professional: 'The account is professional: business or creator',
   ig_check_professional_how: 'Instagram → Settings → Account type and tools → Switch to professional account. Takes a minute.',

@@ -33,8 +33,8 @@ export interface NotesState {
   websiteUrl: string | null;
 }
 
-/** How the owner gives the assistant what it needs. */
-export type NotesWay = 'interview' | 'text' | 'website';
+/** How the owner gives the assistant what it needs; `history` = the terms found in their Instagram chats. */
+export type NotesWay = 'interview' | 'text' | 'website' | 'history';
 
 /** A part of the draft that can show «щойно оновлено». */
 export type FreshKey = NoteSection | 'paymentDetails';

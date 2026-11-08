@@ -5,6 +5,7 @@ import { generateText, isStepCount, Output, tool, type ModelMessage } from 'ai';
 import { z } from 'zod';
 import { AgentModelFactory } from '../agent/model.factory';
 import { readWebsite, type WebsitePage } from './website-reader';
+import type { HistoryFact, HistoryFactSection } from './history/history-import.types';
 import {
   CHECKOUT_FIELDS,
   emptyDraft,
@@ -16,10 +17,11 @@ import {
   type NotesDraft,
 } from './store-notes';
 
-const DRAFT_INSTRUCTIONS = `You prepare the store notes an AI sales assistant answers customers from, for a small Ukrainian shop that sells on Instagram. The sources are the shop's own website pages, text the owner pasted (what they already send customers), and facts its managers wrote in chats; nothing else.
+const DRAFT_INSTRUCTIONS = `You prepare the store notes an AI sales assistant answers customers from, for a small Ukrainian shop that sells on Instagram. The sources are the shop's own website pages, text the owner pasted (what they already send customers), and facts its managers told customers in Instagram chats; nothing else.
 
 Rules:
 - Use only what the sources state. Never invent carriers, timings, prices, conditions, bank details or hours. If a source is vague, write what it says and add a question.
+- Chat facts come with how many conversations said them: one said more often is more likely true today. When chat facts disagree, write the more frequent one and ask the owner about the difference.
 - Write each section in Ukrainian as 2–6 short bullet lines ("- …"): plain facts a manager would tell a customer, no marketing.
 - delivery: carriers (Нова Пошта, Укрпошта…), how fast orders ship, who pays for delivery, any free-delivery threshold.
 - payment: ways to pay (накладений платіж, передоплата на картку, оплата онлайн), whether prepayment is required.
@@ -30,7 +32,7 @@ Rules:
 - Leave a section null when the sources say nothing about it.
 - paymentDetails: the exact bank details for card prepayment (recipient, IBAN or card number) only when a source states them; otherwise null.
 - checkoutFields: fullName, phone, city, novaPoshtaBranch unless the shop clearly doesn't ship by Nova Poshta; add paymentMethod when the shop offers more than one way to pay.
-- businessHours: when managers answer, per day, only if stated.
+- businessHours: when managers answer, per day, only if stated (the chats' working-hours facts count).
 - sizingAdvice: "recommend" for a clothing shop with standard sizes, otherwise null.
 - questions: up to 6 short questions in Ukrainian, to the owner, about what customers will ask that the sources don't answer — who pays for delivery, how fast orders ship, prepayment, the return period, bank details when card prepayment is offered without them, working hours. Plain and specific.`;
 
@@ -112,8 +114,9 @@ export class NotesDrafterService {
 
   /**
    * Draft the notes from what the owner gave (their website, or text they
-   * already send customers; neither for the short interview) and open the
-   * chat with the questions left.
+   * already send customers; neither for the short interview) plus the terms
+   * the Instagram history import found in their chats, and open the chat with
+   * the questions left.
    */
   async draft(
     tenantId: string,
@@ -129,7 +132,7 @@ export class NotesDrafterService {
       const sources = [
         ...pages.map((p) => `## Page: ${p.url}\n${p.text}`),
         ...(pasted ? [`## Text the shop already sends customers\n${pasted}`] : []),
-        ...(facts.length > 0 ? [`## What the shop's managers told customers in chats\n${facts.map((f) => `- ${f}`).join('\n')}`] : []),
+        ...(facts.length > 0 ? [renderFacts(facts)] : []),
       ].join('\n\n');
       const resolved = this.models.resolve({});
       const result = await generateText({
@@ -146,7 +149,7 @@ export class NotesDrafterService {
       draft.sizingAdvice = shop.businessType === 'fashion' ? 'recommend' : null;
     }
 
-    const from = pages.length > 0 ? 'website' : pasted ? 'text' : null;
+    const from = pages.length > 0 ? 'website' : pasted ? 'text' : facts.length > 0 ? 'history' : null;
     // Nothing was drafted because the site couldn't be read (not because the draft came from chat history).
     const unreadSite = !!source.websiteUrl && pages.length === 0 && !pasted && facts.length === 0;
     const messages: InterviewMessage[] = [{ role: 'assistant', text: opening(draft, from, unreadSite) }];
@@ -281,14 +284,44 @@ export class NotesDrafterService {
     return { name: row?.name ?? '', businessType: row?.business_type ?? 'fashion' };
   }
 
-  /** Facts the Instagram history import found (delivery, payment, returns statements), if it has run. */
-  private async historyFacts(tenantId: string): Promise<string[]> {
+  /** The shop's terms the Instagram history import found in its chats, if it has run and the owner still agrees. */
+  private async historyFacts(tenantId: string): Promise<HistoryFact[]> {
     const [row]: Array<{ facts: unknown }> = await this.dataSource.query(
-      `SELECT history_import->'facts' AS facts FROM tenant_onboarding WHERE tenant_id = $1`,
+      `SELECT CASE WHEN history_import->>'consent' = 'true' THEN history_import->'facts' END AS facts
+         FROM tenant_onboarding WHERE tenant_id = $1`,
       [tenantId],
     );
-    return Array.isArray(row?.facts) ? row.facts.filter((f): f is string => typeof f === 'string').slice(0, 30) : [];
+    if (!Array.isArray(row?.facts)) return [];
+    return row.facts
+      .filter(
+        (f): f is HistoryFact =>
+          !!f && typeof f === 'object' && FACT_SECTIONS.includes(f.section) && typeof f.text === 'string' && !!f.text.trim(),
+      )
+      .map((f) => ({ section: f.section, text: f.text.trim(), count: typeof f.count === 'number' && f.count > 0 ? f.count : 1 }))
+      .slice(0, 30);
   }
+}
+
+const FACT_SECTIONS: readonly HistoryFactSection[] = ['delivery', 'payment', 'returns', 'contacts', 'hours'];
+
+const FACT_HEADING: Record<HistoryFactSection, string> = {
+  delivery: 'Delivery',
+  payment: 'Payment',
+  returns: 'Returns and exchange',
+  contacts: 'Contacts',
+  hours: 'Working hours',
+};
+
+/** The chat facts for the draft prompt, grouped by section, each with how many conversations said it. */
+function renderFacts(facts: HistoryFact[]): string {
+  const groups = FACT_SECTIONS.map((section) => {
+    const lines = facts
+      .filter((f) => f.section === section)
+      .sort((a, b) => b.count - a.count)
+      .map((f) => `- ${f.text} (${f.count === 1 ? 'one conversation' : `${f.count} conversations`})`);
+    return lines.length > 0 ? `### ${FACT_HEADING[section]}\n${lines.join('\n')}` : null;
+  }).filter(Boolean);
+  return `## What the shop's managers told customers in Instagram chats\n${groups.join('\n\n')}`;
 }
 
 const DEFAULT_QUESTIONS = [
@@ -314,13 +347,16 @@ function fromModel(out: z.infer<typeof draftSchema>, sources: string[]): NotesDr
 }
 
 /** The chat's first message, without a model call: what was found and the first questions. */
-function opening(draft: NotesDraft, from: 'website' | 'text' | null, unreadSite = false): string {
+function opening(draft: NotesDraft, from: 'website' | 'text' | 'history' | null, unreadSite = false): string {
   const found = NOTE_SECTIONS.filter((s) => draft.sections[s]).map((s) => SECTION_TITLE[s].toLowerCase());
-  const where = from === 'website' ? 'вашого сайту' : 'вашого тексту';
+  // Working hours aren't a notes section, but the chats are where they're usually found.
+  if (from === 'history' && draft.businessHours && Object.keys(draft.businessHours).length > 0) found.push('години роботи');
+  const where = { website: 'вашого сайту', text: 'вашого тексту', history: 'ваших переписок' };
+  const nothing = { website: 'На сайті', text: 'У тексті', history: 'У переписках' };
   const intro = from
     ? found.length > 0
-      ? `Чернетку складено з ${where}: ${found.join(', ')}. Перевірте її.`
-      : `${from === 'website' ? 'На сайті' : 'У тексті'} немає умов доставки й оплати, тож спитаю вас.`
+      ? `Чернетку складено з ${where[from]}: ${found.join(', ')}. Перевірте її.`
+      : `${nothing[from]} немає умов доставки й оплати, тож спитаю вас.`
     : unreadSite
       ? 'Не вдалося відкрити ваш сайт, тож спитаю вас — це кілька коротких питань.'
       : 'Розкажіть кілька речей про магазин — я запишу їх для бота.';
