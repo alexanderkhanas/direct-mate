@@ -318,19 +318,22 @@ export default function NotesStep() {
   );
 }
 
-/** Which of the key sections are filled: an ok chip for each, one «Бракує: …» chip for the rest. */
+/** The key sections in a fixed order: green with a tick once filled, grey while still empty. */
 function Coverage({ sections }: { sections: NotesDraft['sections'] }) {
   const { t } = useT();
-  const missing = KEY_SECTIONS.filter((s) => !filled(sections[s]));
   return (
     <div className="flex flex-wrap gap-1.5 lg:gap-2">
-      {KEY_SECTIONS.filter((s) => filled(sections[s])).map((s) => (
-        <Chip key={s} tone="ok" icon={<Check className="h-4 w-4" aria-hidden="true" />}>
-          {t(`setup_notes.chip_${s}`)}
-        </Chip>
-      ))}
-      {missing.length > 0 && (
-        <Chip tone="miss">{t('setup_notes.missing', { list: missing.map((s) => t(`setup_notes.miss_${s}`)).join(', ') })}</Chip>
+      {KEY_SECTIONS.map((s) =>
+        filled(sections[s]) ? (
+          <Chip key={s} tone="ok" icon={<Check className="h-4 w-4" aria-hidden="true" />}>
+            {t(`setup_notes.chip_${s}`)}
+          </Chip>
+        ) : (
+          <Chip key={s} tone="muted">
+            {t(`setup_notes.chip_${s}`)}
+            <span className="sr-only">, {t('setup_notes.chip_empty')}</span>
+          </Chip>
+        ),
       )}
     </div>
   );

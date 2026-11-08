@@ -8,6 +8,7 @@ import { readWebsite, type WebsitePage } from './website-reader';
 import {
   CHECKOUT_FIELDS,
   emptyDraft,
+  KEY_SECTIONS,
   NOTE_SECTIONS,
   renderKnowledgeDoc,
   SECTION_TITLE,
@@ -50,8 +51,10 @@ const draftSchema = z.object({
 const interviewInstructions = (shop: string, draft: NotesDraft) => `You help the owner of «${shop}» finish the notes their AI sales assistant answers customers from.
 
 - Write in Ukrainian, warmly and briefly. Ask at most two questions per message, the most important unknowns first (delivery and payment before anything else).
+- You have no gender. Never use gendered past-tense forms about yourself (not «записала» / «записав», «зрозуміла» / «зрозумів»); use impersonal forms: «Записано», «Додано в «Доставку»», «Зрозуміло».
 - When the owner tells you something, record it straight away with the tools: update_section with the whole new text of that section (keep what was already right), set_payment_details with the exact details they give, set_business_hours, set_checkout_fields, set_sizing. Then ask the next question.
 - Never write anything the owner didn't say. Don't ask about what the notes already cover.
+- Ask about every section listed under «Sections still empty» before you call finish. If the owner says there's nothing for one (no phone or shop address, no returns), record exactly that in the section, e.g. «- Зв'язок лише через Direct в Instagram.», so it isn't empty any more.
 - When nothing important is left, call finish and tell the owner to check the draft and press «Зберегти і далі».
 
 ## Current notes
@@ -61,8 +64,16 @@ Payment details for card prepayment: ${draft.paymentDetails ?? '(none)'}
 Asked at checkout: ${draft.checkoutFields.join(', ')}
 Working hours: ${draft.businessHours ? Object.entries(draft.businessHours).map(([d, h]) => `${d} ${h}`).join(', ') : '(unknown)'}
 
+## Sections still empty
+${emptyKeySections(draft).map((s) => `- ${SECTION_TITLE[s]}`).join('\n') || '(none)'}
+
 ## Still unknown
 ${draft.questions.length > 0 ? draft.questions.map((q) => `- ${q}`).join('\n') : '(nothing listed)'}`;
+
+/** The key sections (the chips the owner sees) with nothing in them yet. */
+function emptyKeySections(draft: NotesDraft) {
+  return KEY_SECTIONS.filter((s) => !draft.sections[s]?.trim());
+}
 
 export interface InterviewMessage {
   role: 'owner' | 'assistant';
@@ -215,7 +226,7 @@ export class NotesDrafterService {
       providerOptions: resolved.providerOptions,
       maxRetries: 2,
     });
-    const reply = result.text.trim() || 'Записала. Перевірте чернетку й натисніть «Зберегти і далі».';
+    const reply = result.text.trim() || 'Записано. Перевірте чернетку й натисніть «Зберегти і далі».';
     const messages: InterviewMessage[] = [...current.messages, { role: 'owner', text: message }, { role: 'assistant', text: reply }];
     await this.save(tenantId, draft, messages);
     return { reply, draft, messages, finished };
@@ -285,6 +296,7 @@ const DEFAULT_QUESTIONS = [
   'Хто оплачує доставку — ви чи покупець? Чи є безкоштовна доставка від певної суми?',
   'Як можна оплатити: накладений платіж, передоплата на картку? Якщо передоплата — які реквізити надсилати?',
   'Чи можна обміняти або повернути товар, і протягом скількох днів?',
+  'Як клієнтам з вами зв\'язатися, крім Direct: телефон, адреса магазину? Якщо лише через Instagram — так і напишіть.',
 ];
 
 function fromModel(out: z.infer<typeof draftSchema>, sources: string[]): NotesDraft {
@@ -307,8 +319,8 @@ function opening(draft: NotesDraft, from: 'website' | 'text' | null, unreadSite 
   const where = from === 'website' ? 'вашого сайту' : 'вашого тексту';
   const intro = from
     ? found.length > 0
-      ? `Я склала чернетку з ${where}: ${found.join(', ')}. Перевірте її в чернетці.`
-      : `${from === 'website' ? 'На сайті' : 'У тексті'} я не знайшла умов доставки й оплати, тож спитаю вас.`
+      ? `Чернетку складено з ${where}: ${found.join(', ')}. Перевірте її.`
+      : `${from === 'website' ? 'На сайті' : 'У тексті'} немає умов доставки й оплати, тож спитаю вас.`
     : unreadSite
       ? 'Не вдалося відкрити ваш сайт, тож спитаю вас — це кілька коротких питань.'
       : 'Розкажіть кілька речей про магазин — я запишу їх для бота.';

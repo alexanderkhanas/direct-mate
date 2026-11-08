@@ -8,6 +8,9 @@
 export const NOTE_SECTIONS = ['delivery', 'payment', 'returns', 'sizes', 'contacts', 'other'] as const;
 export type NoteSection = (typeof NOTE_SECTIONS)[number];
 
+/** The sections every store should have; setup shows a chip for each (admin: notes/draft.ts KEY_SECTIONS). */
+export const KEY_SECTIONS: readonly NoteSection[] = ['delivery', 'payment', 'returns', 'contacts'];
+
 export const SECTION_TITLE: Record<NoteSection, string> = {
   delivery: 'Доставка',
   payment: 'Оплата',

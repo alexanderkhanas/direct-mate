@@ -2,6 +2,8 @@ import {
   forwardRef,
   useEffect,
   useId,
+  useImperativeHandle,
+  useLayoutEffect,
   useRef,
   type ButtonHTMLAttributes,
   type InputHTMLAttributes,
@@ -12,6 +14,7 @@ import { createPortal } from 'react-dom';
 import { AlertTriangle, CheckCircle2, Info, Loader2, X, XCircle } from '../icons';
 import { cn } from '../../lib/cn';
 import { useT } from '../../i18n';
+import { useMediaQuery } from '../../lib/useMediaQuery';
 
 /*
  * Setup primitives: Tailwind ports of the design canvas's component classes
@@ -199,6 +202,57 @@ export const TextArea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<H
 );
 TextArea.displayName = 'TextArea';
 
+interface ChatTextareaProps extends Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, 'value' | 'rows' | 'onKeyDown'> {
+  value: string;
+  /** Enter on a computer; the caller decides whether there's anything to send. */
+  onSend: () => void;
+  /** Grows with the text up to this many lines, then scrolls. */
+  maxRows?: number;
+}
+
+/**
+ * A chat composer's text field, as in Instagram: it wraps and grows with the
+ * text. On a computer Enter sends and Shift+Enter starts a new line; on a
+ * phone Enter is a new line and the send button sends. Unstyled: the caller
+ * gives it its padding and line height inside its own pill.
+ */
+export const ChatTextarea = forwardRef<HTMLTextAreaElement, ChatTextareaProps>(
+  ({ value, onSend, maxRows = 5, className, style, ...props }, ref) => {
+    const inner = useRef<HTMLTextAreaElement>(null);
+    useImperativeHandle(ref, () => inner.current!);
+    const touch = useMediaQuery('(pointer: coarse)');
+
+    useLayoutEffect(() => {
+      const el = inner.current;
+      if (!el) return;
+      const css = getComputedStyle(el);
+      const max = parseFloat(css.lineHeight) * maxRows + parseFloat(css.paddingTop) + parseFloat(css.paddingBottom);
+      el.style.height = 'auto';
+      el.style.height = `${Math.min(el.scrollHeight, max)}px`;
+      el.style.overflowY = el.scrollHeight > max ? 'auto' : 'hidden';
+    }, [value, maxRows]);
+
+    return (
+      <textarea
+        ref={inner}
+        rows={1}
+        value={value}
+        enterKeyHint={touch ? 'enter' : 'send'}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey && !touch && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            onSend();
+          }
+        }}
+        className={cn('block min-w-0 flex-1 resize-none bg-transparent text-base text-dm-ink outline-none placeholder:text-dm-muted', className)}
+        style={style}
+        {...props}
+      />
+    );
+  },
+);
+ChatTextarea.displayName = 'ChatTextarea';
+
 // ─── Surfaces ───────────────────────────────────────────────
 
 export function Card({ flat, className, children }: { flat?: boolean; className?: string; children: ReactNode }) {
@@ -254,13 +308,15 @@ export function Skeleton({ className }: { className?: string }) {
 
 // ─── Chips, badges ──────────────────────────────────────────
 
-export type ChipTone = 'ok' | 'miss' | 'neutral' | 'accent';
+export type ChipTone = 'ok' | 'miss' | 'neutral' | 'accent' | 'muted';
 
 const CHIP_TONE: Record<ChipTone, string> = {
   ok: 'bg-dm-green-bg text-dm-green',
   miss: 'bg-dm-amber-bg text-dm-amber',
   neutral: 'bg-white border border-dm-line2 text-dm-ink2',
   accent: 'bg-blue-50 text-blue-800',
+  /** Not there yet, without alarm (a notes section still empty). */
+  muted: 'bg-dm-bubble text-dm-muted',
 };
 
 export function Chip({ tone = 'neutral', icon, children, className }: { tone?: ChipTone; icon?: ReactNode; children: ReactNode; className?: string }) {

@@ -4,7 +4,7 @@ import { ArrowUp, ImagePlus, RotateCcw, X } from '../icons';
 import { api } from '../../lib/api';
 import { cn } from '../../lib/cn';
 import { useT } from '../../i18n';
-import { Alert, IconButton, SetupButton, Skeleton, Suggest } from '../setup/ui';
+import { Alert, IconButton, SetupButton, Skeleton, Suggest, ChatTextarea } from '../setup/ui';
 import { useOptionalSetup } from '../../pages/onboarding/SetupContext';
 import { storeInitial } from '../../pages/onboarding/SetupShell';
 import { apiState } from '../../pages/onboarding/steps';
@@ -288,7 +288,7 @@ export function TestChat({
         </div>
       )}
 
-      <div className={cn('flex flex-none items-center gap-1.5 border-t border-dm-line bg-white py-2 pl-2 pr-2.5', full && 'lg:px-3 lg:py-2.5')}>
+      <div className={cn('flex flex-none items-end gap-1.5 border-t border-dm-line bg-white py-2 pl-2 pr-2.5', full && 'lg:px-3 lg:py-2.5')}>
         <input
           ref={fileRef}
           type="file"
@@ -300,7 +300,8 @@ export function TestChat({
             e.target.value = '';
           }}
         />
-        <div className="flex h-12 min-w-0 flex-1 items-center gap-0.5 rounded-full border border-dm-line2 px-0.5 transition-shadow focus-within:border-blue-600 focus-within:ring-[3px] focus-within:ring-blue-100">
+        {/* A pill while it's one line; grows into a rounded box as the message wraps (buttons stay at the bottom). */}
+        <div className="flex min-h-12 min-w-0 flex-1 items-end gap-0.5 rounded-[24px] border border-dm-line2 px-0.5 transition-shadow focus-within:border-blue-600 focus-within:ring-[3px] focus-within:ring-blue-100">
           <button
             type="button"
             onClick={() => fileRef.current?.click()}
@@ -311,22 +312,16 @@ export function TestChat({
           >
             <ImagePlus className="h-5 w-5" aria-hidden="true" />
           </button>
-          <input
+          <ChatTextarea
             value={text}
             onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                submit();
-              }
-            }}
+            onSend={() => submit()}
             onFocus={() => onComposerFocus?.(true)}
             onBlur={() => onComposerFocus?.(false)}
             maxLength={1000}
-            enterKeyHint="send"
             placeholder={t('setup_bot.placeholder')}
             aria-label={t('setup_bot.message_label')}
-            className="min-w-0 flex-1 bg-transparent text-base text-dm-ink outline-none placeholder:text-dm-muted"
+            className="py-[11px] leading-6"
           />
           {canSend && (
             <button

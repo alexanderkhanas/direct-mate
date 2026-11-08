@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { Loader2, Send, Sparkle } from '../../icons';
 import { useT } from '../../../i18n';
 import { cn } from '../../../lib/cn';
-import { Alert } from '../../setup/ui';
+import { Alert, ChatTextarea } from '../../setup/ui';
 import { SetUpForMeButton } from '../SetUpForMeButton';
 import type { NotesMessage } from './draft';
 
@@ -97,20 +97,21 @@ export function NotesChat({
           e.preventDefault();
           if (canSend) onSend();
         }}
-        className="flex flex-none items-center gap-1.5 pt-1 lg:border-t lg:border-dm-line lg:bg-white lg:px-3 lg:py-2.5"
+        className="flex flex-none items-end gap-1.5 pt-1 lg:border-t lg:border-dm-line lg:bg-white lg:px-3 lg:py-2.5"
       >
-        <div className="flex h-11 min-w-0 flex-1 items-center rounded-full border border-dm-line2 bg-white px-3.5 transition-shadow focus-within:border-blue-600 focus-within:ring-[3px] focus-within:ring-blue-100">
-          <input
+        {/* A pill while it's one line; grows into a rounded box as the answer wraps. */}
+        <div className="flex min-h-11 min-w-0 flex-1 items-center rounded-[22px] border border-dm-line2 bg-white px-3.5 transition-shadow focus-within:border-blue-600 focus-within:ring-[3px] focus-within:ring-blue-100">
+          <ChatTextarea
             value={message}
             onChange={(e) => onMessage(e.target.value)}
+            onSend={() => canSend && onSend()}
             onFocus={() => onFocusChange(true)}
             onBlur={() => onFocusChange(false)}
             aria-label={t('setup_notes.answer_label')}
             placeholder={t('setup_notes.answer_placeholder')}
             maxLength={2000}
             autoComplete="off"
-            enterKeyHint="send"
-            className="h-full min-w-0 flex-1 bg-transparent text-base text-dm-ink outline-none placeholder:text-dm-muted"
+            className="py-[9px] leading-6"
           />
         </div>
         <button

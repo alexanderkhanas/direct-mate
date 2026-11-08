@@ -42,11 +42,7 @@ const uk = {
   chip_payment: 'Оплата',
   chip_returns: 'Обмін',
   chip_contacts: 'Контакти',
-  missing: 'Бракує: {list}',
-  miss_delivery: 'доставка',
-  miss_payment: 'оплата',
-  miss_returns: 'обмін',
-  miss_contacts: 'контакти',
+  chip_empty: 'ще не заповнено',
 
   // Chat
   tabs_label: 'Чат і чернетка',
@@ -126,11 +122,7 @@ const en: typeof uk = {
   chip_payment: 'Payment',
   chip_returns: 'Exchanges',
   chip_contacts: 'Contacts',
-  missing: 'Missing: {list}',
-  miss_delivery: 'delivery',
-  miss_payment: 'payment',
-  miss_returns: 'exchanges',
-  miss_contacts: 'contacts',
+  chip_empty: 'not filled in yet',
 
   tabs_label: 'Chat and draft',
   tab_chat: 'Chat',

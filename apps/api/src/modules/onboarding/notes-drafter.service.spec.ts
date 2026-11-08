@@ -69,6 +69,8 @@ describe('NotesDrafterService', () => {
     expect(draft.sections).toEqual({ delivery: '- Нова Пошта, відправка за 1–2 дні.' });
     expect(draft.sources).toEqual(['https://alta.example/dostavka']);
     expect(messages[0].text).toContain('з вашого сайту: доставка');
+    // Neutral: the assistant has no gender (no «склала» / «склав»).
+    expect(messages[0].text).not.toMatch(/склала|склав/);
     expect(messages[0].text).toContain('Як можна оплатити замовлення?');
     // The model saw the page text.
     expect(JSON.stringify(model.doGenerateCalls[0].prompt)).toContain('Відправляємо Новою Поштою');
@@ -133,6 +135,14 @@ describe('NotesDrafterService', () => {
     expect(result.draft.sections.payment).toContain('Передоплата на картку');
     expect(result.draft.paymentDetails).toBe('ФОП Іваненко, IBAN UA12 3456');
     expect(result.messages.map((m) => m.role)).toEqual(['owner', 'assistant']);
+  });
+
+  it('tells the interview which key sections are still empty, so it asks before finishing', async () => {
+    const model = new MockLanguageModelV4({ doGenerate: [text('Як клієнтам з вами зв\'язатися?')] });
+    const draft = { ...emptyDraft(), sections: { delivery: '- Нова Пошта', payment: '- Накладений платіж', returns: '- 14 днів' } };
+    await setup(model, { draft }).service.chat('t1', 'Все, начебто');
+    const instructions = JSON.stringify(model.doGenerateCalls[0].prompt);
+    expect(instructions).toMatch(/Sections still empty\\n- Контакти\\n\\n/);
   });
 
   it('writes the notes, checkout details and payment details into the store on save', async () => {
