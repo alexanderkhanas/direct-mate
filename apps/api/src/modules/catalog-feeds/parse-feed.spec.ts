@@ -3,7 +3,8 @@ import { join } from 'path';
 import { parseFeed } from './parse-feed';
 import { detectFormat, feedUrl } from './feed-fetcher';
 import { parsePrice, plainText } from './feed-normalize';
-import { parseCsv } from './parsers/sheet.parser';
+import { parseCsv, parseSheet } from './parsers/sheet.parser';
+import { FeedError } from './feed-fetcher';
 
 const fixture = (name: string) => readFileSync(join(__dirname, '__fixtures__', name), 'utf8');
 const NO_LIMIT = { maxProducts: null };
@@ -147,6 +148,15 @@ describe('feed helpers', () => {
     expect(detectFormat(fixture('yml-prom.xml'))).toBe('yml');
     expect(detectFormat(fixture('sheet.csv'), 'text/csv')).toBe('sheet');
     expect(detectFormat('<!DOCTYPE html><html><body>Sign in</body></html>')).toBeNull();
+  });
+
+  it('refuses a sheet without «Товар» and «Ціна» with a code the admin can explain', () => {
+    expect(() => parseSheet('Назва,Колір\nСукня,чорний')).toThrow(FeedError);
+    try {
+      parseSheet('Назва,Колір\nСукня,чорний');
+    } catch (err) {
+      expect((err as FeedError).code).toBe('unknown_format');
+    }
   });
 
   it('reads quoted CSV fields with commas, quotes and line breaks', () => {

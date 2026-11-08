@@ -1,10 +1,13 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Geologica:wght@300..700&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 body {
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'Geologica', system-ui, -apple-system, 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
+  /* viewport-fit=cover (for the setup footer's bottom inset) also reaches under a landscape notch. */
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
 }

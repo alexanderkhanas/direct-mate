@@ -64,7 +64,7 @@ describe('NotesDrafterService', () => {
       ],
     });
     const t = setup(model);
-    const { draft, messages } = await t.service.draft('t1', 'https://alta.example');
+    const { draft, messages } = await t.service.draft('t1', { websiteUrl: 'https://alta.example' });
 
     expect(draft.sections).toEqual({ delivery: '- Нова Пошта, відправка за 1–2 дні.' });
     expect(draft.sources).toEqual(['https://alta.example/dostavka']);
@@ -76,10 +76,46 @@ describe('NotesDrafterService', () => {
 
   it('asks the standard questions without a model call when there is no website', async () => {
     const model = new MockLanguageModelV4({ doGenerate: [] });
-    const { draft, messages } = await setup(model).service.draft('t1', null);
+    const { draft, messages } = await setup(model).service.draft('t1', {});
     expect(model.doGenerateCalls).toHaveLength(0);
     expect(draft.questions.length).toBeGreaterThan(0);
     expect(messages[0].text).toContain('Якою службою відправляєте');
+  });
+
+  it("tells the owner when their website couldn't be read, then asks the standard questions", async () => {
+    readWebsiteMock.mockResolvedValue([]);
+    const model = new MockLanguageModelV4({ doGenerate: [] });
+    const { messages } = await setup(model).service.draft('t1', { websiteUrl: 'https://down.example' });
+    expect(model.doGenerateCalls).toHaveLength(0);
+    expect(messages[0].text).toContain('Не вдалося відкрити ваш сайт');
+  });
+
+  it('drafts from text the owner pasted, without reading any website', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        text(
+          JSON.stringify({
+            delivery: '- Нова Пошта, відправка щодня до 16:00.',
+            payment: '- Накладений платіж або передоплата на картку ФОП.',
+            returns: null,
+            sizes: null,
+            contacts: null,
+            other: null,
+            paymentDetails: null,
+            checkoutFields: ['fullName', 'phone', 'city', 'novaPoshtaBranch'],
+            businessHours: null,
+            sizingAdvice: null,
+            questions: ['Чи можна обміняти товар?'],
+          }),
+        ),
+      ],
+    });
+    const { draft, messages } = await setup(model).service.draft('t1', { text: 'Відправляємо Новою Поштою щодня до 16:00.' });
+
+    expect(readWebsiteMock).not.toHaveBeenCalled();
+    expect(JSON.stringify(model.doGenerateCalls[0].prompt)).toContain('Text the shop already sends customers');
+    expect(draft.sections.payment).toContain('Накладений платіж');
+    expect(messages[0].text).toContain('з вашого тексту: доставка, оплата');
   });
 
   it("records the owner's answers in the draft with its tools", async () => {

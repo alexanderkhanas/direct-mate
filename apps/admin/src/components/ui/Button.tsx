@@ -2,11 +2,12 @@ import { ButtonHTMLAttributes, forwardRef } from 'react';
 import { cn } from '../../lib/cn';
 import { Spinner } from './Spinner';
 
-type Variant = 'primary' | 'secondary' | 'danger' | 'ghost';
+type Variant = 'primary' | 'brand' | 'secondary' | 'danger' | 'ghost';
 type Size = 'sm' | 'md' | 'lg';
 
 const variants: Record<Variant, string> = {
   primary: 'bg-gray-900 text-white hover:bg-gray-800 disabled:opacity-50',
+  brand: 'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50',
   secondary: 'border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50',
   danger: 'bg-red-600 text-white hover:bg-red-700 disabled:opacity-50',
   ghost: 'text-gray-600 hover:text-gray-900 hover:bg-gray-100 disabled:opacity-50',

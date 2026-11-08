@@ -247,6 +247,12 @@ mode for the side effects you want; never add `isDemo`-style flags inside the ag
 
 ## Known issues / tech debt
 
+- **Self-serve setup gaps:** a Shopify token isn't checked on connect, and its products wait for an operator-run n8n
+  sync (the founder gets a Telegram notice). `POST /catalog/feeds` imports in one request of up to 1–2 min, longer than a
+  default 60 s proxy timeout. Connecting a second product source doesn't disconnect the first. Notes edited in Settings
+  after setup aren't reflected in the setup draft (`tenant_onboarding.notes_draft`), so saving from setup again
+  overwrites them.
+
 - **Store notes:** production stores (`clothes-store`, `luxe-space`, `pilot`) have no knowledge doc yet —
   that is the onboarding work. Until then the agent hands off delivery and payment questions there.
 - **Promise check reads negations in the notes as offers:** a note saying «знижок немає» counts as the
@@ -335,3 +341,8 @@ ENCRYPTION_KEY (64-char hex), INTERNAL_API_KEY, ANTHROPIC_API_KEY (Phase 6)
 - Controllers: `@UseGuards(JwtAuthGuard)`, `@CurrentUser()` decorator for tenant context
 - Services: constructor injection, `@InjectRepository()` for TypeORM repos
 - Admin pages: TanStack Query for data, Tailwind for styling, existing UI components in `components/ui/`
+- Setup flow (`/onboarding`, full-screen, outside `<Layout>`): the shell is `pages/onboarding/SetupShell.tsx`; each step in
+  `pages/onboarding/steps/` hands its one primary action to the footer with `useSetupStep()`. Primitives (buttons,
+  alerts, chips, sheets) are in `components/setup/ui.tsx`, colours are the `dm-*` Tailwind tokens, strings live in
+  `i18n/setup/<area>.ts`. The API reports eight steps; the owner sees six (tone inside «Спробуйте бота», Telegram inside
+  «Увімкнути бота»). Design source: the «DirectMate Onboarding Design» canvas.

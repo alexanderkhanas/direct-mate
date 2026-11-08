@@ -44,4 +44,23 @@ describe('AuthService.register', () => {
     expect(manager.query).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO tenant_onboarding'), ['1']);
     expect(telegram.notifyPlatform).toHaveBeenCalledWith(expect.stringContaining('Alta Men'));
   });
+
+  it('makes a clothing store when the form sends no business type', async () => {
+    const created: Array<Record<string, unknown>> = [];
+    const manager = {
+      findOne: jest.fn(async () => null),
+      query: jest.fn(async () => []),
+      create: jest.fn((_entity, row) => (created.push(row), row)),
+      save: jest.fn(async (row) => ({ id: '1', ...row })),
+    };
+    const service = new AuthService(
+      { findOne: jest.fn(async () => null) } as never,
+      { sign: jest.fn(() => 'token') } as never,
+      { transaction: jest.fn(async (cb) => cb(manager)) } as never,
+      { createTrialForTenant: jest.fn(async () => ({})) } as never,
+      { notifyPlatform: jest.fn(async () => undefined) } as never,
+    );
+    await service.register({ storeName: 'Лляна', email: 'olena@lliana.ua', password: 'secret123' });
+    expect(created.find((row) => 'slug' in row)).toMatchObject({ name: 'Лляна', businessType: 'fashion' });
+  });
 });

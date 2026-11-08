@@ -1,5 +1,6 @@
 import type { ImportProductInput } from '../../catalog/catalog.service';
 import { mergeImages, parsePrice, plainText, WarningLog, type ParsedFeed } from '../feed-normalize';
+import { FeedError } from '../feed-fetcher';
 
 /**
  * The Google Sheet template for shops without a website: one row per size
@@ -28,7 +29,8 @@ export function parseSheet(csv: string, warnings = new WarningLog()): Omit<Parse
 
   const index = headerIndex(rows[0]);
   if (index.title === undefined || index.price === undefined) {
-    throw new Error('The sheet needs at least the «Товар» and «Ціна» columns');
+    // A coded error, so the admin can show how the sheet should look instead of a generic failure.
+    throw new FeedError('unknown_format', 'The sheet needs at least the «Товар» and «Ціна» columns');
   }
   const cell = (row: string[], col: Column) => (index[col] !== undefined ? (row[index[col]!] ?? '').trim() : '');
 

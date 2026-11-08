@@ -19,7 +19,8 @@ import TenantDetailPage from './pages/admin/TenantDetailPage';
 import StatsPage from './pages/admin/StatsPage';
 import PlanConfigPage from './pages/admin/PlanConfigPage';
 import RegisterPage from './pages/RegisterPage';
-import OnboardingPage from './pages/OnboardingPage';
+import SetupPage from './pages/onboarding/SetupPage';
+import SuccessPage from './pages/onboarding/SuccessPage';
 import { PrivacyPage, TermsPage, DataDeletionPage } from './pages/PrivacyPage';
 import { TenantProvider } from './contexts/TenantContext';
 import Layout from './components/Layout';
@@ -41,6 +42,9 @@ export default function App() {
         <Route path="/data-deletion" element={<DataDeletionPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
+        {/* Setup is full-screen, outside the admin layout. */}
+        <Route path="/onboarding" element={<PrivateRoute><SetupPage /></PrivateRoute>} />
+        <Route path="/onboarding/done" element={<PrivateRoute><SuccessPage /></PrivateRoute>} />
         <Route
           path="/"
           element={
@@ -50,7 +54,6 @@ export default function App() {
           }
         >
           <Route index element={<DashboardPage />} />
-          <Route path="onboarding" element={<OnboardingPage />} />
           <Route path="orders" element={<OrdersPage />} />
           <Route path="conversations" element={<ConversationsPage />} />
           <Route path="conversations/:id" element={<ConversationDetailPage />} />

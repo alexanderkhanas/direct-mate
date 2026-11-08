@@ -12,11 +12,11 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import { memoryStorage } from 'multer';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser, JwtPayload } from '../../common/decorators/current-user.decorator';
-import { OnboardingService } from './onboarding.service';
+import { HELP_TOPICS, OnboardingService, type HelpTopic } from './onboarding.service';
 import { TestChatService } from './test-chat.service';
 import { NotesDrafterService } from './notes-drafter.service';
 import { CHECKOUT_FIELDS, NOTE_SECTIONS, WEEK_DAYS, type NotesDraft } from './store-notes';
@@ -26,6 +26,10 @@ class HelpDto {
   @IsString()
   @MaxLength(40)
   step?: string;
+
+  @IsOptional()
+  @IsIn(HELP_TOPICS)
+  topic?: HelpTopic;
 }
 
 class DraftNotesDto {
@@ -33,6 +37,12 @@ class DraftNotesDto {
   @IsString()
   @MaxLength(500)
   websiteUrl?: string;
+
+  /** What the shop already sends customers about delivery and payment, pasted by the owner. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(8000)
+  text?: string;
 }
 
 class NotesMessageDto {
@@ -85,7 +95,7 @@ export class OnboardingController {
   @Post('help')
   @HttpCode(200)
   help(@CurrentUser() user: JwtPayload, @Body() dto: HelpDto) {
-    return this.onboarding.requestHelp(user.tenantId, user.email, dto.step);
+    return this.onboarding.requestHelp(user.tenantId, user.email, dto.step, dto.topic);
   }
 
   // ─── «Що знає бот»: AI draft, then a short chat ──────────────
@@ -98,7 +108,7 @@ export class OnboardingController {
   @Post('notes/draft')
   @HttpCode(200)
   draftNotes(@CurrentUser() user: JwtPayload, @Body() dto: DraftNotesDto) {
-    return this.notes.draft(user.tenantId, dto.websiteUrl?.trim() || null);
+    return this.notes.draft(user.tenantId, { websiteUrl: dto.websiteUrl?.trim() || null, text: dto.text?.trim() || null });
   }
 
   @Post('notes/chat')
@@ -117,7 +127,10 @@ export class OnboardingController {
   @Post('notes/save')
   @HttpCode(200)
   async saveNotes(@CurrentUser() user: JwtPayload, @Body() dto: NotesDraftDto) {
-    await this.notes.apply(user.tenantId, validDraft(dto.draft));
+    const draft = validDraft(dto.draft);
+    // Keep the saved version as the draft too, so coming back to the step shows what was saved.
+    await this.notes.update(user.tenantId, draft);
+    await this.notes.apply(user.tenantId, draft);
     return this.onboarding.status(user.tenantId);
   }
 

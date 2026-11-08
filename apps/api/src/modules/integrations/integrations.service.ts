@@ -10,6 +10,14 @@ import { ConnectionStatus, ConnectionType } from '@direct-mate/shared';
 import { CryptoService } from '../../common/crypto.service';
 import { GRAPH_API } from '../../common/meta-graph';
 
+/** A connection as the admin sees it: tokens stay on the server, even encrypted. */
+export type PublicConnection = Omit<Connection, 'accessTokenEncrypted' | 'refreshTokenEncrypted'>;
+
+export function withoutTokens(connection: Connection): PublicConnection {
+  const { accessTokenEncrypted: _access, refreshTokenEncrypted: _refresh, ...rest } = connection;
+  return rest;
+}
+
 @Injectable()
 export class IntegrationsService {
   private readonly logger = new Logger(IntegrationsService.name);
@@ -113,8 +121,10 @@ export class IntegrationsService {
     return this.crypto.decrypt(conn.accessTokenEncrypted);
   }
 
-  async findAll(tenantId: string): Promise<Connection[]> {
-    return this.connectionRepo.find({ where: { tenantId } });
+  /** The store's connections for the admin, without their (encrypted) tokens. */
+  async findAll(tenantId: string): Promise<PublicConnection[]> {
+    const connections = await this.connectionRepo.find({ where: { tenantId } });
+    return connections.map(withoutTokens);
   }
 
   async findById(id: string): Promise<Connection | null> {

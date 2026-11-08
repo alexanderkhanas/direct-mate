@@ -7,7 +7,8 @@ import { Response } from 'express';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { InternalApiKeyGuard } from '../../common/guards/internal-api-key.guard';
 import { CurrentUser, JwtPayload } from '../../common/decorators/current-user.decorator';
-import { IntegrationsService } from './integrations.service';
+import { IntegrationsService, withoutTokens } from './integrations.service';
+import { TelegramService } from '../notifications/telegram.service';
 
 class ConnectInstagramDto {
   @ApiProperty({ example: '123456789' })
@@ -48,7 +49,10 @@ class ConnectShopifyDto {
 @ApiBearerAuth()
 @Controller('connections')
 export class IntegrationsController {
-  constructor(private readonly integrationsService: IntegrationsService) {}
+  constructor(
+    private readonly integrationsService: IntegrationsService,
+    private readonly telegram: TelegramService,
+  ) {}
 
   @Get()
   findAll(@CurrentUser() user: JwtPayload) {
@@ -56,29 +60,33 @@ export class IntegrationsController {
   }
 
   @Post('instagram')
-  connectInstagram(
+  async connectInstagram(
     @CurrentUser() user: JwtPayload,
     @Body() dto: ConnectInstagramDto,
   ) {
-    return this.integrationsService.connectInstagram(
+    const connection = await this.integrationsService.connectInstagram(
       user.tenantId,
       dto.pageId,
       dto.accessToken,
       dto.accountName,
     );
+    return withoutTokens(connection);
   }
 
   @Post('shopify')
-  connectShopify(
+  async connectShopify(
     @CurrentUser() user: JwtPayload,
     @Body() dto: ConnectShopifyDto,
   ) {
-    return this.integrationsService.connectShopify(
+    const connection = await this.integrationsService.connectShopify(
       user.tenantId,
       dto.shopDomain,
       dto.accessToken,
       dto.shopName,
     );
+    // Products arrive through the operator-run n8n sync; a self-serve store needs someone to start it.
+    void this.telegram.notifyPlatform(`🛍 Shopify підключено: ${dto.shopDomain} (${user.email}) — запустіть синхронізацію товарів`);
+    return withoutTokens(connection);
   }
 
   @Post(':id/disconnect')

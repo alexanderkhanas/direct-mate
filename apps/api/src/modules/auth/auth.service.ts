@@ -87,6 +87,8 @@ export class AuthService {
     const existingUser = await this.userRepo.findOne({ where: { email: dto.email } });
     if (existingUser) throw new ConflictException('Email already registered');
 
+    const businessType = dto.businessType ?? 'fashion';
+
     // 2. Generate slug
     let slug = this.slugify(dto.storeName);
 
@@ -103,7 +105,7 @@ export class AuthService {
       const tenant = manager.create(Tenant, {
         name: dto.storeName,
         slug,
-        businessType: dto.businessType as any,
+        businessType: businessType as any,
         timezone: 'Europe/Kyiv',
         isActive: true,
       });
@@ -164,7 +166,7 @@ export class AuthService {
       return result;
     });
 
-    void this.telegram.notifyPlatform(`🆕 Нова реєстрація: «${dto.storeName}» (${dto.email}), ${dto.businessType}`);
+    void this.telegram.notifyPlatform(`🆕 Нова реєстрація: «${dto.storeName}» (${dto.email}), ${businessType}`);
     return registered;
   }
 

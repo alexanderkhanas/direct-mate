@@ -201,7 +201,7 @@ export default function CatalogPage() {
             <EmptyState
               icon={Package}
               title={t('catalog.no_products')}
-              description={t('catalog.no_products_desc')}
+              description={q ? undefined : t('setup_products.catalog_empty')}
             />
           )}
         </Card>

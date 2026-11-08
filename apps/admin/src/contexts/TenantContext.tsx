@@ -60,8 +60,8 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   const setSelectedTenantId = (id: string | null) => {
     setSelectedTenantIdState(id);
     setOverrideTenantId(id);
-    // Invalidate all queries so pages refetch with the new tenant context
-    queryClient.invalidateQueries();
+    // Reset, not just invalidate: a page must never show (or save) the previous store's cached data meanwhile.
+    void queryClient.resetQueries();
   };
 
   // Sync override on mount (in case of page reload with stored selection)

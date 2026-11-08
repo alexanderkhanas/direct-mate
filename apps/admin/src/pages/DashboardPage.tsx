@@ -17,7 +17,10 @@ import { api } from '../lib/api';
 import { Card } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { LoadingState } from '../components/ui/Spinner';
+import { SetupCard } from '../components/dashboard/SetupCard';
+import { ImproveBotCard } from '../components/dashboard/ImproveBotCard';
 import { useT } from '../i18n';
+import type { OnboardingStatus } from './onboarding/steps';
 
 interface DashboardData {
   period: { from: string; to: string };
@@ -81,6 +84,29 @@ function StatCard({ label, value, icon: Icon, color, bg }: {
 
 export default function DashboardPage() {
   const { t } = useT();
+  const { data: status } = useQuery<OnboardingStatus>({
+    queryKey: ['onboarding-status'],
+    queryFn: () => api.get('/onboarding/status').then((r) => r.data),
+    staleTime: 30_000,
+  });
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-semibold text-gray-900">{t('dashboard.title')}</h1>
+        <p className="text-sm text-gray-500 mt-1">{t('dashboard.subtitle')}</p>
+      </div>
+
+      {/* Setup unfinished: the way back into it. After go-live: what was skipped. */}
+      {status && (status.completed ? <ImproveBotCard status={status} /> : <SetupCard status={status} />)}
+
+      <DashboardStats />
+    </div>
+  );
+}
+
+function DashboardStats() {
+  const { t } = useT();
   const REASON_LABELS: Record<string, string> = {
     product_not_found: t('dashboard.reason_product_not_found'),
     low_confidence: t('dashboard.reason_low_confidence'),
@@ -106,12 +132,7 @@ export default function DashboardPage() {
   ];
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-gray-900">{t('dashboard.title')}</h1>
-        <p className="text-sm text-gray-500 mt-1">{t('dashboard.subtitle')}</p>
-      </div>
-
+    <>
       {/* Summary cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
@@ -293,6 +314,6 @@ export default function DashboardPage() {
           )}
         </Card>
       </div>
-    </div>
+    </>
   );
 }

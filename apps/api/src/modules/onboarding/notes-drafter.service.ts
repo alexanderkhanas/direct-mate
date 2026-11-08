@@ -15,7 +15,7 @@ import {
   type NotesDraft,
 } from './store-notes';
 
-const DRAFT_INSTRUCTIONS = `You prepare the store notes an AI sales assistant answers customers from, for a small Ukrainian shop that sells on Instagram. The sources are the shop's own website pages and facts its managers wrote in chats; nothing else.
+const DRAFT_INSTRUCTIONS = `You prepare the store notes an AI sales assistant answers customers from, for a small Ukrainian shop that sells on Instagram. The sources are the shop's own website pages, text the owner pasted (what they already send customers), and facts its managers wrote in chats; nothing else.
 
 Rules:
 - Use only what the sources state. Never invent carriers, timings, prices, conditions, bank details or hours. If a source is vague, write what it says and add a question.
@@ -52,7 +52,7 @@ const interviewInstructions = (shop: string, draft: NotesDraft) => `You help the
 - Write in Ukrainian, warmly and briefly. Ask at most two questions per message, the most important unknowns first (delivery and payment before anything else).
 - When the owner tells you something, record it straight away with the tools: update_section with the whole new text of that section (keep what was already right), set_payment_details with the exact details they give, set_business_hours, set_checkout_fields, set_sizing. Then ask the next question.
 - Never write anything the owner didn't say. Don't ask about what the notes already cover.
-- When nothing important is left, call finish and tell the owner to check the notes and press «Зберегти».
+- When nothing important is left, call finish and tell the owner to check the draft and press «Зберегти і далі».
 
 ## Current notes
 ${renderKnowledgeDoc(draft) || '(empty)'}
@@ -99,16 +99,25 @@ export class NotesDrafterService {
     };
   }
 
-  /** Read the website (if any), draft the notes, and open the chat with the questions left. */
-  async draft(tenantId: string, websiteUrl: string | null): Promise<{ draft: NotesDraft; messages: InterviewMessage[] }> {
-    const pages = websiteUrl ? await readWebsite(websiteUrl).catch(() => [] as WebsitePage[]) : [];
+  /**
+   * Draft the notes from what the owner gave (their website, or text they
+   * already send customers; neither for the short interview) and open the
+   * chat with the questions left.
+   */
+  async draft(
+    tenantId: string,
+    source: { websiteUrl?: string | null; text?: string | null },
+  ): Promise<{ draft: NotesDraft; messages: InterviewMessage[] }> {
+    const pages = source.websiteUrl ? await readWebsite(source.websiteUrl).catch(() => [] as WebsitePage[]) : [];
+    const pasted = source.text?.trim().slice(0, 8000) || null;
     const facts = await this.historyFacts(tenantId);
     const shop = await this.shop(tenantId);
 
     let draft = emptyDraft();
-    if (pages.length > 0 || facts.length > 0) {
+    if (pages.length > 0 || pasted || facts.length > 0) {
       const sources = [
         ...pages.map((p) => `## Page: ${p.url}\n${p.text}`),
+        ...(pasted ? [`## Text the shop already sends customers\n${pasted}`] : []),
         ...(facts.length > 0 ? [`## What the shop's managers told customers in chats\n${facts.map((f) => `- ${f}`).join('\n')}`] : []),
       ].join('\n\n');
       const resolved = this.models.resolve({});
@@ -126,7 +135,10 @@ export class NotesDrafterService {
       draft.sizingAdvice = shop.businessType === 'fashion' ? 'recommend' : null;
     }
 
-    const messages: InterviewMessage[] = [{ role: 'assistant', text: opening(draft, pages.length > 0) }];
+    const from = pages.length > 0 ? 'website' : pasted ? 'text' : null;
+    // Nothing was drafted because the site couldn't be read (not because the draft came from chat history).
+    const unreadSite = !!source.websiteUrl && pages.length === 0 && !pasted && facts.length === 0;
+    const messages: InterviewMessage[] = [{ role: 'assistant', text: opening(draft, from, unreadSite) }];
     await this.save(tenantId, draft, messages);
     return { draft, messages };
   }
@@ -203,7 +215,7 @@ export class NotesDrafterService {
       providerOptions: resolved.providerOptions,
       maxRetries: 2,
     });
-    const reply = result.text.trim() || 'Записала. Перевірте нотатки праворуч і натисніть «Зберегти».';
+    const reply = result.text.trim() || 'Записала. Перевірте чернетку й натисніть «Зберегти і далі».';
     const messages: InterviewMessage[] = [...current.messages, { role: 'owner', text: message }, { role: 'assistant', text: reply }];
     await this.save(tenantId, draft, messages);
     return { reply, draft, messages, finished };
@@ -290,15 +302,18 @@ function fromModel(out: z.infer<typeof draftSchema>, sources: string[]): NotesDr
 }
 
 /** The chat's first message, without a model call: what was found and the first questions. */
-function opening(draft: NotesDraft, fromWebsite: boolean): string {
+function opening(draft: NotesDraft, from: 'website' | 'text' | null, unreadSite = false): string {
   const found = NOTE_SECTIONS.filter((s) => draft.sections[s]).map((s) => SECTION_TITLE[s].toLowerCase());
-  const intro = fromWebsite
+  const where = from === 'website' ? 'вашого сайту' : 'вашого тексту';
+  const intro = from
     ? found.length > 0
-      ? `Я склала чернетку з вашого сайту: ${found.join(', ')}. Перевірте її праворуч.`
-      : 'На сайті я не знайшла умов доставки й оплати, тож спитаю вас.'
-    : 'Розкажіть кілька речей про магазин — я запишу їх для бота.';
+      ? `Я склала чернетку з ${where}: ${found.join(', ')}. Перевірте її в чернетці.`
+      : `${from === 'website' ? 'На сайті' : 'У тексті'} я не знайшла умов доставки й оплати, тож спитаю вас.`
+    : unreadSite
+      ? 'Не вдалося відкрити ваш сайт, тож спитаю вас — це кілька коротких питань.'
+      : 'Розкажіть кілька речей про магазин — я запишу їх для бота.';
   const asks = draft.questions.slice(0, 2);
-  return asks.length > 0 ? `${intro}\n\n${asks.join('\n')}` : `${intro}\n\nЯкщо все вірно — натисніть «Зберегти».`;
+  return asks.length > 0 ? `${intro}\n\n${asks.join('\n')}` : `${intro}\n\nЯкщо все вірно — натисніть «Зберегти і далі».`;
 }
 
 /** The shop's site from its feed link («https://shop.ua/feed.xml» → «https://shop.ua»), but not Google Sheets. */

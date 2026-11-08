@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft } from 'lucide-react';
 import { api } from '../lib/api';
 import { Button } from '../components/ui/Button';
@@ -8,6 +9,7 @@ import { useT } from '../i18n';
 
 export default function LoginPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const { t } = useT();
   const [email, setEmail] = useState('');
@@ -19,10 +21,11 @@ export default function LoginPage() {
   useEffect(() => {
     const token = searchParams.get('impersonate');
     if (token) {
+      queryClient.clear();
       localStorage.setItem('accessToken', token);
       navigate('/');
     }
-  }, [searchParams, navigate]);
+  }, [searchParams, navigate, queryClient]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -30,6 +33,8 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const { data } = await api.post('/auth/login', { email, password });
+      // A new session: nothing cached from the previous store may leak into this one.
+      queryClient.clear();
       localStorage.setItem('accessToken', data.accessToken);
       navigate('/');
     } catch {

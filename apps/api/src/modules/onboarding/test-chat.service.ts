@@ -22,6 +22,8 @@ export interface TestChatMessage {
   role: 'customer' | 'bot';
   text: string;
   imageUrls?: string[];
+  /** ISO time; the chat shows «Сьогодні 14:32» above the first message. */
+  createdAt?: string;
 }
 
 /**
@@ -89,9 +91,15 @@ export class TestChatService {
 
   /** The conversation so far, for when the owner comes back to the page. */
   async history(tenantId: string): Promise<TestChatMessage[]> {
-    const rows: Array<{ role: string; text: string | null; attachments: MessageAttachment[] | null; raw_payload: { imageUrls?: string[] } | null }> =
+    const rows: Array<{
+      role: string;
+      text: string | null;
+      attachments: MessageAttachment[] | null;
+      raw_payload: { imageUrls?: string[] } | null;
+      created_at: Date;
+    }> =
       await this.dataSource.query(
-        `SELECT m.role, m.text, m.attachments, m.raw_payload FROM messages m
+        `SELECT m.role, m.text, m.attachments, m.raw_payload, m.created_at FROM messages m
            JOIN conversations c ON c.id = m.conversation_id
            JOIN customers cu ON cu.id = c.customer_id
           WHERE c.tenant_id = $1 AND c.channel = $2 AND cu.external_user_id = $3
@@ -105,6 +113,7 @@ export class TestChatService {
         role: r.role === MessageRole.User ? 'customer' : 'bot',
         text: r.text ?? '',
         ...(images.length > 0 && { imageUrls: images }),
+        createdAt: new Date(r.created_at).toISOString(),
       };
     });
   }

@@ -20,7 +20,14 @@ export interface OnboardingStatus {
   operatingMode: string;
   steps: OnboardingStep[];
   readiness: Readiness;
-  store: { name: string; businessType: string; instagram: string | null; feedUrl: string | null };
+  store: {
+    name: string;
+    businessType: string;
+    instagram: string | null;
+    feedUrl: string | null;
+    /** Active products, and those with stock: «Знає 64 товари». */
+    products: { total: number; inStock: number };
+  };
   /** «Налаштуйте за мене» is shown only when a support username is configured. */
   supportAvailable: boolean;
 }
@@ -30,6 +37,18 @@ const SKIPPABLE: ReadonlySet<OnboardingStepKey> = new Set(['tone', 'sizes', 'tel
 const BLOCKING: ReadonlySet<OnboardingStepKey> = new Set(['instagram', 'products', 'knowledge']);
 /** Registration's tone before Nov 2026; still the tone of stores that never changed it. */
 const OLD_DEFAULT_TONE = 'Warm, friendly, concise.';
+
+/** What the owner wants help with, beyond the step they're on. */
+export type HelpTopic = 'other_platform' | 'shopify' | 'instagram' | 'feed';
+export const HELP_TOPICS: readonly HelpTopic[] = ['other_platform', 'shopify', 'instagram', 'feed'];
+
+// `other_platform` is left unfinished on purpose: the owner names the platform before sending.
+const HELP_TOPIC_LINE: Record<HelpTopic, string> = {
+  other_platform: 'Хочу підключити товари з ',
+  shopify: 'Хочу підключити товари з Shopify.',
+  instagram: 'Не виходить підключити Instagram.',
+  feed: 'Не виходить підключити фід товарів.',
+};
 
 const STEP_LABEL_UK: Record<OnboardingStepKey, string> = {
   instagram: 'підключення Instagram',
@@ -59,6 +78,8 @@ interface StoreRow {
   history_import: { applied?: boolean } | null;
   instagram: string | null;
   feed_url: string | null;
+  products_total: number;
+  products_in_stock: number;
 }
 
 /**
@@ -92,7 +113,12 @@ export class OnboardingService {
               o.steps_skipped, o.tested_at, o.completed_at, o.history_import,
               (SELECT metadata->>'accountName' FROM connections
                 WHERE tenant_id = t.id AND type = 'instagram' AND status = 'connected' LIMIT 1) AS instagram,
-              (SELECT metadata->>'url' FROM connections WHERE tenant_id = t.id AND type = 'product_feed' LIMIT 1) AS feed_url
+              (SELECT metadata->>'url' FROM connections WHERE tenant_id = t.id AND type = 'product_feed' LIMIT 1) AS feed_url,
+              (SELECT count(*)::int FROM products p WHERE p.tenant_id = t.id AND p.status = 'active') AS products_total,
+              (SELECT count(*)::int FROM products p WHERE p.tenant_id = t.id AND p.status = 'active'
+                  AND EXISTS (SELECT 1 FROM product_variants v JOIN stock_balances sb ON sb.variant_id = v.id
+                               WHERE v.product_id = p.id AND v.active = true
+                                 AND sb.available_qty - sb.reserved_qty - sb.pending_checkout_qty > 0)) AS products_in_stock
          FROM tenants t
          LEFT JOIN store_configs sc ON sc.tenant_id = t.id
          LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
@@ -113,7 +139,8 @@ export class OnboardingService {
       test: !!row.tested_at,
       live: row.operating_mode === 'active' || row.operating_mode === 'learning',
     };
-    const keys: OnboardingStepKey[] = ['instagram', 'products', 'knowledge', 'tone', ...(clothing ? (['sizes'] as const) : []), 'telegram', 'test', 'live'];
+    // Teach, then check, then launch: the bot can be tried before Instagram is connected.
+    const keys: OnboardingStepKey[] = ['products', 'knowledge', ...(clothing ? (['sizes'] as const) : []), 'test', 'tone', 'instagram', 'telegram', 'live'];
     const skipped = new Set(row.steps_skipped ?? []);
     return {
       completed: !!row.completed_at,
@@ -124,7 +151,13 @@ export class OnboardingService {
         blocking: BLOCKING.has(key),
       })),
       readiness,
-      store: { name: row.name, businessType: row.business_type, instagram: row.instagram, feedUrl: row.feed_url },
+      store: {
+        name: row.name,
+        businessType: row.business_type,
+        instagram: row.instagram,
+        feedUrl: row.feed_url,
+        products: { total: row.products_total ?? 0, inStock: row.products_in_stock ?? 0 },
+      },
       supportAvailable: !!this.supportUsername(),
     };
   }
@@ -160,7 +193,7 @@ export class OnboardingService {
    * «Налаштуйте за мене»: a t.me link to the founder with the message already
    * written (the owner still presses send), and a heads-up to the founder.
    */
-  async requestHelp(tenantId: string, email: string, step: string | undefined): Promise<{ url: string | null }> {
+  async requestHelp(tenantId: string, email: string, step: string | undefined, topic?: HelpTopic): Promise<{ url: string | null }> {
     const status = await this.status(tenantId);
     await this.dataSource.query(
       `UPDATE tenant_onboarding SET help_requested_at = now(), updated_at = now() WHERE tenant_id = $1`,
@@ -174,6 +207,7 @@ export class OnboardingService {
       status.store.instagram && `Instagram: @${status.store.instagram}`,
       status.store.feedUrl && `Товари: ${status.store.feedUrl}`,
       stepLabel && `Зупинився на кроці: ${stepLabel}`,
+      topic && HELP_TOPIC_LINE[topic],
     ].filter(Boolean);
     void this.telegram.notifyPlatform(
       `🆘 Просять допомоги з налаштуванням: «${status.store.name}» (${email})${stepLabel ? `, крок: ${stepLabel}` : ''}`,

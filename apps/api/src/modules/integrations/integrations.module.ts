@@ -6,9 +6,10 @@ import { TelegramConnectToken } from '../notifications/entities/telegram-connect
 import { IntegrationsService } from './integrations.service';
 import { IntegrationsController, InternalConnectionsController, InstagramOAuthController } from './integrations.controller';
 import { CryptoService } from '../../common/crypto.service';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Connection, SyncJob, TelegramConnectToken])],
+  imports: [TypeOrmModule.forFeature([Connection, SyncJob, TelegramConnectToken]), NotificationsModule],
   controllers: [IntegrationsController, InternalConnectionsController, InstagramOAuthController],
   providers: [IntegrationsService, CryptoService],
   exports: [IntegrationsService],

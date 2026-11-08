@@ -20,6 +20,8 @@ const ROW = {
   history_import: null,
   instagram: 'alta.men',
   feed_url: 'https://alta.example/feed.xml',
+  products_total: 64,
+  products_in_stock: 51,
 };
 
 function service(row: Record<string, unknown> = {}, opts: { support?: string } = {}) {
@@ -35,17 +37,24 @@ describe('OnboardingService.status', () => {
   it('reads each step from the store and keeps skips for the optional ones', async () => {
     const { svc } = service();
     const status = await svc.status('t1');
+    // Teach, check, launch: the owner tries the bot before connecting Instagram.
     expect(status.steps.map((s) => [s.key, s.state, s.blocking])).toEqual([
-      ['instagram', 'done', true],
       ['products', 'todo', true],
       ['knowledge', 'done', true],
-      ['tone', 'todo', false], // the registration default isn't a choice the owner made
       ['sizes', 'todo', false], // a clothing store
-      ['telegram', 'skipped', false],
       ['test', 'todo', false],
+      ['tone', 'todo', false], // the registration default isn't a choice the owner made
+      ['instagram', 'done', true],
+      ['telegram', 'skipped', false],
       ['live', 'todo', false],
     ]);
-    expect(status.store).toEqual({ name: 'Alta', businessType: 'fashion', instagram: 'alta.men', feedUrl: 'https://alta.example/feed.xml' });
+    expect(status.store).toEqual({
+      name: 'Alta',
+      businessType: 'fashion',
+      instagram: 'alta.men',
+      feedUrl: 'https://alta.example/feed.xml',
+      products: { total: 64, inStock: 51 },
+    });
   });
 
   it('has no sizes step for a beauty store, and counts an own tone as done', async () => {
@@ -69,6 +78,12 @@ describe('OnboardingService.status', () => {
     expect(text).toContain('Instagram: @alta.men');
     expect(text).toContain('Зупинився на кроці: товари');
     expect(telegram.notifyPlatform).toHaveBeenCalledWith(expect.stringContaining('owner@alta.ua'));
+  });
+
+  it('leaves the other-platform line open for the owner to name their platform', async () => {
+    const { svc } = service({}, { support: 'founder' });
+    const { url } = await svc.requestHelp('t1', 'owner@alta.ua', 'products', 'other_platform');
+    expect(decodeURIComponent(url!.split('text=')[1]).endsWith('Хочу підключити товари з ')).toBe(true);
   });
 });
 
@@ -107,6 +122,18 @@ describe('TestChatService', () => {
       'c1', 't1', expect.anything(), expect.anything(), '', undefined, null,
       [{ type: 'customer_photo', mediaId: '/uploads/customer-media/t1/a.jpg', url: '/uploads/customer-media/t1/a.jpg' }],
     );
+  });
+
+  it('returns the conversation with message times, for the chat to show when it started', async () => {
+    const query = jest.fn(async () => [
+      { role: 'user', text: 'Є сорочка?', attachments: null, raw_payload: null, created_at: new Date('2026-11-08T12:32:00Z') },
+      { role: 'assistant', text: 'Так.', attachments: null, raw_payload: { imageUrls: ['/a.jpg'] }, created_at: new Date('2026-11-08T12:32:07Z') },
+    ]);
+    const svc = new TestChatService({ query } as never, {} as never, {} as never, {} as never, {} as never, {} as never);
+    expect(await svc.history('t1')).toEqual([
+      { role: 'customer', text: 'Є сорочка?', createdAt: '2026-11-08T12:32:00.000Z' },
+      { role: 'bot', text: 'Так.', imageUrls: ['/a.jpg'], createdAt: '2026-11-08T12:32:07.000Z' },
+    ]);
   });
 
   it('stops a store sending more than 60 test messages an hour', async () => {
