@@ -128,7 +128,9 @@ export default function InstagramStep() {
         </Alert>
       )}
 
-      <Alert tone="info" icon={<ShieldCheck className="mt-px h-5 w-5 flex-none" aria-hidden="true" />} title={t('setup_history.ig_safe')} />
+      <Alert tone="info" icon={<ShieldCheck className="mt-px h-5 w-5 flex-none" aria-hidden="true" />} title={t('setup_history.ig_safe')}>
+        {t('setup_history.ig_safe_text')}
+      </Alert>
 
       {connected ? (
         <>

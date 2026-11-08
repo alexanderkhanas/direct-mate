@@ -30,13 +30,13 @@ const STEP_COMPONENTS: Record<OwnerStepKey, ComponentType> = {
  * The setup frame (design boards m02–m04, d10). One tree for every width, so a
  * step mounts once:
  *   < 1024 px  phone: top bar, 3-segment progress, step line → steps sheet,
- *              sticky footer, «Спробувати бота» pill → bot sheet
- *   1024–1279  desktop top bar with stages; «Ваш бот» opens as a right drawer
- *   ≥ 1280     the 400 px «Ваш бот» panel beside the step
+ *              sticky footer, «Спробувати AI-агента» pill → bot sheet
+ *   1024–1279  desktop top bar with stages; «Ваш AI-агент» opens as a right drawer
+ *   ≥ 1280     the 400 px «Ваш AI-агент» panel beside the step
  */
 export function SetupShell({ intro, onIntroDone, skipFailed }: { intro: boolean; onIntroDone: () => void; skipFailed: boolean }) {
   const { t } = useT();
-  const { active } = useSetup();
+  const { active, current } = useSetup();
   const [stepsOpen, setStepsOpen] = useState(false);
   const [botOpen, setBotOpen] = useState<false | 'bottom' | 'right'>(false);
   const Step = STEP_COMPONENTS[active];
@@ -51,8 +51,10 @@ export function SetupShell({ intro, onIntroDone, skipFailed }: { intro: boolean;
       {(slot) => {
         const config: StepConfig = slot?.config.current ?? {};
         const fill = !intro && config.layout === 'fill';
-        // The pill would cover a chat's composer, or a two-row footer's buttons; those steps go without it.
-        const showPill = !intro && active !== 'test' && !fill && !config.hideFooter && !config.secondary;
+        // No pill while the bot is still being taught («Навчання»): there's nothing worth trying yet. Nor where it
+        // would cover a chat's composer or a two-row footer's buttons.
+        const showPill =
+          !intro && current.stage !== 'teach' && active !== 'test' && !fill && !config.hideFooter && !config.secondary;
         return (
           <div className="flex h-[100dvh] flex-col bg-dm-bg font-sans text-[15px] leading-[1.45] text-dm-ink antialiased">
             <MobileTopBar />
@@ -307,7 +309,7 @@ function Footer({ slot, skipFailed }: { slot: StepConfigSlot | null; skipFailed:
   );
 }
 
-/** «Спробувати бота»: floats above the footer on phones, on every step except the test step. */
+/** «Спробувати AI-агента»: floats above the footer on phones, on every step except the test step. */
 function TryBotPill({ onClick }: { onClick: () => void }) {
   const { t } = useT();
   const { status } = useSetup();

@@ -370,10 +370,13 @@ ENCRYPTION_KEY (64-char hex), INTERNAL_API_KEY, ANTHROPIC_API_KEY (Phase 6)
 - Controllers: `@UseGuards(JwtAuthGuard)`, `@CurrentUser()` decorator for tenant context
 - Services: constructor injection, `@InjectRepository()` for TypeORM repos
 - Admin pages: TanStack Query for data, Tailwind for styling, existing UI components in `components/ui/`
+- Owner-facing copy (admin, setup, owner and manager Telegram messages) calls it «AI-агент» / "AI agent", never
+  «бот» / "bot": it's sold as more than a chatbot. The exception is our Telegram bot (@DirectMateBot). Customers
+  are told «AI-асистент» by the welcome line.
 - Icons: only from `components/icons.tsx` (Google Material Symbols Rounded, weight 300, imported as SVG components;
   brand logos inline). Never import an icon library directly.
 - Setup flow (`/onboarding`, full-screen, outside `<Layout>`): the shell is `pages/onboarding/SetupShell.tsx`; each step in
   `pages/onboarding/steps/` hands its one primary action to the footer with `useSetupStep()`. Primitives (buttons,
   alerts, chips, sheets) are in `components/setup/ui.tsx`, colours are the `dm-*` Tailwind tokens, strings live in
-  `i18n/setup/<area>.ts`. The API reports eight steps; the owner sees six (tone inside «Спробуйте бота», Telegram inside
-  «Увімкнути бота»). Design source: the «DirectMate Onboarding Design» canvas.
+  `i18n/setup/<area>.ts`. The API reports eight steps; the owner sees six (tone inside «Спробуйте AI-агента», Telegram inside
+  «Увімкнути AI-агента»). Design source: the «DirectMate Onboarding Design» canvas.

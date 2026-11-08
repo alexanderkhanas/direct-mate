@@ -2,7 +2,6 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
-import { TelegramService } from '../notifications/telegram.service';
 import { OnboardingReadiness, type Readiness } from './onboarding-readiness.service';
 import { DEFAULT_BRAND_TONE } from './store-defaults';
 
@@ -53,12 +52,12 @@ const HELP_TOPIC_LINE: Record<HelpTopic, string> = {
 const STEP_LABEL_UK: Record<OnboardingStepKey, string> = {
   instagram: 'підключення Instagram',
   products: 'товари',
-  knowledge: 'що знає бот (доставка, оплата)',
+  knowledge: 'що знає AI-агент (доставка, оплата)',
   tone: 'тон спілкування',
   sizes: 'розміри',
   telegram: 'сповіщення в Telegram',
-  test: 'перевірка бота',
-  live: 'увімкнення бота',
+  test: 'перевірка AI-агента',
+  live: 'увімкнення AI-агента',
 };
 
 interface StoreRow {
@@ -93,7 +92,6 @@ export class OnboardingService {
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly readiness: OnboardingReadiness,
-    private readonly telegram: TelegramService,
     private readonly config: ConfigService,
   ) {}
 
@@ -192,7 +190,8 @@ export class OnboardingService {
 
   /**
    * «Налаштуйте за мене»: a t.me link to the founder with the message already
-   * written (the owner still presses send), and a heads-up to the founder.
+   * written. The owner presses send, so the request arrives as a DM; no separate
+   * notice is sent.
    */
   async requestHelp(tenantId: string, email: string, step: string | undefined, topic?: HelpTopic): Promise<{ url: string | null }> {
     const status = await this.status(tenantId);
@@ -210,9 +209,6 @@ export class OnboardingService {
       stepLabel && `Зупинився на кроці: ${stepLabel}`,
       topic && HELP_TOPIC_LINE[topic],
     ].filter(Boolean);
-    void this.telegram.notifyPlatform(
-      `🆘 Просять допомоги з налаштуванням: «${status.store.name}» (${email})${stepLabel ? `, крок: ${stepLabel}` : ''}`,
-    );
     const username = this.supportUsername();
     return { url: username ? `https://t.me/${username}?text=${encodeURIComponent(lines.join('\n'))}` : null };
   }

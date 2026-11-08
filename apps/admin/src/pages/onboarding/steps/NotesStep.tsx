@@ -36,7 +36,7 @@ const FRESH_MS = 4000;
 type DraftBody = Record<string, never> | { text: string } | { websiteUrl: string };
 
 /**
- * «Що знає бот»: the store notes the bot answers delivery, payment and returns
+ * «Що знає AI-агент»: the store notes the bot answers delivery, payment and returns
  * questions from. Three ways in (interview, pasted text, website), plus the
  * owner's Instagram chats once they've been read → a draft →
  * a short chat with the assistant beside the editable draft → save.

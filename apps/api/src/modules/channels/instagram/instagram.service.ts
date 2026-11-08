@@ -532,7 +532,7 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
       reason: 'send_failed',
       conversationId: conversation.id,
       lastMessage: '',
-      summary: `Бот не зміг надіслати відповідь в Instagram: «${text.slice(0, 300)}»`,
+      summary: `AI-агент не зміг надіслати відповідь в Instagram: «${text.slice(0, 300)}»`,
     });
   }
 

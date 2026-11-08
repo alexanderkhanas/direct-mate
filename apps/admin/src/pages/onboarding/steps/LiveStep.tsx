@@ -21,7 +21,7 @@ type Mode = 'active' | 'learning';
 const NOTE_CARD = 'flex flex-col gap-1 rounded-2xl border border-dm-line bg-dm-sunken p-4';
 
 /**
- * «Увімкнути бота» (m60, m61, d60): what's ready, Telegram for handoffs, the
+ * «Увімкнути AI-агента» (m60, m61, d60): what's ready, Telegram for handoffs, the
  * trial terms, then turn the bot on or watch first. While something required
  * is missing, the footer names it and goes there.
  */

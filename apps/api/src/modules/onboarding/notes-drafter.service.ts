@@ -359,7 +359,7 @@ function opening(draft: NotesDraft, from: 'website' | 'text' | 'history' | null,
       : `${nothing[from]} немає умов доставки й оплати, тож спитаю вас.`
     : unreadSite
       ? 'Не вдалося відкрити ваш сайт, тож спитаю вас — це кілька коротких питань.'
-      : 'Розкажіть кілька речей про магазин — я запишу їх для бота.';
+      : 'Розкажіть кілька речей про магазин — я запишу їх для AI-агента.';
   const asks = draft.questions.slice(0, 2);
   return asks.length > 0 ? `${intro}\n\n${asks.join('\n')}` : `${intro}\n\nЯкщо все вірно — натисніть «Зберегти і далі».`;
 }

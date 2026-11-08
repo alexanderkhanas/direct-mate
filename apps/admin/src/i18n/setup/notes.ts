@@ -1,7 +1,7 @@
-// Setup strings: «Що знає бот» (store notes). `en` must have the same keys as `uk`.
+// Setup strings: «Що знає AI-агент» (store notes). `en` must have the same keys as `uk`.
 const uk = {
-  title: 'Що знає бот',
-  lead: 'Доставка, оплата, повернення. Бот відповідає лише з цього й нічого не вигадує.',
+  title: 'Що знає AI-агент',
+  lead: 'Доставка, оплата, повернення. AI-агент відповідає лише з цього й нічого не вигадує.',
 
   // Start: three ways in
   how_label: 'Як вам зручніше?',
@@ -17,7 +17,7 @@ const uk = {
   text_count: '{n} з {max} символів',
   website_label: 'Адреса сайту',
   website_placeholder: 'https://your-shop.com.ua',
-  no_notes: 'Поки нотаток немає, бот передаватиме питання про доставку й оплату менеджеру.',
+  no_notes: 'Поки нотаток немає, AI-агент передаватиме питання про доставку й оплату менеджеру.',
   start: 'Почати',
   make_draft: 'Скласти чернетку',
   draft_failed: 'Не вдалося скласти чернетку',
@@ -67,12 +67,12 @@ const uk = {
   section_sizes: 'Розміри й посадка',
   section_contacts: 'Контакти',
   section_other: 'Інше',
-  section_empty: 'Поки порожньо — бот передаватиме такі питання менеджеру',
+  section_empty: 'Поки порожньо — AI-агент передаватиме такі питання менеджеру',
   section_other_placeholder: 'Наприклад, самовивіз, подарункова упаковка',
   fresh: 'щойно оновлено',
   payment_details: 'Реквізити для передоплати',
   payment_details_placeholder: 'Отримувач, IBAN або номер картки',
-  payment_details_hint: 'Бот надсилає їх дослівно, коли клієнт обирає передоплату.',
+  payment_details_hint: 'AI-агент надсилає їх дослівно, коли клієнт обирає передоплату.',
   settings_note: 'Графік роботи й дані для замовлення збережуться разом із нотатками. Змінити їх можна в ',
   settings_link: 'Налаштуваннях',
   settings_note_end: '.',
@@ -83,8 +83,8 @@ const uk = {
 };
 
 const en: typeof uk = {
-  title: 'What the bot knows',
-  lead: 'Delivery, payment, returns. The bot answers only from this and makes nothing up.',
+  title: 'What the AI agent knows',
+  lead: 'Delivery, payment, returns. The AI agent answers only from this and makes nothing up.',
 
   how_label: 'How would you like to do it?',
   way_interview: 'I’ll answer a few questions',
@@ -99,7 +99,7 @@ const en: typeof uk = {
   text_count: '{n} of {max} characters',
   website_label: 'Website address',
   website_placeholder: 'https://your-shop.com',
-  no_notes: 'Until there are notes, the bot hands delivery and payment questions to a manager.',
+  no_notes: 'Until there are notes, the AI agent hands delivery and payment questions to a manager.',
   start: 'Start',
   make_draft: 'Draft the notes',
   draft_failed: 'Couldn’t draft the notes',
@@ -145,12 +145,12 @@ const en: typeof uk = {
   section_sizes: 'Sizes and fit',
   section_contacts: 'Contacts',
   section_other: 'Other',
-  section_empty: 'Empty for now — the bot will hand such questions to a manager',
+  section_empty: 'Empty for now — the AI agent will hand such questions to a manager',
   section_other_placeholder: 'For example, pickup, gift wrapping',
   fresh: 'just updated',
   payment_details: 'Payment details for prepayment',
   payment_details_placeholder: 'Recipient, IBAN or card number',
-  payment_details_hint: 'The bot sends them word for word when a customer chooses prepayment.',
+  payment_details_hint: 'The AI agent sends them word for word when a customer chooses prepayment.',
   settings_note: 'Working hours and order details are saved with the notes. You can change them in ',
   settings_link: 'Settings',
   settings_note_end: '.',

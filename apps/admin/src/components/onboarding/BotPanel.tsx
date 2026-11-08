@@ -152,9 +152,15 @@ function SkillsHeading({ className }: { className?: string }) {
   );
 }
 
-/** The live test chat in its rounded box, filling what the skills list leaves. */
+/**
+ * The live test chat in its rounded box, filling what the skills list leaves.
+ * Only from «Перевірка» on: while the owner is still teaching the bot there's
+ * nothing worth trying yet.
+ */
 function PanelChat() {
   const { t } = useT();
+  const { current } = useSetup();
+  if (current.stage === 'teach') return null;
   return (
     <div className="mx-4 mb-4 mt-3 flex min-h-[280px] flex-1 flex-col">
       <TestChat title={t('setup_bot.try_title')} className="flex-1 rounded-[18px] border border-dm-line" />
@@ -165,7 +171,7 @@ function PanelChat() {
 // ─── The panel, the drawer and the sheet ───────────────────────────────
 
 /**
- * «Ваш бот» beside the step at ≥1280 px: the skills list (it doubles as step
+ * «Ваш AI-агент» beside the step at ≥1280 px: the skills list (it doubles as step
  * navigation) and the live test chat. On the test step, where the chat is the
  * step itself, the panel holds the tone editor instead (board d40).
  */
@@ -193,7 +199,7 @@ export function BotPanel() {
 }
 
 /**
- * «Ваш бот» on demand: a bottom sheet on phones (board m04: a skills summary
+ * «Ваш AI-агент» on demand: a bottom sheet on phones (board m04: a skills summary
  * above the chat), or the panel's skills and chat as a right drawer at
  * 1024–1279 px.
  */

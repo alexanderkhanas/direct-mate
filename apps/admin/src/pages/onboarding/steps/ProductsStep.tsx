@@ -73,7 +73,7 @@ export default function ProductsStep() {
   );
 }
 
-/** «Бот тепер знає N товарів», or, when nothing is in stock, why the bot won't offer anything yet. */
+/** «AI-агент тепер знає N товарів», or, when nothing is in stock, why the bot won't offer anything yet. */
 function DoneAlert({ flow }: { flow: ProductSourceFlow }) {
   const { t } = useT();
   const plural = usePlural();

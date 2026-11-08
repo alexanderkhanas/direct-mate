@@ -26,7 +26,7 @@ function readDismissed(): boolean {
 }
 
 /**
- * «Зробіть бота кращим»: after go-live, the Dashboard lists what was skipped
+ * «Зробіть AI-агента кращим»: after go-live, the Dashboard lists what was skipped
  * during setup. Hidden once everything is done or the owner dismisses it.
  */
 export function ImproveBotCard({ status }: { status: OnboardingStatus }) {

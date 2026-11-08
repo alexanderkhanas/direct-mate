@@ -1,7 +1,7 @@
 /**
  * The setup steps as the owner sees them. The API reports eight steps
  * (onboarding.service.ts); the owner sees six, in three stages: tone is shown
- * inside «Спробуйте бота» and Telegram inside «Увімкнути бота».
+ * inside «Спробуйте AI-агента» and Telegram inside «Увімкнути AI-агента».
  */
 
 export type ApiStepKey = 'products' | 'instagram' | 'knowledge' | 'sizes' | 'test' | 'tone' | 'telegram' | 'live';

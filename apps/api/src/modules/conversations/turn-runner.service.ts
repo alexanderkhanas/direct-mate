@@ -176,7 +176,7 @@ export class TurnRunner {
             reply: null,
             handoff: {
               reason: 'rate_limited',
-              summaryForManager: `Клієнт надіслав понад ${limit} повідомлень за годину; бот зупинився.`,
+              summaryForManager: `Клієнт надіслав понад ${limit} повідомлень за годину; AI-агент зупинився.`,
             },
             firstReply,
           });

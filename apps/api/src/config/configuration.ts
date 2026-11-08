@@ -104,7 +104,7 @@ export default () => ({
     botToken: process.env.TELEGRAM_BOT_TOKEN ?? '',
     webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET ?? '',
     botUsername: process.env.TELEGRAM_BOT_USERNAME ?? 'DirectMateBot',
-    // The founder's chat with the bot: sign-ups, help requests, stores going
+    // The founder's chat with the bot: sign-ups, Shopify connects, stores going
     // live. Unset = no platform notifications.
     platformChatId: process.env.PLATFORM_TELEGRAM_CHAT_ID ?? '',
   },

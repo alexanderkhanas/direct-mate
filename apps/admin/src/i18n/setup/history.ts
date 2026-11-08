@@ -1,11 +1,12 @@
 // Setup strings: history (reading the store's Instagram chats). `en` must have the same keys as `uk`.
 const uk = {
   // Instagram step
-  ig_lead: 'Підключіть Instagram — ми прочитаємо ваші останні переписки й заповнимо умови доставки, оплати та ваш тон.',
-  ig_lead_no_read: 'Підключіть акаунт, у якому відповідатиме бот.',
-  ig_safe: 'Бот нікому не напише, доки ви самі не увімкнете його на останньому кроці.',
-  consent_title: 'Прочитати останні переписки',
-  consent_note: 'Беремо останні ~30 розмов. Аналізує AI; самі переписки не зберігаємо — лише висновки: умови, тон і приклади.',
+  ig_lead: 'Підключіть Instagram — і AI навчиться говорити з клієнтами так, як це робите ви: вашим тоном, з вашими умовами доставки й оплати.',
+  ig_lead_no_read: 'Підключіть акаунт, у якому відповідатиме AI-агент.',
+  ig_safe: 'Зараз AI-агент нікому не відповідає.',
+  ig_safe_text: 'Він почне працювати, лише коли ви самі його увімкнете на останньому кроці.',
+  consent_title: 'Навчити AI-агента говорити, як ви',
+  consent_note: 'AI вивчить ваші останні ~30 розмов з клієнтами й перейме ваш стиль: як ви вітаєтеся, звертаєтеся й відповідаєте про доставку та оплату. Перед застосуванням ви все переглянете. Самих переписок ми не зберігаємо — лише висновки.',
   later: 'Підключити пізніше',
 
   // The import's progress, one line
@@ -52,8 +53,8 @@ const uk = {
   tone_example_keep: 'Повернути',
   tone_example_keep_label: 'Повернути приклад',
   tone_example_removed: 'Не додаватиметься',
-  tone_examples_room: 'Бот бачить до 8 прикладів разом з вашими, тож додамо перші {n}.',
-  tone_examples_full: 'Бот бачить до 8 прикладів, і ваших уже стільки, тож застосуємо лише тон.',
+  tone_examples_room: 'AI-агент бачить до 8 прикладів разом з вашими, тож додамо перші {n}.',
+  tone_examples_full: 'AI-агент бачить до 8 прикладів, і ваших уже стільки, тож застосуємо лише тон.',
   tone_apply: 'Застосувати',
   tone_apply_failed_title: 'Не вдалося застосувати',
   tone_apply_failed_text: 'Спробуйте ще раз.',
@@ -64,11 +65,12 @@ const uk = {
 };
 
 const en: typeof uk = {
-  ig_lead: "Connect Instagram: we'll read your recent chats and fill in your delivery and payment terms and your tone.",
-  ig_lead_no_read: 'Connect the account the bot will answer in.',
-  ig_safe: "The bot won't message anyone until you turn it on yourself in the last step.",
-  consent_title: 'Read recent chats',
-  consent_note: "We take the last ~30 conversations. AI analyses them; we don't keep the chats themselves, only what it learns: terms, tone and examples.",
+  ig_lead: 'Connect Instagram, and the AI learns to talk to customers the way you do: in your tone, with your delivery and payment terms.',
+  ig_lead_no_read: 'Connect the account the AI agent will answer in.',
+  ig_safe: 'Right now the AI agent replies to no one.',
+  ig_safe_text: 'It starts working only when you turn it on yourself, in the last step.',
+  consent_title: 'Teach the AI agent to talk like you',
+  consent_note: "The AI studies your last ~30 customer conversations and picks up your style: how you greet and address people, what you say about delivery and payment. You review everything before it's applied. We don't keep the chats themselves, only what it learns.",
   later: 'Connect later',
 
   status_reading: 'Reading your chats…',
@@ -112,8 +114,8 @@ const en: typeof uk = {
   tone_example_keep: 'Keep',
   tone_example_keep_label: 'Keep example',
   tone_example_removed: "Won't be added",
-  tone_examples_room: 'The bot reads up to 8 examples, yours included, so the first {n} will be added.',
-  tone_examples_full: 'The bot reads up to 8 examples and you already have that many, so only the tone will be applied.',
+  tone_examples_room: 'The AI agent reads up to 8 examples, yours included, so the first {n} will be added.',
+  tone_examples_full: 'The AI agent reads up to 8 examples and you already have that many, so only the tone will be applied.',
   tone_apply: 'Apply',
   tone_apply_failed_title: "Couldn't apply",
   tone_apply_failed_text: 'Try again.',

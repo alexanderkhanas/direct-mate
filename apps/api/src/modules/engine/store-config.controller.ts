@@ -139,6 +139,6 @@ export class StoreConfigController {
     const [tenant]: Array<{ name: string; slug: string }> = await this.configRepo.manager
       .query(`SELECT name, slug FROM tenants WHERE id = $1`, [tenantId])
       .catch(() => []);
-    await this.telegram.notifyPlatform(`🚀 Бот увімкнено: «${tenant?.name ?? tenantId}» (${tenant?.slug ?? '—'})`);
+    await this.telegram.notifyPlatform(`🚀 AI-агента увімкнено: «${tenant?.name ?? tenantId}» (${tenant?.slug ?? '—'})`);
   }
 }

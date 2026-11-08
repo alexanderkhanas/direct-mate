@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { LifeBuoy } from '../icons';
+import { SupportAgent } from '../icons';
 import { api } from '../../lib/api';
 import { useT } from '../../i18n';
 import { cn } from '../../lib/cn';
@@ -82,7 +82,7 @@ export function SetUpForMeButton({ step, topic, look = 'pill', lead, label, shor
     return (
       <div className={cn('flex items-start gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-4', className)}>
         <span className="grid h-10 w-10 flex-none place-items-center rounded-xl bg-white text-blue-600" aria-hidden="true">
-          <LifeBuoy className="h-5 w-5" />
+          <SupportAgent className="h-5 w-5" />
         </span>
         <div className="flex min-w-0 flex-col gap-1">
           <b className="text-[15px] font-semibold text-dm-ink">{t('setup_shell.help_card_title')}</b>
@@ -104,7 +104,7 @@ export function SetUpForMeButton({ step, topic, look = 'pill', lead, label, shor
     return (
       <span className={cn('inline-flex flex-col gap-1', className)}>
         <button type="button" onClick={open} className="inline-flex min-h-11 items-center gap-1.5 text-left text-sm text-dm-ink2">
-          <LifeBuoy className="h-4 w-4 flex-none text-blue-600" aria-hidden="true" />
+          <SupportAgent className="h-4 w-4 flex-none text-blue-600" aria-hidden="true" />
           <span>
             {lead && <>{lead} </>}
             <span className="font-medium text-blue-800 underline decoration-1 underline-offset-[3px]">{label ?? t('setup_shell.help_inline')}</span>
@@ -120,9 +120,8 @@ export function SetUpForMeButton({ step, topic, look = 'pill', lead, label, shor
       <button
         type="button"
         onClick={open}
-        className="inline-flex h-11 items-center gap-2 whitespace-nowrap rounded-full border border-blue-200 bg-blue-50 pl-3 pr-4 text-[13px] font-medium text-blue-800 transition-colors hover:bg-blue-100 lg:h-10 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-100"
+        className="inline-flex h-11 items-center whitespace-nowrap rounded-full border border-blue-200 bg-blue-50 px-4 text-[13px] font-medium text-blue-800 transition-colors hover:bg-blue-100 lg:h-10 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-100"
       >
-        <LifeBuoy className="h-4 w-4 flex-none" aria-hidden="true" />
         {short && !label ? (
           <>
             <span className="lg:hidden xl:inline">{t('setup_shell.help_pill')}</span>

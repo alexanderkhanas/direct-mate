@@ -129,7 +129,7 @@ export class OnboardingController {
     return this.onboarding.requestHelp(user.tenantId, user.email, dto.step, dto.topic);
   }
 
-  // ─── «Що знає бот»: AI draft, then a short chat ──────────────
+  // ─── «Що знає AI-агент»: AI draft, then a short chat ──────────────
 
   @Get('notes')
   getNotes(@CurrentUser() user: JwtPayload) {
@@ -191,7 +191,7 @@ export class OnboardingController {
     return this.onboarding.status(user.tenantId);
   }
 
-  // ─── «Спробуйте свого бота» ─────────────────────────────────
+  // ─── «Спробуйте свого AI-агента» ─────────────────────────────────
 
   @Get('test-chat')
   async testChatHistory(@CurrentUser() user: JwtPayload) {

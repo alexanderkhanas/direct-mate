@@ -27,7 +27,7 @@ export interface TestChatMessage {
 }
 
 /**
- * «Спробуйте свого бота»: the owner writes as a customer and gets the real
+ * «Спробуйте свого AI-агента»: the owner writes as a customer and gets the real
  * agent's answers, before the bot is turned on. Runs in demo mode (nothing
  * leaves the system) and answers even while the store is paused.
  */

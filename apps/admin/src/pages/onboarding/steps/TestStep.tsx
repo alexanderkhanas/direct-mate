@@ -8,7 +8,7 @@ import { ToneEditor } from '../../../components/onboarding/ToneEditor';
 import { useSetupStep } from '../SetupContext';
 
 /**
- * «Спробуйте бота» (boards m40–m42, d40): the owner writes as a customer in an
+ * «Спробуйте AI-агента» (boards m40–m42, d40): the owner writes as a customer in an
  * Instagram-style chat. The tone editor sits in the right panel at ≥1280 px;
  * below that, «Тон» in the chat header opens it in a sheet.
  */

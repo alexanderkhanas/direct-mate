@@ -27,10 +27,9 @@ const ROW = {
 function service(row: Record<string, unknown> = {}, opts: { support?: string } = {}) {
   const query = jest.fn(async (sql: string) => (sql.includes('FROM tenants t') ? [{ ...ROW, ...row }] : []));
   const readiness = { check: jest.fn(async () => ({ ready: false, missing: ['products'] })) };
-  const telegram = { notifyPlatform: jest.fn(async () => undefined) };
   const config = { get: jest.fn((key: string) => (key === 'support.telegramUsername' ? opts.support ?? '' : undefined)) };
-  const svc = new OnboardingService({ query } as never, readiness as never, telegram as never, config as never);
-  return { svc, query, telegram };
+  const svc = new OnboardingService({ query } as never, readiness as never, config as never);
+  return { svc, query };
 }
 
 describe('OnboardingService.status', () => {
@@ -77,7 +76,7 @@ describe('OnboardingService.status', () => {
   });
 
   it('builds the «set it up for me» Telegram link with what the founder needs to know', async () => {
-    const { svc, telegram } = service({}, { support: '@founder' });
+    const { svc } = service({}, { support: '@founder' });
     const { url } = await svc.requestHelp('t1', 'owner@alta.ua', 'products');
     expect(url).toMatch(/^https:\/\/t\.me\/founder\?text=/);
     const text = decodeURIComponent(url!.split('text=')[1]);
@@ -85,7 +84,6 @@ describe('OnboardingService.status', () => {
     expect(text).toContain('Email: owner@alta.ua');
     expect(text).toContain('Instagram: @alta.men');
     expect(text).toContain('Зупинився на кроці: товари');
-    expect(telegram.notifyPlatform).toHaveBeenCalledWith(expect.stringContaining('owner@alta.ua'));
   });
 
   it('leaves the other-platform line open for the owner to name their platform', async () => {

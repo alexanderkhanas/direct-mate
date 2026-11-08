@@ -83,7 +83,7 @@ import ms_star_shine from '@material-symbols/svg-300/rounded/star_shine.svg?reac
 import ms_storefront from '@material-symbols/svg-300/rounded/storefront.svg?react';
 import ms_straighten from '@material-symbols/svg-300/rounded/straighten.svg?react';
 import ms_straighten_fill from '@material-symbols/svg-300/rounded/straighten-fill.svg?react';
-import ms_support from '@material-symbols/svg-300/rounded/support.svg?react';
+import ms_headset_mic from '@material-symbols/svg-300/rounded/headset_mic.svg?react';
 import ms_sync from '@material-symbols/svg-300/rounded/sync.svg?react';
 import ms_table from '@material-symbols/svg-300/rounded/table.svg?react';
 import ms_table_view from '@material-symbols/svg-300/rounded/table_view.svg?react';
@@ -185,7 +185,8 @@ export const Info = material(ms_info);
 export const Layers = material(ms_layers);
 export const LayoutDashboard = material(ms_dashboard, ms_dashboard_fill);
 export const LayoutGrid = material(ms_grid_view);
-export const LifeBuoy = material(ms_support);
+/** A headset: «Налаштуйте за мене безкоштовно», a person sets it up. */
+export const SupportAgent = material(ms_headset_mic);
 export const Lightbulb = material(ms_lightbulb);
 export const Link2 = material(ms_link);
 export const Loader2 = material(ms_progress_activity);

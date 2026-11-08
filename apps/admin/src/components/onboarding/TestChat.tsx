@@ -57,7 +57,7 @@ const keepFocus = (e: MouseEvent) => e.preventDefault();
 /**
  * The owner's test conversation, styled as an Instagram DM: the owner writes
  * as a customer (blue, right), the real agent answers (grey, left). One
- * conversation (`['test-chat']`) shared by the «Ваш бот» panel, the bot sheet
+ * conversation (`['test-chat']`) shared by the «Ваш AI-агент» panel, the bot sheet
  * and the test step. It fills its container; the thread scrolls inside.
  */
 export function TestChat({
@@ -77,7 +77,7 @@ export function TestChat({
   hideHeader?: boolean;
   /** Extra header buttons before «Почати заново» (the test step's «Тон»). */
   headerAction?: ReactNode;
-  /** A note after the messages (the bot sheet's «Про доставку бот навчиться…»). */
+  /** A note after the messages (the bot sheet's «Про доставку AI-агент навчиться…»). */
   threadNote?: ReactNode;
   /** The composer gained or lost focus: the test step hides the footer while the phone keyboard is open. */
   onComposerFocus?: (focused: boolean) => void;

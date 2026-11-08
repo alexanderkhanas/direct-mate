@@ -33,7 +33,7 @@ function withoutPhrase(text: string, phrase: string): string {
 }
 
 /**
- * «Як звучить бот»: the store's tone (quick toggles plus free text) and the
+ * «Як звучить AI-агент»: the store's tone (quick toggles plus free text) and the
  * owner's example replies. Shown in the desktop panel on the test step and in
  * a sheet opened from «Тон». The tone saves with its own button, not the
  * step's primary; examples save as they're added. When the owner's Instagram
