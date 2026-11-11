@@ -1,11 +1,12 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, Clock, Info, Loader2, ShieldCheck } from '../../../components/icons';
+import { CheckCircle2, Clock, Info, ShieldCheck } from '../../../components/icons';
 import { api } from '../../../lib/api';
 import { cn } from '../../../lib/cn';
 import { useT } from '../../../i18n';
 import { Alert, StepTitle, CheckMark, Switch, TextLink } from '../../../components/setup/ui';
 import { SetUpForMeButton } from '../../../components/onboarding/SetUpForMeButton';
+import { AiLearning } from '../../../components/onboarding/AiLearning';
 import {
   HISTORY_KEY,
   factSections,
@@ -191,6 +192,7 @@ function ImportLine({ imp, offerRead }: { imp: HistoryImport | null; offerRead: 
   );
 
   if (phase === 'none') return offerRead ? link : null;
+  if (phase === 'reading') return <AiLearning title={t('setup_history.status_reading')} text={t('setup_history.status_reading_text')} />;
 
   const sections = factSections(imp);
   const doneKey =
@@ -201,8 +203,7 @@ function ImportLine({ imp, offerRead }: { imp: HistoryImport | null; offerRead: 
         : sections.includes('payment')
           ? 'status_done_payment'
           : 'status_done_tone';
-  const line: Record<Exclude<typeof phase, 'none'>, { icon: ReactNode; text: string }> = {
-    reading: { icon: <Loader2 className="h-5 w-5 flex-none animate-spin text-blue-600" />, text: t('setup_history.status_reading') },
+  const line: Record<Exclude<typeof phase, 'none' | 'reading'>, { icon: ReactNode; text: string }> = {
     done: { icon: <CheckCircle2 className="h-5 w-5 flex-none text-dm-green-icon" />, text: t(`setup_history.${doneKey}`) },
     limited: { icon: <Clock className="h-5 w-5 flex-none text-dm-muted" />, text: t('setup_history.status_limited') },
     waiting: { icon: <Clock className="h-5 w-5 flex-none text-dm-muted" />, text: t('setup_history.status_waiting') },

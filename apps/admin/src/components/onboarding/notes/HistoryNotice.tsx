@@ -1,10 +1,10 @@
-import { Loader2 } from '../../icons';
 import { useT } from '../../../i18n';
-import { Alert, TextLink } from '../../setup/ui';
+import { TextLink } from '../../setup/ui';
+import { AiLearning } from '../AiLearning';
 import { factSections, historyPhase, useStartHistoryImport, type HistoryImportView } from '../historyImport';
 
 /**
- * The notes start screen's word on the Instagram chat reading: a calm card
+ * The notes start screen's word on learning from Instagram: the AI-learning card
  * while it runs, one plain line when it couldn't help, or a link that starts
  * it when Instagram is connected but nothing was read (or the reading
  * failed). Nothing once there are terms to draft from (that's the «З ваших
@@ -18,15 +18,7 @@ export function HistoryNotice({ view }: { view: HistoryImportView | undefined })
   const phase = historyPhase(imp);
 
   if (phase === 'reading') {
-    return (
-      <Alert
-        tone="info"
-        icon={<Loader2 className="mt-px h-5 w-5 flex-none animate-spin" aria-hidden="true" />}
-        title={t('setup_history.notes_reading_title')}
-      >
-        {t('setup_history.notes_reading_text')}
-      </Alert>
-    );
+    return <AiLearning title={t('setup_history.notes_reading_title')} text={t('setup_history.notes_reading_text')} />;
   }
 
   if (phase === 'none' || phase === 'failed') {

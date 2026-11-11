@@ -179,7 +179,7 @@ describe('NotesDrafterService', () => {
     expect(prompt).toContain('### Working hours\\n- Відповідаємо з 10:00 до 19:00 (3 conversations)');
     expect(prompt).not.toContain('старий формат');
     expect(draft.businessHours).toEqual({ mon: '10:00-19:00' });
-    expect(messages[0].text).toMatch(/^Чернетку складено з ваших переписок: доставка, оплата, години роботи\. Перевірте її\./);
+    expect(messages[0].text).toMatch(/^Чернетку складено з того, що AI-агент дізнався з вашого Instagram: доставка, оплата, години роботи\. Перевірте її\./);
     expect(messages[0].text).not.toMatch(/склала|склав/);
     expect(messages[0].text).toContain('Чи можна обміняти товар?');
   });

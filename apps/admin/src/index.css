@@ -11,3 +11,42 @@ body {
   padding-left: env(safe-area-inset-left);
   padding-right: env(safe-area-inset-right);
 }
+
+/*
+ * «AI-агент вчиться на вашому Instagram» (components/onboarding/AiLearning.tsx). Plain CSS rather than
+ * Tailwind keyframes, so it doesn't depend on the config being reloaded. Still under reduced motion.
+ */
+@keyframes dm-sparkle {
+  0%, 100% { transform: scale(0.8) rotate(0deg); }
+  50% { transform: scale(1.08) rotate(18deg); }
+}
+@keyframes dm-sparkle-pop {
+  0%, 100% { transform: scale(0); opacity: 0; }
+  35%, 65% { transform: scale(1); opacity: 1; }
+}
+@keyframes dm-learn-chip {
+  0%, 55%, 100% { opacity: 0.5; background-color: #ffffff; color: #5b6474; }
+  12%, 30% { opacity: 1; background-color: #dbeafe; color: #1e40af; }
+}
+@keyframes dm-indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+.dm-sparkle-big,
+.dm-sparkle-small,
+.dm-sparkle-tiny {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.dm-sparkle-big { animation: dm-sparkle 1.6s ease-in-out infinite; }
+.dm-sparkle-small { animation: dm-sparkle 1.6s ease-in-out -0.8s infinite; }
+.dm-sparkle-tiny { animation: dm-sparkle-pop 1.6s ease-in-out -0.4s infinite; }
+.dm-learn-chip { animation: dm-learn-chip 3.2s ease-in-out infinite; }
+.dm-indeterminate { animation: dm-indeterminate 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .dm-sparkle-big,
+  .dm-sparkle-small,
+  .dm-sparkle-tiny,
+  .dm-learn-chip,
+  .dm-indeterminate { animation: none; }
+}

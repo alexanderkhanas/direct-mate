@@ -351,8 +351,9 @@ function opening(draft: NotesDraft, from: 'website' | 'text' | 'history' | null,
   const found = NOTE_SECTIONS.filter((s) => draft.sections[s]).map((s) => SECTION_TITLE[s].toLowerCase());
   // Working hours aren't a notes section, but the chats are where they're usually found.
   if (from === 'history' && draft.businessHours && Object.keys(draft.businessHours).length > 0) found.push('години роботи');
-  const where = { website: 'вашого сайту', text: 'вашого тексту', history: 'ваших переписок' };
-  const nothing = { website: 'На сайті', text: 'У тексті', history: 'У переписках' };
+  // Owner-facing: the AI agent learned from their Instagram; never «ваші переписки».
+  const where = { website: 'вашого сайту', text: 'вашого тексту', history: 'того, що AI-агент дізнався з вашого Instagram' };
+  const nothing = { website: 'На сайті', text: 'У тексті', history: 'В Instagram' };
   const intro = from
     ? found.length > 0
       ? `Чернетку складено з ${where[from]}: ${found.join(', ')}. Перевірте її.`
