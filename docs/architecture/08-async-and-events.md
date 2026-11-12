@@ -14,10 +14,11 @@ That one fact explains most of this document.
 
 ```mermaid
 flowchart TB
-    subgraph Cron["@nestjs/schedule — 3 jobs"]
+    subgraph Cron["@nestjs/schedule"]
         C1["*/5 * * * *<br/>ReservationsService.expireStale<br/>💀 table is always empty"]
         C2["0 8 * * *<br/>SubscriptionsService.checkTrialExpiry"]
         C3["EVERY_DAY_AT_10AM<br/>LearningSchedulerService"]
+        C4["EVERY_30_MINUTES<br/>InstagramContentService.tick<br/><i>stories; posts and reels hourly</i>"]
     end
     subgraph Interval["setInterval — 4 timers, invisible to Nest"]
         I1["2s — InstagramService.pollTasks<br/><i>debounce flush + auto-resume</i>"]
@@ -31,7 +32,6 @@ flowchart TB
         B3["ImageEmbeddingService.onModuleInit<br/><i>CLIP enable/self-disable</i>"]
     end
     subgraph Ext["Externally driven by n8n"]
-        E1["/internal/instagram/fetch-content"]
         E2["/internal/instagram/refresh-tokens"]
         E3["/internal/sync/catalog-import"]
     end
@@ -44,6 +44,7 @@ flowchart TB
 | `*/5 * * * *` | `ReservationsService.expireStale` | **No try/catch** — a throw aborts the pass mid-loop | ❌ read-then-update with no locking → double-decrement. 💀 Moot: the table is never written |
 | `0 8 * * *` | `SubscriptionsService.checkTrialExpiry` | no try/catch around the loop | Idempotent, but **cache invalidation is process-local** — another replica serves a stale verdict for ≤5 min |
 | `EVERY_DAY_AT_10AM` | `LearningSchedulerService.checkLearningPeriodExpiry` | per-tenant try/catch, logs and continues ✅ | Partially — `learning_notified_at` is the dedup stamp but check and write are not atomic |
+| `EVERY_30_MINUTES` | `InstagramContentService.tick`: every store's live stories; on every other tick its new posts and reels and the SKU pass; then vision for new stories (≤ 5 per store). Off with `CONTENT_FETCH_WORKER_ENABLED=false` (the CLI scripts) | per-store try/catch, logs and continues ✅; the vision pass after all stores, its errors caught. An in-memory guard skips a tick while the last run is going | Duplicate work only (upserts by media id; links written `WHERE product_id IS NULL`) — but the guard is per process, so run it on one replica |
 
 ### `setInterval` timers
 
@@ -96,6 +97,7 @@ Ordered by blast radius. These are the calls that fail silently.
 | `screenshot-upload.controller.ts:97` | `processJob(id).catch(console.error)` | Job stuck at `processing` forever. **No resume on restart** |
 | `auth.service.ts:160` | `setTimeout(() => createTrialForTenant(...), 0)` | New tenant with **no `subscription_plans` row**. Fails open (`isActive` returns true for a missing plan) but no reconciliation job exists |
 | `reply-engine.service.ts:1255` | `saveUnlinkedMedia(...).catch(log)` then immediately `return doHandoff(...)` | The admin never sees the media that needs linking |
+| `instagram-content.service.ts` `fetchContent` | `void matchNewStories(...)` after the «Fetch content» button's fetch | Errors are caught and logged. A restart mid-pass leaves those stories unlinked; nothing retries them |
 
 ---
 
@@ -251,9 +253,10 @@ Ranked by value.
 2. **Catalogue import.** 1–5 MB payloads inside **one open transaction spanning hundreds of external
    image fetches and `sharp` decodes**. Long-held transaction → bloat, lock contention, total loss on a
    tail network hiccup. At minimum, move pHash computation out of the transaction.
-3. **`POST /internal/instagram/fetch-content` with no tenantId** iterates *every* connected tenant,
-   paginating the Graph API and running GPT-4o vision inline, in one HTTP request. Unbounded duration, no
-   checkpoint.
+3. ~~**`POST /internal/instagram/fetch-content`** iterated every connected tenant and ran GPT vision
+   inline, in one HTTP request.~~ Fixed (Nov 2026): the endpoint is gone. Content is fetched by an in-process
+   cron, one store at a time; the new-story vision pass runs after the fetch, capped per store, and never inside
+   a request (the admin «Fetch content» button answers after the fetch and leaves vision in the background).
 4. **Telegram handoff notification** — needs an outbox row (see §6.1).
 5. **Order → n8n sync** — nothing reconciles stale `pending` orders.
 6. **Comment handling** — fire-and-forget, deduped only in memory.
@@ -292,7 +295,7 @@ There is no event bus. The closest things:
 | **Deferred work** | `pending_messages` + a 2 s poller |
 | **Retry-with-backoff** | `product_media.embedding_attempted_at` + a partial index |
 | **Callback** | n8n → `POST /internal/orders/:id/sync-callback` |
-| **Scheduled** | 3 `@Cron` + 4 `setInterval` |
+| **Scheduled** | `@Cron` jobs + 4 `setInterval` (§1) |
 | **Eventual consistency for the UI** | ⚠️ **polling** — 3 s to 60 s per page. No websockets, no SSE |
 
 Admin polling intervals: conversation detail 5 s · traces 10 s · conversations list 15 s · dashboard 60 s
@@ -306,8 +309,9 @@ Admin polling intervals: conversation detail 5 s · traces 10 s · conversations
    observed. Check `pg_locks` before designing a fix.
 2. **Postgres pool size** — `database.module.ts` sets no `extra.max`, so it is node-pg's default of 10.
    With a hung LLM call pinning a connection, that is a small budget.
-3. **n8n schedule cadences** — the workflows are not in this repo; the 30-min/10-min/15-min figures come
-   from `CLAUDE.md` prose only.
+3. **n8n schedule cadences** — the workflows are not in this repo; the 10-min/15-min figures come from
+   `CLAUDE.md` prose only. (The Instagram content fetch is no longer an n8n workflow: it is the 30-minute
+   `InstagramContentService.tick` cron.)
 4. **Does Meta retry webhooks we ack with 200 and then drop internally?** Meta documents retries only for
    non-2xx, so the fire-and-forget ack almost certainly forfeits provider-side retry.
 5. **Were `checkConversationLimit` / `incrementConversationCount` removed, never wired, or expected to be

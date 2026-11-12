@@ -13,6 +13,7 @@ import { StoreConfig } from '../engine/entities/store-config.entity';
 import { ScreenshotTrainingModule } from '../screenshot-training/screenshot-training.module';
 import { AgentModule } from '../agent/agent.module';
 import { CustomerMediaModule } from '../customer-media/customer-media.module';
+import { ContentMediaModule } from '../content-media/content-media.module';
 import { InstagramSender } from './instagram/instagram-sender.service';
 
 @Module({
@@ -20,7 +21,7 @@ import { InstagramSender } from './instagram/instagram-sender.service';
     TypeOrmModule.forFeature([Conversation, StoreConfig]),
     ConversationsModule, IntegrationsModule, NotificationsModule,
     InstagramContentModule, ScreenshotTrainingModule,
-    AgentModule, CustomerMediaModule,
+    AgentModule, CustomerMediaModule, ContentMediaModule,
   ],
   controllers: [InstagramController],
   providers: [InstagramService, InstagramCommentService, InstagramSender, CryptoService],

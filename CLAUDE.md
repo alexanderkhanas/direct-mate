@@ -28,7 +28,8 @@ docs/v2-agent/   — The agent rework: decisions and the phase-by-phase implemen
 - **packages/shared compiled to JS** — not imported as raw TS, workspace symlink resolves it
 - **npm workspaces** with `legacy-peer-deps=true` in .npmrc
 - **Node 22.** `ai` v7 and `@ai-sdk/openai` are ESM-only; the CommonJS API loads them through Node's require(esm), and jest transforms them (`transformIgnorePatterns`).
-- **n8n for external orchestration** (Shopify/OpenCart sync workflows) — calls backend internal endpoints
+- **n8n for external orchestration** (Shopify/OpenCart sync workflows, the token-expiry report) — calls backend
+  internal endpoints. Instagram content is **not** fetched by n8n any more: that is an in-process cron (see Channels)
 - **InternalApiKeyGuard** for n8n-facing endpoints (`x-internal-key` header)
 - **JwtAuthGuard** for admin-facing endpoints
 - **Demo tenant isolation** — `tenants.is_demo BOOLEAN`. The public demo widget (`/demo/message`) takes an
@@ -69,10 +70,19 @@ admin simulator and Live DM console, the CLI simulator.
 2. **Gates:** store `paused`, conversation in human control → skip. Customer over
    `AGENT_MAX_CUSTOMER_MESSAGES_PER_HOUR` (60) → announced handoff (`rate_limited`).
 3. **History** (`HistoryBuilder`): the current conversation, time-gap markers, the previous conversation's
-   last messages as context, the customer's recent orders, and up to 10 customer photos (resized to
-   1024px, sent to the model as images).
-4. **Media** (`MediaContextResolver`): a story/post reply, shared post, comment or photo is matched to a
-   product (mapping table, pHash, then vision) and becomes a note to the agent.
+   last messages as context, the customer's recent orders, and up to 10 images: customer photos (resized to
+   1024px) and the content they point at. A story replied to, a post or reel shared, a post commented on is
+   copied once per media id (`ContentMediaService`, `uploads/content-media/`, cached in
+   `instagram_media_mappings.image_path`); a video becomes a 2×2 sheet of its most different frames (`ffmpeg-static`,
+   ≤180 s, ≤50 MB), falling back to its cover, then the caption. The runner waits up to 3 s for a copy in progress
+   (`ContentMediaService.prepare`). The label and caption sit inside the customer's message, and the grounding check
+   reads only what the customer typed (`said`), so a caption's price is no fact.
+4. **Media** (`MediaContextResolver`): a customer photo is matched to a product (mapping table, pHash, CLIP, then
+   vision). Content (story, post, reel, comment): the stored link, then a pHash match of our copy, else a note to read
+   the text on it first (name, article, price) and search. Only a link, an article or a name that fits one product
+   identifies it: offered alone when in stock, else said so with alternatives. Otherwise the agent sees the catalog as
+   text only, so it says it can't tell which model and shows the closest 2–3. Content it couldn't copy is labelled
+   «you can't see it». Another account's post is «looks like», never the same item.
 5. **Agent** (`AgentService.runTurn`): a tool loop, then the **guards**. A failed check regenerates once
    with the violations fed back; a second grounding failure is an announced handoff.
 6. **Supersede:** on Instagram, a reply is dropped if the customer wrote again meanwhile, and re-run once.
@@ -91,7 +101,8 @@ The runner, not the model, owns two fixed lines: the **welcome line** (the AI-as
 customer per 30 days) and the **handoff line** appended to every handoff.
 
 ### Tools (`modules/agent/tools/`)
-Read: `search_products`, `browse_category`, `get_product`, `get_size_help` (not offered when the store's
+Read: `search_products` (words, or an exact `sku` / article; optional `price` ±5 % of what the customer pays),
+`browse_category` (also `price`), `get_product`, `get_size_help` (not offered when the store's
 sizing is `consult`). State: `get_order_draft`, `update_order_draft` (lives in `checkout_sessions` /
 `checkout_items` / `checkout_customer_info`; price always from the DB). Staged effects, committed by the
 runner per mode: `show_products` (≤4 images), `send_size_chart`, `place_order` (only when the draft is
@@ -152,10 +163,19 @@ ready chart never stands in); otherwise from the height/weight ranges in `flow_c
 - **Echoes:** ours if the id is in `instagram_sent_mids`, the `app_id` is ours, or the text equals a recent
   bot message (rechecked after 3s). Anything else is a manager reply: the bot pauses (takeover,
   auto-resume after 30 min).
-- **Comments** (`InstagramCommentService`): on a feed post linked to a product, a small model
+- **Comments** (`InstagramCommentService`): on a feed post (linked to a product or not: the agent sees the post), a small model
   (`INSTAGRAM_COMMENT_GATE_MODEL`) screens whether the comment asks the shop something. If so, the
   comment is saved into the commenter's DM conversation and answered as a normal agent turn, sent as one
   **private reply** (text only — photos are dropped), then a short public reply points to Direct.
+- **Content fetch** (`InstagramContentService.tick`, an in-process `@Cron`, not n8n): every 30 minutes each connected
+  store's live stories, so every story is seen within its 24 h; hourly its posts and reels, newest first, paging on
+  only until a page holds a post it already has. A full page-through (up to 200) only while the store has no fetched
+  post (`bulk_import` row that isn't a story). Rows are upserted by media id, refreshing type, caption, links,
+  `thumbnail_url` and `media_product_type`, never a link. Then the SKU pass (unlinked rows nobody has linked or
+  unlinked) and, after every store is fetched, vision for new stories (≤5 per store). Stores one at a time, a failure
+  logged and skipped, an in-memory guard against overlapping runs (single replica). `CONTENT_FETCH_WORKER_ENABLED=false`
+  turns it off (the CLI scripts do). The Content page's «Fetch content» button runs the same fetch for one store and
+  answers before the vision pass.
 - **Learning mode:** turns run as `dry_run`; the learning observer records bot drafts next to manager replies.
 
 ### Instagram history import (setup)
@@ -287,7 +307,14 @@ mode for the side effects you want; never add `isDemo`-style flags inside the ag
   Replies sent by other auto-reply tools (ManyChat and similar) look like a person's in history and can't be told
   apart. After the store connects, a reply counts as a person's only if its echo was saved as a `manager` message.
   Not yet run end to end against a live account.
-- **Comment private replies are text only;** the agent is told, but a staged photo is silently dropped.
+- **Comment private replies are text only;** the agent is told, but a staged photo is silently dropped. Comments on
+  reels are still ignored.
+- **Content images:** the in-progress and already-tried captures are per process (a second replica could copy twice).
+  Files under `uploads/content-media/` are never deleted: covers that only stood in, re-copies after a file went
+  missing, and copies of other accounts' posts all stay. The content fetch cron skips its run while the history
+  import's Graph budget pause (`app_state.instagram_history_budget`) is on; the «Fetch content» button doesn't.
+  `ffmpeg-static` downloads its binary from GitHub during `npm ci`; if that fails a deploy, install ffmpeg with apt and
+  set `FFMPEG_BIN`.
 - **Live Instagram checks still pending on Unified Login:** echo `app_id`, `entry.id` shape, the
   3-message burst and manager takeover on a real account.
 - Three local tenants (`clothes-store`, `men-demo-store`, `luxe-space`) share one IG account id;
@@ -357,6 +384,8 @@ AGENT_MAX_CUSTOMER_MESSAGES_PER_HOUR, AGENT_MODERATION, JUDGE_MODEL
 INSTAGRAM_DEBOUNCE_MS, INSTAGRAM_COMMENT_GATE_MODEL
 ATTRIBUTES_MODEL, ATTRIBUTES_REASONING_EFFORT, ATTRIBUTES_WORKER_ENABLED
 HISTORY_IMPORT_WORKER_ENABLED (the Instagram history import cron; default on, the CLI scripts turn it off)
+CONTENT_FETCH_WORKER_ENABLED (the Instagram content fetch cron: stories, posts, reels; default on, the CLI scripts turn it off)
+FFMPEG_BIN (optional: an ffmpeg binary for video frames instead of ffmpeg-static's)
 SIZE_CHART_MODEL (vision; reads uploaded size charts, defaults to ATTRIBUTES_MODEL), SIZE_CHART_REASONING_EFFORT (default low)
 TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, TELEGRAM_BOT_USERNAME
 DEMO_DEBOUNCE_MS, DEMO_MAX_MESSAGE_LENGTH, DEMO_RATE_LIMIT_SESSIONS_PER_HOUR, DEMO_BUDGET_CENTS_GPT54_MINI, DEMO_BUDGET_CENTS_GPT54

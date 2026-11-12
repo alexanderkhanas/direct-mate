@@ -1,8 +1,32 @@
-import { mkdtemp, rm, stat } from 'fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import sharp = require('sharp');
-import { CustomerMediaService } from './customer-media.service';
+import { safeFetch, SafeFetchOptions, TooLargeError, UnsafeUrlError } from '../../common/safe-fetch';
+import {
+  CONTENT_FOLDER,
+  CustomerMediaService,
+  downloadMedia,
+  downloadToFile,
+  isContentCopy,
+  MediaFailure,
+} from './customer-media.service';
+
+jest.mock('../../common/safe-fetch', () => ({ ...jest.requireActual('../../common/safe-fetch'), safeFetch: jest.fn() }));
+const safeFetchMock = safeFetch as jest.MockedFunction<typeof safeFetch>;
+
+/** safeFetch answering with this status, type and body: the headers hook first, then the body to a file or back. */
+function respond(status: number, body: Buffer, type = 'image/jpeg') {
+  return async (url: string, options: SafeFetchOptions = {}) => {
+    const headers = { 'content-type': type };
+    options.onHeaders?.(status, headers);
+    if (options.toFile) {
+      await writeFile(options.toFile, body);
+      return { status, headers, body: Buffer.alloc(0), url };
+    }
+    return { status, headers, body, url };
+  };
+}
 
 describe('CustomerMediaService', () => {
   const media = new CustomerMediaService();
@@ -44,7 +68,7 @@ describe('CustomerMediaService', () => {
       error: 'unreadable',
     });
 
-    jest.spyOn(global, 'fetch').mockResolvedValue(new Response('gone', { status: 404 }));
+    safeFetchMock.mockImplementation(respond(404, Buffer.from('gone')));
     expect(await media.storeFromUrl('t1', 'https://cdn.example/expired.jpg')).toEqual({
       type: 'customer_photo',
       mediaId: 'https://cdn.example/expired.jpg',
@@ -54,7 +78,7 @@ describe('CustomerMediaService', () => {
 
   it('downloads a photo from its URL and keeps the URL as the media id', async () => {
     const body = await photo(1500, 1500);
-    jest.spyOn(global, 'fetch').mockResolvedValue(new Response(new Uint8Array(body), { status: 200 }));
+    safeFetchMock.mockImplementation(respond(200, body));
     const attachment = await media.storeFromUrl('t1', 'https://cdn.example/a.jpg');
 
     expect(attachment.mediaId).toBe('https://cdn.example/a.jpg');
@@ -83,5 +107,82 @@ describe('CustomerMediaService', () => {
     await media.remove([stored.url!, '/uploads/size-chart.png']);
     await expect(stat(join(root, stored.url!))).rejects.toThrow();
     expect(await media.load(stored.url!)).toBeNull();
+  });
+
+  it("loads copies of stories and posts for the agent, but never deletes them with a conversation", async () => {
+    const url = await media.saveImage('t1', await photo(10, 10), { folder: CONTENT_FOLDER, suffix: '-frames' });
+    expect(url).toMatch(/^\/uploads\/content-media\/t1\/[0-9a-f-]{36}-frames\.jpg$/);
+    expect(await media.load(url)).not.toBeNull();
+
+    // The same story's copy serves every customer who replies to it.
+    await media.remove([url]);
+    expect(await media.load(url)).not.toBeNull();
+  });
+
+  it("knows a copy by where its file is, so '..' can't reach another folder or store", async () => {
+    await mkdir(join(root, 'uploads/size-charts'), { recursive: true });
+    await writeFile(join(root, 'uploads/size-charts/chart.png'), await photo(10, 10));
+    const own = await media.storeFromBuffer('t1', await photo(10, 10));
+    const content = await media.saveImage('t1', await photo(10, 10), { folder: CONTENT_FOLDER });
+
+    expect(isContentCopy(content)).toBe(true);
+    expect(isContentCopy(content, 't1')).toBe(true);
+    expect(isContentCopy(content, 't2')).toBe(false);
+    expect(isContentCopy(own.url!.replace('/uploads/customer-media/', '/uploads/content-media/../customer-media/'))).toBe(false);
+    expect(isContentCopy('/uploads/content-media/t1/../../size-charts/chart.png')).toBe(false);
+    expect(isContentCopy('/uploads/content-media/chart.png')).toBe(false);
+    expect(await media.load('/uploads/content-media/t1/../../size-charts/chart.png')).toBeNull();
+
+    // A customer photo's path is held to its folder the same way: deleting a conversation can't delete other files.
+    await media.remove(['/uploads/customer-media/../size-charts/chart.png', content.replace('/uploads/content-media/', '/uploads/customer-media/../content-media/')]);
+    expect(await stat(join(root, 'uploads/size-charts/chart.png'))).toBeTruthy();
+    expect(await media.load(content)).not.toBeNull();
+  });
+});
+
+describe('downloadMedia', () => {
+  afterEach(() => jest.restoreAllMocks());
+  beforeEach(() => safeFetchMock.mockReset());
+
+  it('returns the bytes with their content type, through safeFetch with a timeout and a size cap', async () => {
+    safeFetchMock.mockImplementation(respond(200, Buffer.from([1, 2, 3]), 'video/mp4; codecs=avc1'));
+    const file = await downloadMedia('https://cdn.example/v.mp4');
+    expect([...file.body]).toEqual([1, 2, 3]);
+    expect(file.contentType).toBe('video/mp4');
+    expect(safeFetchMock.mock.calls[0][1]).toMatchObject({ timeoutMs: 15_000, maxBytes: 20 * 1024 * 1024 });
+  });
+
+  it("doesn't retry a file over the cap or a link to a private address", async () => {
+    safeFetchMock.mockRejectedValue(new TooLargeError('https://cdn.example/big is larger than 20 MB'));
+    const tooLarge = await downloadMedia('https://cdn.example/big').catch((err: unknown) => err);
+    expect(tooLarge).toBeInstanceOf(MediaFailure);
+    expect((tooLarge as MediaFailure).reason).toBe('too_large');
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+
+    safeFetchMock.mockReset();
+    safeFetchMock.mockRejectedValue(new UnsafeUrlError('169.254.169.254 is not public'));
+    const refused = await downloadMedia('http://169.254.169.254/latest').catch((err: unknown) => err);
+    expect((refused as MediaFailure).reason).toBe('download_failed');
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops at the headers when a picture was wanted and the link is a video', async () => {
+    safeFetchMock.mockImplementation(respond(200, Buffer.alloc(10), 'video/mp4'));
+    const failure = await downloadMedia('https://cdn.example/cover', { refuseVideo: true }).catch((err: unknown) => err);
+    expect((failure as MediaFailure).reason).toBe('unreadable');
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('streams a download into a file', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'download-'));
+    try {
+      safeFetchMock.mockImplementation(respond(200, Buffer.from('ftyp video bytes'), 'video/mp4'));
+      const file = join(dir, 'v');
+      expect(await downloadToFile('https://cdn.example/v.mp4', file, { maxBytes: 50 })).toEqual({ contentType: 'video/mp4' });
+      expect(safeFetchMock.mock.calls[0][1]).toMatchObject({ toFile: file, maxBytes: 50 });
+      expect((await readFile(file)).toString()).toBe('ftyp video bytes');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

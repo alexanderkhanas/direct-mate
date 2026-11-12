@@ -218,28 +218,44 @@ attachment semantics must be made in both files.
 
 `instagram_media_mappings` links an Instagram post/story to a catalogue product.
 
+Content is fetched **in the API**, by an in-process `@Cron` (`InstagramContentService.tick`, every 30
+minutes). It used to be driven by a scheduled n8n workflow calling `POST /internal/instagram/fetch-content`;
+that endpoint is gone.
+
 ```mermaid
 flowchart TB
-    S["fetchContent(tenantId)"] --> P["fetchPosts — GET /me/media<br/><i>full sync = 200 items, else first 50</i>"]
-    S --> ST["fetchStories — GET /me/stories<br/><i>expiresAt = now + 24h</i>"]
-    P --> SKU["matchSkusInCaptions<br/><i>regex patterns from brand_config.skuPatterns,<br/>then brute word-split</i>"]
-    ST --> INH["inheritProductsFromSourcePosts<br/><i>story reposting a feed post</i>"]
-    ST --> VIS["matchStoriesByVision<br/><i>hardcoded gpt-4o-mini, confidence ≥ 0.8</i>"]
+    T["tick — @Cron every 30 min<br/><i>off: CONTENT_FETCH_WORKER_ENABLED=false</i>"] --> A["fetchAllStores<br/><i>one store at a time; a failure is logged, the rest continue</i>"]
+    B["POST /instagram/media-mappings/fetch<br/><i>«Fetch content» button, one store</i>"] --> F
+    A --> F["fetchStore"]
+    F --> ST["fetchStories — GET /{ig-id}/stories<br/><i>every tick; expires_at = posted + 24h</i>"]
+    F --> P["fetchPosts — GET /{ig-id}/media<br/><i>hourly. Incremental: stops paging at the first page with a known post.<br/>Full (≤ 200) while the store has no fetched post</i>"]
+    P --> SKU["matchSkusInCaptions<br/><i>unlinked rows nobody linked or unlinked;<br/>brand_config.skuPatterns, then word-split</i>"]
+    ST -.->|"new stories, after every store is fetched<br/>(the button: in the background)"| VIS["matchStoriesByVision<br/><i>gpt-4o-mini, ≤ 5 stories per store, confidence ≥ 0.8</i>"]
 ```
 
-`match_method` vocabulary: `manual`, `bulk_import`, `sku_from_caption`, `story_from_post`,
-`ai_vision_match`, `customer_photo_phash`, `customer_photo_exact`, `customer_photo_clip`,
-`customer_photo_vision`.
+Every fetched item is upserted by `(tenant_id, instagram_media_id)`: `media_type`, caption, links,
+`thumbnail_url` (a video's cover) and `media_product_type` (FEED / REELS / STORY) are refreshed; a link is
+never touched. `RETURNING (xmax = 0)` tells a new item from a known one, which is what stops the incremental
+page-through and picks the stories for the vision pass. «No fetched post» means no `bulk_import` row that
+isn't a story: rows written when a customer replies to a story or shares a post don't turn the first full
+sync off.
+
+📌 The SKU pass and the vision pass write a link only `WHERE product_id IS NULL`, so a link made in the
+admin meanwhile wins. (Until Nov 2026 the SKU pass read its rows with `productId: undefined`, which TypeORM
+drops from the `where`: it re-ran over every row and could overwrite manual and colour links.)
+
+`match_method` vocabulary: `manual`, `bulk_import`, `sku_from_caption`, `ai_vision_match`,
+`customer_photo_phash`, `customer_photo_exact`, `customer_photo_clip`, `customer_photo_vision`; old rows may
+still carry `story_from_post`.
 
 📌 **`linked_color`** enables colour-level links (a story showing the black variant). When set,
 `resolveMediaProduct` loads the **full** variant matrix (not the single variant) so the bot can pitch
 other colours, then `handleColorLinkedMedia` writes the axis-scoping memory.
 
-⚠️ **`source_post_url` is never written by any code path.** `fetchPosts` omits it and `fetchStories`
-passes `null`, so `inheritProductsFromSourcePosts` always finds zero candidates. Either an out-of-band
-script populates it or the feature is dead.
+`source_post_url` is an unused column: nothing ever wrote it, and the story-inheritance code that read it
+was removed (Nov 2026).
 
-Admin surface: `ContentLinkingPage` — list, manual add, bulk fetch, paste-a-link parsing, link/unlink
+Admin surface: `ContentLinkingPage` — list, manual add, «Fetch content», paste-a-link parsing, link/unlink
 with an optional colour.
 
 ---
@@ -251,6 +267,9 @@ n8n runs as a container in the same compose stack, shares the Postgres instance,
 
 ⚠️ **The workflow definitions are not in this repo.** They live only in the `n8n_data` Docker volume.
 Losing that volume loses the Torgsoft and Shopify pipelines, and there is no version control over them.
+
+The Instagram content workflow is retired: content fetching moved into the API (§4). Once the API with the
+content cron is deployed, that workflow must be disabled in n8n; its endpoint now answers 404.
 
 ### 5.1 The internal API contract
 
@@ -265,7 +284,6 @@ Every route is guarded by `InternalApiKeyGuard` (`x-internal-key` header).
 | `POST /internal/connections/resolve-credentials` | `{connectionId, tenantId, platform, purpose}` | ⚠️ Returns a **decrypted** access token |
 | `GET /internal/connections/shopify` | — | Tenant discovery for scheduled workflows |
 | `POST /internal/orders/:id/sync-callback` | `SyncCallbackDto` | Order sync result, idempotency-keyed |
-| `POST /internal/instagram/fetch-content` | `{tenantId?}` | Omit tenantId to fan out over every connected tenant |
 | `POST /internal/instagram/refresh-tokens` | — | Logs IG tokens expiring within 7 days (no refresh grant exists — the store must reconnect) |
 | `POST /conversation/reply` | `ConversationReplyDto` | Full engine invocation on any tenant |
 

@@ -4,7 +4,7 @@ import { CheckoutSessionStatus, MessageRole } from '@direct-mate/shared';
 import { localizeColor } from '../../common/color-i18n';
 import { formatCurrency } from '../../common/format';
 import type { AgentHistoryEntry } from '../agent/agent.types';
-import type { MessageAttachment } from './entities/message.entity';
+import { CONTENT_ATTACHMENTS, MessageAttachment } from './entities/message.entity';
 
 const HISTORY_LIMIT = 30;
 const GAP_NOTE_AFTER_MS = 2 * 60 * 60 * 1000;
@@ -12,22 +12,40 @@ const EARLIER_WINDOW_DAYS = 14;
 const EARLIER_TAIL = 6;
 const RECENT_ORDERS = 3;
 
-/** The current conversation's newest photos are re-sent as images, up to this many; older ones get a label. */
+/**
+ * The current conversation's newest images are re-sent, up to this many: the
+ * customer's photos and the stories and posts they pointed at. Older ones get
+ * a label.
+ */
 const MAX_PHOTOS = 10;
 /** Longer messages are cut for the model (the full text stays in the database). */
 const MAX_MESSAGE_CHARS = 2000;
+/** A story's or post's caption, as far as the agent reads it. */
+const MAX_CAPTION_CHARS = 300;
 
 const ATTACHMENT_LABEL: Record<MessageAttachment['type'], string> = {
   customer_photo: '(sent a photo)',
   customer_video: "(sent a video; you can't watch videos, so ask for a photo or a description)",
   customer_audio: "(sent a voice message; you can't listen to it, so ask them to write)",
   customer_file: "(sent a file you can't open; ask what it is)",
-  story_reply: '(replied to a story)',
+  story_reply: "(replied to the shop's story)",
   post_reply: '(replied to a post)',
   post_share: '(shared a post)',
   story_mention: '(mentioned the shop in their story)',
   quoted_message: '(replying to an earlier message)',
   post_comment: "(commented under the shop's post)",
+};
+const CONTENT_LABEL: Partial<Record<MessageAttachment['type'], string>> = {
+  story_reply: "replied to the shop's story",
+  post_reply: 'replied to a post',
+  post_share: 'shared a post',
+  post_comment: "commented under the shop's post",
+};
+/** What our copy of a story or post shows, said where it is attached. */
+const CONTENT_IMAGE: Record<NonNullable<MessageAttachment['image']>, string> = {
+  picture: 'shown in the image',
+  video_frames: 'a video: the image shows frames from it',
+  video_cover: "a video: the image is its cover",
 };
 const PHOTO_NOT_LOADED = "(sent a photo that couldn't be loaded; ask them to send it again if you need it)";
 const PHOTO_DROPPED = '(sent a photo earlier in the conversation; it is no longer attached)';
@@ -49,9 +67,12 @@ const EARLIER_END = "— end of the earlier conversation; today's messages follo
  *
  * - the current conversation, verbatim, with a note where messages are more
  *   than 2 hours apart, so a next-morning reply reads as one;
- * - the customer's photos in it, as images on the messages they came with
- *   (the newest 10), so «є таке?» after a photo reads naturally on every
- *   later turn too. Prompt caching makes re-sending them cheap;
+ * - the customer's photos in it, and the stories, posts and reels they
+ *   replied to, shared or commented on (a video as a sheet of its frames),
+ *   as images on the messages they came with (the newest 10), so «є таке?»
+ *   after a photo reads naturally on every later turn too. Prompt caching
+ *   makes re-sending them cheap. A story's or post's caption goes in its
+ *   label;
  * - for a returning customer, the tail of their previous conversation and any
  *   order they didn't finish then, labelled as earlier and context-only. The
  *   old messages keep their roles: put inside a system note, a customer's
@@ -69,6 +90,20 @@ export class HistoryBuilder {
   constructor(private readonly dataSource: DataSource) {}
 
   async build(conversation: { id: string; tenantId: string; customerId: string }): Promise<AgentHistoryEntry[]> {
+    return (await this.buildTurn(conversation)).history;
+  }
+
+  /**
+   * The history, and the attachments of the customer's messages since the
+   * last reply read from the same rows, so what the media notes say is shown
+   * is what the history shows. A story's or post's copy that wasn't attached
+   * as an image (past the cap) comes without its `url` and `image`.
+   */
+  async buildTurn(conversation: {
+    id: string;
+    tenantId: string;
+    customerId: string;
+  }): Promise<{ history: AgentHistoryEntry[]; newAttachments: MessageAttachment[] }> {
     const [current, earlier, orders] = await Promise.all([
       this.messages(conversation.id, HISTORY_LIMIT),
       this.earlierConversation(conversation),
@@ -82,7 +117,7 @@ export class HistoryBuilder {
       current
         .filter((row) => row.role === MessageRole.User)
         .flatMap((row) => row.attachments ?? [])
-        .filter((a) => a.type === 'customer_photo' && a.url && !a.error)
+        .filter((a) => (a.type === 'customer_photo' || CONTENT_ATTACHMENTS.has(a.type)) && a.url && !a.error)
         .map((a) => a.url!)
         .slice(-MAX_PHOTOS),
     );
@@ -98,7 +133,7 @@ export class HistoryBuilder {
       if (entry) history.push(entry);
       if (entry?.role === 'bot') history.push(...productsNote(row));
     }
-    return history;
+    return { history, newAttachments: newAttachments(current, photos) };
   }
 
   private async messages(conversationId: string, limit: number): Promise<MessageRow[]> {
@@ -203,6 +238,21 @@ export class HistoryBuilder {
   }
 }
 
+/** Attachments of the customer's messages after the last reply; a content copy keeps its `url` only when it is attached. */
+function newAttachments(rows: MessageRow[], photos: Set<string>): MessageAttachment[] {
+  let start = rows.length;
+  while (start > 0 && rows[start - 1].role !== MessageRole.Assistant && rows[start - 1].role !== MessageRole.Manager) start--;
+  return rows
+    .slice(start)
+    .filter((row) => row.role === MessageRole.User)
+    .flatMap((row) => row.attachments ?? [])
+    .map((a) => {
+      if (!CONTENT_ATTACHMENTS.has(a.type) || !a.url || photos.has(a.url)) return a;
+      const { url: _url, image: _image, ...rest } = a;
+      return rest;
+    });
+}
+
 /**
  * A system note after a bot reply naming the products it was about, with
  * refs. Kept out of the bot's own text, so the model never sees refs in what
@@ -229,7 +279,8 @@ function toEntry(row: MessageRow, photos: Set<string> | null): AgentHistoryEntry
   if (!text) return null;
   switch (row.role) {
     case MessageRole.User:
-      return { role: 'customer', text, ...(images.length > 0 && { images }) };
+      // `said` only when labels were added: the grounding check reads it instead of `text`.
+      return { role: 'customer', text, ...(labels.length > 0 && { said }), ...(images.length > 0 && { images }) };
     case MessageRole.Assistant:
       return { role: 'bot', text };
     case MessageRole.Manager:
@@ -243,12 +294,36 @@ function describeAttachment(a: MessageAttachment, photos: Set<string> | null): {
   if (a.type === 'quoted_message' && a.quotedText) {
     return { label: `(replying to «${clip(a.quotedText.replace(/\s+/g, ' '), 120)}»)` };
   }
+  if (CONTENT_ATTACHMENTS.has(a.type)) return describeContent(a, photos);
   const label = ATTACHMENT_LABEL[a.type] ?? '(sent media)';
   if (a.type !== 'customer_photo' || !photos) return { label };
   if (a.error) return { label: PHOTO_NOT_LOADED };
   // Photos from before we kept copies have only Instagram's (expired) link.
   if (!a.url) return { label };
   return photos.has(a.url) ? { label, image: a.url } : { label: PHOTO_DROPPED };
+}
+
+/**
+ * «(replied to the shop's story, a video: the image shows frames from it;
+ * caption: «…»)». The caption stays inside the customer's message: in a
+ * system note, another account's caption would speak with system authority.
+ */
+function describeContent(a: MessageAttachment, photos: Set<string> | null): { label: string; image?: string } {
+  let what = CONTENT_LABEL[a.type] ?? 'sent media';
+  if (a.type === 'post_share' && a.reel) what = 'shared a reel';
+  if (a.foreign) what += ' from another account';
+  const image = a.url && photos?.has(a.url) ? a.url : undefined;
+  const caption = a.caption ? `«${clip(a.caption.replace(/\s+/g, ' ').trim(), MAX_CAPTION_CHARS)}»` : null;
+  const withCaption = caption ? `; caption: ${caption}` : '';
+  let seen: string;
+  if (image) seen = `, ${CONTENT_IMAGE[a.image ?? 'picture']}${withCaption}`;
+  // An earlier conversation gets labels only.
+  else if (!photos) seen = withCaption;
+  // Past the image cap: it was shown when it was new.
+  else if (a.url) seen = `; its image is no longer attached${withCaption}`;
+  // Never copied (another account's reel, an expired story): without saying so, the agent asks as if it could see.
+  else seen = caption ? `; you can't see it, only its caption: ${caption}` : "; you can't see it";
+  return { label: `(${what}${seen})`, ...(image && { image }) };
 }
 
 function clip(text: string, max = MAX_MESSAGE_CHARS): string {

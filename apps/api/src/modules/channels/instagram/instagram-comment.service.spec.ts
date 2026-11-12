@@ -18,7 +18,9 @@ function runResult(overrides: Partial<TurnRunResult> = {}): TurnRunResult {
   };
 }
 
-function setup(opts: { question?: boolean; saved?: string | null; result?: TurnRunResult; sendFails?: boolean } = {}) {
+function setup(
+  opts: { question?: boolean; saved?: string | null; result?: TurnRunResult; sendFails?: boolean; linked?: boolean } = {},
+) {
   const deps = {
     integrations: {
       findByExternalAccountId: jest.fn().mockResolvedValue({
@@ -28,7 +30,7 @@ function setup(opts: { question?: boolean; saved?: string | null; result?: TurnR
         accessTokenEncrypted: 'enc',
       }),
     },
-    content: { findByMediaId: jest.fn().mockResolvedValue({ productId: 'product-1' }) },
+    content: { findByMediaId: jest.fn().mockResolvedValue(opts.linked === false ? null : { productId: 'product-1' }) },
     conversations: {
       findOrCreateCustomer: jest.fn().mockResolvedValue({ id: 'customer-1', username: null }),
       updateCustomer: jest.fn(),
@@ -45,6 +47,7 @@ function setup(opts: { question?: boolean; saved?: string | null; result?: TurnR
     },
     config: { get: jest.fn() },
     db: { query: jest.fn().mockResolvedValue([{ flow_config: {} }]) },
+    contentMedia: { capture: jest.fn().mockResolvedValue({}) },
   };
   const service = new InstagramCommentService(
     deps.integrations as never,
@@ -56,11 +59,14 @@ function setup(opts: { question?: boolean; saved?: string | null; result?: TurnR
     deps.sender as never,
     deps.config as never,
     deps.db as never,
+    deps.contentMedia as never,
   );
-  jest.spyOn(service as unknown as { isQuestionForShop: () => Promise<boolean> }, 'isQuestionForShop').mockResolvedValue(opts.question ?? true);
+  const gate = jest
+    .spyOn(service as unknown as { isQuestionForShop: () => Promise<boolean> }, 'isQuestionForShop')
+    .mockResolvedValue(opts.question ?? true);
   const fetchMock = jest.fn().mockResolvedValue({ ok: true, text: async () => '' });
   global.fetch = fetchMock as never;
-  return { service, deps, fetchMock };
+  return { service, deps, fetchMock, gate };
 }
 
 describe('InstagramCommentService', () => {
@@ -100,6 +106,41 @@ describe('InstagramCommentService', () => {
     );
     expect(deps.db.query).toHaveBeenCalledWith(expect.stringContaining("delivery_status = 'sent'"), [['m-welcome', 'm-reply']]);
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/comment-1/replies'), expect.anything());
+  });
+
+  it("answers a comment under a post that isn't linked to a product, with the post's image copied while it is screened", async () => {
+    const { service, deps, fetchMock, gate } = setup({ linked: false });
+    await service.handleComment('ig-shop', COMMENT);
+
+    expect(deps.contentMedia.capture).toHaveBeenCalledWith('tenant-1', { type: 'post_comment', mediaId: 'media-1' });
+    expect(deps.contentMedia.capture.mock.invocationCallOrder[0]).toBeLessThan(gate.mock.invocationCallOrder[0]);
+    // The turn itself waits for the copy (TurnRunner → ContentMediaService.prepare) and finds it on the attachment.
+    expect(deps.conversations.saveChannelMessage).toHaveBeenCalledWith(
+      'conv-1',
+      'tenant-1',
+      expect.anything(),
+      'Ціна?',
+      'comment-1',
+      [{ type: 'post_comment', mediaId: 'media-1' }],
+    );
+    expect(deps.runner.run).toHaveBeenCalledTimes(1);
+    expect(deps.sender.sendText).toHaveBeenCalledWith(expect.anything(), { comment_id: 'comment-1' }, expect.any(String), expect.anything());
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/comment-1/replies'), expect.anything());
+  });
+
+  it("answers the comment even when copying the post's image fails", async () => {
+    const { service, deps } = setup({ linked: false });
+    deps.contentMedia.capture.mockRejectedValueOnce(new Error('disk full'));
+    await service.handleComment('ig-shop', COMMENT);
+    await new Promise((r) => setImmediate(r));
+    expect(deps.runner.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('still ignores comments under reels', async () => {
+    const { service, deps } = setup({ linked: false });
+    await service.handleComment('ig-shop', { ...COMMENT, media: { id: 'media-1', media_product_type: 'REELS' } });
+    expect(deps.contentMedia.capture).not.toHaveBeenCalled();
+    expect(deps.runner.run).not.toHaveBeenCalled();
   });
 
   it('drops a comment Meta sent again', async () => {

@@ -11,6 +11,7 @@ import { ConversationTracesService } from './conversation-traces.service';
 import { ConversationsController } from './conversations.controller';
 import { ConversationReplyController } from './conversation-reply.controller';
 import { InstagramContentModule } from '../channels/instagram/instagram-content.module';
+import { ContentMediaModule } from '../content-media/content-media.module';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 import { AgentModule } from '../agent/agent.module';
 import { OrdersModule } from '../orders/orders.module';
@@ -30,6 +31,7 @@ import { MediaContextResolver } from './media-context.resolver';
       StoreConfig,
     ]),
     InstagramContentModule,
+    ContentMediaModule,
     SubscriptionsModule,
     AgentModule,
     OrdersModule,

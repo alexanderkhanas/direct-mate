@@ -9,10 +9,18 @@ import {
 import { MessageDirection, MessageRole } from '@direct-mate/shared';
 import { Conversation } from './conversation.entity';
 
+/** Attachments that point at a story, post or reel, whose image the agent is shown (`ContentMediaService`). */
+export const CONTENT_ATTACHMENTS: ReadonlySet<MessageAttachment['type']> = new Set([
+  'story_reply',
+  'post_reply',
+  'post_share',
+  'post_comment',
+]);
+
 /**
- * Something a message carried besides text. Same shape as the media reference
- * the Instagram ingest already extracts (`extractMediaReference`), plus our
- * copy of a customer's photo.
+ * Something a message carried besides text: a customer's photo (with our
+ * copy), or the story, post or reel they replied to, shared or commented on
+ * (with our copy of its image, or of frames from its video, and its caption).
  */
 export interface MessageAttachment {
   type:
@@ -34,10 +42,26 @@ export interface MessageAttachment {
   mediaId: string;
   /** What the quoted message said, looked up when the reply arrived. */
   quotedText?: string;
-  /** Our copy of a customer's photo (`CustomerMediaService`), re-sent to the agent on later turns. */
+  /**
+   * Our copy, re-sent to the agent as an image on later turns: a customer's
+   * photo (`CustomerMediaService`), or a story's, post's or reel's image
+   * (`ContentMediaService`; what it shows is in `image`).
+   */
   url?: string;
   /** Why a customer's photo has no copy. */
   error?: 'download_failed' | 'too_large' | 'unreadable';
+
+  // Stories, posts and reels only.
+  /** The content's link from the webhook (Meta's CDN, expires within a day), to make our copy from. */
+  sourceUrl?: string;
+  /** The content's caption (a shared post's title, or from Graph). */
+  caption?: string;
+  /** A shared reel, not a feed post. */
+  reel?: boolean;
+  /** Posted by another account, not the shop: the agent may say a product looks like it, not that it's the same. */
+  foreign?: boolean;
+  /** What `url` shows: the content's own picture, frames from its video tiled into one image, or the video's cover. */
+  image?: 'picture' | 'video_frames' | 'video_cover';
 }
 
 @Entity('messages')

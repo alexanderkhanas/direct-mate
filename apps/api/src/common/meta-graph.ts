@@ -5,3 +5,9 @@
  * account.
  */
 export const GRAPH_API = 'https://graph.facebook.com/v27.0';
+
+/**
+ * `app_state` row holding the app-wide pause on Meta's call budget: the history
+ * import sets it, and every scheduled Graph reader waits it out.
+ */
+export const GRAPH_BUDGET_KEY = 'instagram_history_budget';

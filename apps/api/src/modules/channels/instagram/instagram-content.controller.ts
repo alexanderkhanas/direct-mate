@@ -62,6 +62,7 @@ export class InstagramContentController {
     return this.contentService.createManualMapping(user.tenantId, body);
   }
 
+  /** «Fetch content»: the scheduled fetch for this store, now. Vision for new stories runs after the response. */
   @Post('fetch')
   fetch(@CurrentUser() user: JwtPayload) {
     return this.contentService.fetchContent(user.tenantId);
@@ -73,24 +74,14 @@ export class InstagramContentController {
   }
 }
 
-// ─── Internal endpoint (n8n cron) ─────────────────────────────
+// ─── Internal endpoint (n8n: the token-expiry report) ─────────
+// Content fetching is an in-process cron (InstagramContentService.tick), not n8n.
 
 @ApiTags('internal/instagram')
 @UseGuards(InternalApiKeyGuard)
 @Controller('internal/instagram')
 export class InternalInstagramContentController {
-  constructor(
-    private readonly contentService: InstagramContentService,
-    private readonly integrationsService: IntegrationsService,
-  ) {}
-
-  @Post('fetch-content')
-  fetchContent(@Body() body?: { tenantId?: string }) {
-    if (body?.tenantId) {
-      return this.contentService.fetchContent(body.tenantId);
-    }
-    return this.contentService.fetchContentForAllTenants();
-  }
+  constructor(private readonly integrationsService: IntegrationsService) {}
 
   @Post('refresh-tokens')
   refreshTokens() {

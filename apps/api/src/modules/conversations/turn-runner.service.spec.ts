@@ -36,6 +36,8 @@ function setup(opts: {
   placeOrder?: { ok: true; orderId: string; alreadyPlaced: boolean } | { ok: false; error: string };
   paymentClaim?: boolean;
   messagesLastHour?: number;
+  newAttachments?: unknown[];
+  history?: unknown[];
 } = {}) {
   const queries: string[] = [];
   const dataSource = {
@@ -78,12 +80,25 @@ function setup(opts: {
     recordConversation: jest.fn(async () => undefined),
   };
 
+  const order: string[] = [];
+  const contentMedia = { prepare: jest.fn(async (_t: string, _c: string) => void order.push('prepare')) };
+  const history = {
+    buildTurn: jest.fn(async () => {
+      order.push('history');
+      return {
+        history: opts.history ?? [{ role: 'customer', text: 'Скільки коштує сорочка?' }],
+        newAttachments: opts.newAttachments ?? [],
+      };
+    }),
+  };
+  const media = { resolve: jest.fn(async (..._args: unknown[]) => ({ notes: [], messageText: '', productId: null })) };
+
   const runner = new TurnRunner(
     dataSource as never,
     conversations as never,
     traces as never,
-    { build: async () => [{ role: 'customer', text: 'Скільки коштує сорочка?' }] } as never,
-    { resolve: async () => ({ notes: [], messageText: '', productId: null }) } as never,
+    history as never,
+    media as never,
     agent as never,
     { load: async () => ({ ...SETTINGS, ...opts.settings }) } as never,
     subscriptions as never,
@@ -91,13 +106,59 @@ function setup(opts: {
     { triggerExternalSync: jest.fn() } as never,
     telegram as never,
     { get: () => undefined } as never,
+    contentMedia as never,
   );
-  const run = (mode: TurnMode = 'demo') =>
-    runner.run({ tenantId: 't1', conversationId: 'c1', mode, source: 'simulator_cli' });
-  return { run, queries, saved, conversations, agent, drafts, telegram, traces, subscriptions };
+  const run = (mode: TurnMode = 'demo', extra: Partial<Parameters<TurnRunner['run']>[0]> = {}) =>
+    runner.run({ tenantId: 't1', conversationId: 'c1', mode, source: 'simulator_cli', ...extra });
+  return { run, queries, saved, conversations, agent, drafts, telegram, traces, subscriptions, contentMedia, media, order };
 }
 
 describe('TurnRunner', () => {
+  it("waits for the images of the stories and posts in the new messages before reading the history", async () => {
+    const t = setup();
+    await t.run();
+    expect(t.contentMedia.prepare).toHaveBeenCalledWith('t1', 'c1');
+    expect(t.order).toEqual(['prepare', 'history']);
+  });
+
+  it('gives the resolver the copy, caption and flags of a story or post, and only the id of a photo', async () => {
+    const story = { type: 'story_reply', mediaId: 's1', sourceUrl: 'https://cdn/s.mp4', url: '/uploads/content-media/t1/s-frames.jpg', image: 'video_frames', caption: 'Сукня' };
+    const share = { type: 'post_share', mediaId: 'p9', url: '/uploads/content-media/t1/p.jpg', image: 'picture', foreign: true, reel: true };
+    const photo = { type: 'customer_photo', mediaId: 'https://cdn/x.jpg', url: '/uploads/customer-media/t1/x.jpg' };
+    const t = setup({ newAttachments: [story, share, photo] });
+    await t.run();
+    expect(t.media.resolve.mock.calls[0][2]).toEqual([
+      { type: 'story_reply', mediaId: 's1', url: story.url, image: 'video_frames', caption: 'Сукня' },
+      { type: 'post_share', mediaId: 'p9', url: share.url, image: 'picture', foreign: true, reel: true },
+      { type: 'customer_photo', mediaId: 'https://cdn/x.jpg' },
+    ]);
+    // Read with the history, from the same rows: a copy that lands in between can't make a note point at a missing image.
+    expect(t.queries.some((sql) => sql.includes('SELECT attachments FROM messages'))).toBe(false);
+  });
+
+  it('gives the manager and the trace the whole last message, so a share with no words still says what it was', async () => {
+    const share = '(shared a post, shown in the image)';
+    const t = setup({
+      history: [{ role: 'customer', text: share, said: '' }],
+      agent: agentResult({ reply: null, handoff: { reason: 'unsure', summaryForManager: null } }),
+    });
+    await t.run('live');
+    expect(t.telegram.notifyHandoff.mock.calls[0][0]).toMatchObject({ lastMessage: share });
+    expect(t.media.resolve.mock.calls[0][3]).toBe(share);
+    expect(t.traces.persistAgentTurn.mock.calls[0]).toEqual(expect.arrayContaining([expect.objectContaining({ inboundMessageText: share })]));
+  });
+
+  it("takes a reference the caller passed from its saved message, which carries the copy", async () => {
+    const story = { type: 'story_reply', mediaId: 's1', url: '/uploads/content-media/t1/s.jpg', image: 'picture' };
+    const t = setup({ newAttachments: [story] });
+    await t.run('demo', { mediaReference: { type: 'story_reply', mediaId: 's1' } });
+    expect(t.media.resolve.mock.calls[0][2]).toEqual([story]);
+
+    const other = setup({ newAttachments: [story] });
+    await other.run('demo', { mediaReference: { type: 'post_reply', mediaId: 'p1' } });
+    expect(other.media.resolve.mock.calls[0][2]).toEqual([{ type: 'post_reply', mediaId: 'p1' }]);
+  });
+
   it('leaves a conversation alone while another run holds its lease', async () => {
     const t = setup({ leaseFree: false });
     expect((await t.run()).status).toBe('busy');

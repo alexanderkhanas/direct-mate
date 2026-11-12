@@ -15,6 +15,9 @@ export interface CatalogSearch {
    * many to show; `total` lets the model know the list goes on.
    */
   search(tenantId: string, query: { text: string; category?: string }): Promise<CatalogSearchResult>;
+
+  /** Products with this SKU or article (product, model or variant code), read off a post or typed by the customer. */
+  findBySku(tenantId: string, sku: string): Promise<string[]>;
 }
 
 export interface CatalogSearchResult {
@@ -78,6 +81,13 @@ interface SearchRow {
   search_keywords: string | null;
 }
 
+interface SkuRow {
+  id: string;
+  sku: string | null;
+  model_name: string | null;
+  variant_skus: string[] | null;
+}
+
 /**
  * Ranks the whole catalog in memory — a store has 20 to 300 products, and the
  * keyword search behind the old engine returned 5 by sync time, not relevance,
@@ -90,6 +100,7 @@ interface SearchRow {
 @Injectable()
 export class RankedCatalogSearch implements CatalogSearch {
   private readonly cache = new Map<string, { rows: SearchRow[]; expiresAt: number }>();
+  private readonly skuCache = new Map<string, { rows: SkuRow[]; expiresAt: number }>();
 
   constructor(
     private readonly dataSource: DataSource,
@@ -102,6 +113,25 @@ export class RankedCatalogSearch implements CatalogSearch {
 
     const fallback = await this.availability.checkAll(tenantId, { query: query.text, category: query.category });
     return { ids: fallback.map((r) => r.product.id), total: fallback.length };
+  }
+
+  async findBySku(tenantId: string, sku: string): Promise<string[]> {
+    return matchSku(await this.skuRows(tenantId), sku);
+  }
+
+  private async skuRows(tenantId: string): Promise<SkuRow[]> {
+    const cached = this.skuCache.get(tenantId);
+    if (cached && cached.expiresAt > Date.now()) return cached.rows;
+    const rows: SkuRow[] = await this.dataSource.query(
+      `SELECT p.id, p.sku, p.model_name, array_remove(array_agg(v.sku), NULL) AS variant_skus
+         FROM products p
+         LEFT JOIN product_variants v ON v.product_id = p.id AND v.active = true
+        WHERE p.tenant_id = $1 AND p.status = 'active'
+        GROUP BY p.id`,
+      [tenantId],
+    );
+    this.skuCache.set(tenantId, { rows, expiresAt: Date.now() + TTL_MS });
+    return rows;
   }
 
   private async rows(tenantId: string): Promise<SearchRow[]> {
@@ -141,5 +171,44 @@ export function rankProducts(rows: SearchRow[], text: string, category?: string)
     })
     .filter((r) => r.score > 0)
     .sort((a, b) => b.score - a.score || a.length - b.length)
+    .map((r) => r.id);
+}
+
+/** What separates the parts of a code: «LV-2933», «AB.12/RED». */
+const SKU_SEPARATORS = /[\s\-‐‑–—_/.]+/gu;
+
+/** A code as written on a post or by a customer: «Арт. LV-2933», «sku: lv 2933», «LV.2933» → «lv2933». */
+export function normalizeSku(code: string): string {
+  return code
+    .trim()
+    .replace(/^(?:sku|арт(?:икул)?|art(?:icle)?|код|code)(?:[.:#№]|\s)+/iu, '')
+    .replace(/^[#№]\s*/u, '')
+    .replace(SKU_SEPARATORS, '')
+    .toLowerCase();
+}
+
+/**
+ * Products whose SKU or model code is this one, ignoring case and separators
+ * (spaces, dashes, dots, slashes). When none is, a variant SKU that starts with it at a separator:
+ * stores often code a variant as article-colour-size («ADID-002-BILY-M»), and
+ * a post shows the article («ADID-002»). At least two segments, so a brand
+ * prefix («ADID») doesn't list the whole brand.
+ */
+export function matchSku(rows: SkuRow[], code: string): string[] {
+  const wanted = normalizeSku(code);
+  if (wanted.length < 2) return [];
+  const exact = rows.filter((r) =>
+    [r.sku, r.model_name, ...(r.variant_skus ?? [])].some((c) => c && normalizeSku(c) === wanted),
+  );
+  if (exact.length > 0) return exact.map((r) => r.id);
+  if (wanted.length < 3) return [];
+  return rows
+    .filter((r) =>
+      (r.variant_skus ?? []).some((c) => {
+        const segments = c.toLowerCase().split(SKU_SEPARATORS).filter(Boolean);
+        for (let k = 2; k < segments.length; k++) if (segments.slice(0, k).join('') === wanted) return true;
+        return false;
+      }),
+    )
     .map((r) => r.id);
 }

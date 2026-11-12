@@ -1,7 +1,10 @@
 import * as dns from 'dns';
+import { createWriteStream } from 'fs';
 import * as http from 'http';
 import * as https from 'https';
 import { BlockList, isIP, type LookupFunction } from 'net';
+import { Transform } from 'stream';
+import { pipeline } from 'stream/promises';
 import * as zlib from 'zlib';
 
 /**
@@ -16,15 +19,24 @@ import * as zlib from 'zlib';
  *   and a private one for the connection.
  * - Redirects are followed by hand, each one checked the same way.
  * - One timeout for the whole request, and a size cap on the body.
+ * - A large body (a video) can go straight to a file (`toFile`), so it never
+ *   sits in memory.
  */
 
 export class UnsafeUrlError extends Error {}
+
+/** The body is over `maxBytes` (by its Content-Length, or once it has passed the cap). */
+export class TooLargeError extends Error {}
 
 export interface SafeFetchOptions {
   timeoutMs?: number;
   maxBytes?: number;
   maxRedirects?: number;
   headers?: Record<string, string>;
+  /** Write the body to this file instead of returning it (`body` comes back empty). */
+  toFile?: string;
+  /** Sees the final response's status and headers before its body is read; throwing stops the download. */
+  onHeaders?: (status: number, headers: Record<string, string>) => void;
 }
 
 export interface SafeFetchResult {
@@ -160,18 +172,42 @@ function request(
           res.resume();
           return resolve({ status, headers, body: Buffer.alloc(0) });
         }
+        const tooLarge = () => new TooLargeError(`${url} is larger than ${Math.round(opts.maxBytes / 1024 / 1024)} MB`);
+        try {
+          opts.onHeaders?.(status, headers);
+          if (Number(headers['content-length'] ?? 0) > opts.maxBytes) throw tooLarge();
+        } catch (err) {
+          req.destroy(err as Error);
+          return;
+        }
         const encoding = headers['content-encoding'];
         const stream =
           encoding === 'gzip' ? res.pipe(zlib.createGunzip())
           : encoding === 'deflate' ? res.pipe(zlib.createInflate())
           : encoding === 'br' ? res.pipe(zlib.createBrotliDecompress())
           : res;
-        const chunks: Buffer[] = [];
         let size = 0;
+        if (opts.toFile) {
+          const cap = new Transform({
+            transform(chunk: Buffer, _encoding, done) {
+              size += chunk.length;
+              done(size > opts.maxBytes ? tooLarge() : null, chunk);
+            },
+          });
+          pipeline(stream, cap, createWriteStream(opts.toFile)).then(
+            () => resolve({ status, headers, body: Buffer.alloc(0) }),
+            (err: Error) => {
+              req.destroy(err);
+              reject(err);
+            },
+          );
+          return;
+        }
+        const chunks: Buffer[] = [];
         stream.on('data', (chunk: Buffer) => {
           size += chunk.length;
           if (size > opts.maxBytes) {
-            req.destroy(new Error(`${url} is larger than ${Math.round(opts.maxBytes / 1024 / 1024)} MB`));
+            req.destroy(tooLarge());
             return;
           }
           chunks.push(chunk);

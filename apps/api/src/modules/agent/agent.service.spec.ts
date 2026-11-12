@@ -1,7 +1,7 @@
 import { APICallError } from 'ai';
 import { MockLanguageModelV4 } from 'ai/test';
 import { CheckoutSessionStatus } from '@direct-mate/shared';
-import { AgentService, trailingCustomerText } from './agent.service';
+import { AgentService, trailingCustomerText, trailingCustomerWords } from './agent.service';
 import type { AgentProduct } from './catalog/catalog-reader.service';
 import type { AgentHistoryEntry } from './agent.types';
 import type { LoadedImage } from '../customer-media/customer-media.service';
@@ -274,5 +274,31 @@ describe('trailingCustomerText', () => {
         { role: 'customer', text: 'на 182' },
       ]),
     ).toBe('а чорна є?\nна 182');
+  });
+
+  it('keeps the attachment labels, so a photo-only or share-only message still reads as something', () => {
+    expect(
+      trailingCustomerText([
+        { role: 'bot', text: 'Вітаю!' },
+        { role: 'customer', text: '(shared a post, shown in the image)', said: '' },
+      ]),
+    ).toBe('(shared a post, shown in the image)');
+  });
+});
+
+describe('trailingCustomerWords', () => {
+  const history = [
+    { role: 'bot' as const, text: 'Вітаю!' },
+    {
+      role: 'customer' as const,
+      text: "(replied to the shop's story, a picture; caption: «Сукня Мілана — 1990 грн») а є в M?",
+      said: 'а є в M?',
+    },
+    { role: 'customer' as const, text: 'на 182' },
+  ];
+
+  it("takes only what the customer typed, so a price in a post's caption can't pass the grounding check as theirs", () => {
+    expect(trailingCustomerWords(history)).toBe('а є в M?\nна 182');
+    expect(trailingCustomerText(history)).toContain('1990 грн');
   });
 });

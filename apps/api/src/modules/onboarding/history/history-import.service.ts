@@ -7,6 +7,7 @@ import { DataSource } from 'typeorm';
 import { generateText, Output } from 'ai';
 import { z } from 'zod';
 import { returnedRows } from '../../../common/db';
+import { GRAPH_BUDGET_KEY } from '../../../common/meta-graph';
 import { AgentModelFactory } from '../../agent/model.factory';
 import {
   GraphHistoryClient,
@@ -47,7 +48,7 @@ const AGENT_EXAMPLES = 8;
 /** Tags the examples this import adds, so applying again replaces them and leaves the owner's own. */
 export const HISTORY_EXAMPLE_TAG = 'instagram-history';
 /** `app_state` row holding the app-wide pause on Meta's message-read budget. */
-export const BUDGET_KEY = 'instagram_history_budget';
+export const BUDGET_KEY = GRAPH_BUDGET_KEY;
 /** Advisory lock taken around a claim, so two processes can't each claim a store. Any app-unique number. */
 export const CLAIM_LOCK = 7_301_942;
 

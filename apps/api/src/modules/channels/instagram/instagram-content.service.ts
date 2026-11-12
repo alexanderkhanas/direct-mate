@@ -1,7 +1,8 @@
 import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { Repository } from 'typeorm';
+import { Cron, CronExpression } from '@nestjs/schedule';
+import { IsNull, Not, Repository } from 'typeorm';
 import OpenAI from 'openai';
 import { InstagramMediaMapping } from './entities/instagram-media-mapping.entity';
 import { Connection } from '../../integrations/entities/connection.entity';
@@ -16,7 +17,8 @@ import { ConnectionType, ConnectionStatus } from '@direct-mate/shared';
 import { readFile } from 'fs/promises';
 import { extname } from 'path';
 import { uploadPath } from '../../../common/uploads';
-import { GRAPH_API } from '../../../common/meta-graph';
+import { GRAPH_API, GRAPH_BUDGET_KEY } from '../../../common/meta-graph';
+import { safeFetch } from '../../../common/safe-fetch';
 import type { IgAccount } from './instagram-sender.service';
 
 const MEDIA_TYPES: Record<string, string> = {
@@ -27,6 +29,57 @@ const MEDIA_TYPES: Record<string, string> = {
   '.gif': 'image/gif',
   '.avif': 'image/avif',
 };
+
+/** What Graph or a webhook tells us about one piece of content. */
+export interface ContentDetails {
+  caption?: string | null;
+  mediaUrl?: string | null;
+  permalink?: string | null;
+  /** Graph's `media_type`, lower case: image, video, carousel_album. */
+  mediaType?: string | null;
+  /** A video's cover (the store's own reels and video posts). */
+  thumbnailUrl?: string | null;
+  /** Graph's `media_product_type`: FEED, REELS, STORY, AD. */
+  productType?: string | null;
+  /** Our stored copy (image or video contact sheet), `/uploads/content-media/…`. */
+  imagePath?: string | null;
+}
+
+/** What Graph said about one piece of content. `refused`: it can't be read with the store's token, or there is none. */
+export type MediaRead = { details: ContentDetails } | { details: null; refused: boolean };
+
+/** A post, reel or story as Graph returns it. */
+interface GraphMedia {
+  id: string;
+  caption?: string;
+  media_type?: string;
+  media_product_type?: string;
+  media_url?: string;
+  thumbnail_url?: string;
+  permalink?: string;
+  timestamp?: string;
+}
+
+interface GraphPage {
+  data?: GraphMedia[];
+  paging?: { cursors?: { after?: string }; next?: string };
+}
+
+const MEDIA_FIELDS = 'id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp';
+const POSTS_PAGE_SIZE = 50;
+/** Posts read in one run at most: a store's first sync, or a burst of new posts. */
+const MAX_POSTS_PER_RUN = 200;
+const MAX_STORIES_PER_RUN = 100;
+const STORY_LIFETIME_MS = 24 * 60 * 60 * 1000;
+/** The scheduled run reads posts and reels on every other 30-minute tick. */
+const POSTS_INTERVAL_MS = 55 * 60 * 1000;
+/** New stories matched by vision per store per run: one model call each. */
+const VISION_STORIES_PER_RUN = 5;
+/** Every Graph call. */
+const GRAPH_TIMEOUT_MS = 30_000;
+/** An image downloaded for a vision call. */
+const VISION_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
+const VISION_IMAGE_TIMEOUT_MS = 15_000;
 
 const DEFAULT_SKU_PATTERNS = [
   'SKU[:\\s]*(\\S+)',
@@ -68,6 +121,10 @@ type VisionCandidate = {
 export class InstagramContentService {
   private readonly logger = new Logger(InstagramContentService.name);
   private readonly openai: OpenAI;
+  /** A scheduled run is in progress in this process. Production is a single replica. */
+  private running = false;
+  /** When this process last started reading posts and reels; 0 = not since boot. */
+  private lastPostsAt = 0;
 
   constructor(
     @InjectRepository(InstagramMediaMapping)
@@ -141,22 +198,57 @@ export class InstagramContentService {
       .execute();
   }
 
+  /**
+   * Remember a piece of content a customer brought up that isn't linked to a
+   * product: a new row, or the empty fields of an existing one filled in (the
+   * image we saved, the caption, Meta's links). Never touches a link. A stored
+   * image equal to `stalePath` (its file is gone) is replaced.
+   */
   async saveUnlinkedMedia(
     tenantId: string,
     mediaId: string,
     mediaType: string,
+    details: ContentDetails = {},
+    stalePath: string | null = null,
   ): Promise<void> {
-    await this.mappingRepo
-      .createQueryBuilder()
-      .insert()
-      .into(InstagramMediaMapping)
-      .values({
+    await this.dataSource.query(
+      `INSERT INTO instagram_media_mappings
+         (tenant_id, instagram_media_id, media_type, caption, media_url, permalink, image_path, thumbnail_url, media_product_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (tenant_id, instagram_media_id) DO UPDATE SET
+         caption = coalesce(instagram_media_mappings.caption, EXCLUDED.caption),
+         media_url = coalesce(EXCLUDED.media_url, instagram_media_mappings.media_url),
+         permalink = coalesce(instagram_media_mappings.permalink, EXCLUDED.permalink),
+         image_path = CASE WHEN instagram_media_mappings.image_path IS NOT DISTINCT FROM $10::text THEN EXCLUDED.image_path
+                           ELSE coalesce(instagram_media_mappings.image_path, EXCLUDED.image_path) END,
+         thumbnail_url = coalesce(EXCLUDED.thumbnail_url, instagram_media_mappings.thumbnail_url),
+         media_product_type = coalesce(instagram_media_mappings.media_product_type, EXCLUDED.media_product_type)`,
+      [
         tenantId,
-        instagramMediaId: mediaId,
+        mediaId,
         mediaType,
-      })
-      .orIgnore()
-      .execute();
+        details.caption ?? null,
+        details.mediaUrl ?? null,
+        details.permalink ?? null,
+        details.imagePath ?? null,
+        details.thumbnailUrl ?? null,
+        details.productType ?? null,
+        stalePath,
+      ],
+    );
+  }
+
+  /**
+   * Keep our copy of a piece of content's image (or video contact sheet), made
+   * once per media id: where there is none yet, or the one stored is
+   * `stalePath` (its file is gone).
+   */
+  async saveContentImage(tenantId: string, mediaId: string, imagePath: string, stalePath: string | null = null): Promise<void> {
+    await this.dataSource.query(
+      `UPDATE instagram_media_mappings SET image_path = $3
+        WHERE tenant_id = $1 AND instagram_media_id = $2 AND (image_path IS NULL OR image_path = $4::text)`,
+      [tenantId, mediaId, imagePath, stalePath],
+    );
   }
 
   async findAll(
@@ -201,29 +293,6 @@ export class InstagramContentService {
     return this.mappingRepo.save(mapping);
   }
 
-  async fetchContentForAllTenants(): Promise<{ tenants: number; totalFetched: number; totalMatched: number }> {
-    const connections = await this.connectionRepo.find({
-      where: { type: ConnectionType.Instagram, status: ConnectionStatus.Connected },
-    });
-
-    const tenantIds = [...new Set(connections.map(c => c.tenantId))];
-    let totalFetched = 0;
-    let totalMatched = 0;
-
-    for (const tenantId of tenantIds) {
-      try {
-        const result = await this.fetchContent(tenantId);
-        totalFetched += result.fetched;
-        totalMatched += result.matched;
-      } catch (err) {
-        this.logger.error(`Content fetch failed for tenant ${tenantId}`, (err as Error).message);
-      }
-    }
-
-    this.logger.log(`Content fetch complete: ${tenantIds.length} tenants, ${totalFetched} fetched, ${totalMatched} matched`);
-    return { tenants: tenantIds.length, totalFetched, totalMatched };
-  }
-
   async deleteMapping(id: string, tenantId: string): Promise<void> {
     const mapping = await this.mappingRepo.findOne({ where: { id, tenantId } });
     if (!mapping) throw new NotFoundException('Mapping not found');
@@ -252,7 +321,7 @@ export class InstagramContentService {
     let fetchedMediaType = data.mediaType ?? 'highlight';
 
     if (/^\d+$/.test(data.instagramMediaId)) {
-      const info = await this.fetchMediaInfo(tenantId, data.instagramMediaId);
+      const info = await this.getMediaDetails(tenantId, data.instagramMediaId);
       if (info) {
         fetchedCaption = fetchedCaption || info.caption || null;
         fetchedMediaUrl = info.mediaUrl || null;
@@ -274,34 +343,55 @@ export class InstagramContentService {
     }));
   }
 
-  private async fetchMediaInfo(tenantId: string, mediaId: string): Promise<{
-    caption?: string; mediaUrl?: string; permalink?: string; mediaType?: string;
-  } | null> {
+  /**
+   * One piece of content from Graph: caption, links, and what kind it is.
+   * Null when the store isn't connected, or the media isn't readable with its
+   * token (another account's post a customer shared, an expired story), or
+   * Graph failed.
+   */
+  async getMediaDetails(tenantId: string, mediaId: string): Promise<ContentDetails | null> {
+    return (await this.readMediaDetails(tenantId, mediaId)).details;
+  }
+
+  /**
+   * `getMediaDetails`, telling a refusal from a failure: `refused` when the
+   * store isn't connected or Graph says the media can't be read with its token
+   * (codes 10 and 200, or 100 with subcode 33); not when Graph timed out,
+   * throttled or erred.
+   */
+  async readMediaDetails(tenantId: string, mediaId: string): Promise<MediaRead> {
     try {
       const connection = await this.connectionRepo.findOne({
         where: { tenantId, type: ConnectionType.Instagram, status: ConnectionStatus.Connected },
       });
-      if (!connection?.accessTokenEncrypted) return null;
+      if (!connection?.accessTokenEncrypted) return { details: null, refused: true };
 
       const token = this.crypto.decrypt(connection.accessTokenEncrypted);
       const res = await fetch(
-        `${GRAPH_API}/${mediaId}?fields=id,caption,media_type,media_url,permalink,timestamp`,
-        { headers: { Authorization: `Bearer ${token}` } },
+        `${GRAPH_API}/${mediaId}?fields=id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp`,
+        { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(GRAPH_TIMEOUT_MS) },
       );
       if (!res.ok) {
-        this.logger.warn(`Failed to fetch media info for ${mediaId}: ${res.status}`);
-        return null;
+        const body = (await res.json().catch(() => null)) as { error?: { code?: number; error_subcode?: number } } | null;
+        const code = body?.error?.code;
+        const refused = code === 10 || code === 200 || (code === 100 && body?.error?.error_subcode === 33);
+        this.logger.warn(`Failed to fetch media info for ${mediaId}: ${res.status}${code ? ` (code ${code})` : ''}`);
+        return { details: null, refused };
       }
       const data = await res.json() as any;
       return {
-        caption: data.caption,
-        mediaUrl: data.media_url,
-        permalink: data.permalink,
-        mediaType: (data.media_type ?? '').toLowerCase(),
+        details: {
+          caption: data.caption,
+          mediaUrl: data.media_url,
+          permalink: data.permalink,
+          mediaType: (data.media_type ?? '').toLowerCase(),
+          thumbnailUrl: data.thumbnail_url,
+          productType: data.media_product_type,
+        },
       };
     } catch (err) {
       this.logger.warn(`Error fetching media info: ${(err as Error).message}`);
-      return null;
+      return { details: null, refused: false };
     }
   }
 
@@ -347,8 +437,7 @@ export class InstagramContentService {
    *
    * Matched by `permalink` (the shortcode), NOT `instagram_media_id`: a pasted
    * url gives us the shortcode, while the mapping is keyed by the numeric media
-   * id. This is the same shortcode→product lookup `inheritProductsFromSourcePosts`
-   * already uses for reshared stories.
+   * id.
    */
   async resolveMediaIdByPostUrl(
     tenantId: string,
@@ -377,6 +466,88 @@ export class InstagramContentService {
     return value.replace(/[\\%_]/g, (c) => `\\${c}`);
   }
 
+  // ─── Fetching content ─────────────────────────────────────────
+
+  /**
+   * Every 30 minutes: each connected store's live stories, so every story is
+   * seen within its 24 hours; on every other tick, its new posts and reels too.
+   * Off with CONTENT_FETCH_WORKER_ENABLED=false (the CLI scripts do that).
+   */
+  @Cron(CronExpression.EVERY_30_MINUTES)
+  async tick(): Promise<void> {
+    if (!this.config.get<boolean>('contentFetch.workerEnabled')) return;
+    if (this.running) return;
+    this.running = true;
+    try {
+      const pausedUntil = await this.graphPausedUntil();
+      if (pausedUntil) {
+        this.logger.log(`Content fetch skipped: Meta's call budget is paused until ${pausedUntil}`);
+        return;
+      }
+      const posts = Date.now() - this.lastPostsAt >= POSTS_INTERVAL_MS;
+      if (posts) this.lastPostsAt = Date.now();
+      await this.fetchAllStores({ posts });
+    } catch (err) {
+      this.logger.error(`Content fetch failed: ${(err as Error).message}`);
+    } finally {
+      this.running = false;
+    }
+  }
+
+  /**
+   * When the app-wide pause on Meta's call budget ends, while it lasts (the
+   * history import sets it on a throttle or a high `x-app-usage`); null when
+   * there is none. Calls made while Meta throttles keep the block going.
+   */
+  private async graphPausedUntil(): Promise<string | null> {
+    const [row]: Array<{ paused_until: string }> = await this.dataSource.query(
+      `SELECT value->>'pausedUntil' AS paused_until FROM app_state
+        WHERE key = $1 AND (value->>'pausedUntil')::timestamptz > now()`,
+      [GRAPH_BUDGET_KEY],
+    );
+    return row?.paused_until ?? null;
+  }
+
+  /**
+   * One pass over every connected store, one store at a time; a store's
+   * failure is logged and the rest carry on. The new-story vision pass comes
+   * after every store is fetched, so a slow model call never holds up another
+   * store's stories.
+   */
+  async fetchAllStores(opts: { posts: boolean }): Promise<void> {
+    const connections = await this.connectionRepo.find({
+      where: { type: ConnectionType.Instagram, status: ConnectionStatus.Connected },
+    });
+    const stores = [...new Map(connections.map((c) => [c.tenantId, c])).values()].filter(
+      (c) => c.accessTokenEncrypted && c.externalAccountId,
+    );
+
+    const newStories: Array<{ tenantId: string; ids: string[] }> = [];
+    let fetched = 0;
+    let failed = 0;
+    for (const connection of stores) {
+      try {
+        const result = await this.fetchStore(connection, opts);
+        fetched += result.fetched;
+        if (result.newStoryIds.length) newStories.push({ tenantId: connection.tenantId, ids: result.newStoryIds });
+      } catch (err) {
+        failed++;
+        this.logger.error(`Content fetch failed for tenant ${connection.tenantId}: ${(err as Error).message}`);
+      }
+    }
+    for (const { tenantId, ids } of newStories) await this.matchNewStories(tenantId, ids);
+
+    this.logger.log(
+      `Content fetch (${opts.posts ? 'stories, posts and reels' : 'stories'}): ${stores.length} stores, ${fetched} items` +
+        (failed ? `, ${failed} failed` : ''),
+    );
+  }
+
+  /**
+   * The Content page's «Fetch content» button: the scheduled fetch for one
+   * store, now. Returns once the fetch and the SKU pass are done; vision for
+   * new stories carries on in the background, never inside the request.
+   */
   async fetchContent(tenantId: string): Promise<{ fetched: number; matched: number }> {
     const connection = await this.connectionRepo.findOne({
       where: { tenantId, type: ConnectionType.Instagram, status: ConnectionStatus.Connected },
@@ -384,194 +555,178 @@ export class InstagramContentService {
     if (!connection || !connection.accessTokenEncrypted || !connection.externalAccountId) {
       throw new BadRequestException('No active Instagram connection');
     }
-
-    const account = {
-      token: this.crypto.decrypt(connection.accessTokenEncrypted),
-      igAccountId: connection.externalAccountId,
-    };
-    let fetched = 0;
-
-    // Check if this is first sync (no existing mappings) → full pagination
-    const existingCount = await this.mappingRepo.count({ where: { tenantId } });
-    const fullSync = existingCount === 0;
-
-    // 1. Fetch posts (full pagination only on first sync)
-    fetched += await this.fetchPosts(tenantId, account, fullSync);
-
-    // 2. Fetch active stories (24h window)
-    const storiesResult = await this.fetchStories(tenantId, account);
-    fetched += storiesResult.count;
-
-    // 3. SKU matching pass
-    const matched = await this.matchSkusInCaptions(tenantId);
-
-    // 4. Inherit product links for stories reshared from mapped posts
-    await this.inheritProductsFromSourcePosts(tenantId);
-
-    // 5. AI vision matching for new unlinked stories only
-    if (storiesResult.newIds.length > 0) {
-      await this.matchStoriesByVision(tenantId, storiesResult.newIds);
-    }
-
-    return { fetched, matched };
+    const result = await this.fetchStore(connection, { posts: true });
+    if (result.newStoryIds.length) void this.matchNewStories(tenantId, result.newStoryIds);
+    return { fetched: result.fetched, matched: result.matched };
   }
 
-  // Returns true if this was a new insert (not an update of existing)
+  /** One store: its stories, and when asked its posts and reels followed by the SKU pass. */
+  private async fetchStore(
+    connection: Connection,
+    opts: { posts: boolean },
+  ): Promise<{ fetched: number; matched: number; newStoryIds: string[] }> {
+    const tenantId = connection.tenantId;
+    const account: IgAccount = {
+      token: this.crypto.decrypt(connection.accessTokenEncrypted!),
+      igAccountId: connection.externalAccountId!,
+    };
+
+    const stories = await this.fetchStories(tenantId, account);
+    if (!opts.posts) return { fetched: stories.count, matched: 0, newStoryIds: stories.newIds };
+
+    const fullSync = !(await this.hasFetchedPosts(tenantId));
+    const posts = await this.fetchPosts(tenantId, account, fullSync);
+    const matched = await this.matchSkusInCaptions(tenantId);
+    return { fetched: stories.count + posts, matched, newStoryIds: stories.newIds };
+  }
+
+  /**
+   * Whether the store's posts were ever fetched. Rows a customer brought up (a
+   * story reply, a shared post) and fetched stories don't count, so they no
+   * longer stand in the way of the first full sync.
+   */
+  private async hasFetchedPosts(tenantId: string): Promise<boolean> {
+    const [row]: Array<{ found: boolean }> = await this.dataSource.query(
+      `SELECT EXISTS (SELECT 1 FROM instagram_media_mappings
+                       WHERE tenant_id = $1 AND match_method = 'bulk_import' AND media_type <> 'story') AS found`,
+      [tenantId],
+    );
+    return !!row?.found;
+  }
+
+  /**
+   * Save one fetched post, reel or story, or refresh what Meta says about it
+   * (type, caption, links, cover) if we have it already. A link is never
+   * touched. True when the item is new to the store.
+   */
   private async upsertMedia(
     tenantId: string,
-    item: any,
+    item: GraphMedia,
     mediaType: string,
-    sourcePostUrl?: string | null,
+    expiresAt: Date | null = null,
   ): Promise<boolean> {
-    const existing = await this.mappingRepo.findOne({
-      where: { tenantId, instagramMediaId: item.id },
-      select: ['id'],
-    });
-
-    await this.mappingRepo
-      .createQueryBuilder()
-      .insert()
-      .values({
+    const rows: Array<{ inserted: boolean }> = await this.dataSource.query(
+      `INSERT INTO instagram_media_mappings
+         (tenant_id, instagram_media_id, media_type, caption, media_url, permalink, thumbnail_url, media_product_type, match_method, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'bulk_import', $9)
+       ON CONFLICT (tenant_id, instagram_media_id) DO UPDATE SET
+         media_type = EXCLUDED.media_type,
+         caption = coalesce(EXCLUDED.caption, instagram_media_mappings.caption),
+         media_url = coalesce(EXCLUDED.media_url, instagram_media_mappings.media_url),
+         permalink = coalesce(EXCLUDED.permalink, instagram_media_mappings.permalink),
+         thumbnail_url = coalesce(EXCLUDED.thumbnail_url, instagram_media_mappings.thumbnail_url),
+         media_product_type = coalesce(EXCLUDED.media_product_type, instagram_media_mappings.media_product_type),
+         expires_at = coalesce(instagram_media_mappings.expires_at, EXCLUDED.expires_at),
+         fetched_at = now()
+       RETURNING (xmax = 0) AS inserted`,
+      [
         tenantId,
-        instagramMediaId: item.id,
+        item.id,
         mediaType,
-        caption: item.caption ?? null,
-        mediaUrl: item.media_url ?? null,
-        permalink: item.permalink ?? null,
-        sourcePostUrl: sourcePostUrl ?? null,
-        matchMethod: 'bulk_import',
-      })
-      .orUpdate(
-        ['caption', 'media_url', 'permalink', 'source_post_url'],
-        ['tenant_id', 'instagram_media_id'],
-      )
-      .execute();
-
-    return !existing;
+        item.caption ?? null,
+        item.media_url ?? null,
+        item.permalink ?? null,
+        item.thumbnail_url ?? null,
+        item.media_product_type ?? null,
+        expiresAt,
+      ],
+    );
+    return rows[0]?.inserted === true;
   }
 
-  private async fetchPosts(tenantId: string, account: IgAccount, fullSync = false): Promise<number> {
+  /**
+   * Posts and reels, newest first. The first sync pages back up to 200. After
+   * that, paging stops at the first page holding a post we already have; that
+   * page is still saved whole, which keeps the newest posts' expiring CDN links
+   * and details fresh at no extra Graph call. A failure is logged, not thrown,
+   * so the stories fetched before it still reach the vision pass.
+   */
+  private async fetchPosts(tenantId: string, account: IgAccount, fullSync: boolean): Promise<number> {
+    const base = `${GRAPH_API}/${account.igAccountId}/media?fields=${MEDIA_FIELDS}&limit=${POSTS_PAGE_SIZE}`;
     let fetched = 0;
-    let cursor: string | undefined;
-    const maxItems = fullSync ? 200 : 50; // First sync: up to 200, regular: first page only
 
-    do {
-      const url = `${GRAPH_API}/${account.igAccountId}/media?fields=id,caption,media_type,permalink,timestamp,media_url&limit=50${cursor ? `&after=${cursor}` : ''}`;
-      const res = await fetch(url, { headers: { Authorization: `Bearer ${account.token}` } });
+    try {
+      let cursor: string | undefined;
+      do {
+        const res = await fetch(cursor ? `${base}&after=${cursor}` : base, {
+          headers: { Authorization: `Bearer ${account.token}` },
+          signal: AbortSignal.timeout(GRAPH_TIMEOUT_MS),
+        });
+        if (!res.ok) {
+          this.logger.warn(`Instagram posts API error for tenant ${tenantId}: ${res.status}`);
+          break;
+        }
+        const body = (await res.json()) as GraphPage;
 
-      if (!res.ok) {
-        this.logger.error(`Instagram posts API error: ${res.status}`);
-        break;
-      }
+        let reachedKnown = false;
+        for (const item of body.data ?? []) {
+          const isNew = await this.upsertMedia(tenantId, item, (item.media_type ?? 'IMAGE').toLowerCase());
+          if (!isNew) reachedKnown = true;
+          fetched++;
+        }
+        if (reachedKnown && !fullSync) break;
+        cursor = body.paging?.next ? body.paging.cursors?.after : undefined;
+      } while (cursor && fetched < MAX_POSTS_PER_RUN);
 
-      const body = (await res.json()) as {
-        data: any[];
-        paging?: { cursors?: { after?: string }; next?: string };
-      };
-
-      for (const item of body.data ?? []) {
-        await this.upsertMedia(tenantId, item, (item.media_type ?? 'IMAGE').toLowerCase());
-        fetched++;
-      }
-
-      cursor = fullSync && body.paging?.next ? body.paging?.cursors?.after : undefined;
-    } while (cursor && fetched < maxItems);
-
-    this.logger.log(`Fetched ${fetched} posts for tenant ${tenantId}`);
+      this.logger.log(`Fetched ${fetched} posts for tenant ${tenantId}${fullSync ? ' (full sync)' : ''}`);
+    } catch (err) {
+      this.logger.warn(`Failed to fetch posts for tenant ${tenantId} (${fetched} saved): ${(err as Error).message}`);
+    }
     return fetched;
   }
 
+  /**
+   * The store's live stories. A failure here is logged, not thrown: some
+   * accounts can't read stories, and their posts should still be fetched.
+   * Returns the stories new to us, for the vision pass.
+   */
   private async fetchStories(tenantId: string, account: IgAccount): Promise<{ count: number; newIds: string[] }> {
-    let fetched = 0;
+    const base = `${GRAPH_API}/${account.igAccountId}/stories?fields=${MEDIA_FIELDS}`;
+    let count = 0;
     const newIds: string[] = [];
 
     try {
-      const url = `${GRAPH_API}/${account.igAccountId}/stories?fields=id,caption,media_type,media_url,permalink,timestamp`;
-      const res = await fetch(url, { headers: { Authorization: `Bearer ${account.token}` } });
+      let cursor: string | undefined;
+      do {
+        const res = await fetch(cursor ? `${base}&after=${cursor}` : base, {
+          headers: { Authorization: `Bearer ${account.token}` },
+          signal: AbortSignal.timeout(GRAPH_TIMEOUT_MS),
+        });
+        if (!res.ok) {
+          this.logger.warn(`Instagram stories API error for tenant ${tenantId}: ${res.status}`);
+          break;
+        }
+        const body = (await res.json()) as GraphPage;
 
-      if (!res.ok) {
-        this.logger.warn(`Instagram stories API error: ${res.status} — stories may not be available`);
-        return { count: 0, newIds: [] };
-      }
+        for (const item of body.data ?? []) {
+          const posted = item.timestamp ? Date.parse(item.timestamp) : NaN;
+          const expiresAt = new Date((Number.isNaN(posted) ? Date.now() : posted) + STORY_LIFETIME_MS);
+          if (await this.upsertMedia(tenantId, item, 'story', expiresAt)) newIds.push(item.id);
+          count++;
+        }
+        cursor = body.paging?.next ? body.paging.cursors?.after : undefined;
+      } while (cursor && count < MAX_STORIES_PER_RUN);
 
-      const body = (await res.json()) as { data: any[] };
-
-      for (const item of body.data ?? []) {
-        const isNew = await this.upsertMedia(tenantId, item, 'story', null);
-        if (isNew) newIds.push(item.id);
-
-        // Set expiry for stories (24h from fetch)
-        await this.mappingRepo
-          .createQueryBuilder()
-          .update()
-          .set({ expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) } as any)
-          .where('tenant_id = :tenantId AND instagram_media_id = :mediaId AND expires_at IS NULL', {
-            tenantId,
-            mediaId: item.id,
-          })
-          .execute();
-        fetched++;
-      }
-
-      this.logger.log(`Fetched ${fetched} stories for tenant ${tenantId} (${newIds.length} new)`);
+      this.logger.log(`Fetched ${count} stories for tenant ${tenantId} (${newIds.length} new)`);
     } catch (err) {
-      this.logger.warn('Failed to fetch stories', (err as Error).message);
+      this.logger.warn(`Failed to fetch stories for tenant ${tenantId}: ${(err as Error).message}`);
     }
 
-    return { count: fetched, newIds };
+    return { count, newIds };
   }
 
-  // ─── Story → post product inheritance ─────────────────────────
-
-  private async inheritProductsFromSourcePosts(tenantId: string): Promise<number> {
-    // Find unlinked stories that have a source_post_url (reshared from a post)
-    const stories = await this.mappingRepo.find({
-      where: { tenantId, mediaType: 'story', productId: undefined as any },
-    });
-
-    this.logger.log(`inheritProductsFromSourcePosts: ${stories.length} unlinked stories total, ${stories.filter(s => s.sourcePostUrl).length} have sourcePostUrl`);
-    stories.forEach(s => this.logger.log(`  story ${s.instagramMediaId}: sourcePostUrl=${s.sourcePostUrl ?? 'null'}`));
-
-    const candidates = stories.filter((s) => s.sourcePostUrl);
-    if (candidates.length === 0) return 0;
-
-    let inherited = 0;
-
-    for (const story of candidates) {
-      // Extract shortcode from URL: https://www.instagram.com/p/{shortcode}/
-      const match = story.sourcePostUrl!.match(/\/p\/([A-Za-z0-9_-]+)/);
-      if (!match) continue;
-
-      const shortcode = match[1];
-
-      const sourcePost = await this.mappingRepo
-        .createQueryBuilder('m')
-        .where('m.tenant_id = :tenantId', { tenantId })
-        .andWhere('m.permalink LIKE :pattern', { pattern: `%/p/${shortcode}/%` })
-        .andWhere('m.product_id IS NOT NULL')
-        .getOne();
-
-      if (!sourcePost) continue;
-
-      await this.mappingRepo.update(story.id, {
-        productId: sourcePost.productId,
-        variantId: sourcePost.variantId,
-        linkedColor: sourcePost.linkedColor,
-        matchMethod: 'story_from_post',
-        matchConfidence: 1.0,
-      });
-
-      this.logger.log(
-        `Story ${story.instagramMediaId} inherited product ${sourcePost.productId}${sourcePost.linkedColor ? ` (color=${sourcePost.linkedColor})` : ''} from post ${shortcode}`,
-      );
-      inherited++;
+  /** The vision pass for new stories, after their fetch. A failure is only logged. */
+  private async matchNewStories(tenantId: string, ids: string[]): Promise<void> {
+    try {
+      await this.matchStoriesByVision(tenantId, ids);
+    } catch (err) {
+      this.logger.error(`Story vision pass failed for tenant ${tenantId}: ${(err as Error).message}`);
     }
-
-    return inherited;
   }
 
   // ─── AI vision matching ────────────────────────────────────────
 
+  /** An image for a vision call, as a data URL. Null when it can't be had, or the link is a video. */
   private async toBase64DataUrl(url: string): Promise<string | null> {
     try {
       // Our own copies (customer photos, demo catalog images) are read from disk.
@@ -580,17 +735,33 @@ export class InstagramContentService {
         const mime = MEDIA_TYPES[extname(local).toLowerCase()] ?? 'image/jpeg';
         return `data:${mime};base64,${(await readFile(local)).toString('base64')}`;
       }
-      const res = await fetch(url);
-      if (!res.ok) return null;
-      const buffer = await res.arrayBuffer();
-      const mime = res.headers.get('content-type') ?? 'image/jpeg';
-      return `data:${mime};base64,${Buffer.from(buffer).toString('base64')}`;
+      const res = await safeFetch(url, {
+        timeoutMs: VISION_IMAGE_TIMEOUT_MS,
+        maxBytes: VISION_IMAGE_MAX_BYTES,
+        onHeaders: (status, headers) => {
+          if (status < 200 || status >= 300) throw new Error(`HTTP ${status}`);
+          if ((headers['content-type'] ?? '').toLowerCase().startsWith('video/')) throw new Error('a video, not an image');
+        },
+      });
+      const mime = res.headers['content-type'] ?? 'image/jpeg';
+      return `data:${mime};base64,${res.body.toString('base64')}`;
     } catch {
       return null;
     }
   }
 
+  /** The picture vision can read: our copy, a video's cover, else Meta's link (never a video's). */
+  private visionImage(m: InstagramMediaMapping): string | null {
+    return m.imagePath ?? m.thumbnailUrl ?? (m.mediaType === 'video' ? null : m.mediaUrl) ?? null;
+  }
+
+  /**
+   * New stories against the store's linked posts: one vision call per story,
+   * at most VISION_STORIES_PER_RUN per store. Runs after the fetch, never
+   * inside a request.
+   */
   private async matchStoriesByVision(tenantId: string, newIds: string[]): Promise<void> {
+    if (newIds.length === 0) return;
     const unlinkedStories = await this.mappingRepo
       .createQueryBuilder('m')
       .where('m.tenant_id = :tenantId', { tenantId })
@@ -599,32 +770,33 @@ export class InstagramContentService {
       .andWhere('m.instagram_media_id IN (:...newIds)', { newIds })
       .getMany();
 
-    const candidates = unlinkedStories.filter((s) => s.mediaUrl).slice(0, 5);
+    const candidates = unlinkedStories.filter((s) => this.visionImage(s)).slice(0, VISION_STORIES_PER_RUN);
     if (candidates.length === 0) return;
 
     const linkedPosts = await this.mappingRepo
       .createQueryBuilder('m')
       .where('m.tenant_id = :tenantId', { tenantId })
       .andWhere('m.product_id IS NOT NULL')
-      .andWhere('m.media_url IS NOT NULL')
+      .andWhere('(m.image_path IS NOT NULL OR m.thumbnail_url IS NOT NULL OR m.media_url IS NOT NULL)')
+      .orderBy('m.created_at', 'DESC')
       .limit(10)
       .getMany();
 
     if (linkedPosts.length === 0) return;
 
+    // The same posts are compared with every story: download them once.
+    const postDataUrls = await Promise.all(linkedPosts.map((p) => this.toBase64DataUrl(this.visionImage(p)!)));
+    const validPosts = linkedPosts.filter((_, i) => postDataUrls[i] !== null);
+    const validDataUrls = postDataUrls.filter((u): u is string => u !== null);
+    if (validPosts.length === 0) return;
+
     for (const story of candidates) {
       try {
-        const storyDataUrl = await this.toBase64DataUrl(story.mediaUrl!);
+        const storyDataUrl = await this.toBase64DataUrl(this.visionImage(story)!);
         if (!storyDataUrl) {
           this.logger.warn(`Vision match: could not download story image ${story.instagramMediaId}`);
           continue;
         }
-
-        const postDataUrls = await Promise.all(linkedPosts.map((p) => this.toBase64DataUrl(p.mediaUrl!)));
-        const validPosts = linkedPosts.filter((_, i) => postDataUrls[i] !== null);
-        const validDataUrls = postDataUrls.filter((u): u is string => u !== null);
-
-        if (validPosts.length === 0) continue;
 
         const imageContent: OpenAI.Chat.ChatCompletionContentPart[] = [
           {
@@ -656,7 +828,8 @@ export class InstagramContentService {
 
         if (result.match >= 0 && result.match < validPosts.length && result.confidence >= 0.8) {
           const sourcePost = validPosts[result.match];
-          await this.mappingRepo.update(story.id, {
+          // Only while still unlinked: the owner may have linked it meanwhile.
+          await this.mappingRepo.update({ id: story.id, productId: IsNull() }, {
             productId: sourcePost.productId,
             variantId: sourcePost.variantId,
             linkedColor: sourcePost.linkedColor,
@@ -1371,13 +1544,21 @@ export class InstagramContentService {
     return skus;
   }
 
+  /**
+   * Link captioned content nobody has linked or unlinked yet (fetched, or
+   * brought up by a customer) to the product whose SKU its caption names.
+   * A manual link, or a link the owner removed, is left alone.
+   */
   private async matchSkusInCaptions(tenantId: string): Promise<number> {
-    // Get unlinked mappings with captions
-    const unlinked = await this.mappingRepo.find({
-      where: { tenantId, productId: undefined as any },
+    // `IsNull()`, not `undefined`: TypeORM drops an undefined key from the
+    // where, which loaded every row and re-linked manual links.
+    const open = { tenantId, productId: IsNull(), caption: Not(IsNull()) };
+    const withCaptions = await this.mappingRepo.find({
+      where: [
+        { ...open, matchMethod: IsNull() },
+        { ...open, matchMethod: 'bulk_import' },
+      ],
     });
-
-    const withCaptions = unlinked.filter(m => m.caption);
     if (withCaptions.length === 0) return 0;
 
     const patterns = await this.getSkuPatterns(tenantId);
@@ -1433,8 +1614,7 @@ export class InstagramContentService {
       for (const sku of extracted) {
         const match = skuMap.get(sku.toLowerCase());
         if (match) {
-          this.applySkuMatch(mapping, match, sku);
-          matched++;
+          if (await this.applySkuMatch(mapping, match, sku)) matched++;
           found = true;
           break;
         }
@@ -1446,8 +1626,7 @@ export class InstagramContentService {
       for (const word of words) {
         const match = skuMap.get(word.toLowerCase());
         if (match) {
-          this.applySkuMatch(mapping, match, word);
-          matched++;
+          if (await this.applySkuMatch(mapping, match, word)) matched++;
           break;
         }
       }
@@ -1456,22 +1635,28 @@ export class InstagramContentService {
     return matched;
   }
 
+  /** Link one row by SKU. False when it got linked by someone else since it was read. */
   private async applySkuMatch(
     mapping: InstagramMediaMapping,
     match: { variantId: string | null; productId: string; color: string | null },
     sku: string,
-  ): Promise<void> {
-    mapping.productId = match.productId;
-    mapping.variantId = match.variantId;
-    // Variant-level SKU match carries a color → persist as the
-    // canonical color-link for downstream `confirm_color_variant_in_stock`
-    // routing. Product-level SKU match leaves linkedColor null.
-    mapping.linkedColor = match.color;
-    mapping.matchMethod = 'sku_from_caption';
-    mapping.confirmed = true;
-    await this.mappingRepo.save(mapping);
+  ): Promise<boolean> {
+    const { affected } = await this.mappingRepo.update(
+      { id: mapping.id, productId: IsNull() },
+      {
+        productId: match.productId,
+        variantId: match.variantId,
+        // A variant-level SKU carries its colour: a colour-level link. A
+        // product-level SKU leaves linkedColor null.
+        linkedColor: match.color,
+        matchMethod: 'sku_from_caption',
+        confirmed: true,
+      },
+    );
+    if (!affected) return false;
     this.logger.log(
       `SKU match: "${sku}" → product ${match.productId}${match.variantId ? ` variant ${match.variantId}` : ''}${match.color ? ` color=${match.color}` : ''}`,
     );
+    return true;
   }
 }

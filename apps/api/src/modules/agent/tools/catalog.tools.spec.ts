@@ -56,7 +56,10 @@ function deps(category: AgentProduct[], searchIds: string[] = []): AgentToolDeps
       loadCategory: async () => category,
       loadProducts: async (_t: string, ids: string[]) => category.filter((p) => ids.includes(p.id)),
     },
-    search: { search: async () => ({ ids: searchIds, total: searchIds.length + 13 }) },
+    search: {
+      search: async () => ({ ids: searchIds, total: searchIds.length + 13 }),
+      findBySku: async (_t: string, sku: string) => (sku === 'LV-2933' ? [PREMIUM.id] : []),
+    },
   } as unknown as AgentToolDeps;
 }
 
@@ -80,6 +83,15 @@ describe('browse_category', () => {
     expect(((await browse(d, { category: 'Сорочки', maxPrice: 3500 })).products as Array<{ ref: string }>)[0].ref).toBe(
       'bbbbbbbb',
     );
+  });
+
+  it('keeps products priced within about 5% of a price read off a post', async () => {
+    const d = deps([PREMIUM, CHECK]);
+    const refs = async (price: number) =>
+      ((await browse(d, { category: 'Сорочки', price })).products as Array<{ ref: string }>).map((p) => p.ref);
+    expect(await refs(4400)).toEqual(['aaaaaaaa']);
+    expect(await refs(3100)).toEqual(['bbbbbbbb']);
+    expect(await refs(3800)).toEqual([]);
   });
 
   it('names the categories when asked for one that does not exist', async () => {
@@ -129,6 +141,12 @@ describe('get_size_help', () => {
       recommendedSize: 'L',
       recommendedInStock: true,
     });
+  });
+
+  it('reads height and weight given inside measurements', async () => {
+    const out = await sizeHelp(PREMIUM, { measurements: { height: 182, weight: 85 } });
+    expect(out).toMatchObject({ available: true, recommendedSize: 'L', recommendedInStock: true });
+    expect(out.note).toBeUndefined();
   });
 
   it("asks for the customer's own size, not their measurements, when the ranges don't cover the product", async () => {
@@ -278,10 +296,41 @@ describe('send_size_chart', () => {
 });
 
 describe('search_products', () => {
+  const search = (input: Record<string, unknown>, d = deps([PREMIUM, CHECK], [PREMIUM.id, CHECK.id])) =>
+    searchProductsTool(d, SCOPE).execute!(input as never, CALL) as unknown as Promise<Record<string, unknown>>;
+  const refs = (out: Record<string, unknown>) => (out.results as Array<{ ref: string }>).map((r) => r.ref);
+
   it('reports how many matched in total, not just how many it shows', async () => {
-    const tool = searchProductsTool(deps([PREMIUM, CHECK], [PREMIUM.id, CHECK.id]), SCOPE);
-    const out = (await tool.execute!({ query: 'сорочка' } as never, CALL)) as Record<string, unknown>;
+    const out = await search({ query: 'сорочка' });
     expect(out).toMatchObject({ found: 15, shown: 2 });
     expect(out.note).toContain('15 products match');
+  });
+
+  it('finds a product by the article written on a post', async () => {
+    const out = await search({ sku: 'LV-2933' });
+    expect(out).toMatchObject({ sku: 'LV-2933', found: 1, shown: 1 });
+    expect(refs(out)).toEqual(['aaaaaaaa']);
+  });
+
+  it('says when no product has the article, and searches the words instead when there are some', async () => {
+    const bare = await search({ sku: 'XX-1' });
+    expect(bare).toMatchObject({ found: 0, shown: 0, results: [] });
+    expect(bare.note).toContain('No product has the article «XX-1»');
+
+    const withWords = await search({ sku: 'XX-1', query: 'сорочка' });
+    expect(refs(withWords)).toEqual(['aaaaaaaa', 'bbbbbbbb']);
+    expect(withWords.note).toContain('No product has the article «XX-1»');
+  });
+
+  it('keeps matches priced within about 5% of a price: the sale price, or the regular one a post may still show', async () => {
+    const out = await search({ query: 'сорочка', price: 3000 });
+    expect(refs(out)).toEqual(['bbbbbbbb']);
+    expect(out.note).toContain("1 of the 2 best matches don't cost about 3000");
+
+    const onSale = product('dddddddd', 'Сорочка розпродаж', {}, [['Білий', 'L', 1]], 2000);
+    onSale.variants[0].regularPrice = 3300;
+    expect(refs(await search({ query: 'сорочка', price: 2000 }, deps([onSale], [onSale.id])))).toEqual(['dddddddd']);
+    expect(refs(await search({ query: 'сорочка', price: 3250 }, deps([onSale], [onSale.id])))).toEqual(['dddddddd']);
+    expect(refs(await search({ query: 'сорочка', price: 2600 }, deps([onSale], [onSale.id])))).toEqual([]);
   });
 });

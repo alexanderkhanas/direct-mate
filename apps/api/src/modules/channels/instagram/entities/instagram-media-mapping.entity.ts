@@ -52,6 +52,22 @@ export class InstagramMediaMapping {
   @Column({ type: 'text', nullable: true })
   sourcePostUrl!: string | null;
 
+  /**
+   * Our copy for the AI agent to look at: `/uploads/content-media/<tenant>/…`.
+   * The image itself, or for a video a contact sheet of its frames. Made once
+   * per piece of content; Meta's `media_url` expires.
+   */
+  @Column({ type: 'text', nullable: true })
+  imagePath!: string | null;
+
+  /** A video's cover, from Graph (the store's own reels and video posts only). */
+  @Column({ type: 'text', nullable: true })
+  thumbnailUrl!: string | null;
+
+  /** Meta's `media_product_type`: FEED, REELS, STORY or AD. Tells a reel from a feed video. */
+  @Column({ type: 'text', nullable: true })
+  mediaProductType!: string | null;
+
   @Column({ type: 'text', nullable: true })
   matchMethod!: string | null;
 

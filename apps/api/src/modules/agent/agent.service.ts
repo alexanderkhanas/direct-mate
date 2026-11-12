@@ -135,7 +135,7 @@ export class AgentService {
       const loadedCount = [...photos.values()].filter(Boolean).length;
       images = photos.size > 0 ? { inContext: loadedCount, unavailable: photos.size - loadedCount, rejected: false } : undefined;
 
-      const customerText = trailingCustomerText(input.history);
+      const customerText = trailingCustomerWords(input.history);
       // The draft in the turn context was read fresh from the DB, so its
       // prices count as facts alongside this turn's tool results.
       const draftFacts = draftForModel(draft);
@@ -330,14 +330,29 @@ function isRequestRejection(err: unknown): boolean {
   return APICallError.isInstance(cause) && [400, 413, 415, 422].includes(cause.statusCode ?? 0);
 }
 
-/** The customer's newest message(s): what they wrote since the last reply. */
+/** The customer's newest message(s): what they wrote since the last reply, attachment labels included. */
 export function trailingCustomerText(history: AgentHistoryEntry[]): string {
+  return trailing(history, (entry) => entry.text);
+}
+
+/**
+ * Only what the customer typed since the last reply: the words the grounding check accepts as theirs. Attachment
+ * labels are left out, so a post's caption or a quoted shop message can't vouch for a price.
+ */
+export function trailingCustomerWords(history: AgentHistoryEntry[]): string {
+  return trailing(history, (entry) => entry.said ?? entry.text);
+}
+
+function trailing(
+  history: AgentHistoryEntry[],
+  pick: (entry: Extract<AgentHistoryEntry, { role: 'customer' }>) => string,
+): string {
   const texts: string[] = [];
   for (let i = history.length - 1; i >= 0; i--) {
     const entry = history[i];
     if (entry.role === 'note') continue;
     if (entry.role !== 'customer') break;
-    texts.unshift(entry.text);
+    texts.unshift(pick(entry));
   }
   return texts.join('\n');
 }

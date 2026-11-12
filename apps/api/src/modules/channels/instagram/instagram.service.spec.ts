@@ -83,6 +83,7 @@ function setup(opts: {
     })),
   };
   const conversationRepo = { find: jest.fn(async () => []), update: jest.fn() };
+  const contentMedia = { startForMessage: jest.fn() };
 
   const service = new InstagramService(
     { get: (key: string) => ({ 'instagram.debounceMs': 5000, 'meta.appId': opts.appId ?? '777' })[key] } as never,
@@ -101,6 +102,7 @@ function setup(opts: {
     { load: async () => ({ operatingMode: opts.operatingMode ?? 'active' }) } as never,
     media as never,
     sender as never,
+    contentMedia as never,
   );
 
   /** Wait for queued intake to finish. */
@@ -118,7 +120,7 @@ function setup(opts: {
   const promote = (ids: string[]) => ids.forEach((id) => ownMids.add(id));
   for (const id of opts.ownAfterRecheck ?? []) setTimeout(() => promote([id]), 1000);
 
-  return { service, queries, conversations, sender, runner, telegram, learning, media, settle, answer, timerArms };
+  return { service, queries, conversations, sender, runner, telegram, learning, media, contentMedia, settle, answer, timerArms };
 }
 
 const inbound = (message: Record<string, unknown>) => ({
@@ -177,9 +179,75 @@ describe('InstagramService intake', () => {
       [{ type: 'story_reply', mediaId: 'story-9' }],
       [
         { type: 'customer_video', mediaId: 'https://cdn/v.mp4' },
-        { type: 'post_share', mediaId: 'r1' },
+        { type: 'post_share', mediaId: 'r1', reel: true },
       ],
     ]);
+  });
+
+  it("keeps the link and caption of a story, post or reel, and starts copying it once the message is saved", async () => {
+    const t = setup();
+    await t.service.handleWebhook(
+      inbound({ mid: 's1', text: 'є в M?', reply_to: { story: { id: 'story-9', url: 'https://cdn/story.mp4' } } }),
+    );
+    await t.service.handleWebhook(
+      inbound({
+        mid: 'p1',
+        attachments: [
+          { type: 'ig_post', payload: { ig_post_media_id: 'post-1', url: 'https://cdn/post.jpg', title: ' Сукня льон, арт. LV-2933 ' } },
+          { type: 'ig_reel', payload: { reel_video_id: 'reel-1', url: 'https://cdn/reel.mp4', title: 'Нова колекція' } },
+          { type: 'share', payload: { url: 'https://cdn/shared.jpg' } },
+        ],
+      }),
+    );
+    await t.settle();
+
+    const [story, posts] = t.conversations.saveChannelMessage.mock.calls.map((c) => c[5]);
+    expect(story).toEqual([{ type: 'story_reply', mediaId: 'story-9', sourceUrl: 'https://cdn/story.mp4' }]);
+    expect(posts).toEqual([
+      { type: 'post_share', mediaId: 'post-1', sourceUrl: 'https://cdn/post.jpg', caption: 'Сукня льон, арт. LV-2933' },
+      { type: 'post_share', mediaId: 'reel-1', sourceUrl: 'https://cdn/reel.mp4', caption: 'Нова колекція', reel: true },
+      // No media id: the link stands in for it.
+      { type: 'post_share', mediaId: 'https://cdn/shared.jpg', sourceUrl: 'https://cdn/shared.jpg' },
+    ]);
+    expect(t.contentMedia.startForMessage).toHaveBeenCalledWith('t1', 'conv1', 'row-s1', story);
+    expect(t.contentMedia.startForMessage).toHaveBeenCalledWith('t1', 'conv1', 'row-p1', posts);
+    // Copying doesn't hold up the reply timer: the turn waits for it.
+    expect(t.timerArms()).toBe(2);
+  });
+
+  it("writes a photo's copy into its own place in the list, so a story's copy written meanwhile stays", async () => {
+    const t = setup();
+    await t.service.handleWebhook(
+      inbound({
+        mid: 'sp1',
+        reply_to: { story: { id: 'story-9', url: 'https://cdn/story.jpg' } },
+        attachments: [{ type: 'image', payload: { url: 'https://cdn/p.jpg' } }],
+      }),
+    );
+    await t.settle();
+
+    const writes = t.queries.filter((q) => q.sql.includes('UPDATE messages SET attachments'));
+    expect(writes).toHaveLength(1);
+    expect(writes[0].sql).toMatch(/jsonb_set\(attachments, ARRAY\[\$2::text\], \$3::jsonb\)/);
+    expect(writes[0].params).toEqual([
+      'row-sp1',
+      '1',
+      JSON.stringify({ type: 'customer_photo', mediaId: 'https://cdn/p.jpg', url: '/uploads/customer-media/t1/copy.jpg' }),
+    ]);
+    // The story is being copied meanwhile, into place 0.
+    expect(t.contentMedia.startForMessage).toHaveBeenCalledWith('t1', 'conv1', 'row-sp1', [
+      { type: 'story_reply', mediaId: 'story-9', sourceUrl: 'https://cdn/story.jpg' },
+      { type: 'customer_photo', mediaId: 'https://cdn/p.jpg' },
+    ]);
+  });
+
+  it("doesn't copy content again for a redelivered message", async () => {
+    const t = setup();
+    const story = inbound({ mid: 's1', reply_to: { story: { id: 'story-9', url: 'https://cdn/story.jpg' } } });
+    await t.service.handleWebhook(story);
+    await t.service.handleWebhook(story);
+    await t.settle();
+    expect(t.contentMedia.startForMessage).toHaveBeenCalledTimes(1);
   });
 
   it('skips a message to an Instagram account no store has connected', async () => {

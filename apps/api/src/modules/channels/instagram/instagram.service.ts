@@ -10,6 +10,7 @@ import type { MessageAttachment } from '../../conversations/entities/message.ent
 import { TurnRunner, TurnRunResult } from '../../conversations/turn-runner.service';
 import { AgentStoreSettingsService } from '../../agent/store-settings.service';
 import { CustomerMediaService } from '../../customer-media/customer-media.service';
+import { ContentMediaService } from '../../content-media/content-media.service';
 import { IntegrationsService } from '../../integrations/integrations.service';
 import { Connection } from '../../integrations/entities/connection.entity';
 import { TelegramService } from '../../notifications/telegram.service';
@@ -22,6 +23,7 @@ import { InstagramSender, splitForInstagram } from './instagram-sender.service';
 
 interface MetaAttachment {
   type: string;
+  /** `title` is a shared post's or reel's caption. */
   payload?: { url?: string; ig_post_media_id?: string; reel_video_id?: string; title?: string };
 }
 
@@ -89,13 +91,27 @@ const PRUNE_EVERY_MS = 60 * 60 * 1000;
 /** Attachment types that are a reaction, not a message: nothing to answer. */
 const IGNORED_ATTACHMENTS = new Set(['like_heart', 'reaction']);
 
+/** A shared post or reel: its media id (else the link stands in for it), the link to copy it from, its caption. */
+function shared(mediaId: string | undefined, payload: MetaAttachment['payload']): MessageAttachment {
+  const url = payload?.url;
+  const caption = payload?.title?.trim();
+  return {
+    type: 'post_share',
+    mediaId: mediaId ?? url ?? 'unknown',
+    ...(url && { sourceUrl: url }),
+    ...(caption && { caption }),
+  };
+}
+
 /**
  * Instagram DMs on the v2 agent (implementation plan, Phase 4).
  *
  * - **Intake.** Each webhook message is saved once: a redelivered `mid` is
  *   dropped by the unique index. Every attachment is recorded, and photos are
- *   copied (Instagram's links expire). Then the conversation's reply timer
- *   (`reply_due_at`) is pushed out by the debounce window.
+ *   copied (Instagram's links expire); a story, post or reel the customer
+ *   replied to or shared starts being copied for the agent to look at. Then
+ *   the conversation's reply timer (`reply_due_at`) is pushed out by the
+ *   debounce window.
  * - **Answering.** A poller claims due conversations with one atomic UPDATE
  *   and runs each through the TurnRunner: live for active stores, dry run for
  *   learning ones. A run dropped because the customer wrote again is re-run
@@ -132,6 +148,7 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
     private readonly storeSettings: AgentStoreSettingsService,
     private readonly media: CustomerMediaService,
     private readonly sender: InstagramSender,
+    private readonly contentMedia: ContentMediaService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -266,16 +283,21 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // Copy photos before arming the timer, so the agent never runs without them.
-    if (attachments.some((a) => a.type === 'customer_photo' && !a.url && !a.error)) {
-      const stored = await Promise.all(
-        attachments.map((a) => (a.type === 'customer_photo' && !a.url && !a.error ? this.media.attachmentFor(tenantId, a) : a)),
-      );
-      await this.dataSource.query(`UPDATE messages SET attachments = $1 WHERE id = $2`, [
-        JSON.stringify(stored),
-        messageId,
-      ]);
-    }
+    // A story, post or reel is copied in the background (a video takes seconds); the turn waits for it in TurnRunner.
+    this.contentMedia.startForMessage(tenantId, conversation.id, messageId, attachments);
+    // Copy photos before arming the timer, so the agent never runs without them. Each is written into its own place
+    // in the list, so a content copy written meanwhile stays.
+    await Promise.all(
+      attachments.map(async (a, index) => {
+        if (a.type !== 'customer_photo' || a.url || a.error) return;
+        const stored = await this.media.attachmentFor(tenantId, a);
+        await this.dataSource.query(
+          `UPDATE messages SET attachments = jsonb_set(attachments, ARRAY[$2::text], $3::jsonb)
+            WHERE id = $1 AND jsonb_typeof(attachments) = 'array'`,
+          [messageId, String(index), JSON.stringify(stored)],
+        );
+      }),
+    );
 
     const settings = await this.storeSettings.load(tenantId);
     if (settings.operatingMode === 'learning' && text) {
@@ -289,7 +311,11 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  /** What a message carried besides text. Photos are recorded here and copied after the row is saved. */
+  /**
+   * What a message carried besides text. Photos are recorded here and copied
+   * after the row is saved; so is a story, post or reel, with the webhook's
+   * link to it and any caption the payload carries.
+   */
   private async parseAttachments(
     tenantId: string,
     message: MetaMessagingEvent['message'] | undefined,
@@ -298,7 +324,8 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
     const out: MessageAttachment[] = [];
 
     if (message.reply_to?.story?.id) {
-      out.push({ type: 'story_reply', mediaId: message.reply_to.story.id });
+      const story = message.reply_to.story;
+      out.push({ type: 'story_reply', mediaId: story.id, ...(story.url && { sourceUrl: story.url }) });
     } else if (message.reply_to?.mid) {
       // A quote-reply to an earlier message in the thread (not a post).
       const quoted = await this.sender.messageText(tenantId, message.reply_to.mid).catch(() => null);
@@ -321,11 +348,11 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
           break;
         case 'share':
         case 'ig_post':
-          out.push({ type: 'post_share', mediaId: a.payload?.ig_post_media_id ?? url ?? 'unknown' });
+          out.push(shared(a.payload?.ig_post_media_id, a.payload));
           break;
         case 'ig_reel':
         case 'reel':
-          out.push({ type: 'post_share', mediaId: a.payload?.reel_video_id ?? a.payload?.ig_post_media_id ?? url ?? 'unknown' });
+          out.push({ ...shared(a.payload?.reel_video_id ?? a.payload?.ig_post_media_id, a.payload), reel: true });
           break;
         case 'story_mention':
           out.push({ type: 'story_mention', mediaId: url ?? 'unknown' });

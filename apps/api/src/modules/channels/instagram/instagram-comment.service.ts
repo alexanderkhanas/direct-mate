@@ -15,6 +15,7 @@ import { withRetry } from '../../../common/retry';
 import { GRAPH_API } from '../../../common/meta-graph';
 import { CommentChangeValue } from './instagram.service';
 import { InstagramSender } from './instagram-sender.service';
+import { ContentMediaService } from '../../content-media/content-media.service';
 
 const PUBLIC_REPLY_FALLBACK = 'Відповіли вам у дірект';
 /** A conversation already being answered: let the DM poller pick this up shortly. */
@@ -34,8 +35,8 @@ const GATE_INSTRUCTIONS =
 const gateSchema = z.object({ answer: z.boolean() });
 
 /**
- * Instagram comments (entry[].changes, field='comments') under a FEED post
- * linked to a product.
+ * Instagram comments (entry[].changes, field='comments') under a FEED post,
+ * linked to a product or not: the agent sees the post's image either way.
  *
  * A small model decides whether the comment asks the shop something. If it
  * does, the comment is saved in the commenter's DM conversation (the same one
@@ -47,6 +48,9 @@ const gateSchema = z.object({ answer: z.boolean() });
  *
  * A private reply is a single message, so it is sent as text only: the agent
  * is told not to show photos, and any it staged are dropped.
+ *
+ * The post's image is copied while the comment is screened
+ * (`ContentMediaService`), and the turn waits for it like a DM turn does.
  */
 @Injectable()
 export class InstagramCommentService {
@@ -63,6 +67,7 @@ export class InstagramCommentService {
     private readonly sender: InstagramSender,
     private readonly config: ConfigService,
     private readonly dataSource: DataSource,
+    private readonly contentMedia: ContentMediaService,
   ) {}
 
   async handleComment(entryId: string, value: CommentChangeValue): Promise<void> {
@@ -115,10 +120,11 @@ export class InstagramCommentService {
     }
 
     const mapping = await this.contentService.findByMediaId(tenantId, mediaId);
-    if (!mapping?.productId) {
-      this.logger.debug(`Comment ignored: post ${mediaId} not linked to a product`);
-      return;
-    }
+    // The post's image is copied while the comment is screened; the turn joins that copy rather than starting
+    // another. Kept for later comments even if this one isn't answered.
+    void this.contentMedia
+      .capture(tenantId, { type: 'post_comment', mediaId })
+      .catch((err) => this.logger.warn(`Copying the image of post ${mediaId} failed: ${(err as Error).message}`));
     if (!(await this.isQuestionForShop(text))) {
       this.logger.log(`Comment ${commentId} ignored: not a question for the shop`);
       return;
@@ -179,7 +185,9 @@ export class InstagramCommentService {
       maxAttempts: 3,
       baseDelayMs: 2000,
     }).catch((err) => this.logger.error(`Public comment reply failed for ${commentId}: ${(err as Error).message}`));
-    this.logger.log(`Answered comment ${commentId} on product ${mapping.productId} (${result.status})`);
+    this.logger.log(
+      `Answered comment ${commentId} on ${mapping?.productId ? `product ${mapping.productId}` : `unlinked post ${mediaId}`} (${result.status})`,
+    );
   }
 
   /** Every message the runner produced (welcome, reply, handoff line), as one text. */

@@ -20,6 +20,20 @@ const SEARCH_SHOWN = 8;
 const SEARCH_FILTER_POOL = 25;
 /** Above this, browse_category asks for a filter instead of listing. */
 export const MAX_CATEGORY_CARDS = 60;
+/** A price read off a post matches products within this share of it. */
+const PRICE_TOLERANCE = 0.05;
+
+/** Some variant costs about `target`: what the customer pays, or its regular price (a post may show the price before a sale). */
+export function nearPrice(product: AgentProduct, target: number): boolean {
+  const near = (price: number | null) => price != null && Math.abs(price - target) <= target * PRICE_TOLERANCE;
+  return product.variants.some((v) => near(v.price) || near(v.regularPrice));
+}
+
+const priceInput = z
+  .number()
+  .positive()
+  .optional()
+  .describe('A price the customer named or that is written on their photo or post: only products within about 5% of it.');
 
 export function searchProductsTool(deps: AgentToolDeps, scope: ToolScope) {
   return tool({
@@ -27,14 +41,33 @@ export function searchProductsTool(deps: AgentToolDeps, scope: ToolScope) {
       "Find products by name or by specific words: a model the customer named, a material, a kind of item. " +
       'Returns the best 8 matches with price and the colours and sizes in stock now, and how many matched in ' +
       'total. Put a colour or size in color/size, not in query: they keep only products that have it in ' +
-      'stock. For advice, an occasion or a style, use browse_category instead.',
+      'stock. An article or SKU (typed, or written on a photo or post) goes in sku, a price in price. ' +
+      'For advice, an occasion or a style, use browse_category instead.',
     inputSchema: z.object({
-      query: z.string().min(1).describe("Search words in Ukrainian, e.g. 'сорочка льон', 'кросівки шкіряні'."),
+      query: z
+        .string()
+        .optional()
+        .describe("Search words in Ukrainian, e.g. 'сорочка льон', 'кросівки шкіряні'. May be left out when sku is given."),
+      sku: z.string().optional().describe("An article or SKU exactly as written, e.g. 'LV-2933'. Not a price."),
       category: z.string().optional().describe('A category exactly as written in the catalog headings.'),
       color: z.string().optional().describe('Colour the customer asked for, as they said it.'),
       size: z.string().optional().describe('Size the customer asked for, e.g. M, XL, 42.'),
+      price: priceInput,
     }),
-    execute: async ({ query, category, color: givenColor, size: givenSize }) => {
+    execute: async ({ query = '', sku, category, color: givenColor, size: givenSize, price }) => {
+      const notes: string[] = [];
+      if (sku) {
+        const ids = await deps.search.findBySku(scope.tenantId, sku);
+        if (ids.length > 0) {
+          const products = await deps.catalog.loadProducts(scope.tenantId, ids.slice(0, SEARCH_SHOWN));
+          return { sku, found: ids.length, shown: products.length, results: products.map(summarizeProduct) };
+        }
+        notes.push(`No product has the article «${sku}».`);
+      }
+      if (!query.trim()) {
+        return { ...(sku && { sku }), found: 0, shown: 0, results: [], note: [...notes, 'Search by words with query.'].join(' ') };
+      }
+
       // Models often fold the colour or size into the query («сорочка льон
       // чорна»). They are filters on stock, not words to find in a title.
       const color = givenColor ?? findColorWords(query)[0]?.word;
@@ -44,16 +77,22 @@ export function searchProductsTool(deps: AgentToolDeps, scope: ToolScope) {
       for (const s of findSizes(query)) text = text.replace(s, ' ');
 
       const { ids, total } = await deps.search.search(scope.tenantId, { text: text.trim() || query, category });
-      const filtering = !!(color || size);
+      const filtering = !!(color || size || price);
       const products = await deps.catalog.loadProducts(scope.tenantId, ids.slice(0, filtering ? SEARCH_FILTER_POOL : SEARCH_SHOWN));
-      const matching = filtering ? products.filter((p) => hasInStock(p, color, size)) : products;
+      const inStock = color || size ? products.filter((p) => hasInStock(p, color, size)) : products;
+      const matching = price ? inStock.filter((p) => nearPrice(p, price)) : inStock;
       const shown = matching.slice(0, SEARCH_SHOWN);
 
-      const notes: string[] = [];
-      if (filtering && matching.length < products.length) {
+      if (inStock.length < products.length) {
         notes.push(
-          `Of the ${products.length} best matches, ${products.length - matching.length} don't have ` +
+          `Of the ${products.length} best matches, ${products.length - inStock.length} don't have ` +
             `${[color, size].filter(Boolean).join(' / ')} in stock.`,
+        );
+      }
+      if (matching.length < inStock.length) {
+        notes.push(
+          `${inStock.length - matching.length} of the ${inStock.length} best matches${color || size ? ' in stock' : ''} ` +
+            `don't cost about ${price}.`,
         );
       }
       if (total > shown.length) {
@@ -61,6 +100,7 @@ export function searchProductsTool(deps: AgentToolDeps, scope: ToolScope) {
       }
       return {
         query,
+        ...(sku && { sku }),
         found: total,
         shown: shown.length,
         results: shown.map(summarizeProduct),
@@ -86,7 +126,8 @@ export function browseCategoryTool(deps: AgentToolDeps, scope: ToolScope) {
       '(formality, pattern, fabric, collar, fit). Use it for advice and open requests: "what do you ' +
       'recommend", an occasion (a wedding, the office, the sea), a style or a budget. Read the whole list and ' +
       'choose the 2–3 products that fit best. Sizes are not listed: call get_product before stating sizes or ' +
-      'whether a size is in stock. The filters are optional; use them when the customer was specific.',
+      'whether a size is in stock. The filters are optional; use them when the customer was specific, or price ' +
+      'when you read one on their photo or post.',
     inputSchema: z.object({
       category: z.string().describe('A category exactly as written in the catalog headings.'),
       formality: z.enum(ATTRIBUTE_VALUES.formality).optional(),
@@ -97,8 +138,9 @@ export function browseCategoryTool(deps: AgentToolDeps, scope: ToolScope) {
       color: z.string().optional().describe('Only products with this colour in stock.'),
       size: z.string().optional().describe('Only products with this size in stock.'),
       maxPrice: z.number().positive().optional().describe('Only products at or under this price.'),
+      price: priceInput,
     }),
-    execute: async ({ category, color, size, maxPrice, ...look }) => {
+    execute: async ({ category, color, size, maxPrice, price, ...look }) => {
       const categories = await deps.catalog.listCategories(scope.tenantId);
       const match = categories.find((c) => c.name.toLowerCase() === category.trim().toLowerCase());
       if (!match) {
@@ -114,7 +156,8 @@ export function browseCategoryTool(deps: AgentToolDeps, scope: ToolScope) {
         (p) =>
           wanted.every(([key, value]) => p.attributes[key] === value) &&
           (!(color || size) || hasInStock(p, color, size)) &&
-          (maxPrice === undefined || summarizeProduct(p).price <= maxPrice),
+          (maxPrice === undefined || summarizeProduct(p).price <= maxPrice) &&
+          (price === undefined || nearPrice(p, price)),
       );
       const outOfStock = all.length - inStock.length;
 
@@ -254,7 +297,10 @@ export function getSizeHelpTool(deps: AgentToolDeps, scope: ToolScope, settings:
         };
       }
 
-      const recommended = chart && (heightCm || weightKg) ? recommendSize({ heightCm, weightKg }, chart) : null;
+      // Height and weight arrive either way: as their own fields or inside `measurements`.
+      const height = heightCm ?? measurements?.height;
+      const weight = weightKg ?? measurements?.weight;
+      const recommended = chart && (height || weight) ? recommendSize({ heightCm: height, weightKg: weight }, chart) : null;
       if (!chart && !sizeChartImage) {
         return {
           source: 'none' as const,
@@ -280,7 +326,7 @@ export function getSizeHelpTool(deps: AgentToolDeps, scope: ToolScope, settings:
           })),
         }),
         sizeChartImage,
-        ...(!recommended && chart && !(heightCm || weightKg) && {
+        ...(!recommended && chart && !(height || weight) && {
           note: 'Ask for height and weight to recommend a size.',
         }),
       };

@@ -56,6 +56,12 @@ export default () => ({
   historyImport: {
     workerEnabled: process.env.HISTORY_IMPORT_WORKER_ENABLED !== 'false',
   },
+  // Reads each connected store's Instagram content into instagram_media_mappings
+  // (InstagramContentService.tick): stories every 30 minutes, posts and reels
+  // hourly. On for the API; the CLI scripts that boot AppModule turn it off.
+  contentFetch: {
+    workerEnabled: process.env.CONTENT_FETCH_WORKER_ENABLED !== 'false',
+  },
   agent: {
     // v2 tool-calling agent (docs/v2-agent). The model id picks the provider;
     // a store can override it with tenant_settings.ai_settings.model.

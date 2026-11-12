@@ -49,7 +49,7 @@ describe('HistoryBuilder', () => {
       { role: 'customer', text: 'Скільки коштує сорочка?' },
       { role: 'bot', text: '3300 грн' },
       { role: 'note', text: '— 5 hours later —' },
-      { role: 'customer', text: '(sent a photo)' },
+      { role: 'customer', text: '(sent a photo)', said: '' },
       { role: 'manager', text: 'Зараз уточню' },
     ]);
   });
@@ -102,12 +102,12 @@ describe('HistoryBuilder', () => {
       },
     }).build(CONVERSATION);
 
-    expect(history[0]).toEqual({ role: 'customer', text: '(sent a photo earlier in the conversation; it is no longer attached)' });
-    expect(history[1]).toEqual({ role: 'customer', text: '(sent a photo)', images: ['/uploads/customer-media/t1/1.jpg'] });
-    expect(history[10]).toEqual({ role: 'customer', text: '(sent a photo)', images: ['/uploads/customer-media/t1/10.jpg'] });
+    expect(history[0]).toEqual({ role: 'customer', text: '(sent a photo earlier in the conversation; it is no longer attached)', said: '' });
+    expect(history[1]).toEqual({ role: 'customer', text: '(sent a photo)', said: '', images: ['/uploads/customer-media/t1/1.jpg'] });
+    expect(history[10]).toEqual({ role: 'customer', text: '(sent a photo)', said: '', images: ['/uploads/customer-media/t1/10.jpg'] });
     expect(history.slice(11)).toEqual([
-      { role: 'customer', text: "(sent a photo that couldn't be loaded; ask them to send it again if you need it)" },
-      { role: 'customer', text: "(sent a video; you can't watch videos, so ask for a photo or a description)" },
+      { role: 'customer', text: "(sent a photo that couldn't be loaded; ask them to send it again if you need it)", said: '' },
+      { role: 'customer', text: "(sent a video; you can't watch videos, so ask for a photo or a description)", said: '' },
       { role: 'customer', text: 'Є така в L?' },
     ]);
   });
@@ -130,7 +130,108 @@ describe('HistoryBuilder', () => {
     }).build(CONVERSATION);
 
     expect(history).toEqual([
-      { role: 'customer', text: '(replied to a story) (sent a photo) а ця є?', images: ['/uploads/customer-media/t1/a.jpg'] },
+      { role: 'customer', text: "(replied to the shop's story; you can't see it) (sent a photo) а ця є?", said: 'а ця є?', images: ['/uploads/customer-media/t1/a.jpg'] },
+    ]);
+  });
+
+  it('shows the story, post or reel the customer pointed at as an image, labelled, with its caption', async () => {
+    const story = '/uploads/content-media/t1/story-frames.jpg';
+    const post = '/uploads/content-media/t1/post.jpg';
+    const reel = '/uploads/content-media/t1/reel.jpg';
+    const history = await builder({
+      messages: {
+        c2: [
+          {
+            role: 'user',
+            text: 'є в M?',
+            attachments: [{ type: 'story_reply', mediaId: 's1', url: story, image: 'video_frames' }],
+            created_at: at(0.4),
+          },
+          {
+            role: 'user',
+            text: '',
+            attachments: [{ type: 'post_share', mediaId: 'p1', url: post, image: 'picture', caption: `Сукня льон\n\n${'дуже '.repeat(80)}` }],
+            created_at: at(0.3),
+          },
+          {
+            role: 'user',
+            text: '',
+            attachments: [{ type: 'post_share', mediaId: 'r1', url: reel, image: 'video_cover', reel: true, foreign: true }],
+            created_at: at(0.2),
+          },
+          { role: 'user', text: 'Ціна?', attachments: [{ type: 'post_comment', mediaId: 'p2', caption: 'Нова колекція' }], created_at: at(0.1) },
+          { role: 'user', text: 'А штани є?', attachments: [{ type: 'post_share', mediaId: 'r2', reel: true, foreign: true }], created_at: at(0) },
+        ],
+      },
+    }).build(CONVERSATION);
+
+    expect(history[0]).toEqual({
+      role: 'customer',
+      text: "(replied to the shop's story, a video: the image shows frames from it) є в M?",
+      said: 'є в M?',
+      images: [story],
+    });
+    expect(history[1].text).toMatch(/^\(shared a post, shown in the image; caption: «Сукня льон дуже дуже .*… \(cut\)»\)$/);
+    expect(history[1].text.length).toBeLessThan(400);
+    expect(history[1]).toMatchObject({ images: [post] });
+    expect(history[2]).toEqual({
+      role: 'customer',
+      text: '(shared a reel from another account, a video: the image is its cover)',
+      said: '',
+      images: [reel],
+    });
+    // No copy: the agent is told it can't see it, so it doesn't ask as if it could.
+    expect(history[3]).toEqual({
+      role: 'customer',
+      text: "(commented under the shop's post; you can't see it, only its caption: «Нова колекція») Ціна?",
+      said: 'Ціна?',
+    });
+    expect(history[4]).toEqual({ role: 'customer', text: "(shared a reel from another account; you can't see it) А штани є?", said: 'А штани є?' });
+  });
+
+  it('counts content images toward the same cap as photos, keeping the newest', async () => {
+    const photo = (n: number) => ({
+      role: 'user',
+      text: '',
+      attachments: [{ type: 'customer_photo', mediaId: `https://cdn/${n}.jpg`, url: `/uploads/customer-media/t1/${n}.jpg` }],
+      created_at: at(1),
+    });
+    const history = await builder({
+      messages: {
+        c2: [
+          { role: 'user', text: '', attachments: [{ type: 'story_reply', mediaId: 's1', url: '/uploads/content-media/t1/s.jpg', image: 'picture', caption: 'Сукня' }], created_at: at(2) },
+          ...Array.from({ length: 10 }, (_, n) => photo(n)),
+        ],
+      },
+    }).build(CONVERSATION);
+
+    expect(history[0]).toEqual({ role: 'customer', text: "(replied to the shop's story; its image is no longer attached; caption: «Сукня»)", said: '' });
+    expect(history.filter((e) => e.role === 'customer' && e.images).length).toBe(10);
+  });
+
+  it("gives the new messages' attachments from the same rows, with a content copy only when the history shows it", async () => {
+    const story = { type: 'story_reply', mediaId: 's1', url: '/uploads/content-media/t1/s.jpg', image: 'picture', caption: 'Сукня' };
+    const photo = (n: number) => ({
+      type: 'customer_photo',
+      mediaId: `https://cdn/${n}.jpg`,
+      url: `/uploads/customer-media/t1/${n}.jpg`,
+    });
+    const { history, newAttachments } = await builder({
+      messages: {
+        c2: [
+          { role: 'user', text: '', attachments: [{ type: 'post_share', mediaId: 'old' }], created_at: at(3) },
+          { role: 'assistant', text: 'Вітаю!', created_at: at(2.5) },
+          { role: 'user', text: 'є в M?', attachments: [story], created_at: at(2) },
+          // Ten newer photos push the story's copy out of the images.
+          ...Array.from({ length: 10 }, (_, n) => ({ role: 'user', text: '', attachments: [photo(n)], created_at: at(1) })),
+        ],
+      },
+    }).buildTurn(CONVERSATION);
+
+    expect(history.find((e) => e.text.includes('story'))).not.toHaveProperty('images');
+    expect(newAttachments).toEqual([
+      { type: 'story_reply', mediaId: 's1', caption: 'Сукня' },
+      ...Array.from({ length: 10 }, (_, n) => photo(n)),
     ]);
   });
 
@@ -179,7 +280,7 @@ describe('HistoryBuilder', () => {
     // The old messages keep their roles, so a customer's words never come back as system text.
     // Photos from an earlier conversation are named, not re-sent.
     expect(history.slice(1)).toEqual([
-      { role: 'customer', text: '(sent a photo)' },
+      { role: 'customer', text: '(sent a photo)', said: '' },
       { role: 'customer', text: 'а чорна є?' },
       { role: 'bot', text: 'Так, чорна є в L' },
       {

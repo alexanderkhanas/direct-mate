@@ -13,6 +13,7 @@ import { OrdersService } from '../orders/orders.service';
 import { Order } from '../orders/entities/order.entity';
 import { TelegramService } from '../notifications/telegram.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
+import { ContentMediaService } from '../content-media/content-media.service';
 import { ConversationsService } from './conversations.service';
 import { ConversationTracesService } from './conversation-traces.service';
 import { HistoryBuilder } from './history.builder';
@@ -88,6 +89,7 @@ const MATCHABLE: ReadonlySet<MessageAttachment['type']> = new Set([
   'post_share',
   'post_comment',
 ]);
+
 export const DEFAULT_HANDOFF_ANNOUNCE = 'Передаю розмову менеджеру — він відповість вам тут найближчим часом.';
 const FIRST_REPLY_NOTE =
   "This is your first reply to this customer. A welcome line introducing you as the shop's AI assistant " +
@@ -108,7 +110,8 @@ interface ConversationRow {
  *  2. gates: paused store, manager in control, expired subscription, and (live)
  *     a customer sending more messages an hour than any person would, which
  *     caps what a script can spend;
- *  3. history (with conversation boundaries) and media context;
+ *  3. history (with conversation boundaries, and the images of stories and
+ *     posts the customer pointed at) and media context;
  *  4. the agent;
  *  5. drop the reply if the customer wrote again meanwhile (Instagram only);
  *  6. commit staged effects for the mode, then compose and save the messages
@@ -135,6 +138,7 @@ export class TurnRunner {
     private readonly orders: OrdersService,
     private readonly telegram: TelegramService,
     private readonly config: ConfigService,
+    private readonly contentMedia: ContentMediaService,
   ) {}
 
   async run(input: TurnRunInput): Promise<TurnRunResult> {
@@ -183,20 +187,27 @@ export class TurnRunner {
         }
       }
 
-      history = await this.history.build({
+      // Images of the stories, posts and reels in the new messages, for the history (a video's frames take seconds).
+      await this.contentMedia.prepare(input.tenantId, conversation.id);
+      const built = await this.history.buildTurn({
         id: conversation.id,
         tenantId: conversation.tenant_id,
         customerId: conversation.customer_id,
       });
+      history = built.history;
       const lastSaid = [...history].reverse().find((e) => e.role !== 'note');
       if (lastSaid?.role !== 'customer') return this.skipped('nothing_to_answer', traceId);
 
+      // From the rows the history was built from, so a note never points at an image the history doesn't show.
+      const fromMessages = mediaReferences(built.newAttachments);
+      const given = input.mediaReference;
+      // A reference the caller passed is the same one its saved message carries, which has the copy and caption.
       const references =
-        input.mediaReference !== undefined
-          ? input.mediaReference
-            ? [input.mediaReference]
-            : []
-          : await this.newMediaReferences(conversation.id);
+        given === undefined
+          ? fromMessages
+          : given
+            ? [fromMessages.find((r) => r.type === given.type && r.mediaId === given.mediaId) ?? given]
+            : [];
       const media = await this.media.resolve(
         input.tenantId,
         conversation.id,
@@ -426,22 +437,7 @@ export class TurnRunner {
     return rows.length > 0;
   }
 
-  /** What the customer's messages since the last reply point at: photos, stories, posts. */
-  private async newMediaReferences(conversationId: string): Promise<MediaReference[]> {
-    const rows: Array<{ attachments: MessageAttachment[] | null }> = await this.dataSource.query(
-      `SELECT attachments FROM messages
-        WHERE conversation_id = $1 AND direction = $2 AND attachments IS NOT NULL
-          AND created_at > COALESCE(
-            (SELECT max(created_at) FROM messages WHERE conversation_id = $1 AND direction = $3), '-infinity')
-        ORDER BY created_at`,
-      [conversationId, MessageDirection.Inbound, MessageDirection.Outbound],
-    );
-    return rows
-      .flatMap((r) => (Array.isArray(r.attachments) ? r.attachments : []))
-      .filter((a) => MATCHABLE.has(a.type) && !a.error)
-      .map((a) => ({ type: a.type, mediaId: a.mediaId }));
-  }
-
+  /** What the customer's messages since the last reply point at: photos, and stories and posts with our copy and caption. */
   /** Inbound messages from this customer in the last hour, across conversations. */
   private async messagesLastHour(customerId: string): Promise<number> {
     const [row]: Array<{ n: number }> = await this.dataSource.query(
@@ -550,4 +546,22 @@ function orderSource(source: TraceSource): string {
   if (source === 'simulator_cli' || source === 'simulator_scenario' || source === 'live_console') return 'simulator';
   if (source === 'owner_test') return 'test';
   return 'instagram_ai';
+}
+
+/** What the customer's new messages pointed at, for the resolver: a photo by its id; a story or post with its copy, caption and flags. */
+function mediaReferences(attachments: MessageAttachment[]): MediaReference[] {
+  return attachments
+    .filter((a) => MATCHABLE.has(a.type) && !a.error)
+    .map((a) =>
+      a.type === 'customer_photo'
+        ? { type: a.type, mediaId: a.mediaId }
+        : {
+            type: a.type,
+            mediaId: a.mediaId,
+            ...(a.url && { url: a.url, image: a.image }),
+            ...(a.caption && { caption: a.caption }),
+            ...(a.foreign && { foreign: true }),
+            ...(a.reel && { reel: true }),
+          },
+    );
 }

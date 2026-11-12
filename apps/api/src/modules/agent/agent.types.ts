@@ -5,8 +5,12 @@
 
 /** One entry of the conversation as the agent sees it, oldest first. */
 export type AgentHistoryEntry =
-  /** `images`: our copies of photos sent with this message, given to the model as images. */
-  | { role: 'customer'; text: string; images?: string[] }
+  /**
+   * `images`: our copies of photos sent with this message, given to the model as images.
+   * `said`: only what the customer typed, without the attachment labels (a quoted shop message,
+   * a post's caption). The grounding check trusts these words; a caption's price isn't a fact.
+   */
+  | { role: 'customer'; text: string; images?: string[]; said?: string }
   | { role: 'bot'; text: string }
   /** A human manager's message in the same thread. */
   | { role: 'manager'; text: string }

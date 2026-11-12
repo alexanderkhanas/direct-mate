@@ -1,27 +1,44 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { mkdir, readFile, unlink, writeFile } from 'fs/promises';
-import { dirname, join } from 'path';
+import { dirname, join, relative, sep } from 'path';
 import sharp = require('sharp');
+import { safeFetch, TooLargeError, UnsafeUrlError } from '../../common/safe-fetch';
 import { uploadPath, uploadsRoot } from '../../common/uploads';
 import type { MessageAttachment } from '../conversations/entities/message.entity';
 
 /** Long side of our copy. A phone photo drops from ~1,850 to ~1,000 input tokens per model call; text in a screenshot stays readable. */
-const MAX_SIDE = 1024;
+export const MAX_SIDE = 1024;
 /** Bigger sources are refused rather than downloaded. Everything smaller is shrunk, so the model never sees a large file. */
 const MAX_SOURCE_BYTES = 20 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 15_000;
 const DOWNLOAD_ATTEMPTS = 2;
 const FOLDER = 'customer-media';
+/** Stories', posts' and reels' images (`ContentMediaService`). Shared by every conversation about that content, so never deleted with one. */
+export const CONTENT_FOLDER = 'content-media';
 
 export interface LoadedImage {
   data: Uint8Array;
   mediaType: string;
 }
 
+export interface Downloaded {
+  body: Buffer;
+  /** The response's Content-Type, lower case, without parameters; '' when missing. */
+  contentType: string;
+}
+
+export interface DownloadOptions {
+  maxBytes?: number;
+  timeoutMs?: number;
+  attempts?: number;
+  /** Stop at the headers when the response is a video (a cover or a picture was wanted). */
+  refuseVideo?: boolean;
+}
+
 type Failure = NonNullable<MessageAttachment['error']>;
 
-class MediaFailure extends Error {
+export class MediaFailure extends Error {
   constructor(readonly reason: Failure, detail: string) {
     super(detail);
   }
@@ -39,6 +56,10 @@ class MediaFailure extends Error {
  *
  * Never throws on a bad photo: the attachment carries the reason instead, and
  * the agent asks the customer to send it again.
+ *
+ * Copies of stories, posts and reels go through the same download and resize
+ * (`downloadMedia`, or `downloadToFile` for a video; `saveImage`), into
+ * `uploads/content-media/`. Every download goes through `safeFetch`.
  */
 @Injectable()
 export class CustomerMediaService {
@@ -54,7 +75,8 @@ export class CustomerMediaService {
 
   async storeFromUrl(tenantId: string, sourceUrl: string): Promise<MessageAttachment> {
     try {
-      return { type: 'customer_photo', mediaId: sourceUrl, url: await this.save(tenantId, await download(sourceUrl)) };
+      const { body } = await downloadMedia(sourceUrl);
+      return { type: 'customer_photo', mediaId: sourceUrl, url: await this.saveImage(tenantId, body) };
     } catch (err) {
       return this.failed(sourceUrl, err);
     }
@@ -64,16 +86,16 @@ export class CustomerMediaService {
   async storeFromBuffer(tenantId: string, source: Buffer): Promise<MessageAttachment> {
     try {
       if (source.length > MAX_SOURCE_BYTES) throw new MediaFailure('too_large', `${source.length} bytes`);
-      const url = await this.save(tenantId, source);
+      const url = await this.saveImage(tenantId, source);
       return { type: 'customer_photo', mediaId: url, url };
     } catch (err) {
       return this.failed('upload', err);
     }
   }
 
-  /** The bytes of our copy, or null when it is gone or the URL isn't one of ours. */
+  /** The bytes of our copy (a customer's photo or a story's, post's or reel's image), or null when it is gone or the URL isn't one of ours. */
   async load(url: string): Promise<LoadedImage | null> {
-    const file = isOwnCopy(url) ? uploadPath(url) : null;
+    const file = isOwnCopy(url) || isContentCopy(url) ? uploadPath(url) : null;
     if (!file) return null;
     try {
       return { data: new Uint8Array(await readFile(file)), mediaType: 'image/jpeg' };
@@ -83,7 +105,7 @@ export class CustomerMediaService {
     }
   }
 
-  /** Delete our copies, e.g. with the conversation they belong to. Other URLs are ignored. */
+  /** Delete our copies of customer photos, e.g. with the conversation they belong to. Other URLs are ignored. */
   async remove(urls: string[]): Promise<void> {
     for (const url of urls) {
       const file = isOwnCopy(url) ? uploadPath(url) : null;
@@ -94,19 +116,29 @@ export class CustomerMediaService {
     }
   }
 
-  private async save(tenantId: string, source: Buffer): Promise<string> {
+  /**
+   * Save an image (bytes, or a file's path) as our JPEG copy and return its
+   * URL: no larger than `maxSide`, EXIF dropped, transparency on white.
+   * Throws `MediaFailure` ('unreadable') when it isn't an image.
+   */
+  async saveImage(
+    tenantId: string,
+    source: Buffer | string,
+    opts: { folder?: string; maxSide?: number; suffix?: string } = {},
+  ): Promise<string> {
+    const maxSide = opts.maxSide ?? MAX_SIDE;
     let jpeg: Buffer;
     try {
       jpeg = await sharp(source)
         .rotate()
-        .resize({ width: MAX_SIDE, height: MAX_SIDE, fit: 'inside', withoutEnlargement: true })
+        .resize({ width: maxSide, height: maxSide, fit: 'inside', withoutEnlargement: true })
         .flatten({ background: '#ffffff' })
         .jpeg({ quality: 82 })
         .toBuffer();
     } catch (err) {
       throw new MediaFailure('unreadable', err instanceof Error ? err.message : String(err));
     }
-    const relative = join(FOLDER, tenantId, `${randomUUID()}.jpg`);
+    const relative = join(opts.folder ?? FOLDER, tenantId, `${randomUUID()}${opts.suffix ?? ''}.jpg`);
     const file = join(uploadsRoot(), relative);
     await mkdir(dirname(file), { recursive: true });
     await writeFile(file, jpeg);
@@ -121,27 +153,72 @@ export class CustomerMediaService {
 }
 
 function isOwnCopy(url: string): boolean {
-  return url.startsWith(`/uploads/${FOLDER}/`) && uploadPath(url) !== null;
+  return isCopyIn(FOLDER, url);
 }
 
-/** Fetch with a timeout and a size cap, one retry. A file over the cap isn't retried. */
-async function download(url: string): Promise<Buffer> {
+/** One of our copies of a story's, post's or reel's image (that tenant's, when given). */
+export function isContentCopy(url: string, tenantId?: string): boolean {
+  return isCopyIn(CONTENT_FOLDER, url, tenantId);
+}
+
+/** A file at `uploads/<folder>/<tenant>/<file>` once the URL is resolved, so `..` can't reach another folder. */
+function isCopyIn(folder: string, url: string, tenantId?: string): boolean {
+  const file = uploadPath(url);
+  if (!file) return false;
+  const parts = relative(join(uploadsRoot(), folder), file).split(sep);
+  return parts.length === 2 && parts[0] !== '..' && (!tenantId || parts[0] === tenantId);
+}
+
+/**
+ * Fetch through `safeFetch` (public addresses only, each redirect checked, a
+ * timeout and a size cap), one retry. A file over the cap or a refused link
+ * isn't retried. Throws `MediaFailure` ('too_large', 'unreadable' for a
+ * refused video, or 'download_failed').
+ */
+export async function downloadMedia(url: string, opts: DownloadOptions = {}): Promise<Downloaded> {
+  return withAttempts(opts, async () => {
+    const res = await safeFetch(url, fetchOptions(opts));
+    return { body: res.body, contentType: contentTypeOf(res.headers) };
+  });
+}
+
+/** `downloadMedia` streamed into `file`, so a video never sits in memory. */
+export async function downloadToFile(url: string, file: string, opts: DownloadOptions = {}): Promise<{ contentType: string }> {
+  return withAttempts(opts, async () => {
+    const res = await safeFetch(url, { ...fetchOptions(opts), toFile: file });
+    return { contentType: contentTypeOf(res.headers) };
+  });
+}
+
+function fetchOptions(opts: DownloadOptions) {
+  return {
+    timeoutMs: opts.timeoutMs ?? DOWNLOAD_TIMEOUT_MS,
+    maxBytes: opts.maxBytes ?? MAX_SOURCE_BYTES,
+    onHeaders: (status: number, headers: Record<string, string>) => {
+      if (status < 200 || status >= 300) throw new Error(`HTTP ${status}`);
+      if (opts.refuseVideo && contentTypeOf(headers).startsWith('video/')) throw new MediaFailure('unreadable', 'a video');
+    },
+  };
+}
+
+async function withAttempts<T>(opts: DownloadOptions, attempt: () => Promise<T>): Promise<T> {
+  const attempts = opts.attempts ?? DOWNLOAD_ATTEMPTS;
   let lastError: unknown;
-  for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt++) {
+  for (let n = 1; n <= attempts; n++) {
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      if (Number(res.headers.get('content-length') ?? 0) > MAX_SOURCE_BYTES) {
-        throw new MediaFailure('too_large', `content-length ${res.headers.get('content-length')}`);
-      }
-      const body = Buffer.from(await res.arrayBuffer());
-      if (body.length > MAX_SOURCE_BYTES) throw new MediaFailure('too_large', `${body.length} bytes`);
-      return body;
+      return await attempt();
     } catch (err) {
       if (err instanceof MediaFailure) throw err;
+      if (err instanceof TooLargeError) throw new MediaFailure('too_large', err.message);
+      if (err instanceof UnsafeUrlError) throw new MediaFailure('download_failed', err.message);
       lastError = err;
-      if (attempt < DOWNLOAD_ATTEMPTS) await new Promise((r) => setTimeout(r, 1000));
+      if (n < attempts) await new Promise((r) => setTimeout(r, 1000));
     }
   }
   throw new MediaFailure('download_failed', lastError instanceof Error ? lastError.message : String(lastError));
+}
+
+/** Content-Type, lower case, without parameters. */
+function contentTypeOf(headers: Record<string, string>): string {
+  return (headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
 }
