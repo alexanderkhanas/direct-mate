@@ -45,7 +45,12 @@ docs/v2-agent/   — The agent rework: decisions and the phase-by-phase implemen
   reel, each with a `source` (`manual`, `caption_sku`, `same_image`, `conversation`, `vision`) and a `status`.
   `confirmed` comes only from the owner (Content page), a caption SKU or the same image; `suggested` is evidence the
   owner reviews on the Content page («Перевірити»); `rejected` is never used or suggested again. Code never overrides
-  the owner. Customer-photo matches stay on `instagram_media_mappings` (a cache, not content); its
+  the owner. Evidence (live only): when the customer picks the item they saw, the agent adds it with
+  `update_order_draft.addItem.fromContent`, a `content_pick` effect the runner records on the content they pointed at
+  last (`HistoryBuilder.buildTurn().focusMediaId`); a placed order adds its id. An order is evidence, not proof (a
+  customer may knowingly order the closest match): a suggestion's first order asks the owner in Telegram
+  (`ContentQuestionsService`, «Так, це він» / «Ні», once per link, ≤5 per store per day, a tap counts only from the
+  store's chat; `TelegramService.onCallback` routes `cl:` taps). Customer-photo matches stay on `instagram_media_mappings` (a cache, not content); its
   `product_id` / `linked_color` / `confirmed` on content rows are no longer read.
 - `archived_response_templates`, `archived_phrase_blocks`, `archived_faq_items`: the old template engine's
   tables, read-only. Kept because production stores' templates are the only record of their delivery and
@@ -111,7 +116,8 @@ customer per 30 days) and the **handoff line** appended to every handoff.
 Read: `search_products` (words, or an exact `sku` / article; optional `price` ±5 % of what the customer pays),
 `browse_category` (also `price`), `get_product`, `get_size_help` (not offered when the store's
 sizing is `consult`). State: `get_order_draft`, `update_order_draft` (lives in `checkout_sessions` /
-`checkout_items` / `checkout_customer_info`; price always from the DB). Staged effects, committed by the
+`checkout_items` / `checkout_customer_info`; price always from the DB; `addItem.fromContent` marks the item the
+customer chose from a story, post or reel). Staged effects, committed by the
 runner per mode: `show_products` (≤4 images), `send_size_chart`, `place_order` (only when the draft is
 complete, idempotent per checkout session), `send_payment_details` (once per draft), `handoff`.
 Every tool is tenant-scoped; refs the model passes are resolved against the tenant's catalog.

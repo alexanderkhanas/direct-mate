@@ -49,4 +49,27 @@ describe('ContentLinksService', () => {
     await links.setStatus('t1', 'l1', 'confirmed');
     expect(query.mock.calls[0][0]).toMatch(/WHERE id = \$1 AND tenant_id = \$2/);
   });
+
+  it('adds a pick once per conversation, never on a rejected pair, never changing the status', async () => {
+    const { links, query } = setup();
+    await links.addPick('t1', { mediaId: 's1' }, { productId: 'p1', color: 'Чорний', conversationId: 'c1' });
+    const [sql, params] = query.mock.calls[0];
+    expect(sql).toMatch(/'conversation', 'suggested'/);
+    expect(sql).toMatch(/WHERE content_products\.status <> 'rejected'/);
+    expect(sql).toMatch(/AND NOT coalesce\(content_products\.evidence->'picks', '\[\]'::jsonb\)\s+@> jsonb_build_array\(jsonb_build_object\('conversationId', \$5::text\)\)/);
+    expect(sql).not.toMatch(/DO UPDATE SET[\s\S]*status =/);
+    expect(params).toEqual(['t1', 's1', 'p1', 'Чорний', 'c1']);
+  });
+
+  it("marks an order only on that conversation's picks of products in the order", async () => {
+    const { links, query } = setup([[{ id: 'l1', status: 'suggested', owner_asked_at: null }], 1]);
+    expect(await links.addOrder('t1', 'c1', { orderId: 'o1', checkoutSessionId: 's1' })).toEqual([
+      { id: 'l1', status: 'suggested', ownerAskedAt: null },
+    ]);
+    const [sql, params] = query.mock.calls[0];
+    expect(sql).toMatch(/cp\.product_id IN \(SELECT ci\.product_id FROM checkout_items ci WHERE ci\.checkout_session_id = \$4::uuid\)/);
+    expect(sql).toMatch(/cp\.status <> 'rejected'/);
+    expect(sql).not.toMatch(/SET status/);
+    expect(params).toEqual(['t1', 'c1', 'o1', 's1']);
+  });
 });

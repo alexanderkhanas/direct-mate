@@ -235,6 +235,25 @@ describe('HistoryBuilder', () => {
     ]);
   });
 
+  it("names the shop's content the customer pointed at last, never another account's post or a link", async () => {
+    const turn = (attachments: unknown[][]) =>
+      builder({
+        messages: {
+          c2: attachments.map((a, i) => ({ role: 'user', text: '', attachments: a, created_at: at(attachments.length - i) })),
+        },
+      }).buildTurn(CONVERSATION);
+
+    const story = { type: 'story_reply', mediaId: 's1' };
+    const post = { type: 'post_share', mediaId: 'p1' };
+    expect((await turn([[story], [post]])).focusMediaId).toBe('p1');
+    // Another account's post, a pasted link, a photo: the shop's story before them still counts.
+    expect(
+      (await turn([[story], [{ type: 'post_share', mediaId: 'p9', foreign: true }], [{ type: 'post_reply', mediaId: 'https://instagram.com/p/x' }], [{ type: 'customer_photo', mediaId: 'https://cdn/x.jpg' }]]))
+        .focusMediaId,
+    ).toBe('s1');
+    expect((await turn([[{ type: 'customer_photo', mediaId: 'https://cdn/x.jpg' }]])).focusMediaId).toBeNull();
+  });
+
   it('shows what a quote-reply quoted, labels story mentions and cuts very long messages', async () => {
     const history = await builder({
       messages: {

@@ -184,6 +184,73 @@ export class ContentLinksService {
     return rows[0]?.id ?? null;
   }
 
+  /**
+   * A customer chose this product as the item shown in the content they
+   * pointed at: evidence on a suggestion (created if needed), once per
+   * conversation. Never touches a rejected pair; a confirmed one only gains the
+   * evidence. True when the evidence was added.
+   */
+  async addPick(
+    tenantId: string,
+    target: LinkTarget,
+    pick: { productId: string; color: string | null; conversationId: string },
+  ): Promise<boolean> {
+    const [where, key] = 'mappingId' in target ? ['m.id = $2::uuid', target.mappingId] : ['m.instagram_media_id = $2', target.mediaId];
+    const rows = returnedRows<{ id: string }>(
+      await this.dataSource.query(
+        `INSERT INTO content_products (tenant_id, mapping_id, product_id, color, source, status, evidence)
+         SELECT $1::uuid, m.id, p.id, $4::text, 'conversation', 'suggested',
+                jsonb_build_object('picks', jsonb_build_array(jsonb_build_object('conversationId', $5::text)))
+           FROM instagram_media_mappings m
+           JOIN products p ON p.id = $3 AND p.tenant_id = $1
+          WHERE m.tenant_id = $1 AND ${where}
+         ON CONFLICT (mapping_id, product_id, (coalesce(color, ''))) DO UPDATE SET
+           evidence = jsonb_set(
+             content_products.evidence, '{picks}',
+             coalesce(content_products.evidence->'picks', '[]'::jsonb)
+               || jsonb_build_array(jsonb_build_object('conversationId', $5::text))
+           ),
+           updated_at = now()
+         WHERE content_products.status <> 'rejected'
+           AND NOT coalesce(content_products.evidence->'picks', '[]'::jsonb)
+                   @> jsonb_build_array(jsonb_build_object('conversationId', $5::text))
+         RETURNING id`,
+        [tenantId, key, pick.productId, pick.color, pick.conversationId],
+      ),
+    );
+    return rows.length > 0;
+  }
+
+  /**
+   * The order a conversation placed: on each link that conversation picked
+   * and the order contains, the pick gains the order id. Returns the links
+   * that changed, so the caller can ask the owner about a suggestion.
+   */
+  async addOrder(
+    tenantId: string,
+    conversationId: string,
+    order: { orderId: string; checkoutSessionId: string },
+  ): Promise<Array<{ id: string; status: LinkStatus; ownerAskedAt: Date | null }>> {
+    const rows = returnedRows<{ id: string; status: LinkStatus; owner_asked_at: Date | null }>(
+      await this.dataSource.query(
+        `UPDATE content_products cp
+            SET evidence = jsonb_set(cp.evidence, '{picks}', (
+                  SELECT jsonb_agg(CASE WHEN pick->>'conversationId' = $2 AND pick->>'orderId' IS NULL
+                                        THEN pick || jsonb_build_object('orderId', $3::text) ELSE pick END)
+                    FROM jsonb_array_elements(cp.evidence->'picks') AS pick)),
+                updated_at = now()
+          WHERE cp.tenant_id = $1
+            AND cp.status <> 'rejected'
+            AND cp.product_id IN (SELECT ci.product_id FROM checkout_items ci WHERE ci.checkout_session_id = $4::uuid)
+            AND cp.evidence->'picks' @> jsonb_build_array(jsonb_build_object('conversationId', $2::text))
+            AND NOT cp.evidence->'picks' @> jsonb_build_array(jsonb_build_object('conversationId', $2::text, 'orderId', $3::text))
+          RETURNING cp.id, cp.status, cp.owner_asked_at`,
+        [tenantId, conversationId, order.orderId, order.checkoutSessionId],
+      ),
+    );
+    return rows.map((r) => ({ id: r.id, status: r.status, ownerAskedAt: r.owner_asked_at }));
+  }
+
   /** The owner confirms or rejects a link. False when it isn't this store's. */
   async setStatus(tenantId: string, linkId: string, status: 'confirmed' | 'rejected'): Promise<boolean> {
     const rows = returnedRows<{ id: string }>(

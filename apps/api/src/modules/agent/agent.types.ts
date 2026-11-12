@@ -41,7 +41,9 @@ export type StagedEffect =
   | { type: 'show_products'; images: Array<{ productId: string; url: string }> }
   | { type: 'send_size_chart'; imageUrl: string; name: string }
   | { type: 'place_order'; checkoutSessionId: string }
-  | { type: 'send_payment_details'; checkoutSessionId: string; text: string };
+  | { type: 'send_payment_details'; checkoutSessionId: string; text: string }
+  /** The customer chose this product as the item in the story, post or reel they pointed at: evidence, never proof. */
+  | { type: 'content_pick'; productId: string; color: string | null };
 
 export type HandoffReason =
   | 'customer_asked_for_human'

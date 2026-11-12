@@ -62,6 +62,12 @@ export class TelegramController {
       throw new ForbiddenException('Invalid webhook secret');
     }
 
+    // A tap on an inline button (an owner answering «У сторіс саме цей товар?»).
+    if (body?.callback_query) {
+      await this.telegramService.handleCallback(body.callback_query);
+      return { ok: true };
+    }
+
     const message = body?.message;
     if (message?.text && typeof message.text === 'string') {
       const text: string = message.text;

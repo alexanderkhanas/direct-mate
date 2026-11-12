@@ -14,6 +14,8 @@ import { Order } from '../orders/entities/order.entity';
 import { TelegramService } from '../notifications/telegram.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { ContentMediaService } from '../content-media/content-media.service';
+import { ContentLinksService } from '../channels/instagram/content-links.service';
+import { ContentQuestionsService } from '../channels/instagram/content-questions.service';
 import { ConversationsService } from './conversations.service';
 import { ConversationTracesService } from './conversation-traces.service';
 import { HistoryBuilder } from './history.builder';
@@ -139,6 +141,8 @@ export class TurnRunner {
     private readonly telegram: TelegramService,
     private readonly config: ConfigService,
     private readonly contentMedia: ContentMediaService,
+    private readonly contentLinks: ContentLinksService,
+    private readonly contentQuestions: ContentQuestionsService,
   ) {}
 
   async run(input: TurnRunInput): Promise<TurnRunResult> {
@@ -240,6 +244,7 @@ export class TurnRunner {
         handoff: agentResult.handoff,
         firstReply,
         agentResult,
+        focusMediaId: built.focusMediaId,
       });
       // A conversation the bot took on counts toward the plan (and ends a trial at its limit).
       if (newConversation && result.messages.length > 0) {
@@ -277,12 +282,28 @@ export class TurnRunner {
       firstReply: boolean;
       agentResult?: AgentTurnResult;
       error?: string;
+      /** The shop's content the customer pointed at last: what a `content_pick` is evidence for. */
+      focusMediaId?: string | null;
     },
   ): Promise<TurnRunResult> {
     let { reply, handoff } = outcome;
     const effects = handoff?.reason === 'runner_error' ? [] : outcome.agentResult?.effects ?? [];
     const committed = { orderId: null as string | null, paymentDetailsSent: false };
     let paymentText: string | null = null;
+
+    // Evidence for the content the customer pointed at: live only, never proof (the owner confirms).
+    if (input.mode === 'live' && outcome.focusMediaId) {
+      for (const effect of effects) {
+        if (effect.type !== 'content_pick') continue;
+        await this.contentLinks
+          .addPick(input.tenantId, { mediaId: outcome.focusMediaId }, {
+            productId: effect.productId,
+            color: effect.color,
+            conversationId: conversation.id,
+          })
+          .catch((err) => this.logger.warn(`Recording a content pick failed (non-fatal): ${(err as Error).message}`));
+      }
+    }
 
     // Place the order before anything is said about it.
     for (const effect of effects) {
@@ -295,7 +316,14 @@ export class TurnRunner {
         break;
       }
       committed.orderId = placed.orderId;
-      if (input.mode === 'live' && !placed.alreadyPlaced) void this.announceOrder(input.tenantId, placed.orderId);
+      if (input.mode === 'live' && !placed.alreadyPlaced) {
+        void this.announceOrder(input.tenantId, placed.orderId);
+        // The order is evidence on this conversation's picks; a suggestion's first order asks the owner.
+        void this.contentQuestions.afterOrder(input.tenantId, conversation.id, {
+          orderId: placed.orderId,
+          checkoutSessionId: effect.checkoutSessionId,
+        });
+      }
     }
 
     for (const effect of effects) {

@@ -113,6 +113,7 @@ describe('stories, posts and reels', () => {
     expect(section).toContain("say so plainly, then offer the closest alternatives");
     expect(section).toContain("say you don't see exactly this item, or can't tell which model it is");
     expect(section).toContain("When the message says you can't see it");
+    expect(section).toContain('add it with update_order_draft and fromContent: true');
   });
 
   it('is part of the fixed rules, before anything about the store, so the prefix stays cacheable', () => {

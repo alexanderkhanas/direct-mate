@@ -98,12 +98,14 @@ export class HistoryBuilder {
    * last reply read from the same rows, so what the media notes say is shown
    * is what the history shows. A story's or post's copy that wasn't attached
    * as an image (past the cap) comes without its `url` and `image`.
+   * `focusMediaId`: the shop's story, post or reel the customer pointed at
+   * last in this conversation, which a pick is evidence for.
    */
   async buildTurn(conversation: {
     id: string;
     tenantId: string;
     customerId: string;
-  }): Promise<{ history: AgentHistoryEntry[]; newAttachments: MessageAttachment[] }> {
+  }): Promise<{ history: AgentHistoryEntry[]; newAttachments: MessageAttachment[]; focusMediaId: string | null }> {
     const [current, earlier, orders] = await Promise.all([
       this.messages(conversation.id, HISTORY_LIMIT),
       this.earlierConversation(conversation),
@@ -133,7 +135,7 @@ export class HistoryBuilder {
       if (entry) history.push(entry);
       if (entry?.role === 'bot') history.push(...productsNote(row));
     }
-    return { history, newAttachments: newAttachments(current, photos) };
+    return { history, newAttachments: newAttachments(current, photos), focusMediaId: focusMediaId(current) };
   }
 
   private async messages(conversationId: string, limit: number): Promise<MessageRow[]> {
@@ -236,6 +238,22 @@ export class HistoryBuilder {
       ...lines,
     ].join('\n');
   }
+}
+
+/**
+ * The shop's content the customer pointed at last in this conversation: not
+ * another account's post, and only a real media id (not a link or «unknown»).
+ */
+function focusMediaId(rows: MessageRow[]): string | null {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i].role !== MessageRole.User) continue;
+    const content = (rows[i].attachments ?? []).filter((a) => CONTENT_ATTACHMENTS.has(a.type));
+    for (let j = content.length - 1; j >= 0; j--) {
+      const a = content[j];
+      if (!a.foreign && a.mediaId && a.mediaId !== 'unknown' && !/^https?:\/\//i.test(a.mediaId)) return a.mediaId;
+    }
+  }
+  return null;
 }
 
 /** Attachments of the customer's messages after the last reply; a content copy keeps its `url` only when it is attached. */

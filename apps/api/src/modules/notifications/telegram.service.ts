@@ -6,6 +6,9 @@ import * as crypto from 'crypto';
 import { TelegramConnectToken } from './entities/telegram-connect-token.entity';
 import { StoreConfig } from '../engine/entities/store-config.entity';
 import { withRetry } from '../../common/retry';
+import { uploadPath } from '../../common/uploads';
+import { readFile } from 'fs/promises';
+import { basename } from 'path';
 
 interface HandoffParams {
   tenantId: string;
@@ -14,6 +17,28 @@ interface HandoffParams {
   conversationId: string;
   lastMessage?: string;
   summary?: string;
+}
+
+/** A tap on an inline button, as Telegram sends it. */
+export interface TelegramCallbackQuery {
+  id: string;
+  data?: string;
+  message?: { message_id: number; chat: { id: number | string }; text?: string; caption?: string; photo?: unknown[] };
+}
+
+/**
+ * Handles taps whose `callback_data` starts with its prefix («cl:…»). Returns
+ * the line to append to the message (its buttons go), or null to leave the
+ * message as it is (a tap from a chat it doesn't belong to, a stale button).
+ */
+export type CallbackHandler = (data: string, chatId: string) => Promise<string | null>;
+
+/** A question for a store's owner: text, an optional picture we hold, one row of buttons. */
+export interface OwnerQuestion {
+  text: string;
+  /** `/uploads/…`: sent as the message's photo. */
+  imagePath?: string | null;
+  buttons: Array<{ text: string; data: string }>;
 }
 
 interface NewOrderParams {
@@ -27,6 +52,7 @@ interface NewOrderParams {
 @Injectable()
 export class TelegramService {
   private readonly logger = new Logger(TelegramService.name);
+  private readonly callbackHandlers = new Map<string, CallbackHandler>();
 
   constructor(
     private readonly config: ConfigService,
@@ -157,6 +183,93 @@ export class TelegramService {
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`${res.status} — ${await res.text()}`);
+  }
+
+  /**
+   * Another module answers taps on its buttons: `callback_data` «<prefix>:…».
+   * Registered at startup (onModuleInit), so this module imports nothing of
+   * theirs.
+   */
+  onCallback(prefix: string, handler: CallbackHandler): void {
+    this.callbackHandlers.set(prefix, handler);
+  }
+
+  /** A button tap from the webhook: the handler decides; the message then shows the outcome without its buttons. */
+  async handleCallback(query: TelegramCallbackQuery): Promise<void> {
+    const data = query.data ?? '';
+    const chatId = query.message ? String(query.message.chat.id) : null;
+    const handler = this.callbackHandlers.get(data.split(':')[0]);
+    let outcome: string | null = null;
+    if (handler && chatId) {
+      outcome = await handler(data, chatId).catch((err) => {
+        this.logger.error(`Telegram callback ${data} failed: ${(err as Error).message}`);
+        return null;
+      });
+    }
+    await this.call('answerCallbackQuery', { callback_query_id: query.id, ...(outcome && { text: outcome.slice(0, 190) }) }).catch(
+      (err) => this.logger.warn(`answerCallbackQuery failed: ${(err as Error).message}`),
+    );
+    if (!outcome || !query.message || !chatId) return;
+    const before = query.message.caption ?? query.message.text ?? '';
+    const text = `${before}\n\n${outcome}`;
+    // Editing without reply_markup removes the buttons.
+    await this.call(query.message.photo ? 'editMessageCaption' : 'editMessageText', {
+      chat_id: chatId,
+      message_id: query.message.message_id,
+      ...(query.message.photo ? { caption: text.slice(0, 1024) } : { text: text.slice(0, 4096) }),
+    }).catch((err) => this.logger.warn(`Editing the answered question failed: ${(err as Error).message}`));
+  }
+
+  /**
+   * A question with buttons to every chat the store connected. A picture we
+   * hold goes as the photo, else the text alone. Never throws. Returns how many
+   * chats got it.
+   */
+  async askTenant(tenantId: string, question: OwnerQuestion): Promise<number> {
+    const chatIds = await this.chatIdsFor(tenantId);
+    const keyboard = { inline_keyboard: [question.buttons.map((b) => ({ text: b.text, callback_data: b.data }))] };
+    const file = question.imagePath ? uploadPath(question.imagePath) : null;
+    const photo = file ? await readFile(file).catch(() => null) : null;
+    let sent = 0;
+    for (const chatId of chatIds) {
+      try {
+        if (photo && file) {
+          const form = new FormData();
+          form.append('chat_id', chatId);
+          form.append('caption', question.text.slice(0, 1024));
+          form.append('reply_markup', JSON.stringify(keyboard));
+          form.append('photo', new Blob([new Uint8Array(photo)]), basename(file));
+          await this.call('sendPhoto', form);
+        } else {
+          await this.call('sendMessage', { chat_id: chatId, text: question.text, reply_markup: keyboard });
+        }
+        sent++;
+      } catch (err) {
+        this.logger.error(`Telegram question to ${chatId} failed: ${(err as Error).message}`);
+      }
+    }
+    return sent;
+  }
+
+  /** One Bot API call; throws on failure. Without a bot token it does nothing. */
+  private async call(method: string, body: Record<string, unknown> | FormData): Promise<void> {
+    const botToken = this.config.get<string>('telegram.botToken');
+    if (!botToken) {
+      this.logger.warn(`Telegram bot token not configured — skipping ${method}`);
+      return;
+    }
+    const res = await fetch(`https://api.telegram.org/bot${botToken}/${method}`, {
+      method: 'POST',
+      ...(body instanceof FormData
+        ? { body }
+        : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+    });
+    if (!res.ok) throw new Error(`${method}: ${res.status} — ${await res.text()}`);
+  }
+
+  /** The chats a store connected (handoff notices, orders, questions). */
+  async chatIdsFor(tenantId: string): Promise<string[]> {
+    return this.getChatIds(tenantId);
   }
 
   private async getChatIds(tenantId: string): Promise<string[]> {

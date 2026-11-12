@@ -63,6 +63,14 @@ export function updateOrderDraftTool(deps: AgentToolDeps, scope: ToolScope, sett
           color: z.string().optional(),
           size: z.string().optional(),
           quantity: z.number().int().min(1).max(20).optional(),
+          fromContent: z
+            .boolean()
+            .optional()
+            .describe(
+              'true when the customer chose this as the item shown in the story, post or reel they pointed at ' +
+                '(they named it, or picked it when you asked which one it is). Leave it out for an alternative ' +
+                "you offered because the exact one isn't available or you couldn't tell.",
+            ),
         })
         .optional(),
       removeItem: z
@@ -84,6 +92,7 @@ export function updateOrderDraftTool(deps: AgentToolDeps, scope: ToolScope, sett
     }),
     execute: async ({ addItem, removeItem, customer, paymentMethod }) => {
       const patch: DraftPatch = {};
+      let contentPick: StagedEffect | null = null;
 
       if (addItem) {
         const resolved = await deps.catalog.resolveProductRef(scope.tenantId, addItem.productRef);
@@ -93,6 +102,7 @@ export function updateOrderDraftTool(deps: AgentToolDeps, scope: ToolScope, sett
         const pick = pickVariant(product, addItem.color, addItem.size);
         if ('error' in pick) return { ok: false, error: pick.error };
         patch.addItem = { variantId: pick.variant.id, qty: addItem.quantity };
+        if (addItem.fromContent) contentPick = { type: 'content_pick', productId: product.id, color: pick.variant.color ?? null };
       }
 
       if (removeItem) {
@@ -133,7 +143,7 @@ export function updateOrderDraftTool(deps: AgentToolDeps, scope: ToolScope, sett
         return { ok: false, error: 'The item was not added to the draft.', draft: draftForModel(result.draft) };
       }
       return result.ok
-        ? { ok: true, draft: draftForModel(result.draft) }
+        ? { ok: true, draft: draftForModel(result.draft), ...(contentPick && { staged: contentPick }) }
         : { ok: false, error: result.error, draft: draftForModel(result.draft) };
     },
   });

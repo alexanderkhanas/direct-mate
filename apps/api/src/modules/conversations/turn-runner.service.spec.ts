@@ -38,6 +38,7 @@ function setup(opts: {
   messagesLastHour?: number;
   newAttachments?: unknown[];
   history?: unknown[];
+  focusMediaId?: string | null;
 } = {}) {
   const queries: string[] = [];
   const dataSource = {
@@ -88,10 +89,13 @@ function setup(opts: {
       return {
         history: opts.history ?? [{ role: 'customer', text: 'Скільки коштує сорочка?' }],
         newAttachments: opts.newAttachments ?? [],
+        focusMediaId: opts.focusMediaId ?? null,
       };
     }),
   };
   const media = { resolve: jest.fn(async (..._args: unknown[]) => ({ notes: [], messageText: '', productId: null })) };
+  const contentLinks = { addPick: jest.fn(async () => true) };
+  const contentQuestions = { afterOrder: jest.fn(async () => undefined) };
 
   const runner = new TurnRunner(
     dataSource as never,
@@ -107,11 +111,49 @@ function setup(opts: {
     telegram as never,
     { get: () => undefined } as never,
     contentMedia as never,
+    contentLinks as never,
+    contentQuestions as never,
   );
   const run = (mode: TurnMode = 'demo', extra: Partial<Parameters<TurnRunner['run']>[0]> = {}) =>
     runner.run({ tenantId: 't1', conversationId: 'c1', mode, source: 'simulator_cli', ...extra });
-  return { run, queries, saved, conversations, agent, drafts, telegram, traces, subscriptions, contentMedia, media, order };
+  return { run, queries, saved, conversations, agent, drafts, telegram, traces, subscriptions, contentMedia, media, order, contentLinks, contentQuestions };
 }
+
+describe('TurnRunner: evidence for content links', () => {
+  const pick = { type: 'content_pick' as const, productId: 'p1', color: 'Чорний' };
+  const placing = { type: 'place_order' as const, checkoutSessionId: 's1' };
+
+  it('records a pick live, for the content the customer pointed at last', async () => {
+    const t = setup({ focusMediaId: 'story-1', agent: agentResult({ effects: [pick] }) });
+    await t.run('live');
+    expect(t.contentLinks.addPick).toHaveBeenCalledWith('t1', { mediaId: 'story-1' }, { productId: 'p1', color: 'Чорний', conversationId: 'c1' });
+  });
+
+  it('records nothing in demo or a dry run, nor without a piece of content', async () => {
+    for (const mode of ['demo', 'dry_run'] as const) {
+      const t = setup({ focusMediaId: 'story-1', agent: agentResult({ effects: [pick] }) });
+      await t.run(mode);
+      expect(t.contentLinks.addPick).not.toHaveBeenCalled();
+    }
+    const none = setup({ focusMediaId: null, agent: agentResult({ effects: [pick] }) });
+    await none.run('live');
+    expect(none.contentLinks.addPick).not.toHaveBeenCalled();
+  });
+
+  it("hands a new live order to the owner questions, and never one that was placed before", async () => {
+    const t = setup({ agent: agentResult({ effects: [placing] }) });
+    await t.run('live');
+    expect(t.contentQuestions.afterOrder).toHaveBeenCalledWith('t1', 'c1', { orderId: 'o1', checkoutSessionId: 's1' });
+
+    const again = setup({ agent: agentResult({ effects: [placing] }), placeOrder: { ok: true, orderId: 'o1', alreadyPlaced: true } });
+    await again.run('live');
+    expect(again.contentQuestions.afterOrder).not.toHaveBeenCalled();
+
+    const demo = setup({ agent: agentResult({ effects: [placing] }) });
+    await demo.run('demo');
+    expect(demo.contentQuestions.afterOrder).not.toHaveBeenCalled();
+  });
+});
 
 describe('TurnRunner', () => {
   it("waits for the images of the stories and posts in the new messages before reading the history", async () => {
