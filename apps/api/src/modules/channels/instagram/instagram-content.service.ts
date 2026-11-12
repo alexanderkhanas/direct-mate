@@ -2,7 +2,7 @@ import { Injectable, Logger, NotFoundException, BadRequestException } from '@nes
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { IsNull, Not, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import OpenAI from 'openai';
 import { InstagramMediaMapping } from './entities/instagram-media-mapping.entity';
 import { Connection } from '../../integrations/entities/connection.entity';
@@ -20,6 +20,7 @@ import { uploadPath } from '../../../common/uploads';
 import { GRAPH_API, GRAPH_BUDGET_KEY } from '../../../common/meta-graph';
 import { safeFetch } from '../../../common/safe-fetch';
 import type { IgAccount } from './instagram-sender.service';
+import { ContentLinksService, type ContentLinkView } from './content-links.service';
 
 const MEDIA_TYPES: Record<string, string> = {
   '.jpg': 'image/jpeg',
@@ -64,6 +65,28 @@ interface GraphPage {
   data?: GraphMedia[];
   paging?: { cursors?: { after?: string }; next?: string };
 }
+
+export type ContentFilter = 'review' | 'unlinked' | 'linked';
+
+/** One row of the Content page. */
+export interface ContentItem {
+  id: string;
+  instagramMediaId: string;
+  mediaType: string;
+  mediaProductType: string | null;
+  caption: string | null;
+  imageUrl: string | null;
+  permalink: string | null;
+  createdAt: Date;
+  products: ContentLinkView[];
+}
+
+/** Conditions on `instagram_media_mappings m`. */
+const CONTENT_FILTER_SQL: Record<ContentFilter, string> = {
+  review: `EXISTS (SELECT 1 FROM content_products cp WHERE cp.mapping_id = m.id AND cp.status = 'suggested')`,
+  linked: `EXISTS (SELECT 1 FROM content_products cp WHERE cp.mapping_id = m.id AND cp.status = 'confirmed')`,
+  unlinked: `NOT EXISTS (SELECT 1 FROM content_products cp WHERE cp.mapping_id = m.id AND cp.status <> 'rejected')`,
+};
 
 const MEDIA_FIELDS = 'id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp';
 const POSTS_PAGE_SIZE = 50;
@@ -142,6 +165,7 @@ export class InstagramContentService {
     private readonly imageHashService: ImageHashService,
     private readonly imageEmbeddingService: ImageEmbeddingService,
     private readonly dataSource: DataSource,
+    private readonly links: ContentLinksService,
   ) {
     this.openai = new OpenAI({ apiKey: this.config.get<string>('openai.apiKey') });
   }
@@ -251,46 +275,69 @@ export class InstagramContentService {
     );
   }
 
+  /**
+   * The Content page: the store's stories, posts and reels (not customer
+   * photos), newest first, each with the products it shows. `review`: has a
+   * suggestion to confirm; `linked`: has a confirmed product; `unlinked`: has
+   * none (a rejected one doesn't count).
+   */
   async findAll(
     tenantId: string,
-    filters?: { linked?: boolean; limit?: number; offset?: number },
-  ): Promise<{ items: InstagramMediaMapping[]; total: number }> {
+    filters: { filter?: ContentFilter; limit?: number; offset?: number } = {},
+  ): Promise<{ items: ContentItem[]; total: number; counts: Record<'review' | 'unlinked' | 'linked' | 'all', number> }> {
     const qb = this.mappingRepo
       .createQueryBuilder('m')
       .where('m.tenant_id = :tenantId', { tenantId })
+      .andWhere(`m.media_type <> 'customer_photo'`)
       .orderBy('m.createdAt', 'DESC');
+    if (filters.filter) qb.andWhere(CONTENT_FILTER_SQL[filters.filter]);
+    qb.take(Math.min(filters.limit ?? 50, 100)).skip(filters.offset ?? 0);
 
-    if (filters?.linked === true) qb.andWhere('m.product_id IS NOT NULL');
-    if (filters?.linked === false) qb.andWhere('m.product_id IS NULL');
-
-    const limit = filters?.limit ?? 50;
-    const offset = filters?.offset ?? 0;
-    qb.take(limit).skip(offset);
-
-    const [items, total] = await qb.getManyAndCount();
-    return { items, total };
+    const [rows, total] = await qb.getManyAndCount();
+    const links = await this.links.forMappings(tenantId, rows.map((r) => r.id));
+    const [counts]: Array<Record<'review' | 'unlinked' | 'linked' | 'all', string>> = await this.dataSource.query(
+      `SELECT count(*) FILTER (WHERE ${CONTENT_FILTER_SQL.review}) AS review,
+              count(*) FILTER (WHERE ${CONTENT_FILTER_SQL.unlinked}) AS unlinked,
+              count(*) FILTER (WHERE ${CONTENT_FILTER_SQL.linked}) AS linked,
+              count(*) AS all
+         FROM instagram_media_mappings m
+        WHERE m.tenant_id = $1 AND m.media_type <> 'customer_photo'`,
+      [tenantId],
+    );
+    return {
+      items: rows.map((m) => ({
+        id: m.id,
+        instagramMediaId: m.instagramMediaId,
+        mediaType: m.mediaType,
+        mediaProductType: m.mediaProductType,
+        caption: m.caption,
+        // Our copy first: Meta's links expire within a day.
+        imageUrl: m.imagePath ?? m.thumbnailUrl ?? (m.mediaType === 'video' ? null : m.mediaUrl),
+        permalink: m.permalink,
+        createdAt: m.createdAt,
+        products: links.get(m.id) ?? [],
+      })),
+      total,
+      counts: {
+        review: Number(counts?.review ?? 0),
+        unlinked: Number(counts?.unlinked ?? 0),
+        linked: Number(counts?.linked ?? 0),
+        all: Number(counts?.all ?? 0),
+      },
+    };
   }
 
-  async updateMapping(
-    id: string,
-    tenantId: string,
-    data: {
-      productId?: string | null;
-      variantId?: string | null;
-      linkedColor?: string | null;
-      confirmed?: boolean;
-    },
-  ): Promise<InstagramMediaMapping> {
-    const mapping = await this.mappingRepo.findOne({ where: { id, tenantId } });
-    if (!mapping) throw new NotFoundException('Mapping not found');
+  /** The owner links a product to a piece of content. */
+  async linkProduct(tenantId: string, mappingId: string, productId: string, color: string | null): Promise<{ id: string }> {
+    const id = await this.links.ownerLink(tenantId, mappingId, productId, color || null);
+    if (!id) throw new NotFoundException('Content or product not found');
+    return { id };
+  }
 
-    if (data.productId !== undefined) mapping.productId = data.productId;
-    if (data.variantId !== undefined) mapping.variantId = data.variantId;
-    if (data.linkedColor !== undefined) mapping.linkedColor = data.linkedColor;
-    if (data.confirmed !== undefined) mapping.confirmed = data.confirmed;
-    if (data.productId) mapping.matchMethod = 'manual';
-
-    return this.mappingRepo.save(mapping);
+  /** The owner confirms or rejects one of a content row's products. */
+  async setLinkStatus(tenantId: string, linkId: string, status: 'confirmed' | 'rejected'): Promise<{ ok: true }> {
+    if (!(await this.links.setStatus(tenantId, linkId, status))) throw new NotFoundException('Link not found');
+    return { ok: true };
   }
 
   async deleteMapping(id: string, tenantId: string): Promise<void> {
@@ -299,48 +346,46 @@ export class InstagramContentService {
     await this.mappingRepo.remove(mapping);
   }
 
+  /** «Додати вручну»: a story highlight, post or reel by its link or id, optionally with its product. */
   async createManualMapping(
     tenantId: string,
     data: { instagramMediaId: string; mediaType?: string; caption?: string; productId?: string },
   ): Promise<InstagramMediaMapping> {
-    const existing = await this.mappingRepo.findOne({
+    let mapping = await this.mappingRepo.findOne({
       where: { tenantId, instagramMediaId: data.instagramMediaId },
     });
-    if (existing) {
-      if (data.productId) existing.productId = data.productId;
-      if (data.caption) existing.caption = data.caption;
-      existing.matchMethod = 'manual';
-      existing.confirmed = !!data.productId;
-      return this.mappingRepo.save(existing);
-    }
-
-    // Try to fetch media info from Instagram API
-    let fetchedCaption = data.caption ?? null;
-    let fetchedMediaUrl: string | null = null;
-    let fetchedPermalink: string | null = null;
-    let fetchedMediaType = data.mediaType ?? 'highlight';
-
-    if (/^\d+$/.test(data.instagramMediaId)) {
-      const info = await this.getMediaDetails(tenantId, data.instagramMediaId);
-      if (info) {
-        fetchedCaption = fetchedCaption || info.caption || null;
-        fetchedMediaUrl = info.mediaUrl || null;
-        fetchedPermalink = info.permalink || null;
-        fetchedMediaType = info.mediaType || fetchedMediaType;
+    if (mapping) {
+      if (data.caption) mapping.caption = data.caption;
+      mapping = await this.mappingRepo.save(mapping);
+    } else {
+      let caption = data.caption ?? null;
+      let mediaUrl: string | null = null;
+      let permalink: string | null = null;
+      let mediaType = data.mediaType ?? 'highlight';
+      if (/^\d+$/.test(data.instagramMediaId)) {
+        const info = await this.getMediaDetails(tenantId, data.instagramMediaId);
+        if (info) {
+          caption = caption || info.caption || null;
+          mediaUrl = info.mediaUrl || null;
+          permalink = info.permalink || null;
+          mediaType = info.mediaType || mediaType;
+        }
       }
+      mapping = await this.mappingRepo.save(
+        this.mappingRepo.create({
+          tenantId,
+          instagramMediaId: data.instagramMediaId,
+          mediaType,
+          caption,
+          mediaUrl,
+          permalink,
+          // Added by hand: the SKU pass leaves it to the owner.
+          matchMethod: 'manual',
+        }),
+      );
     }
-
-    return this.mappingRepo.save(this.mappingRepo.create({
-      tenantId,
-      instagramMediaId: data.instagramMediaId,
-      mediaType: fetchedMediaType,
-      caption: fetchedCaption,
-      mediaUrl: fetchedMediaUrl,
-      permalink: fetchedPermalink,
-      productId: data.productId ?? null,
-      matchMethod: 'manual',
-      confirmed: !!data.productId,
-    }));
+    if (data.productId) await this.linkProduct(tenantId, mapping.id, data.productId, null);
+    return mapping;
   }
 
   /**
@@ -456,7 +501,8 @@ export class InstagramContentService {
       .andWhere("m.permalink LIKE :pattern ESCAPE '\\'", {
         pattern: `%/${this.escapeLike(shortcode)}/%`,
       })
-      .andWhere('m.product_id IS NOT NULL')
+      // Only content with a product: otherwise the link is better left in the message.
+      .andWhere(`EXISTS (SELECT 1 FROM content_products cp WHERE cp.mapping_id = m.id AND cp.status <> 'rejected')`)
       .getOne();
 
     return row?.instagramMediaId ?? null;
@@ -751,7 +797,7 @@ export class InstagramContentService {
   }
 
   /** The picture vision can read: our copy, a video's cover, else Meta's link (never a video's). */
-  private visionImage(m: InstagramMediaMapping): string | null {
+  private visionImage(m: Pick<InstagramMediaMapping, 'imagePath' | 'thumbnailUrl' | 'mediaType' | 'mediaUrl'>): string | null {
     return m.imagePath ?? m.thumbnailUrl ?? (m.mediaType === 'video' ? null : m.mediaUrl) ?? null;
   }
 
@@ -766,21 +812,36 @@ export class InstagramContentService {
       .createQueryBuilder('m')
       .where('m.tenant_id = :tenantId', { tenantId })
       .andWhere('m.media_type = :type', { type: 'story' })
-      .andWhere('m.product_id IS NULL')
+      .andWhere(CONTENT_FILTER_SQL.unlinked)
       .andWhere('m.instagram_media_id IN (:...newIds)', { newIds })
       .getMany();
 
     const candidates = unlinkedStories.filter((s) => this.visionImage(s)).slice(0, VISION_STORIES_PER_RUN);
     if (candidates.length === 0) return;
 
-    const linkedPosts = await this.mappingRepo
-      .createQueryBuilder('m')
-      .where('m.tenant_id = :tenantId', { tenantId })
-      .andWhere('m.product_id IS NOT NULL')
-      .andWhere('(m.image_path IS NOT NULL OR m.thumbnail_url IS NOT NULL OR m.media_url IS NOT NULL)')
-      .orderBy('m.created_at', 'DESC')
-      .limit(10)
-      .getMany();
+    const linkedPosts: Array<Pick<InstagramMediaMapping, 'instagramMediaId' | 'imagePath' | 'thumbnailUrl' | 'mediaType' | 'mediaUrl'> & {
+      productId: string;
+      linkedColor: string | null;
+    }> = (
+      await this.dataSource.query(
+        `SELECT m.instagram_media_id, m.image_path, m.thumbnail_url, m.media_type, m.media_url, cp.product_id, cp.color
+           FROM content_products cp
+           JOIN instagram_media_mappings m ON m.id = cp.mapping_id
+          WHERE cp.tenant_id = $1 AND cp.status = 'confirmed'
+            AND (m.image_path IS NOT NULL OR m.thumbnail_url IS NOT NULL OR m.media_url IS NOT NULL)
+          ORDER BY cp.created_at DESC
+          LIMIT 10`,
+        [tenantId],
+      )
+    ).map((r: Record<string, string | null>) => ({
+      instagramMediaId: r.instagram_media_id as string,
+      imagePath: r.image_path,
+      thumbnailUrl: r.thumbnail_url,
+      mediaType: r.media_type as string,
+      mediaUrl: r.media_url,
+      productId: r.product_id as string,
+      linkedColor: r.color,
+    }));
 
     if (linkedPosts.length === 0) return;
 
@@ -828,13 +889,13 @@ export class InstagramContentService {
 
         if (result.match >= 0 && result.match < validPosts.length && result.confidence >= 0.8) {
           const sourcePost = validPosts[result.match];
-          // Only while still unlinked: the owner may have linked it meanwhile.
-          await this.mappingRepo.update({ id: story.id, productId: IsNull() }, {
+          // A suggestion only: never certain, and never over what the owner decided.
+          await this.links.autoLink(tenantId, { mappingId: story.id }, {
             productId: sourcePost.productId,
-            variantId: sourcePost.variantId,
-            linkedColor: sourcePost.linkedColor,
-            matchMethod: 'ai_vision_match',
-            matchConfidence: result.confidence,
+            color: sourcePost.linkedColor,
+            source: 'vision',
+            status: 'suggested',
+            confidence: result.confidence,
           });
           this.logger.log(
             `Story ${story.instagramMediaId} matched to post ${sourcePost.instagramMediaId}${sourcePost.linkedColor ? ` (color=${sourcePost.linkedColor})` : ''} via vision (confidence: ${result.confidence})`,
@@ -915,38 +976,30 @@ export class InstagramContentService {
       }
     }
 
-    // Load linked media (last 10 confirmed mappings). Used both for
-    // exact-URL short-circuit AND as supplementary candidates in
-    // Stage 2. A linked candidate is "strong corroboration" — the
-    // mapping was admin-confirmed or auto-linked from SKU caption,
-    // so a vision pick against one is more trustworthy than a pure
-    // CLIP-only pick.
-    const linkedMedia = await this.mappingRepo
-      .createQueryBuilder('m')
-      .where('m.tenant_id = :tenantId', { tenantId })
-      .andWhere('m.product_id IS NOT NULL')
-      .andWhere('m.media_url IS NOT NULL')
-      // Exclude self-generated customer-photo mappings — those rows
-      // are produced by past customer-photo matches (persisted by
-      // `persistCustomerPhotoMatch` for cache reuse). Letting them
-      // back into this "trusted linked" query creates a contamination
-      // loop: one noisy vision accept becomes a future "linked"
-      // candidate, escalating confidence without human review. Only
-      // human-confirmed mappings (admin manual) and SKU-caption /
-      // story-from-post auto-links count as trusted corroboration
-      // for new photo matches.
-      .andWhere(
-        `(m.match_method IS NULL
-          OR m.match_method NOT IN (
-            'customer_photo_phash',
-            'customer_photo_clip',
-            'customer_photo_vision',
-            'customer_photo_exact'
-          ))`,
-      )
-      .orderBy('m.created_at', 'DESC')
-      .limit(10)
-      .getMany();
+    // Linked media: the last 10 confirmed content links. Used both for the
+    // exact-URL short-circuit AND as supplementary candidates in Stage 2. A
+    // linked candidate is "strong corroboration": the owner confirmed it or
+    // the caption names its SKU, so a vision pick against one is more
+    // trustworthy than a pure CLIP-only pick. Customer-photo matches never
+    // reach content_products, so one noisy vision accept can't come back here
+    // as a "trusted" candidate.
+    const linkedRows: Array<{ instagram_media_id: string; media_url: string; product_id: string; color: string | null }> =
+      await this.dataSource.query(
+        `SELECT m.instagram_media_id, m.media_url, cp.product_id, cp.color
+           FROM content_products cp
+           JOIN instagram_media_mappings m ON m.id = cp.mapping_id
+          WHERE cp.tenant_id = $1 AND cp.status = 'confirmed' AND m.media_url IS NOT NULL
+          ORDER BY cp.created_at DESC
+          LIMIT 10`,
+        [tenantId],
+      );
+    const linkedMedia = linkedRows.map((r) => ({
+      instagramMediaId: r.instagram_media_id,
+      mediaUrl: r.media_url as string | null,
+      productId: r.product_id as string | null,
+      variantId: null as string | null,
+      linkedColor: r.color,
+    }));
 
     // Short-circuit: customer URL is literally one of the linked
     // media URLs (deterministic, simulator-friendly).
@@ -957,7 +1010,7 @@ export class InstagramContentService {
       );
       return {
         productId: exact.productId!,
-        variantId: exact.variantId,
+        variantId: exact.linkedColor ? await this.resolveVariantByColor(exact.productId!, exact.linkedColor) : null,
         color: exact.linkedColor ?? null,
         confidence: 1.0,
         matchMethod: 'customer_photo_exact',
@@ -1550,15 +1603,16 @@ export class InstagramContentService {
    * A manual link, or a link the owner removed, is left alone.
    */
   private async matchSkusInCaptions(tenantId: string): Promise<number> {
-    // `IsNull()`, not `undefined`: TypeORM drops an undefined key from the
-    // where, which loaded every row and re-linked manual links.
-    const open = { tenantId, productId: IsNull(), caption: Not(IsNull()) };
-    const withCaptions = await this.mappingRepo.find({
-      where: [
-        { ...open, matchMethod: IsNull() },
-        { ...open, matchMethod: 'bulk_import' },
-      ],
-    });
+    // Fetched or brought up by a customer, never added by hand, with no link
+    // at all: a rejected one counts, so a pair the owner said no to stays off.
+    const withCaptions = await this.mappingRepo
+      .createQueryBuilder('m')
+      .where('m.tenant_id = :tenantId', { tenantId })
+      .andWhere('m.caption IS NOT NULL')
+      .andWhere(`(m.match_method IS NULL OR m.match_method = 'bulk_import')`)
+      .andWhere(`m.media_type <> 'customer_photo'`)
+      .andWhere('NOT EXISTS (SELECT 1 FROM content_products cp WHERE cp.mapping_id = m.id)')
+      .getMany();
     if (withCaptions.length === 0) return 0;
 
     const patterns = await this.getSkuPatterns(tenantId);
@@ -1635,25 +1689,21 @@ export class InstagramContentService {
     return matched;
   }
 
-  /** Link one row by SKU. False when it got linked by someone else since it was read. */
+  /** Link one row by SKU: certain. False when someone linked that pair since it was read. */
   private async applySkuMatch(
     mapping: InstagramMediaMapping,
     match: { variantId: string | null; productId: string; color: string | null },
     sku: string,
   ): Promise<boolean> {
-    const { affected } = await this.mappingRepo.update(
-      { id: mapping.id, productId: IsNull() },
-      {
-        productId: match.productId,
-        variantId: match.variantId,
-        // A variant-level SKU carries its colour: a colour-level link. A
-        // product-level SKU leaves linkedColor null.
-        linkedColor: match.color,
-        matchMethod: 'sku_from_caption',
-        confirmed: true,
-      },
-    );
-    if (!affected) return false;
+    // A variant-level SKU carries its colour: a colour-level link. A
+    // product-level SKU links every colour.
+    const linked = await this.links.autoLink(mapping.tenantId, { mappingId: mapping.id }, {
+      productId: match.productId,
+      color: match.color,
+      source: 'caption_sku',
+      status: 'confirmed',
+    });
+    if (!linked) return false;
     this.logger.log(
       `SKU match: "${sku}" → product ${match.productId}${match.variantId ? ` variant ${match.variantId}` : ''}${match.color ? ` color=${match.color}` : ''}`,
     );

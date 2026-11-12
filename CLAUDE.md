@@ -41,6 +41,12 @@ docs/v2-agent/   — The agent rework: decisions and the phase-by-phase implemen
 - PostgreSQL in Docker, port **5433** (5432 taken by another project)
 - Container name: `docker-postgres-1`, user: `postgres`, db: `directmate`
 - Seed scripts use raw SQL (`AppDataSource.query()`) to avoid SnakeNamingStrategy issues
+- **Content links** (`content_products`, written only by `ContentLinksService`): several products per story, post or
+  reel, each with a `source` (`manual`, `caption_sku`, `same_image`, `conversation`, `vision`) and a `status`.
+  `confirmed` comes only from the owner (Content page), a caption SKU or the same image; `suggested` is evidence the
+  owner reviews on the Content page («Перевірити»); `rejected` is never used or suggested again. Code never overrides
+  the owner. Customer-photo matches stay on `instagram_media_mappings` (a cache, not content); its
+  `product_id` / `linked_color` / `confirmed` on content rows are no longer read.
 - `archived_response_templates`, `archived_phrase_blocks`, `archived_faq_items`: the old template engine's
   tables, read-only. Kept because production stores' templates are the only record of their delivery and
   payment copy. Drop once every store has a knowledge doc.
@@ -78,11 +84,12 @@ admin simulator and Live DM console, the CLI simulator.
    (`ContentMediaService.prepare`). The label and caption sit inside the customer's message, and the grounding check
    reads only what the customer typed (`said`), so a caption's price is no fact.
 4. **Media** (`MediaContextResolver`): a customer photo is matched to a product (mapping table, pHash, CLIP, then
-   vision). Content (story, post, reel, comment): the stored link, then a pHash match of our copy, else a note to read
-   the text on it first (name, article, price) and search. Only a link, an article or a name that fits one product
-   identifies it: offered alone when in stock, else said so with alternatives. Otherwise the agent sees the catalog as
-   text only, so it says it can't tell which model and shows the closest 2–3. Content it couldn't copy is labelled
-   «you can't see it». Another account's post is «looks like», never the same item.
+   vision). Content (story, post, reel, comment): its confirmed products (`content_products`), then a pHash match of
+   our copy (remembered as confirmed), else a note to read the text on it first (name, article, price) and search.
+   Only a confirmed product, an article or a name that fits one product identifies it: offered alone when in stock,
+   else said so with alternatives; several confirmed → «which one?». Otherwise the agent sees the catalog as text only,
+   so it says it can't tell which model and shows the closest 2–3, suggestions first, never as the item pictured.
+   Content it couldn't copy is labelled «you can't see it». Another account's post is «looks like», never the same item.
 5. **Agent** (`AgentService.runTurn`): a tool loop, then the **guards**. A failed check regenerates once
    with the violations fed back; a second grounding failure is an announced handoff.
 6. **Supersede:** on Instagram, a reply is dropped if the customer wrote again meanwhile, and re-run once.
@@ -171,8 +178,8 @@ ready chart never stands in); otherwise from the height/weight ranges in `flow_c
   store's live stories, so every story is seen within its 24 h; hourly its posts and reels, newest first, paging on
   only until a page holds a post it already has. A full page-through (up to 200) only while the store has no fetched
   post (`bulk_import` row that isn't a story). Rows are upserted by media id, refreshing type, caption, links,
-  `thumbnail_url` and `media_product_type`, never a link. Then the SKU pass (unlinked rows nobody has linked or
-  unlinked) and, after every store is fetched, vision for new stories (≤5 per store). Stores one at a time, a failure
+  `thumbnail_url` and `media_product_type`, never a link. Then the SKU pass (rows with no link at all, not added by
+  hand) and, after every store is fetched, vision for new stories (≤5 per store, suggestions only). Stores one at a time, a failure
   logged and skipped, an in-memory guard against overlapping runs (single replica). `CONTENT_FETCH_WORKER_ENABLED=false`
   turns it off (the CLI scripts do). The Content page's «Fetch content» button runs the same fetch for one store and
   answers before the vision pass.

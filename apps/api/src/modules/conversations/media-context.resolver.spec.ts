@@ -1,19 +1,32 @@
 import { MediaContextResolver, MediaReference } from './media-context.resolver';
+import type { ContentLink } from '../channels/instagram/content-links.service';
 
 const PRODUCT = '5d041fb6-0000-0000-0000-000000000000';
+const OTHER = '9a7c1aa1-0000-0000-0000-000000000000';
+
+const link = (fields: Partial<ContentLink> = {}): ContentLink => ({
+  id: `l-${fields.productId ?? PRODUCT}`,
+  mappingId: 'm1',
+  productId: PRODUCT,
+  title: 'Сукня льон',
+  color: 'Білий',
+  source: 'manual',
+  status: 'confirmed',
+  confidence: null,
+  evidence: {},
+  ...fields,
+});
 
 function setup(
   opts: {
-    linked?: boolean;
-    confirmed?: boolean;
+    links?: ContentLink[];
+    known?: boolean;
     phash?: { productId: string; color: string | null } | null;
     photo?: { productId: string; color: string | null; matchMethod: string } | null;
   } = {},
 ) {
   const content = {
-    findByMediaId: jest.fn(async () =>
-      opts.linked ? { productId: PRODUCT, linkedColor: 'Білий', confirmed: opts.confirmed ?? true } : null,
-    ),
+    findByMediaId: jest.fn(async () => (opts.known ? { id: 'm1' } : null)),
     matchCustomerPhoto: jest.fn(async () => opts.photo ?? null),
     persistCustomerPhotoMatch: jest.fn(async () => undefined),
     saveUnlinkedMedia: jest.fn(async () => undefined),
@@ -21,16 +34,17 @@ function setup(
   };
   const contentMedia = { matchCatalogImage: jest.fn(async () => opts.phash ?? null) };
   const dataSource = { query: jest.fn(async () => [{ title: 'Сукня льон' }]) };
-  const resolver = new MediaContextResolver(content as never, contentMedia as never, dataSource as never);
+  const links = { forMedia: jest.fn(async () => opts.links ?? []), autoLink: jest.fn(async () => true) };
+  const resolver = new MediaContextResolver(content as never, contentMedia as never, links as never, dataSource as never);
   const resolve = (ref: MediaReference) => resolver.resolve('t1', 'c1', [ref], '');
-  return { resolve, content, contentMedia };
+  return { resolve, content, contentMedia, links };
 }
 
 const STORY: MediaReference = { type: 'story_reply', mediaId: 's1', url: '/uploads/content-media/t1/s.jpg', image: 'picture' };
 
 describe('MediaContextResolver: stories, posts and reels', () => {
-  it('names the linked product first, without looking at the image', async () => {
-    const t = setup({ linked: true, phash: { productId: 'other', color: null } });
+  it('names the confirmed product first, without looking at the image', async () => {
+    const t = setup({ links: [link()], phash: { productId: 'other', color: null } });
     const out = await t.resolve(STORY);
 
     expect(out.productId).toBe(PRODUCT);
@@ -43,12 +57,33 @@ describe('MediaContextResolver: stories, posts and reels', () => {
     expect(t.contentMedia.matchCatalogImage).not.toHaveBeenCalled();
   });
 
-  it("offers an automatic match nobody confirmed as the likely item, not a certain one", async () => {
-    const out = await setup({ linked: true, confirmed: false }).resolve(STORY);
-    expect(out.productId).toBe(PRODUCT);
-    expect(out.notes[0]).toContain("replied to the shop's story, probably showing «Сукня льон» (ref 5d041fb6, colour «Білий»)");
-    expect(out.notes[0]).toContain('offer it as the likely item, not a certain one');
+  it('lists several confirmed products as the items pictured, and asks which one when the message does not say', async () => {
+    const out = await setup({
+      links: [link(), link({ productId: OTHER, title: 'Кеди замш вовна', color: 'Темно-синій', source: 'caption_sku' })],
+    }).resolve(STORY);
+    expect(out.notes[0]).toContain(
+      "showing «Сукня льон» (ref 5d041fb6, colour «Білий»), «Кеди замш вовна» (ref 9a7c1aa1, colour «Темно-синій»): these are the items pictured",
+    );
+    expect(out.notes[0]).toContain("If their message doesn't say which one they mean, show them with show_products and ask");
+  });
+
+  it('gives suggestions as hints for the shortlist, never as the item pictured', async () => {
+    const t = setup({
+      links: [
+        link({ status: 'suggested', source: 'conversation', evidence: { picks: [{ conversationId: 'c7', orderId: 'o1' }, { conversationId: 'c8' }] } }),
+        link({ productId: OTHER, title: 'Кеди замш вовна', color: null, status: 'suggested', source: 'vision', confidence: 0.9 }),
+      ],
+    });
+    const out = await t.resolve(STORY);
+    expect(out.productId).toBeNull();
+    // The usual instructions stay: it still can't tell which model it is.
+    expect(out.notes[0]).toContain("say you don't see exactly this item, or can't tell which model it is");
+    expect(out.notes[0]).toContain('«Сукня льон» (ref 5d041fb6, colour «Білий»), chosen by 2 earlier customers, 1 ordered it');
+    expect(out.notes[0]).toContain('«Кеди замш вовна» (ref 9a7c1aa1), suggested by an automatic image check');
+    expect(out.notes[0]).toContain("Include them first among the closest, and don't call them the item pictured.");
     expect(out.notes[0]).not.toContain('not alternatives');
+    // Suggestions don't stop the same-image check.
+    expect(t.contentMedia.matchCatalogImage).toHaveBeenCalled();
   });
 
   it('then matches our copy to a catalog photo by perceptual hash', async () => {
@@ -59,6 +94,13 @@ describe('MediaContextResolver: stories, posts and reels', () => {
     expect(out.productId).toBe(PRODUCT);
     expect(out.notes[0]).toContain('showing «Сукня льон» (ref 5d041fb6)');
     expect(out.notes[0]).toContain('If it is in stock, offer this product, not alternatives.');
+    // Remembered as certain, so the next customer skips the hashing.
+    expect(t.links.autoLink).toHaveBeenCalledWith('t1', { mediaId: 's1' }, {
+      productId: PRODUCT,
+      color: null,
+      source: 'same_image',
+      status: 'confirmed',
+    });
     // Never the heavy photo matching for content.
     expect(t.content.matchCustomerPhoto).not.toHaveBeenCalled();
   });

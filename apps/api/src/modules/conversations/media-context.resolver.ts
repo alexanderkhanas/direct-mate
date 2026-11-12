@@ -3,6 +3,7 @@ import { DataSource } from 'typeorm';
 import { InstagramContentService } from '../channels/instagram/instagram-content.service';
 import { ContentMediaService } from '../content-media/content-media.service';
 import { productRef } from '../agent/catalog/catalog-reader.service';
+import { ContentLinksService, type ContentLink } from '../channels/instagram/content-links.service';
 import type { MessageAttachment } from './entities/message.entity';
 
 export interface MediaReference {
@@ -38,8 +39,8 @@ const SOURCE_LABEL: Record<string, string> = {
   post_comment: "commented under the shop's post",
 };
 
-/** `certain`: a person or an exact signal linked it (manual, caption SKU, the same image); else an automatic image match. */
-type Match = { productId: string; color: string | null; certain: boolean };
+/** A product the content or photo shows. */
+type Found = { productId: string; title: string; color: string | null };
 const EXACT_PHOTO_METHODS = new Set(['customer_photo_phash', 'customer_photo_exact']);
 
 /**
@@ -48,12 +49,13 @@ const EXACT_PHOTO_METHODS = new Set(['customer_photo_phash', 'customer_photo_exa
  * photo they sent — into a note for the agent, before it runs.
  *
  * - **A photo**: perceptual hash, then CLIP and a vision call
- *   (`matchCustomerPhoto`).
- * - **A story, post or reel**: its stored link to a product; else our copy
- *   of its image matched to a catalog photo by perceptual hash (the shop
- *   reusing a product photo); else a note telling the agent to identify the
- *   product from the image, which it sees in the history, or from the
- *   caption. The heavy photo matching isn't run for content.
+ *   (`matchCustomerPhoto`). Only the same image is certain.
+ * - **A story, post or reel**: its confirmed products (`content_products`:
+ *   the owner, a caption SKU, the same image), offered as the items pictured;
+ *   else our copy matched to a catalog photo by perceptual hash (remembered
+ *   as confirmed); else a note telling the agent to identify the product from
+ *   the image or the caption, with any suggestions (customers' picks, the
+ *   visual check) as hints to show first, never as the item pictured.
  *
  * It never replies or hands off itself; the agent decides.
  */
@@ -64,6 +66,7 @@ export class MediaContextResolver {
   constructor(
     private readonly content: InstagramContentService,
     private readonly contentMedia: ContentMediaService,
+    private readonly links: ContentLinksService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -106,69 +109,132 @@ export class MediaContextResolver {
     ref: MediaReference,
   ): Promise<{ note: string | null; productId: string | null }> {
     const what = describe(ref);
-    const match = await this.match(tenantId, conversationId, ref);
-    if (!match) return { note: unmatchedNote(ref, what), productId: null };
-
-    const [product]: Array<{ title: string }> = await this.dataSource.query(
-      `SELECT title FROM products WHERE id = $1 AND tenant_id = $2`,
-      [match.productId, tenantId],
-    );
-    if (!product) return { note: null, productId: null };
-    const named = `«${product.title}» (ref ${productRef(match.productId)}${match.color ? `, colour «${match.color}»` : ''})`;
-    if (!match.certain) {
-      return {
-        note:
-          `The customer ${what}, probably showing ${named}: an automatic image match nobody has confirmed. Check it ` +
-          'with get_product and offer it as the likely item, not a certain one (for example «Схоже, це …»); if it ' +
-          "isn't in stock, say so, then offer the closest alternatives.",
-        productId: match.productId,
-      };
+    try {
+      return ref.type === 'customer_photo'
+        ? await this.resolvePhoto(tenantId, conversationId, ref, what)
+        : await this.resolveContent(tenantId, ref, what);
+    } catch (err) {
+      this.logger.error(`Media resolution failed for ${ref.type} (treated as no match): ${err}`);
+      return { note: unmatchedNote(ref, what), productId: null };
     }
+  }
+
+  private async resolvePhoto(
+    tenantId: string,
+    conversationId: string,
+    ref: MediaReference,
+    what: string,
+  ): Promise<{ note: string | null; productId: string | null }> {
+    const match = await this.content.matchCustomerPhoto(tenantId, ref.mediaId, { conversationId });
+    if (!match) return { note: unmatchedNote(ref, what), productId: null };
+    // Remember the match so the next turn about the same photo skips matching.
+    await this.content
+      .persistCustomerPhotoMatch(tenantId, ref.mediaId, match)
+      .catch((err) => this.logger.warn(`Failed to persist customer-photo match (non-fatal): ${err}`));
+
+    const title = await this.title(tenantId, match.productId);
+    if (!title) return { note: null, productId: null };
+    const found: Found = { productId: match.productId, title, color: match.color };
+    if (EXACT_PHOTO_METHODS.has(match.matchMethod)) return { note: certainNote(ref, what, [found]), productId: found.productId };
     return {
       note:
-        `The customer ${what} showing ${named}. ` +
-        'Their message is about this product unless they say otherwise; check it with get_product. ' +
-        `If it is in stock${match.color ? ' in that colour' : ''}, offer this product, not alternatives. If it isn't, ` +
-        'or not in the size they want, say so plainly, then offer the closest alternatives.',
-      productId: match.productId,
+        `The customer ${what}, probably showing ${named(found)}: an automatic image match nobody has confirmed. Check it ` +
+        'with get_product and offer it as the likely item, not a certain one (for example «Схоже, це …»); if it ' +
+        "isn't in stock, say so, then offer the closest alternatives.",
+      productId: found.productId,
     };
   }
 
-  private async match(tenantId: string, conversationId: string, ref: MediaReference): Promise<Match | null> {
-    try {
-      if (ref.type === 'customer_photo') {
-        const match = await this.content.matchCustomerPhoto(tenantId, ref.mediaId, { conversationId });
-        if (!match) return null;
-        // Remember the match so the next turn about the same photo skips matching.
-        await this.content
-          .persistCustomerPhotoMatch(tenantId, ref.mediaId, match)
-          .catch((err) => this.logger.warn(`Failed to persist customer-photo match (non-fatal): ${err}`));
-        return { productId: match.productId, color: match.color, certain: EXACT_PHOTO_METHODS.has(match.matchMethod) };
-      }
+  private async resolveContent(
+    tenantId: string,
+    ref: MediaReference,
+    what: string,
+  ): Promise<{ note: string | null; productId: string | null }> {
+    const links = await this.links.forMedia(tenantId, ref.mediaId);
+    const confirmed = links.filter((l) => l.status === 'confirmed');
+    if (confirmed.length > 0) return { note: certainNote(ref, what, confirmed), productId: confirmed[0].productId };
 
-      const mapping = await this.content.findByMediaId(tenantId, ref.mediaId);
-      if (mapping?.productId) {
-        return { productId: mapping.productId, color: mapping.linkedColor ?? null, certain: mapping.confirmed };
+    // Frames tiled into one image never hash like a catalog photo; a picture or a cover can.
+    if (ref.url && ref.image !== 'video_frames') {
+      const same = await this.contentMedia.matchCatalogImage(tenantId, ref.url);
+      const title = same && (await this.title(tenantId, same.productId));
+      if (same && title) {
+        // The shop's own catalog photo: certain, and remembered so the next customer skips the hashing.
+        if (!ref.foreign) {
+          await this.links
+            .autoLink(tenantId, { mediaId: ref.mediaId }, { productId: same.productId, color: same.color, source: 'same_image', status: 'confirmed' })
+            .catch((err) => this.logger.warn(`Failed to remember a same-image match (non-fatal): ${err}`));
+        }
+        return { note: certainNote(ref, what, [{ ...same, title }]), productId: same.productId };
       }
+    }
 
-      // Frames tiled into one image never hash like a catalog photo; a picture or a cover can.
-      if (ref.url && ref.image !== 'video_frames') {
-        const same = await this.contentMedia.matchCatalogImage(tenantId, ref.url);
-        if (same) return { ...same, certain: true };
-      }
-
-      // Unknown story or post: recorded so the store can link it (the copy, when made, already did this).
-      if (!ref.foreign && !mapping && ref.mediaId !== 'unknown' && !/^https?:\/\//i.test(ref.mediaId)) {
+    // Unknown story or post: recorded so the store can link it (the copy, when made, already did this).
+    if (links.length === 0 && !ref.foreign && ref.mediaId !== 'unknown' && !/^https?:\/\//i.test(ref.mediaId)) {
+      const known = await this.content.findByMediaId(tenantId, ref.mediaId);
+      if (!known) {
         await this.content
           .saveUnlinkedMedia(tenantId, ref.mediaId, ref.type === 'story_reply' ? 'story' : ref.type)
           .catch((err) => this.logger.warn(`Failed to save unlinked media (non-fatal): ${err}`));
       }
-      return null;
-    } catch (err) {
-      this.logger.error(`Media resolution failed for ${ref.type} (treated as no match): ${err}`);
-      return null;
     }
+
+    const suggested = links.filter((l) => l.status === 'suggested');
+    const hint = suggested.length > 0 ? ` ${suggestionsNote(suggested)}` : '';
+    return { note: unmatchedNote(ref, what) + hint, productId: null };
   }
+
+  private async title(tenantId: string, productId: string): Promise<string | null> {
+    const [product]: Array<{ title: string }> = await this.dataSource.query(
+      `SELECT title FROM products WHERE id = $1 AND tenant_id = $2`,
+      [productId, tenantId],
+    );
+    return product?.title ?? null;
+  }
+}
+
+function named(f: Found): string {
+  return `«${f.title}» (ref ${productRef(f.productId)}${f.color ? `, colour «${f.color}»` : ''})`;
+}
+
+/** Certain products: the owner's, a caption SKU, the same image. Offered as the items pictured. */
+function certainNote(ref: MediaReference, what: string, found: Found[]): string {
+  if (found.length === 1) {
+    const [f] = found;
+    return (
+      `The customer ${what} showing ${named(f)}. ` +
+      'Their message is about this product unless they say otherwise; check it with get_product. ' +
+      `If it is in stock${f.color ? ' in that colour' : ''}, offer this product, not alternatives. If it isn't, ` +
+      'or not in the size they want, say so plainly, then offer the closest alternatives.'
+    );
+  }
+  const ask = ref.type === 'post_comment' ? 'name them briefly' : 'show them with show_products';
+  return (
+    `The customer ${what} showing ${found.map(named).join(', ')}: these are the items pictured. ` +
+    `If their message doesn't say which one they mean, ${ask} and ask; check the one they mean with get_product. ` +
+    "If it is in stock, offer it, not alternatives. If it isn't, or not in the size they want, say so plainly, then " +
+    'offer the closest alternatives.'
+  );
+}
+
+/** Suggestions (customers' picks, the visual check): hints for the shortlist, never the item pictured. */
+function suggestionsNote(links: ContentLink[]): string {
+  const parts = links.map((l) => {
+    const picks = l.evidence.picks ?? [];
+    const orders = picks.filter((p) => p.orderId).length;
+    const why =
+      l.source === 'conversation'
+        ? `chosen by ${picks.length} earlier customer${picks.length === 1 ? '' : 's'}${orders > 0 ? `, ${orders} ordered it` : ''}`
+        : l.source === 'vision'
+          ? 'suggested by an automatic image check'
+          : 'linked, not confirmed';
+    return `${named({ productId: l.productId, title: l.title, color: l.color })}, ${why}`;
+  });
+  const them = links.length === 1 ? 'it' : 'them';
+  return (
+    `Nobody has confirmed what this shows, but there ${links.length === 1 ? 'is a suggestion' : 'are suggestions'}: ` +
+    `${parts.join('; ')}. Include ${them} first among the closest, and don't call ${them} the item pictured.`
+  );
 }
 
 function describe(ref: MediaReference): string {

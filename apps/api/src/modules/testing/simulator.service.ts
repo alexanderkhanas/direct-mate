@@ -201,23 +201,22 @@ export class SimulatorService {
     };
   }
 
-  /** Linked media mappings (product ↔ Instagram media id) for the story-reply picker. */
+  /** Content with a confirmed product (product ↔ Instagram media id) for the story-reply picker. */
   async listLinkedMedia(
     tenantId: string,
   ): Promise<Array<{ instagramMediaId: string; mediaType: string; productTitle: string }>> {
     const rows: Array<{ instagram_media_id: string; media_type: string; title: string }> = await this.dataSource.query(
-      `SELECT m.instagram_media_id, m.media_type, p.title
-       FROM instagram_media_mappings m
-       JOIN products p ON p.id = m.product_id
-       WHERE m.tenant_id = $1 AND m.product_id IS NOT NULL
-       ORDER BY p.title, m.media_type`,
+      `SELECT DISTINCT ON (m.id) m.instagram_media_id, m.media_type, p.title
+       FROM content_products cp
+       JOIN instagram_media_mappings m ON m.id = cp.mapping_id
+       JOIN products p ON p.id = cp.product_id
+       WHERE cp.tenant_id = $1 AND cp.status = 'confirmed'
+       ORDER BY m.id, cp.created_at`,
       [tenantId],
     );
-    return rows.map((r) => ({
-      instagramMediaId: r.instagram_media_id,
-      mediaType: r.media_type,
-      productTitle: r.title,
-    }));
+    return rows
+      .map((r) => ({ instagramMediaId: r.instagram_media_id, mediaType: r.media_type, productTitle: r.title }))
+      .sort((a, b) => a.productTitle.localeCompare(b.productTitle) || a.mediaType.localeCompare(b.mediaType));
   }
 
   private async liveState(

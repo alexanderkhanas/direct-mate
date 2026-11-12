@@ -51,7 +51,6 @@ function setup(
   };
   const service = new InstagramCommentService(
     deps.integrations as never,
-    deps.content as never,
     deps.conversations as never,
     deps.runner as never,
     deps.settings as never,

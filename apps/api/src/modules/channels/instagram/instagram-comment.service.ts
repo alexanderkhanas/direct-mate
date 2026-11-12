@@ -6,7 +6,6 @@ import { generateText, Output } from 'ai';
 import { z } from 'zod';
 import { ConnectionType, MessageRole } from '@direct-mate/shared';
 import { IntegrationsService } from '../../integrations/integrations.service';
-import { InstagramContentService } from './instagram-content.service';
 import { ConversationsService } from '../../conversations/conversations.service';
 import { TurnRunner, TurnRunResult } from '../../conversations/turn-runner.service';
 import { AgentStoreSettingsService } from '../../agent/store-settings.service';
@@ -59,7 +58,6 @@ export class InstagramCommentService {
 
   constructor(
     private readonly integrationsService: IntegrationsService,
-    private readonly contentService: InstagramContentService,
     private readonly conversationsService: ConversationsService,
     private readonly turnRunner: TurnRunner,
     private readonly storeSettings: AgentStoreSettingsService,
@@ -119,7 +117,6 @@ export class InstagramCommentService {
       return;
     }
 
-    const mapping = await this.contentService.findByMediaId(tenantId, mediaId);
     // The post's image is copied while the comment is screened; the turn joins that copy rather than starting
     // another. Kept for later comments even if this one isn't answered.
     void this.contentMedia
@@ -186,7 +183,7 @@ export class InstagramCommentService {
       baseDelayMs: 2000,
     }).catch((err) => this.logger.error(`Public comment reply failed for ${commentId}: ${(err as Error).message}`));
     this.logger.log(
-      `Answered comment ${commentId} on ${mapping?.productId ? `product ${mapping.productId}` : `unlinked post ${mediaId}`} (${result.status})`,
+      `Answered comment ${commentId} on post ${mediaId} (${result.status})`,
     );
   }
 

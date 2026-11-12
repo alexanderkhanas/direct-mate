@@ -1,5 +1,4 @@
-import { DataSource, FindOperator } from 'typeorm';
-import { SnakeNamingStrategy } from 'typeorm-naming-strategies';
+import { FindOperator } from 'typeorm';
 import { safeFetch, SafeFetchOptions } from '../../../common/safe-fetch';
 import { InstagramContentService } from './instagram-content.service';
 import { InstagramMediaMapping } from './entities/instagram-media-mapping.entity';
@@ -55,9 +54,16 @@ function applyOperator(actual: unknown, op: FindOperator<unknown>): boolean {
   }
 }
 
-function chain<T>(result: T) {
+/** A query builder that returns `result` and keeps the conditions it was given. */
+function chain<T>(result: T, conditions: string[] = []) {
   const qb: Record<string, unknown> = {};
-  for (const m of ['select', 'where', 'andWhere', 'innerJoin', 'leftJoinAndSelect', 'orderBy', 'limit']) qb[m] = () => qb;
+  for (const m of ['select', 'innerJoin', 'leftJoinAndSelect', 'orderBy', 'limit']) qb[m] = () => qb;
+  for (const m of ['where', 'andWhere']) {
+    qb[m] = (condition: string) => {
+      conditions.push(condition);
+      return qb;
+    };
+  }
   qb.getMany = async () => result;
   return qb;
 }
@@ -81,6 +87,10 @@ function setup(opts: {
   workerEnabled?: boolean;
   /** `pausedUntil` of the app-wide Graph budget pause, when one is on. */
   pausedUntil?: string;
+  /** What the SKU pass's query returns. */
+  skuRows?: Row[];
+  /** What ContentLinksService.autoLink answers: false when the pair was linked or rejected meanwhile. */
+  autoLinked?: boolean;
 } = {}) {
   const rows = opts.rows ?? [];
   const statements: Array<{ sql: string; params: unknown[] }> = [];
@@ -99,8 +109,10 @@ function setup(opts: {
       return { affected: hit.length };
     }),
     save: jest.fn(async (r: Row) => r),
-    createQueryBuilder: jest.fn(() => chain([])),
+    createQueryBuilder: jest.fn(() => chain(opts.skuRows ?? [], skuConditions)),
   };
+  const skuConditions: string[] = [];
+  const links = { autoLink: jest.fn(async () => opts.autoLinked ?? true) };
   const connectionRepo = {
     find: jest.fn(async () => connections),
     findOne: jest.fn(async ({ where }: { where: { tenantId: string } }) => connections.find((c) => c.tenantId === where.tenantId) ?? null),
@@ -141,6 +153,7 @@ function setup(opts: {
     {} as never,
     {} as never,
     dataSource as never,
+    links as never,
   );
 
   const graph = opts.graph ?? {};
@@ -164,7 +177,7 @@ function setup(opts: {
   });
   global.fetch = fetchMock as never;
 
-  return { service, rows, statements, mappingRepo, connectionRepo, dataSource, fetchMock };
+  return { service, rows, statements, mappingRepo, connectionRepo, dataSource, fetchMock, links, skuConditions };
 }
 
 const realFetch = global.fetch;
@@ -173,73 +186,53 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
-/** The real TypeORM query builder, no connection: what SQL a `find` turns into. */
-let orm: DataSource;
-beforeAll(async () => {
-  orm = new DataSource({ type: 'postgres', entities: [InstagramMediaMapping], namingStrategy: new SnakeNamingStrategy() });
-  await (orm as unknown as { buildMetadatas(): Promise<void> }).buildMetadatas();
-});
-function findSql(where: unknown): string {
-  return orm
-    .getRepository(InstagramMediaMapping)
-    .createQueryBuilder('m')
-    .setFindOptions({ where: where as never })
-    .getQuery();
-}
-
 const skuPass = (service: InstagramContentService) =>
   (service as unknown as { matchSkusInCaptions(tenantId: string): Promise<number> }).matchSkusInCaptions(TENANT);
 
 describe('SKU pass', () => {
-  it('asks the database for unlinked rows only', async () => {
-    const { service, mappingRepo } = setup();
+  it('asks only for captioned content with no link at all, never a row added by hand or a customer photo', async () => {
+    const { service, skuConditions } = setup();
     await skuPass(service);
-    const { where } = mappingRepo.find.mock.calls[0][0];
-    const conditions = findSql(where).split(' WHERE ')[1];
-    // Every OR branch is scoped to the store and to rows without a product.
-    for (const branch of conditions.split(' OR ')) {
-      expect(branch).toMatch(/"m"\."tenant_id" = /);
-      expect(branch).toMatch(/"m"\."product_id" IS NULL/);
-    }
+    expect(skuConditions).toEqual(
+      expect.arrayContaining([
+        'm.tenant_id = :tenantId',
+        'm.caption IS NOT NULL',
+        `(m.match_method IS NULL OR m.match_method = 'bulk_import')`,
+        `m.media_type <> 'customer_photo'`,
+        // A rejected link counts: a pair the owner said no to stays off.
+        'NOT EXISTS (SELECT 1 FROM content_products cp WHERE cp.mapping_id = m.id)',
+      ]),
+    );
   });
 
-  it("leaves a manual link alone even when its caption names another product's SKU", async () => {
-    const manual = row('manual', { productId: 'product-1', linkedColor: 'Чорний', matchMethod: 'manual', confirmed: true, caption: 'Артикул: SKU-2' });
-    const unlinked = row('fetched', { matchMethod: 'bulk_import', caption: 'Нова сукня. Артикул: SKU-2' });
-    const { service } = setup({ rows: [manual, unlinked], products: [{ id: 'product-2', sku: 'SKU-2' }] });
-
-    const matched = await skuPass(service);
-
-    expect(matched).toBe(1);
-    expect(manual).toMatchObject({ productId: 'product-1', linkedColor: 'Чорний', matchMethod: 'manual', confirmed: true });
-    expect(unlinked).toMatchObject({ productId: 'product-2', matchMethod: 'sku_from_caption', confirmed: true });
-  });
-
-  it("doesn't undo the owner unlinking a SKU match, and links content a customer brought up", async () => {
-    const unlinkedByOwner = row('owner', { matchMethod: 'sku_from_caption', confirmed: false, caption: 'Артикул: SKU-2' });
-    const shared = row('shared', { mediaType: 'post', caption: 'SKU-2V у чорному' });
-    const { service } = setup({
-      rows: [unlinkedByOwner, shared],
-      variants: [{ id: 'variant-2', sku: 'SKU-2V', productId: 'product-2', color: 'Чорний' }],
+  it('links a product SKU for every colour and a variant SKU in its colour, as certain', async () => {
+    const fetched = row('fetched', { matchMethod: 'bulk_import', caption: 'Нова сукня. Артикул: SKU-2' });
+    const shared = row('shared', { mediaType: 'post', caption: 'SKU-3V у чорному' });
+    const { service, links } = setup({
+      skuRows: [fetched, shared],
+      products: [{ id: 'product-2', sku: 'SKU-2' }],
+      variants: [{ id: 'variant-3', sku: 'SKU-3V', productId: 'product-3', color: 'Чорний' }],
     });
 
-    await skuPass(service);
-
-    expect(unlinkedByOwner.productId).toBeNull();
-    expect(shared).toMatchObject({ productId: 'product-2', variantId: 'variant-2', linkedColor: 'Чорний' });
+    expect(await skuPass(service)).toBe(2);
+    expect(links.autoLink).toHaveBeenCalledWith(TENANT, { mappingId: 'fetched' }, {
+      productId: 'product-2',
+      color: null,
+      source: 'caption_sku',
+      status: 'confirmed',
+    });
+    expect(links.autoLink).toHaveBeenCalledWith(TENANT, { mappingId: 'shared' }, {
+      productId: 'product-3',
+      color: 'Чорний',
+      source: 'caption_sku',
+      status: 'confirmed',
+    });
   });
 
-  it("doesn't count or overwrite a row linked by someone else after it was read", async () => {
+  it("doesn't count a pair that was linked or rejected after the row was read", async () => {
     const fetched = row('fetched', { matchMethod: 'bulk_import', caption: 'Артикул: SKU-2' });
-    const { service, mappingRepo } = setup({ rows: [fetched], products: [{ id: 'product-2', sku: 'SKU-2' }] });
-    mappingRepo.find.mockImplementationOnce(async () => {
-      const snapshot = [{ ...fetched }];
-      Object.assign(fetched, { productId: 'product-9', matchMethod: 'manual' });
-      return snapshot;
-    });
-
+    const { service } = setup({ skuRows: [fetched], products: [{ id: 'product-2', sku: 'SKU-2' }], autoLinked: false });
     expect(await skuPass(service)).toBe(0);
-    expect(fetched).toMatchObject({ productId: 'product-9', matchMethod: 'manual' });
   });
 });
 

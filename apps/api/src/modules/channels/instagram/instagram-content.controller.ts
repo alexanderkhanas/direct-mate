@@ -1,14 +1,17 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
   Get,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
   UseGuards,
 } from '@nestjs/common';
+import { isUUID } from 'class-validator';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { InternalApiKeyGuard } from '../../../common/guards/internal-api-key.guard';
@@ -26,24 +29,39 @@ export class InstagramContentController {
   @Get()
   findAll(
     @CurrentUser() user: JwtPayload,
-    @Query('linked') linked?: string,
+    @Query('filter') filter?: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
   ) {
     return this.contentService.findAll(user.tenantId, {
-      linked: linked === 'true' ? true : linked === 'false' ? false : undefined,
-      limit: limit ? parseInt(limit, 10) : 50,
-      offset: offset ? parseInt(offset, 10) : 0,
+      filter: filter === 'review' || filter === 'unlinked' || filter === 'linked' ? filter : undefined,
+      limit: limit ? parseInt(limit, 10) || 50 : 50,
+      offset: offset ? parseInt(offset, 10) || 0 : 0,
     });
   }
 
-  @Patch(':id')
-  update(
+  /** The owner links a product (a colour, or every colour) to a piece of content: confirmed. */
+  @Post(':id/products')
+  linkProduct(
     @CurrentUser() user: JwtPayload,
-    @Param('id') id: string,
-    @Body() body: { productId?: string | null; variantId?: string | null; linkedColor?: string | null; confirmed?: boolean },
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: { productId: string; color?: string | null },
   ) {
-    return this.contentService.updateMapping(id, user.tenantId, body);
+    if (!body?.productId || !isUUID(body.productId)) throw new BadRequestException('productId is required');
+    return this.contentService.linkProduct(user.tenantId, id, body.productId, body.color ?? null);
+  }
+
+  /** «Так, це він» / «Ні»: the owner confirms or rejects one of the content's products. */
+  @Patch(':id/products/:linkId')
+  setLinkStatus(
+    @CurrentUser() user: JwtPayload,
+    @Param('linkId', ParseUUIDPipe) linkId: string,
+    @Body() body: { status: string },
+  ) {
+    if (body?.status !== 'confirmed' && body?.status !== 'rejected') {
+      throw new BadRequestException('status must be confirmed or rejected');
+    }
+    return this.contentService.setLinkStatus(user.tenantId, linkId, body.status);
   }
 
   @Delete(':id')
