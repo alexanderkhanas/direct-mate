@@ -113,6 +113,7 @@ function setup(opts: {
   };
   const skuConditions: string[] = [];
   const links = { autoLink: jest.fn(async () => opts.autoLinked ?? true) };
+  const verifier = { checkNewStories: jest.fn(async (_tenantId: string, _ids: string[]) => undefined) };
   const connectionRepo = {
     find: jest.fn(async () => connections),
     findOne: jest.fn(async ({ where }: { where: { tenantId: string } }) => connections.find((c) => c.tenantId === where.tenantId) ?? null),
@@ -154,6 +155,7 @@ function setup(opts: {
     {} as never,
     dataSource as never,
     links as never,
+    verifier as never,
   );
 
   const graph = opts.graph ?? {};
@@ -177,7 +179,7 @@ function setup(opts: {
   });
   global.fetch = fetchMock as never;
 
-  return { service, rows, statements, mappingRepo, connectionRepo, dataSource, fetchMock, links, skuConditions };
+  return { service, rows, statements, mappingRepo, connectionRepo, dataSource, fetchMock, links, skuConditions, verifier };
 }
 
 const realFetch = global.fetch;
@@ -329,9 +331,9 @@ describe('scheduled fetch', () => {
     expect(upsert.params).toEqual(expect.arrayContaining(['https://cdn/r1-cover.jpg', 'REELS']));
   });
 
-  it('runs the vision pass for new stories after every store is fetched', async () => {
+  it('runs the visual check for new stories after every store is fetched', async () => {
     const order: string[] = [];
-    const { service, fetchMock } = setup({
+    const { service, fetchMock, verifier } = setup({
       connections: [
         { tenantId: 'tenant-a', externalAccountId: 'ig-a' },
         { tenantId: 'tenant-b', externalAccountId: 'ig-b' },
@@ -342,9 +344,9 @@ describe('scheduled fetch', () => {
       order.push(`fetch ${new URL(u).pathname.split('/')[2]}`);
       return impl(u);
     })(fetchMock.getMockImplementation()!));
-    jest.spyOn(service as never, 'matchStoriesByVision').mockImplementation((async (tenantId: string, ids: string[]) => {
+    verifier.checkNewStories.mockImplementation(async (tenantId: string, ids: string[]) => {
       order.push(`vision ${tenantId} ${ids.join(',')}`);
-    }) as never);
+    });
 
     await service.fetchAllStores({ posts: false });
 
@@ -361,16 +363,14 @@ describe('scheduled fetch, when Graph misbehaves', () => {
     expect(statements.find((s) => s.sql.includes('FROM app_state'))!.params).toEqual(['instagram_history_budget']);
   });
 
-  it('still sends the new stories to vision when the posts fetch fails', async () => {
-    const { service } = setup({ graph: { stories: { 'ig-1': [story('s1')] }, failingPosts: ['ig-1'] } });
-    const vision = jest.spyOn(service as never, 'matchStoriesByVision').mockImplementation((async () => undefined) as never);
+  it('still sends the new stories to the visual check when the posts fetch fails', async () => {
+    const { service, verifier } = setup({ graph: { stories: { 'ig-1': [story('s1')] }, failingPosts: ['ig-1'] } });
     await service.fetchAllStores({ posts: true });
-    expect(vision).toHaveBeenCalledWith(TENANT, ['s1']);
+    expect(verifier.checkNewStories).toHaveBeenCalledWith(TENANT, ['s1']);
   });
 
   it('gives every Graph call a timeout', async () => {
     const { service, fetchMock } = setup({ graph: { stories: { 'ig-1': [story('s1')] }, media: { 'ig-1': [[post('p1')]] } } });
-    jest.spyOn(service as never, 'matchStoriesByVision').mockImplementation((async () => undefined) as never);
     await service.fetchAllStores({ posts: true });
     await service.getMediaDetails(TENANT, 'p1');
     const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
@@ -453,24 +453,15 @@ describe('vision images', () => {
     expect(safeFetchMock.mock.calls[0][1]).toMatchObject({ maxBytes: 20 * 1024 * 1024 });
     expect(await toDataUrl('https://cdn/r.mp4')).toBeNull();
   });
-
-  it("uses a video's cover, never the video itself", () => {
-    const { service } = setup();
-    const visionImage = (m: Partial<InstagramMediaMapping>) =>
-      (service as unknown as { visionImage(m: Partial<InstagramMediaMapping>): string | null }).visionImage(m);
-    expect(visionImage({ mediaType: 'video', mediaUrl: 'https://cdn/r.mp4', thumbnailUrl: 'https://cdn/r.jpg' })).toBe('https://cdn/r.jpg');
-    expect(visionImage({ mediaType: 'video', mediaUrl: 'https://cdn/r.mp4', thumbnailUrl: null })).toBeNull();
-    expect(visionImage({ mediaType: 'image', mediaUrl: 'https://cdn/p.jpg' })).toBe('https://cdn/p.jpg');
-  });
 });
 
 describe('«Fetch content» button', () => {
-  it('answers after the fetch and leaves story vision running in the background', async () => {
-    const { service } = setup({ graph: { stories: { 'ig-1': [story('s1')] }, media: { 'ig-1': [[post('p1')]] } } });
-    const vision = jest.spyOn(service as never, 'matchStoriesByVision').mockImplementation((() => new Promise(() => {})) as never);
+  it('answers after the fetch and leaves the visual check of new stories running in the background', async () => {
+    const { service, verifier } = setup({ graph: { stories: { 'ig-1': [story('s1')] }, media: { 'ig-1': [[post('p1')]] } } });
+    verifier.checkNewStories.mockImplementation(() => new Promise(() => {}));
 
     await expect(service.fetchContent(TENANT)).resolves.toEqual({ fetched: 2, matched: 0 });
-    expect(vision).toHaveBeenCalledWith(TENANT, ['s1']);
+    expect(verifier.checkNewStories).toHaveBeenCalledWith(TENANT, ['s1']);
   });
 
   it('refuses a store without an Instagram connection', async () => {

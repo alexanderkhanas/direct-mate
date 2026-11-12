@@ -35,9 +35,10 @@ function setup(
   const contentMedia = { matchCatalogImage: jest.fn(async () => opts.phash ?? null) };
   const dataSource = { query: jest.fn(async () => [{ title: 'Сукня льон' }]) };
   const links = { forMedia: jest.fn(async () => opts.links ?? []), autoLink: jest.fn(async () => true) };
-  const resolver = new MediaContextResolver(content as never, contentMedia as never, links as never, dataSource as never);
+  const verifier = { verifyInBackground: jest.fn() };
+  const resolver = new MediaContextResolver(content as never, contentMedia as never, links as never, verifier as never, dataSource as never);
   const resolve = (ref: MediaReference) => resolver.resolve('t1', 'c1', [ref], '');
-  return { resolve, content, contentMedia, links };
+  return { resolve, content, contentMedia, links, verifier };
 }
 
 const STORY: MediaReference = { type: 'story_reply', mediaId: 's1', url: '/uploads/content-media/t1/s.jpg', image: 'picture' };
@@ -121,6 +122,20 @@ describe('MediaContextResolver: stories, posts and reels', () => {
     expect(out.notes[0]).toContain('If it shows several items, show them with show_products and ask which one.');
     expect(out.notes[0]).not.toContain('another account');
     expect(t.content.matchCustomerPhoto).not.toHaveBeenCalled();
+  });
+
+  it("starts the visual check for the shop's content nobody confirmed, never for another account's or a confirmed one", async () => {
+    const t = setup();
+    await t.resolve(STORY);
+    expect(t.verifier.verifyInBackground).toHaveBeenCalledWith('t1', 's1');
+
+    const foreign = setup();
+    await foreign.resolve({ type: 'post_share', mediaId: 'p9', url: '/uploads/content-media/t1/p.jpg', image: 'picture', foreign: true });
+    expect(foreign.verifier.verifyInBackground).not.toHaveBeenCalled();
+
+    const confirmed = setup({ links: [link()] });
+    await confirmed.resolve(STORY);
+    expect(confirmed.verifier.verifyInBackground).not.toHaveBeenCalled();
   });
 
   it("doesn't hash a sheet of video frames, and says the image is frames", async () => {

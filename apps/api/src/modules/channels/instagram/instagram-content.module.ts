@@ -9,6 +9,9 @@ import { InstagramContentService } from './instagram-content.service';
 import { ContentLinksService } from './content-links.service';
 import { ContentQuestionsService } from './content-questions.service';
 import { NotificationsModule } from '../../notifications/notifications.module';
+import { AvailabilityModule } from '../../availability/availability.module';
+import { ContentVerifierService } from './content-verifier.service';
+import { CATALOG_SEARCH, RankedCatalogSearch } from '../../agent/catalog/catalog-search';
 import { InstagramContentController, InternalInstagramContentController } from './instagram-content.controller';
 import { CryptoService } from '../../../common/crypto.service';
 import { IntegrationsModule } from '../../integrations/integrations.module';
@@ -20,9 +23,18 @@ import { CatalogModule } from '../../catalog/catalog.module';
     IntegrationsModule,
     CatalogModule,
     NotificationsModule,
+    AvailabilityModule,
   ],
   controllers: [InstagramContentController, InternalInstagramContentController],
-  providers: [InstagramContentService, ContentLinksService, ContentQuestionsService, CryptoService],
-  exports: [InstagramContentService, ContentLinksService, ContentQuestionsService],
+  providers: [
+    InstagramContentService,
+    ContentLinksService,
+    ContentQuestionsService,
+    ContentVerifierService,
+    // The visual check finds candidates with the same search the agent uses.
+    { provide: CATALOG_SEARCH, useClass: RankedCatalogSearch },
+    CryptoService,
+  ],
+  exports: [InstagramContentService, ContentLinksService, ContentQuestionsService, ContentVerifierService],
 })
 export class InstagramContentModule {}

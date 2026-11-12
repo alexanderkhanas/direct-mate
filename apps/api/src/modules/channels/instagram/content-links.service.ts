@@ -251,6 +251,16 @@ export class ContentLinksService {
     return rows.map((r) => ({ id: r.id, status: r.status, ownerAskedAt: r.owner_asked_at }));
   }
 
+  /** The link for this content row, product and colour, if there is one. */
+  async findId(tenantId: string, mappingId: string, productId: string, color: string | null): Promise<string | null> {
+    const [row]: Array<{ id: string }> = await this.dataSource.query(
+      `SELECT id FROM content_products
+        WHERE tenant_id = $1 AND mapping_id = $2 AND product_id = $3 AND coalesce(color, '') = coalesce($4::text, '')`,
+      [tenantId, mappingId, productId, color],
+    );
+    return row?.id ?? null;
+  }
+
   /** The owner confirms or rejects a link. False when it isn't this store's. */
   async setStatus(tenantId: string, linkId: string, status: 'confirmed' | 'rejected'): Promise<boolean> {
     const rows = returnedRows<{ id: string }>(

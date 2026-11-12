@@ -4,6 +4,7 @@ import { InstagramContentService } from '../channels/instagram/instagram-content
 import { ContentMediaService } from '../content-media/content-media.service';
 import { productRef } from '../agent/catalog/catalog-reader.service';
 import { ContentLinksService, type ContentLink } from '../channels/instagram/content-links.service';
+import { ContentVerifierService } from '../channels/instagram/content-verifier.service';
 import type { MessageAttachment } from './entities/message.entity';
 
 export interface MediaReference {
@@ -67,6 +68,7 @@ export class MediaContextResolver {
     private readonly content: InstagramContentService,
     private readonly contentMedia: ContentMediaService,
     private readonly links: ContentLinksService,
+    private readonly verifier: ContentVerifierService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -177,6 +179,11 @@ export class MediaContextResolver {
           .saveUnlinkedMedia(tenantId, ref.mediaId, ref.type === 'story_reply' ? 'story' : ref.type)
           .catch((err) => this.logger.warn(`Failed to save unlinked media (non-fatal): ${err}`));
       }
+    }
+
+    // The visual check, once per piece of content, after this reply: the next customer gets its verdict.
+    if (!ref.foreign && ref.mediaId !== 'unknown' && !/^https?:\/\//i.test(ref.mediaId)) {
+      this.verifier.verifyInBackground(tenantId, ref.mediaId);
     }
 
     const suggested = links.filter((l) => l.status === 'suggested');

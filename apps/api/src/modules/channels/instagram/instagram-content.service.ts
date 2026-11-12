@@ -21,6 +21,7 @@ import { GRAPH_API, GRAPH_BUDGET_KEY } from '../../../common/meta-graph';
 import { safeFetch } from '../../../common/safe-fetch';
 import type { IgAccount } from './instagram-sender.service';
 import { ContentLinksService, type ContentLinkView } from './content-links.service';
+import { ContentVerifierService } from './content-verifier.service';
 
 const MEDIA_TYPES: Record<string, string> = {
   '.jpg': 'image/jpeg',
@@ -96,8 +97,6 @@ const MAX_STORIES_PER_RUN = 100;
 const STORY_LIFETIME_MS = 24 * 60 * 60 * 1000;
 /** The scheduled run reads posts and reels on every other 30-minute tick. */
 const POSTS_INTERVAL_MS = 55 * 60 * 1000;
-/** New stories matched by vision per store per run: one model call each. */
-const VISION_STORIES_PER_RUN = 5;
 /** Every Graph call. */
 const GRAPH_TIMEOUT_MS = 30_000;
 /** An image downloaded for a vision call. */
@@ -166,6 +165,7 @@ export class InstagramContentService {
     private readonly imageEmbeddingService: ImageEmbeddingService,
     private readonly dataSource: DataSource,
     private readonly links: ContentLinksService,
+    private readonly verifier: ContentVerifierService,
   ) {
     this.openai = new OpenAI({ apiKey: this.config.get<string>('openai.apiKey') });
   }
@@ -762,11 +762,12 @@ export class InstagramContentService {
   }
 
   /** The vision pass for new stories, after their fetch. A failure is only logged. */
+  /** The visual check for new stories (ContentVerifierService): suggestions only, never inside a request. */
   private async matchNewStories(tenantId: string, ids: string[]): Promise<void> {
     try {
-      await this.matchStoriesByVision(tenantId, ids);
+      await this.verifier.checkNewStories(tenantId, ids);
     } catch (err) {
-      this.logger.error(`Story vision pass failed for tenant ${tenantId}: ${(err as Error).message}`);
+      this.logger.error(`Story visual check failed for tenant ${tenantId}: ${(err as Error).message}`);
     }
   }
 
@@ -793,121 +794,6 @@ export class InstagramContentService {
       return `data:${mime};base64,${res.body.toString('base64')}`;
     } catch {
       return null;
-    }
-  }
-
-  /** The picture vision can read: our copy, a video's cover, else Meta's link (never a video's). */
-  private visionImage(m: Pick<InstagramMediaMapping, 'imagePath' | 'thumbnailUrl' | 'mediaType' | 'mediaUrl'>): string | null {
-    return m.imagePath ?? m.thumbnailUrl ?? (m.mediaType === 'video' ? null : m.mediaUrl) ?? null;
-  }
-
-  /**
-   * New stories against the store's linked posts: one vision call per story,
-   * at most VISION_STORIES_PER_RUN per store. Runs after the fetch, never
-   * inside a request.
-   */
-  private async matchStoriesByVision(tenantId: string, newIds: string[]): Promise<void> {
-    if (newIds.length === 0) return;
-    const unlinkedStories = await this.mappingRepo
-      .createQueryBuilder('m')
-      .where('m.tenant_id = :tenantId', { tenantId })
-      .andWhere('m.media_type = :type', { type: 'story' })
-      .andWhere(CONTENT_FILTER_SQL.unlinked)
-      .andWhere('m.instagram_media_id IN (:...newIds)', { newIds })
-      .getMany();
-
-    const candidates = unlinkedStories.filter((s) => this.visionImage(s)).slice(0, VISION_STORIES_PER_RUN);
-    if (candidates.length === 0) return;
-
-    const linkedPosts: Array<Pick<InstagramMediaMapping, 'instagramMediaId' | 'imagePath' | 'thumbnailUrl' | 'mediaType' | 'mediaUrl'> & {
-      productId: string;
-      linkedColor: string | null;
-    }> = (
-      await this.dataSource.query(
-        `SELECT m.instagram_media_id, m.image_path, m.thumbnail_url, m.media_type, m.media_url, cp.product_id, cp.color
-           FROM content_products cp
-           JOIN instagram_media_mappings m ON m.id = cp.mapping_id
-          WHERE cp.tenant_id = $1 AND cp.status = 'confirmed'
-            AND (m.image_path IS NOT NULL OR m.thumbnail_url IS NOT NULL OR m.media_url IS NOT NULL)
-          ORDER BY cp.created_at DESC
-          LIMIT 10`,
-        [tenantId],
-      )
-    ).map((r: Record<string, string | null>) => ({
-      instagramMediaId: r.instagram_media_id as string,
-      imagePath: r.image_path,
-      thumbnailUrl: r.thumbnail_url,
-      mediaType: r.media_type as string,
-      mediaUrl: r.media_url,
-      productId: r.product_id as string,
-      linkedColor: r.color,
-    }));
-
-    if (linkedPosts.length === 0) return;
-
-    // The same posts are compared with every story: download them once.
-    const postDataUrls = await Promise.all(linkedPosts.map((p) => this.toBase64DataUrl(this.visionImage(p)!)));
-    const validPosts = linkedPosts.filter((_, i) => postDataUrls[i] !== null);
-    const validDataUrls = postDataUrls.filter((u): u is string => u !== null);
-    if (validPosts.length === 0) return;
-
-    for (const story of candidates) {
-      try {
-        const storyDataUrl = await this.toBase64DataUrl(this.visionImage(story)!);
-        if (!storyDataUrl) {
-          this.logger.warn(`Vision match: could not download story image ${story.instagramMediaId}`);
-          continue;
-        }
-
-        const imageContent: OpenAI.Chat.ChatCompletionContentPart[] = [
-          {
-            type: 'image_url',
-            image_url: { url: storyDataUrl, detail: 'low' },
-          },
-          ...validDataUrls.map((url): OpenAI.Chat.ChatCompletionContentPart => ({
-            type: 'image_url',
-            image_url: { url, detail: 'low' },
-          })),
-          {
-            type: 'text',
-            text: `The first image is a story. The next ${validPosts.length} images are product posts (index 0 to ${validPosts.length - 1}). Does the story show the same product as any of the posts? Reply with JSON only: {"match": <index or -1 if no match>, "confidence": <0.0 to 1.0>}`,
-          },
-        ];
-
-        const response = await this.openai.chat.completions.create({
-          model: 'gpt-4o-mini',
-          messages: [{ role: 'user', content: imageContent }],
-          max_tokens: 50,
-          temperature: 0,
-        });
-
-        const text = response.choices[0]?.message?.content?.trim() ?? '';
-        const jsonMatch = text.match(/\{.*\}/s);
-        if (!jsonMatch) continue;
-
-        const result = JSON.parse(jsonMatch[0]) as { match: number; confidence: number };
-
-        if (result.match >= 0 && result.match < validPosts.length && result.confidence >= 0.8) {
-          const sourcePost = validPosts[result.match];
-          // A suggestion only: never certain, and never over what the owner decided.
-          await this.links.autoLink(tenantId, { mappingId: story.id }, {
-            productId: sourcePost.productId,
-            color: sourcePost.linkedColor,
-            source: 'vision',
-            status: 'suggested',
-            confidence: result.confidence,
-          });
-          this.logger.log(
-            `Story ${story.instagramMediaId} matched to post ${sourcePost.instagramMediaId}${sourcePost.linkedColor ? ` (color=${sourcePost.linkedColor})` : ''} via vision (confidence: ${result.confidence})`,
-          );
-        } else {
-          this.logger.log(
-            `Story ${story.instagramMediaId}: no vision match (match=${result.match}, confidence=${result.confidence})`,
-          );
-        }
-      } catch (err) {
-        this.logger.error(`Vision match failed for story ${story.instagramMediaId}: ${err}`);
-      }
     }
   }
 

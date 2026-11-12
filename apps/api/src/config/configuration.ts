@@ -62,6 +62,11 @@ export default () => ({
   contentFetch: {
     workerEnabled: process.env.CONTENT_FETCH_WORKER_ENABLED !== 'false',
   },
+  // The visual check: a story, post or reel compared with catalog photos, once per piece of content.
+  contentVision: {
+    model: process.env.CONTENT_VISION_MODEL || process.env.ATTRIBUTES_MODEL || 'gpt-6.1-terra',
+    reasoningEffort: process.env.CONTENT_VISION_REASONING_EFFORT || 'low',
+  },
   agent: {
     // v2 tool-calling agent (docs/v2-agent). The model id picks the provider;
     // a store can override it with tenant_settings.ai_settings.model.

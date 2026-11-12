@@ -50,7 +50,12 @@ docs/v2-agent/   — The agent rework: decisions and the phase-by-phase implemen
   last (`HistoryBuilder.buildTurn().focusMediaId`); a placed order adds its id. An order is evidence, not proof (a
   customer may knowingly order the closest match): a suggestion's first order asks the owner in Telegram
   (`ContentQuestionsService`, «Так, це він» / «Ні», once per link, ≤5 per store per day, a tap counts only from the
-  store's chat; `TelegramService.onCallback` routes `cl:` taps). Customer-photo matches stay on `instagram_media_mappings` (a cache, not content); its
+  store's chat; `TelegramService.onCallback` routes `cl:` taps). The **visual check** (`ContentVerifierService`)
+  compares a piece of content with catalog photos once (`vision_checked_at`): a vision call lists the items, our
+  catalog search finds ≤4 candidates each, a second call gives same / none / unsure per item. A «same» ≥0.6 is kept as
+  a `vision` suggestion with its reason; ≥0.8 asks the owner. Runs for new stories after the fetch (≤5 per store) and
+  in the background the first time a customer points at content nobody confirmed. `npm run content:eval` measures it
+  on confirmed content (paid). Customer-photo matches stay on `instagram_media_mappings` (a cache, not content); its
   `product_id` / `linked_color` / `confirmed` on content rows are no longer read.
 - `archived_response_templates`, `archived_phrase_blocks`, `archived_faq_items`: the old template engine's
   tables, read-only. Kept because production stores' templates are the only record of their delivery and
@@ -185,7 +190,7 @@ ready chart never stands in); otherwise from the height/weight ranges in `flow_c
   only until a page holds a post it already has. A full page-through (up to 200) only while the store has no fetched
   post (`bulk_import` row that isn't a story). Rows are upserted by media id, refreshing type, caption, links,
   `thumbnail_url` and `media_product_type`, never a link. Then the SKU pass (rows with no link at all, not added by
-  hand) and, after every store is fetched, vision for new stories (≤5 per store, suggestions only). Stores one at a time, a failure
+  hand) and, after every store is fetched, the visual check for new stories (≤5 per store, suggestions only). Stores one at a time, a failure
   logged and skipped, an in-memory guard against overlapping runs (single replica). `CONTENT_FETCH_WORKER_ENABLED=false`
   turns it off (the CLI scripts do). The Content page's «Fetch content» button runs the same fetch for one store and
   answers before the vision pass.
@@ -380,6 +385,7 @@ cd apps/api && npm run simulate -- --tenant demo-altamen --message "Привіт
 # One-off agent turn / product attributes
 cd apps/api && npm run agent:try
 cd apps/api && npm run attributes:extract -- --tenant demo-altamen
+cd apps/api && npm run content:eval -- --tenant demo-altamen   # visual check vs confirmed content (paid)
 
 # Unit tests (free)
 cd apps/api && npm test
@@ -399,6 +405,7 @@ ATTRIBUTES_MODEL, ATTRIBUTES_REASONING_EFFORT, ATTRIBUTES_WORKER_ENABLED
 HISTORY_IMPORT_WORKER_ENABLED (the Instagram history import cron; default on, the CLI scripts turn it off)
 CONTENT_FETCH_WORKER_ENABLED (the Instagram content fetch cron: stories, posts, reels; default on, the CLI scripts turn it off)
 FFMPEG_BIN (optional: an ffmpeg binary for video frames instead of ffmpeg-static's)
+CONTENT_VISION_MODEL (the visual check of content, defaults to ATTRIBUTES_MODEL), CONTENT_VISION_REASONING_EFFORT (default low)
 SIZE_CHART_MODEL (vision; reads uploaded size charts, defaults to ATTRIBUTES_MODEL), SIZE_CHART_REASONING_EFFORT (default low)
 TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, TELEGRAM_BOT_USERNAME
 DEMO_DEBOUNCE_MS, DEMO_MAX_MESSAGE_LENGTH, DEMO_RATE_LIMIT_SESSIONS_PER_HOUR, DEMO_BUDGET_CENTS_GPT54_MINI, DEMO_BUDGET_CENTS_GPT54

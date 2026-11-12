@@ -68,6 +68,10 @@ export class InstagramMediaMapping {
   @Column({ type: 'text', nullable: true })
   mediaProductType!: string | null;
 
+  /** When the visual check compared it with the catalog (once per piece of content). */
+  @Column({ type: 'timestamptz', nullable: true })
+  visionCheckedAt!: Date | null;
+
   @Column({ type: 'text', nullable: true })
   matchMethod!: string | null;
 
