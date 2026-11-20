@@ -5,6 +5,7 @@ import { Alert, SkillRow, Skeleton, StepTitle } from '../../../components/setup/
 import { ProductSourceBody } from '../../../components/catalog/products/ProductSourceBody';
 import { ConnectedSources } from '../../../components/catalog/products/ConnectedSources';
 import { useProductSource, type ProductSourceFlow } from '../../../components/catalog/products/useProductSource';
+import { SetUpWithClaudeCard } from '../../../components/onboarding/SetUpWithClaudeCard';
 import { useSetup, useSetupStep } from '../SetupContext';
 
 /** How often setup re-reads the status while a connected Shopify has no products in stock yet. */
@@ -69,6 +70,8 @@ export default function ProductsStep() {
     <>
       <StepTitle title={flow.heading.title} lead={flow.heading.lead} />
       <ProductSourceBody flow={flow} />
+      {/* The first step every owner sees, intro or not: the other road through setup. */}
+      {flow.view === 'choose' && <SetUpWithClaudeCard className="mt-2" />}
     </>
   );
 }

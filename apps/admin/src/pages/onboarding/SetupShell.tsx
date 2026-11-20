@@ -6,6 +6,7 @@ import { cn } from '../../lib/cn';
 import { usePlural } from '../../lib/plural';
 import { IconButton, Sheet, SetupButton, StepTitle, Tick, type TickState } from '../../components/setup/ui';
 import { SetUpForMeButton } from '../../components/onboarding/SetUpForMeButton';
+import { SetUpWithClaudeCard } from '../../components/onboarding/SetUpWithClaudeCard';
 import { BotPanel, BotSheet } from '../../components/onboarding/BotPanel';
 import { StepConfigProvider, useSetup, useSetupStep, type StepConfig, type StepConfigSlot } from './SetupContext';
 import { doneCount, stageProgress, type OwnerStep, type OwnerStepKey } from './steps';
@@ -395,7 +396,7 @@ function stepMeta(
   return '';
 }
 
-/** First visit (m02): what's ahead, that nothing reaches customers yet, and the free-setup offer. */
+/** First visit (m02): what's ahead, that nothing reaches customers yet, setting up with Claude instead, and the free-setup offer. */
 function Intro({ onDone }: { onDone: () => void }) {
   const { t } = useT();
   const { status } = useSetup();
@@ -423,6 +424,7 @@ function Intro({ onDone }: { onDone: () => void }) {
         <Tick state="done" size={20} />
         {t('setup_shell.intro_account', { store: status.store.name })}
       </span>
+      <SetUpWithClaudeCard />
       <SetUpForMeButton look="card" />
     </div>
   );

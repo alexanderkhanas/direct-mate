@@ -62,6 +62,9 @@ const uk = {
   setup_off_text: 'Поки що налаштуйте AI-агента в DirectMate: це займе кілька хвилин.',
   setup_off_button: 'Створити магазин',
   setup_back: 'Назад',
+  intro_card_title: 'Або налаштуйте розмовою з Claude',
+  intro_card_text: 'Claude розпитає про магазин і сам пройде ці кроки. Вам лишається відповідати.',
+  intro_card_link: 'Як підключити Claude',
   setup_home: 'На головну',
 
   card_title: 'Claude',
@@ -134,6 +137,9 @@ const en: typeof uk = {
   setup_off_text: 'For now, set up your AI agent in DirectMate: it takes a few minutes.',
   setup_off_button: 'Create a store',
   setup_back: 'Back',
+  intro_card_title: 'Or set it up by talking to Claude',
+  intro_card_text: 'Claude asks about your store and goes through these steps itself. You just answer.',
+  intro_card_link: 'How to connect Claude',
   setup_home: 'Home',
 
   card_title: 'Claude',
