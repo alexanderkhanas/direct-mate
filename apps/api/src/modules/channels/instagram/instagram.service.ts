@@ -11,6 +11,7 @@ import { TurnRunner, TurnRunResult } from '../../conversations/turn-runner.servi
 import { AgentStoreSettingsService } from '../../agent/store-settings.service';
 import { CustomerMediaService } from '../../customer-media/customer-media.service';
 import { ContentMediaService } from '../../content-media/content-media.service';
+import { VoiceMessagesService } from '../../customer-media/voice-messages.service';
 import { IntegrationsService } from '../../integrations/integrations.service';
 import { Connection } from '../../integrations/entities/connection.entity';
 import { TelegramService } from '../../notifications/telegram.service';
@@ -149,6 +150,7 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
     private readonly media: CustomerMediaService,
     private readonly sender: InstagramSender,
     private readonly contentMedia: ContentMediaService,
+    private readonly voice: VoiceMessagesService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -283,8 +285,10 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // A story, post or reel is copied in the background (a video takes seconds); the turn waits for it in TurnRunner.
+    // A story, post or reel is copied in the background (a video takes seconds), and a voice message transcribed; the
+    // turn waits for both in TurnRunner.
     this.contentMedia.startForMessage(tenantId, conversation.id, messageId, attachments);
+    this.voice.startForMessage(tenantId, conversation.id, messageId, attachments);
     // Copy photos before arming the timer, so the agent never runs without them. Each is written into its own place
     // in the list, so a content copy written meanwhile stays.
     await Promise.all(
@@ -495,7 +499,7 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Send the runner's messages in order. Photos are best-effort and go before
-   * the text they illustrate; a text that fails after retries stops the rest,
+   * the text they illustrate, several as one album; a text that fails after retries stops the rest,
    * is marked failed, and hands the conversation to a manager.
    */
   private async deliver(conversation: DueConversation, result: TurnRunResult): Promise<void> {
@@ -520,11 +524,8 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
 
     for (const [i, message] of result.messages.entries()) {
       const ctx = { tenantId: conversation.tenant_id, conversationId: conversation.id, messageId: message.messageId ?? null };
-      for (const url of (message.imageUrls ?? []).slice(0, MAX_IMAGES_PER_MESSAGE)) {
-        await this.sender
-          .sendImage(account, recipient, url, ctx)
-          .catch((err) => this.logger.warn(`Image not delivered (text still goes) for ${conversation.id}: ${(err as Error).message}`));
-      }
+      // Several photos go as one album; best effort, the text still goes.
+      await this.sender.sendImages(account, recipient, (message.imageUrls ?? []).slice(0, MAX_IMAGES_PER_MESSAGE), ctx);
       try {
         const mids = await this.sender.sendText(account, recipient, message.text, ctx);
         if (message.messageId) {
@@ -603,6 +604,8 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
 
     const text = message.text?.trim() ?? '';
     if (text && (await this.matchesRecentBotText(conversation.id, text))) return;
+    // An album's photos may echo under ids the send didn't return.
+    if (!text && message.attachments?.length && this.sender.sentAlbumRecently(conversation.id)) return;
     await new Promise((r) => setTimeout(r, ECHO_RECHECK_MS));
     if (await this.sender.isOwnMessage(message.mid)) return;
 

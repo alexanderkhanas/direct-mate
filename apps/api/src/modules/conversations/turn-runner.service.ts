@@ -14,6 +14,7 @@ import { Order } from '../orders/entities/order.entity';
 import { TelegramService } from '../notifications/telegram.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { ContentMediaService } from '../content-media/content-media.service';
+import { VoiceMessagesService } from '../customer-media/voice-messages.service';
 import { ContentLinksService } from '../channels/instagram/content-links.service';
 import { ContentQuestionsService } from '../channels/instagram/content-questions.service';
 import { ConversationsService } from './conversations.service';
@@ -143,6 +144,7 @@ export class TurnRunner {
     private readonly contentMedia: ContentMediaService,
     private readonly contentLinks: ContentLinksService,
     private readonly contentQuestions: ContentQuestionsService,
+    private readonly voice: VoiceMessagesService,
   ) {}
 
   async run(input: TurnRunInput): Promise<TurnRunResult> {
@@ -191,8 +193,12 @@ export class TurnRunner {
         }
       }
 
-      // Images of the stories, posts and reels in the new messages, for the history (a video's frames take seconds).
-      await this.contentMedia.prepare(input.tenantId, conversation.id);
+      // Images of the stories, posts and reels in the new messages (a video's frames take seconds), and the transcripts
+      // of voice messages, for the history.
+      await Promise.all([
+        this.contentMedia.prepare(input.tenantId, conversation.id),
+        this.voice.prepare(input.tenantId, conversation.id),
+      ]);
       const built = await this.history.buildTurn({
         id: conversation.id,
         tenantId: conversation.tenant_id,

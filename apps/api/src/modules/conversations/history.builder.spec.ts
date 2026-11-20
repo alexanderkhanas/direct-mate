@@ -275,6 +275,42 @@ describe('HistoryBuilder', () => {
     expect(history[2].text).toBe(`${'я'.repeat(2000)}… (cut)`);
   });
 
+  it("reads a voice message's transcript as the customer's own words, and says when there is none", async () => {
+    const voice = (extra: Record<string, unknown>) => ({
+      role: 'user',
+      text: '',
+      attachments: [{ type: 'customer_audio', mediaId: 'https://cdn/a.mp4', url: '/uploads/customer-media/t1/a.mp3', seconds: 4, ...extra }],
+      created_at: at(0),
+    });
+    const history = await builder({
+      messages: {
+        c2: [
+          voice({ transcript: 'Чорні штани в L є?', transcribedBy: 'gpt-4o-mini-transcribe' }),
+          voice({ transcript: 'Доставка Новою Поштою', clipped: true, seconds: 180 }),
+          voice({ transcript: '' }),
+          voice({}),
+          voice({ error: 'download_failed', url: undefined }),
+        ],
+      },
+    }).build(CONVERSATION);
+
+    // The grounding check reads `said`: a size said aloud counts like one typed. The MP3 is never sent as an image.
+    expect(history[0]).toEqual({ role: 'customer', text: '(voice message, automatic transcript) Чорні штани в L є?', said: 'Чорні штани в L є?' });
+    expect(history[1]).toEqual({
+      role: 'customer',
+      text: '(voice message, automatic transcript of its first 3 minutes) Доставка Новою Поштою',
+      said: 'Доставка Новою Поштою',
+    });
+    expect(history[2]).toEqual({
+      role: 'customer',
+      text: '(sent a voice message with no words that could be made out; ask them to write)',
+      said: '',
+    });
+    const cantListen = { role: 'customer', text: "(sent a voice message; you can't listen to it, so ask them to write)", said: '' };
+    expect(history[3]).toEqual(cantListen);
+    expect(history[4]).toEqual(cantListen);
+  });
+
   it('adds the previous conversation as labelled context, with its unfinished order', async () => {
     const history = await builder({
       messages: {

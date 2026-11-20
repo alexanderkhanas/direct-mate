@@ -95,6 +95,13 @@ export interface AgentStepRecord {
   finishReason: string;
   toolCalls: Array<{ toolName: string; input: unknown }>;
   toolResults: Array<{ toolName: string; output: unknown }>;
+  /** This model call: waiting for the model, then running its tools (ms), and its tokens. */
+  modelMs?: number;
+  toolMs?: number;
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
 }
 
 export interface AgentUsage {

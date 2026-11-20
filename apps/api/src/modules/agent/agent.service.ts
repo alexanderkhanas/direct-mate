@@ -232,6 +232,13 @@ export class AgentService {
         finishReason: string;
         toolCalls: ReadonlyArray<{ toolName: string; input: unknown }>;
         toolResults: ReadonlyArray<{ toolName: string; output: unknown }>;
+        performance?: { responseTimeMs: number; toolExecutionMs: Readonly<Record<string, number>> };
+        usage?: {
+          inputTokens: number | undefined;
+          outputTokens: number | undefined;
+          inputTokenDetails?: { cacheReadTokens?: number | undefined };
+          outputTokenDetails?: { reasoningTokens?: number | undefined };
+        };
       }>;
       totalUsage: {
         inputTokens: number | undefined;
@@ -250,6 +257,16 @@ export class AgentService {
         finishReason: step.finishReason,
         toolCalls: step.toolCalls.map((c) => ({ toolName: c.toolName, input: c.input })),
         toolResults: step.toolResults.map((r) => ({ toolName: r.toolName, output: r.output })),
+        ...(step.performance && {
+          modelMs: Math.round(step.performance.responseTimeMs),
+          toolMs: Math.round(Object.values(step.performance.toolExecutionMs ?? {}).reduce((a, b) => a + b, 0)),
+        }),
+        ...(step.usage && {
+          inputTokens: step.usage.inputTokens ?? 0,
+          cachedInputTokens: step.usage.inputTokenDetails?.cacheReadTokens ?? 0,
+          outputTokens: step.usage.outputTokens ?? 0,
+          reasoningTokens: step.usage.outputTokenDetails?.reasoningTokens ?? 0,
+        }),
       });
     }
     usage.inputTokens += result.totalUsage.inputTokens ?? 0;

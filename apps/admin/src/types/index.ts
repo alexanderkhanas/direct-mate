@@ -36,7 +36,19 @@ export interface Message {
   direction: 'inbound' | 'outbound';
   role: 'user' | 'assistant' | 'manager' | 'system';
   text: string | null;
+  attachments?: MessageAttachment[] | null;
   createdAt: string;
+}
+
+/** What a message carried besides text. Only the fields the admin reads. */
+export interface MessageAttachment {
+  type: string;
+  /** Our copy: a photo, a story's image, or a voice message's MP3. */
+  url?: string;
+  error?: string;
+  /** Voice messages: length, and what was said ('' when no words could be made out). */
+  seconds?: number;
+  transcript?: string;
 }
 
 export interface ConversationState {

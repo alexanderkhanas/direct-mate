@@ -17,6 +17,9 @@ export const CONTENT_ATTACHMENTS: ReadonlySet<MessageAttachment['type']> = new S
   'post_comment',
 ]);
 
+/** Longer voice messages keep (and transcribe) only their start (`VoiceMessagesService`). */
+export const MAX_VOICE_SECONDS = 180;
+
 /**
  * Something a message carried besides text: a customer's photo (with our
  * copy), or the story, post or reel they replied to, shared or commented on
@@ -28,9 +31,10 @@ export interface MessageAttachment {
     | 'post_reply'
     | 'post_share'
     | 'customer_photo'
+    /** A voice message: the agent reads its transcript (`VoiceMessagesService`). */
+    | 'customer_audio'
     // The agent can't open these; it is told one was sent and asks for a photo or text.
     | 'customer_video'
-    | 'customer_audio'
     | 'customer_file'
     /** The customer mentioned the shop in their own story. */
     | 'story_mention'
@@ -45,11 +49,22 @@ export interface MessageAttachment {
   /**
    * Our copy, re-sent to the agent as an image on later turns: a customer's
    * photo (`CustomerMediaService`), or a story's, post's or reel's image
-   * (`ContentMediaService`; what it shows is in `image`).
+   * (`ContentMediaService`; what it shows is in `image`). For a voice
+   * message, our MP3 of it (never sent to the model).
    */
   url?: string;
-  /** Why a customer's photo has no copy. */
+  /** Why a customer's photo or voice message has no copy. */
   error?: 'download_failed' | 'too_large' | 'unreadable';
+
+  // Voice messages only.
+  /** Its length in seconds (at most MAX_VOICE_SECONDS: what our copy holds). */
+  seconds?: number;
+  /** Longer than MAX_VOICE_SECONDS: only its start was kept and transcribed. */
+  clipped?: boolean;
+  /** What the customer said, transcribed automatically; '' when no words could be made out. */
+  transcript?: string;
+  /** The model that transcribed it (with `seconds`, what it cost). */
+  transcribedBy?: string;
 
   // Stories, posts and reels only.
   /** The content's link from the webhook (Meta's CDN, expires within a day), to make our copy from. */

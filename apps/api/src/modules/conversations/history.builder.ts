@@ -4,7 +4,7 @@ import { CheckoutSessionStatus, MessageRole } from '@direct-mate/shared';
 import { localizeColor } from '../../common/color-i18n';
 import { formatCurrency } from '../../common/format';
 import type { AgentHistoryEntry } from '../agent/agent.types';
-import { CONTENT_ATTACHMENTS, MessageAttachment } from './entities/message.entity';
+import { CONTENT_ATTACHMENTS, MAX_VOICE_SECONDS, MessageAttachment } from './entities/message.entity';
 
 const HISTORY_LIMIT = 30;
 const GAP_NOTE_AFTER_MS = 2 * 60 * 60 * 1000;
@@ -26,6 +26,7 @@ const MAX_CAPTION_CHARS = 300;
 const ATTACHMENT_LABEL: Record<MessageAttachment['type'], string> = {
   customer_photo: '(sent a photo)',
   customer_video: "(sent a video; you can't watch videos, so ask for a photo or a description)",
+  // Until it is transcribed, or when it can't be.
   customer_audio: "(sent a voice message; you can't listen to it, so ask them to write)",
   customer_file: "(sent a file you can't open; ask what it is)",
   story_reply: "(replied to the shop's story)",
@@ -47,6 +48,10 @@ const CONTENT_IMAGE: Record<NonNullable<MessageAttachment['image']>, string> = {
   video_frames: 'a video: the image shows frames from it',
   video_cover: "a video: the image is its cover",
 };
+/** Before a voice message's transcript, which then reads as the customer's own words. */
+const VOICE_TRANSCRIBED = '(voice message, automatic transcript)';
+const VOICE_CLIPPED = `(voice message, automatic transcript of its first ${MAX_VOICE_SECONDS / 60} minutes)`;
+const VOICE_SILENT = '(sent a voice message with no words that could be made out; ask them to write)';
 const PHOTO_NOT_LOADED = "(sent a photo that couldn't be loaded; ask them to send it again if you need it)";
 const PHOTO_DROPPED = '(sent a photo earlier in the conversation; it is no longer attached)';
 
@@ -287,12 +292,15 @@ function productsNote(row: MessageRow): AgentHistoryEntry[] {
 function toEntry(row: MessageRow, photos: Set<string> | null): AgentHistoryEntry | null {
   const labels: string[] = [];
   const images: string[] = [];
+  const spoken: string[] = [];
   for (const attachment of row.attachments ?? []) {
-    const { label, image } = describeAttachment(attachment, photos);
+    const { label, image, words } = describeAttachment(attachment, photos);
     labels.push(label);
     if (image) images.push(image);
+    if (words) spoken.push(words);
   }
-  const said = clip(row.text?.trim() ?? '');
+  // A voice message's transcript is the customer's own words, like what they type.
+  const said = clip([...spoken, row.text?.trim() ?? ''].filter(Boolean).join('\n'));
   const text = [...labels, said].filter(Boolean).join(' ');
   if (!text) return null;
   switch (row.role) {
@@ -308,7 +316,15 @@ function toEntry(row: MessageRow, photos: Set<string> | null): AgentHistoryEntry
   }
 }
 
-function describeAttachment(a: MessageAttachment, photos: Set<string> | null): { label: string; image?: string } {
+/** `words`: a voice message's transcript, which goes with what the customer typed. */
+function describeAttachment(
+  a: MessageAttachment,
+  photos: Set<string> | null,
+): { label: string; image?: string; words?: string } {
+  if (a.type === 'customer_audio' && a.transcript !== undefined) {
+    if (!a.transcript) return { label: VOICE_SILENT };
+    return { label: a.clipped ? VOICE_CLIPPED : VOICE_TRANSCRIBED, words: a.transcript };
+  }
   if (a.type === 'quoted_message' && a.quotedText) {
     return { label: `(replying to «${clip(a.quotedText.replace(/\s+/g, ' '), 120)}»)` };
   }

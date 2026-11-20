@@ -1,10 +1,7 @@
-import { spawn } from 'child_process';
 import sharp = require('sharp');
+import { FFMPEG, parseDuration, runFfmpeg as run } from '../../common/ffmpeg';
 
-// ffmpeg-static is CommonJS (`module.exports = path`) while its types declare a
-// default export, so it is required directly. FFMPEG_BIN overrides the path.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const FFMPEG: string | null = require('ffmpeg-static');
+export { parseDuration };
 
 /** Longest video we take frames from. Stories run up to 60 s, reels up to 3 minutes. */
 export const MAX_VIDEO_SECONDS = 180;
@@ -81,12 +78,6 @@ export async function extractFrames(file: string, count: number): Promise<Buffer
     if (run && run.code === 0 && run.stdout.length > 0) frames.push(run.stdout);
   }
   return frames;
-}
-
-/** `Duration: 00:01:02.50` from ffmpeg's report, in seconds; null when it says N/A. */
-export function parseDuration(report: string): number | null {
-  const m = report.match(/Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)/);
-  return m ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) : null;
 }
 
 /** When to take each frame: `count` points from 5 % to 95 % of the video. A few early points when the length is unknown. */
@@ -166,29 +157,7 @@ export async function contactSheet(frames: Buffer[], width: number): Promise<Buf
     .toBuffer();
 }
 
-/** Runs ffmpeg and collects what it wrote. Resolves with the exit code (a probe exits non-zero); killed after `timeoutMs`. */
-function runFfmpeg(args: string[], timeoutMs: number): Promise<{ code: number | null; stdout: Buffer; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(FFMPEG!, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    const out: Buffer[] = [];
-    let outBytes = 0;
-    let stderr = '';
-    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
-    child.stdout.on('data', (chunk: Buffer) => {
-      outBytes += chunk.length;
-      if (outBytes > MAX_FRAME_BYTES) child.kill('SIGKILL');
-      else out.push(chunk);
-    });
-    child.stderr.on('data', (chunk: Buffer) => {
-      if (stderr.length < 64_000) stderr += chunk.toString();
-    });
-    child.on('error', (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ code, stdout: Buffer.concat(out), stderr });
-    });
-  });
+/** One ffmpeg run, with a single frame's size as the cap on what it writes. */
+function runFfmpeg(args: string[], timeoutMs: number) {
+  return run(args, timeoutMs, MAX_FRAME_BYTES);
 }

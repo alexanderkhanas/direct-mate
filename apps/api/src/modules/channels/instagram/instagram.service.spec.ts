@@ -32,6 +32,7 @@ function setup(opts: {
   recentBotTexts?: string[];
   sendFails?: boolean;
   appId?: string;
+  albumSent?: boolean;
 } = {}) {
   const queries: Array<{ sql: string; params: unknown[] }> = [];
   const savedMids = new Set<string>();
@@ -68,7 +69,8 @@ function setup(opts: {
       if (opts.sendFails && !text.startsWith('Вітаю')) throw new Error('Meta 500');
       return [`mid-${text.length}`];
     }),
-    sendImage: jest.fn(async (_account: IgAccount, _to: unknown, _url: string) => 'mid-image'),
+    sendImages: jest.fn(async (_account: IgAccount, _to: unknown, _urls: string[]) => ['mid-album']),
+    sentAlbumRecently: jest.fn((_conversationId: string) => opts.albumSent ?? false),
     isOwnMessage: jest.fn(async (mid: string) => ownMids.has(mid)),
     messageText: jest.fn(async (_t: string, mid: string) => (mid === 'bot-mid' ? 'Сорочка льон — 3300 грн' : null)),
     pruneSentIds: jest.fn(),
@@ -84,6 +86,7 @@ function setup(opts: {
   };
   const conversationRepo = { find: jest.fn(async () => []), update: jest.fn() };
   const contentMedia = { startForMessage: jest.fn() };
+  const voice = { startForMessage: jest.fn() };
 
   const service = new InstagramService(
     { get: (key: string) => ({ 'instagram.debounceMs': 5000, 'meta.appId': opts.appId ?? '777' })[key] } as never,
@@ -103,6 +106,7 @@ function setup(opts: {
     media as never,
     sender as never,
     contentMedia as never,
+    voice as never,
   );
 
   /** Wait for queued intake to finish. */
@@ -120,7 +124,7 @@ function setup(opts: {
   const promote = (ids: string[]) => ids.forEach((id) => ownMids.add(id));
   for (const id of opts.ownAfterRecheck ?? []) setTimeout(() => promote([id]), 1000);
 
-  return { service, queries, conversations, sender, runner, telegram, learning, media, contentMedia, settle, answer, timerArms };
+  return { service, queries, conversations, sender, runner, telegram, learning, media, contentMedia, voice, settle, answer, timerArms };
 }
 
 const inbound = (message: Record<string, unknown>) => ({
@@ -269,9 +273,10 @@ describe('InstagramService answering', () => {
     expect(t.runner.run).toHaveBeenCalledWith(expect.objectContaining({ mode: 'live', source: 'instagram', supersede: true }));
     const sends = [
       ...t.sender.sendText.mock.invocationCallOrder.map((n, i) => ({ n, what: t.sender.sendText.mock.calls[i][2] })),
-      ...t.sender.sendImage.mock.invocationCallOrder.map((n, i) => ({ n, what: t.sender.sendImage.mock.calls[i][2] })),
+      ...t.sender.sendImages.mock.invocationCallOrder.map((n, i) => ({ n, what: t.sender.sendImages.mock.calls[i][2] })),
     ].sort((a, b) => a.n - b.n);
-    expect(sends.map((s) => s.what)).toEqual(['Вітаю, з вами AI-асистент', '/uploads/a.jpg', 'Так, є в L — 3300 грн.']);
+    // The welcome line has no photos (an empty list sends nothing); the reply's photos go before its text.
+    expect(sends.map((s) => s.what)).toEqual([[], 'Вітаю, з вами AI-асистент', ['/uploads/a.jpg'], 'Так, є в L — 3300 грн.']);
     const delivered = t.queries.filter((q) => q.sql.includes("delivery_status = 'sent'")).map((q) => q.params[0]);
     expect(delivered).toEqual(['m-welcome', 'm-reply']);
   });
@@ -340,6 +345,22 @@ describe('InstagramService echoes', () => {
     const byRecheck = setup({ ownAfterRecheck: ['image-echo'] });
     await handle(byRecheck, echo({ mid: 'image-echo', attachments: [{ type: 'image', payload: { url: 'https://cdn/x.jpg' } }] }));
     expect(byRecheck.conversations.takeover).not.toHaveBeenCalled();
+  });
+
+  it("takes an image-only echo right after an album as ours, but not a manager's text", async () => {
+    const photos = { attachments: [{ type: 'image', payload: { url: 'https://cdn/x.jpg' } }] };
+    const afterAlbum = setup({ albumSent: true });
+    await handle(afterAlbum, echo({ mid: 'album-photo-2', ...photos }));
+    expect(afterAlbum.conversations.takeover).not.toHaveBeenCalled();
+    expect(afterAlbum.sender.sentAlbumRecently).toHaveBeenCalledWith('conv1');
+
+    const managerText = setup({ albumSent: true });
+    await handle(managerText, echo({ mid: 'manager-2', text: 'Це Оля, менеджер' }));
+    expect(managerText.conversations.takeover).toHaveBeenCalled();
+
+    const noAlbum = setup();
+    await handle(noAlbum, echo({ mid: 'manager-photo', ...photos }));
+    expect(noAlbum.conversations.takeover).toHaveBeenCalled();
   });
 
   it("treats any other echo as a manager writing, and pauses the bot", async () => {

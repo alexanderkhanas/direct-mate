@@ -83,6 +83,7 @@ function setup(opts: {
 
   const order: string[] = [];
   const contentMedia = { prepare: jest.fn(async (_t: string, _c: string) => void order.push('prepare')) };
+  const voice = { prepare: jest.fn(async (_t: string, _c: string) => void order.push('voice')) };
   const history = {
     buildTurn: jest.fn(async () => {
       order.push('history');
@@ -113,10 +114,11 @@ function setup(opts: {
     contentMedia as never,
     contentLinks as never,
     contentQuestions as never,
+    voice as never,
   );
   const run = (mode: TurnMode = 'demo', extra: Partial<Parameters<TurnRunner['run']>[0]> = {}) =>
     runner.run({ tenantId: 't1', conversationId: 'c1', mode, source: 'simulator_cli', ...extra });
-  return { run, queries, saved, conversations, agent, drafts, telegram, traces, subscriptions, contentMedia, media, order, contentLinks, contentQuestions };
+  return { run, queries, saved, conversations, agent, drafts, telegram, traces, subscriptions, contentMedia, voice, media, order, contentLinks, contentQuestions };
 }
 
 describe('TurnRunner: evidence for content links', () => {
@@ -156,11 +158,12 @@ describe('TurnRunner: evidence for content links', () => {
 });
 
 describe('TurnRunner', () => {
-  it("waits for the images of the stories and posts in the new messages before reading the history", async () => {
+  it("waits for the images of the stories and posts and the voice transcripts in the new messages before reading the history", async () => {
     const t = setup();
     await t.run();
     expect(t.contentMedia.prepare).toHaveBeenCalledWith('t1', 'c1');
-    expect(t.order).toEqual(['prepare', 'history']);
+    expect(t.voice.prepare).toHaveBeenCalledWith('t1', 'c1');
+    expect(t.order).toEqual(['prepare', 'voice', 'history']);
   });
 
   it('gives the resolver the copy, caption and flags of a story or post, and only the id of a photo', async () => {

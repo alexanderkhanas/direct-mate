@@ -15,6 +15,7 @@ export const validationSchema = Joi.object({
   SIZE_CHART_MODEL: Joi.string().allow('').optional(),
   CONTENT_VISION_MODEL: Joi.string().allow('').optional(),
   CONTENT_VISION_REASONING_EFFORT: Joi.string().allow('').optional(),
+  TRANSCRIBE_MODEL: Joi.string().allow('').optional(),
   SIZE_CHART_REASONING_EFFORT: Joi.string().allow('').optional(),
   INTERNAL_API_KEY: Joi.string().required(),
   HISTORY_IMPORT_WORKER_ENABLED: Joi.string().valid('true', 'false').default('true'),

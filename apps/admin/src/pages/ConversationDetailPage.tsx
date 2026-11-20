@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, AlertTriangle, MessageSquare, Activity } from '../components/icons';
 import { api } from '../lib/api';
-import { ConversationDetail } from '../types';
+import { ConversationDetail, Message, MessageAttachment } from '../types';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
@@ -171,7 +171,10 @@ export default function ConversationDetailPage() {
                           : 'bg-gray-100 text-gray-900 rounded-bl-sm',
                       )}
                     >
-                      {msg.text ?? <em className="opacity-50">empty</em>}
+                      {voiceMessages(msg).map((voice, i) => (
+                        <VoiceMessage key={i} voice={voice} />
+                      ))}
+                      {msg.text || (voiceMessages(msg).length === 0 && <em className="opacity-50">empty</em>)}
                     </div>
                     <p
                       className={cn(
@@ -228,6 +231,26 @@ export default function ConversationDetailPage() {
         )}
       </div>
       )}
+    </div>
+  );
+}
+
+function voiceMessages(msg: Message): MessageAttachment[] {
+  return (msg.attachments ?? []).filter((a) => a.type === 'customer_audio');
+}
+
+/** A customer's voice message: our copy to listen to, and what the AI agent read. */
+function VoiceMessage({ voice }: { voice: MessageAttachment }) {
+  let transcript: ReactNode;
+  if (voice.transcript) transcript = <p>«{voice.transcript}»</p>;
+  else if (voice.transcript === '') transcript = <p className="text-xs text-gray-500">No words could be made out</p>;
+  else if (voice.error) transcript = <p className="text-xs text-gray-500">Couldn't be loaded</p>;
+  else transcript = <p className="text-xs text-gray-500">Not transcribed</p>;
+  return (
+    <div className="space-y-1.5">
+      <p className="text-xs text-gray-500">Voice message{voice.seconds ? ` · ${voice.seconds} s` : ''}</p>
+      {voice.url && <audio controls preload="none" src={voice.url} className="h-8 w-60 max-w-full" />}
+      {transcript}
     </div>
   );
 }
