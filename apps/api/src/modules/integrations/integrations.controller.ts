@@ -9,6 +9,7 @@ import { InternalApiKeyGuard } from '../../common/guards/internal-api-key.guard'
 import { CurrentUser, JwtPayload } from '../../common/decorators/current-user.decorator';
 import { IntegrationsService, withoutTokens } from './integrations.service';
 import { TelegramService } from '../notifications/telegram.service';
+import { SetupEventsService } from '../mcp/setup-events.service';
 
 class ConnectInstagramDto {
   @ApiProperty({ example: '123456789' })
@@ -149,38 +150,15 @@ export class InstagramOAuthController {
   constructor(
     private readonly integrationsService: IntegrationsService,
     private readonly config: ConfigService,
+    private readonly setupEvents: SetupEventsService,
   ) {}
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @Post('connections/instagram/oauth/start')
   async start(@CurrentUser() user: JwtPayload, @Body() body: { returnTo?: string } = {}) {
-    const appId = this.config.get<string>('meta.appId');
-    const configId = this.config.get<string>('meta.loginConfigId');
-    const redirectUri = this.config.get<string>('meta.oauthRedirectUri');
-    if (!appId || !configId || !redirectUri) {
-      throw new BadRequestException('Instagram OAuth not configured');
-    }
-
-    // Generate state token and save to DB (reuse telegram_connect_tokens table).
-    // Meta returns `state` as given, so it also says which admin page to come back to.
-    const token = await this.integrationsService.createOAuthState(user.tenantId);
-    const state = `${token}.${body?.returnTo === 'onboarding' ? 'onboarding' : 'connections'}`;
-
-    // The Unified Login URL from the App Dashboard. The configuration carries
-    // the permissions, so no scopes here. Its `display=popup` is dropped: the
-    // admin opens this as a full page.
-    const params = new URLSearchParams({
-      client_id: appId,
-      config_id: configId,
-      redirect_uri: redirectUri,
-      response_type: 'code',
-      override_default_response_type: 'true',
-      state,
-      prompt: 'login',
-    });
-
-    return { redirectUrl: `https://www.facebook.com/dialog/oauth?${params}` };
+    const returnTo = body?.returnTo === 'onboarding' ? 'onboarding' : 'connections';
+    return { redirectUrl: await this.integrationsService.instagramLoginUrl(user.tenantId, returnTo) };
   }
 
   @Get('auth/instagram/callback')
@@ -192,8 +170,9 @@ export class InstagramOAuthController {
   ) {
     const adminBaseUrl = this.config.get<string>('admin.baseUrl') ?? 'http://localhost:5173';
     const [state, returnKey] = (rawState ?? '').split('.');
-    // Only the two pages that start a connection; never a URL from the query.
-    const page = `${adminBaseUrl}/${returnKey === 'onboarding' ? 'onboarding' : 'connections'}`;
+    // Only the pages that start a connection; never a URL from the query.
+    const fromClaude = returnKey === 'claude';
+    const page = `${adminBaseUrl}/${fromClaude ? 'claude/done' : returnKey === 'onboarding' ? 'onboarding' : 'connections'}`;
 
     if (!code || !state) {
       // Meta sends `error=access_denied` when the owner closes or declines the login.
@@ -233,6 +212,7 @@ export class InstagramOAuthController {
       await this.integrationsService.connectInstagram(tenantId, account.id, accessToken, account.username, expiresAt);
 
       this.logger.log(`Instagram OAuth connected for tenant ${tenantId}, account ${account.id}`);
+      if (fromClaude) await this.setupEvents.record(tenantId, 'instagram_connected');
       return res.redirect(`${page}?instagram=connected`);
     } catch (err) {
       this.logger.error('Instagram OAuth callback failed', (err as Error).message);

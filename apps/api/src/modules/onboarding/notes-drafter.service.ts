@@ -11,10 +11,13 @@ import {
   emptyDraft,
   KEY_SECTIONS,
   NOTE_SECTIONS,
+  parseKnowledgeDoc,
   renderKnowledgeDoc,
   SECTION_TITLE,
   WEEK_DAYS,
+  type CheckoutField,
   type NotesDraft,
+  type NotesPatch,
 } from './store-notes';
 
 const DRAFT_INSTRUCTIONS = `You prepare the store notes an AI sales assistant answers customers from, for a small Ukrainian shop that sells on Instagram. The sources are the shop's own website pages, text the owner pasted (what they already send customers), and facts its managers told customers in Instagram chats; nothing else.
@@ -266,6 +269,50 @@ export class NotesDrafterService {
       ]);
     }
     this.logger.log(`Store notes saved for ${tenantId} (${knowledgeDoc.length} chars)`);
+  }
+
+  /**
+   * Change some of the notes and leave the rest as the store has them now.
+   * `apply` rewrites everything from a draft, and the draft goes stale when the
+   * notes are edited in Settings, so the base here is the live store: the
+   * draft's sections only while they still render to the live notes, else the
+   * live notes parsed back into sections; payment details and checkout fields
+   * always from `checkout_config`. Sizing advice is never touched.
+   */
+  async mergeAndApply(tenantId: string, patch: NotesPatch): Promise<NotesDraft> {
+    const current = await this.get(tenantId);
+    const [live]: Array<{ knowledge_doc: string | null; checkout_config: Record<string, unknown> | null }> =
+      await this.dataSource.query(`SELECT knowledge_doc, checkout_config FROM store_configs WHERE tenant_id = $1`, [tenantId]);
+    const liveDoc = (live?.knowledge_doc ?? '').trim();
+    const inStep = !!current.draft && renderKnowledgeDoc(current.draft) === liveDoc;
+    const liveFields = Array.isArray(live?.checkout_config?.fields)
+      ? (live!.checkout_config!.fields as unknown[]).filter((f): f is CheckoutField => (CHECKOUT_FIELDS as readonly unknown[]).includes(f))
+      : [];
+    const livePayment = live?.checkout_config?.paymentDetails;
+
+    const sections = { ...(inStep ? current.draft!.sections : parseKnowledgeDoc(liveDoc)) };
+    for (const key of NOTE_SECTIONS) {
+      const value = patch.sections?.[key];
+      if (value === undefined) continue;
+      if (value.trim()) sections[key] = value.trim().slice(0, 3000);
+      else delete sections[key];
+    }
+    const draft: NotesDraft = {
+      ...(current.draft ?? emptyDraft()),
+      sections,
+      paymentDetails:
+        patch.paymentDetails !== undefined
+          ? patch.paymentDetails?.trim().slice(0, 1000) || null
+          : typeof livePayment === 'string' && livePayment.trim()
+            ? livePayment
+            : null,
+      checkoutFields: patch.checkoutFields ?? (liveFields.length > 0 ? liveFields : emptyDraft().checkoutFields),
+      businessHours: patch.businessHours ?? null,
+      sizingAdvice: null,
+    };
+    await this.save(tenantId, draft, current.messages);
+    await this.apply(tenantId, draft);
+    return draft;
   }
 
   private async save(tenantId: string, draft: NotesDraft, messages: InterviewMessage[]): Promise<void> {

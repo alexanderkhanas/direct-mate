@@ -1,10 +1,11 @@
 import { useState, type FormEvent } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
 import { Check, ChevronLeft, Eye, EyeOff, MessageCircle } from '../components/icons';
 import { api } from '../lib/api';
 import { useT } from '../i18n';
+import { safeNext } from '../lib/next';
 import { Alert, Field, IconButton, SetupButton, TextInput } from '../components/setup/ui';
 
 type RegisterError = { field: 'email' | 'password' | null; message: string };
@@ -28,6 +29,8 @@ export default function RegisterPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<RegisterError | null>(null);
   const [loading, setLoading] = useState(false);
+  const [searchParams] = useSearchParams();
+  const next = safeNext(searchParams.get('next'));
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -45,7 +48,8 @@ export default function RegisterPage() {
       // A new store: nothing cached from a previous session may leak into its setup.
       queryClient.clear();
       localStorage.setItem('accessToken', data.accessToken);
-      navigate('/onboarding');
+      // A sign-up that started on Claude's consent page goes back there: Claude runs the setup.
+      navigate(next ?? '/onboarding');
     } catch (err) {
       setError(
         isEmailTaken(err) ? { field: 'email', message: t('auth.email_taken') } : { field: null, message: t('auth.register_error') },
@@ -157,7 +161,7 @@ export default function RegisterPage() {
 
           <p className="mt-auto pt-2 text-center text-[15px] text-dm-muted lg:mt-2 lg:pt-0">
             {t('auth.have_account')}{' '}
-            <Link to="/login" className="font-medium text-blue-800 underline decoration-1 underline-offset-[3px] hover:text-blue-700">
+            <Link to={next ? `/login?next=${encodeURIComponent(next)}` : '/login'} className="font-medium text-blue-800 underline decoration-1 underline-offset-[3px] hover:text-blue-700">
               {t('auth.sign_in')}
             </Link>
           </p>

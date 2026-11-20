@@ -4,6 +4,7 @@ import notes from './setup/notes';
 import bot from './setup/bot';
 import launch from './setup/launch';
 import outside from './setup/outside';
+import claude from './setup/claude';
 import sizes from './setup/sizes';
 import history from './setup/history';
 
@@ -613,6 +614,7 @@ export const en = {
   setup_bot: bot.en,
   setup_launch: launch.en,
   setup_outside: outside.en,
+  setup_claude: claude.en,
   setup_sizes: sizes.en,
   setup_history: history.en,
 };

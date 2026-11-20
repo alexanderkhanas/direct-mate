@@ -157,22 +157,34 @@ export function PrivacyPage() {
         </div>
 
         <div className={style.section}>
-          <h2 className={style.h2}>8. Data retention</h2>
+          <h2 className={style.h2}>8. AI assistants you connect</h2>
+          <p className={style.p}>If you connect DirectMate to an AI assistant, such as Claude by Anthropic, through our connector, the assistant acts on your instructions and on your behalf:</p>
+          <ul className={style.ul}>
+            <li>it can read your store’s setup status, store notes (including the payment details you entered for customers), product counts, examples from a product feed you give it, and the conversations in your private test chat;</li>
+            <li>it can change the settings you ask it to change, send test messages to your AI agent, and turn the AI agent on only after you confirm;</li>
+            <li>it does not receive your customers’ Instagram messages, your password, or the access tokens of your connected accounts.</li>
+          </ul>
+          <p className={style.p}>What the assistant’s provider does with the information it receives is governed by that provider’s own terms and privacy policy.</p>
+          <p className={style.p}>We keep a record of each connection (which assistant, when you allowed it and when it was last used) and of the setup steps completed through it. Its access tokens are stored only as one-way hashes and expire. You can disconnect an assistant at any time under Connections, which ends its access immediately. While you connect, we set a short-lived cookie (10 minutes) so that access can only be allowed from the browser where you started.</p>
+        </div>
+
+        <div className={style.section}>
+          <h2 className={style.h2}>9. Data retention</h2>
           <p className={style.p}>We retain information for as long as necessary to provide the service, comply with legal obligations, resolve disputes, enforce agreements, and maintain security and fraud-prevention records. When data is no longer needed, we will delete or anonymize it within a reasonable period.</p>
         </div>
 
         <div className={style.section}>
-          <h2 className={style.h2}>9. Data security</h2>
+          <h2 className={style.h2}>10. Data security</h2>
           <p className={style.p}>We take reasonable technical and organizational measures to protect information from unauthorized access, disclosure, alteration, or destruction, including encryption of sensitive tokens (AES-256-GCM), secure HTTPS connections, and access controls. However, no method of transmission or storage is completely secure.</p>
         </div>
 
         <div className={style.section}>
-          <h2 className={style.h2}>10. International data transfers</h2>
+          <h2 className={style.h2}>11. International data transfers</h2>
           <p className={style.p}>Depending on the tools and providers used, data may be processed in countries other than the user's country of residence. Where required, we take reasonable steps to ensure appropriate safeguards are in place.</p>
         </div>
 
         <div className={style.section}>
-          <h2 className={style.h2}>11. Your rights</h2>
+          <h2 className={style.h2}>12. Your rights</h2>
           <ul className={style.ul}>
             <li>request access to your data</li>
             <li>request correction of inaccurate data</li>
@@ -185,22 +197,22 @@ export function PrivacyPage() {
         </div>
 
         <div className={style.section}>
-          <h2 className={style.h2}>12. Data deletion requests</h2>
+          <h2 className={style.h2}>13. Data deletion requests</h2>
           <p className={style.p}>If you want us to delete your data, see our <Link to="/data-deletion" className={style.a}>Data Deletion Request</Link> page or contact <a href="mailto:privacy@directmate.app" className={style.a}>privacy@directmate.app</a>.</p>
         </div>
 
         <div className={style.section}>
-          <h2 className={style.h2}>13. Children's privacy</h2>
+          <h2 className={style.h2}>14. Children's privacy</h2>
           <p className={style.p}>DirectMate is intended for business use and is not directed to children under the age of 13. We do not knowingly collect personal information directly from children.</p>
         </div>
 
         <div className={style.section}>
-          <h2 className={style.h2}>14. Changes to this Privacy Policy</h2>
+          <h2 className={style.h2}>15. Changes to this Privacy Policy</h2>
           <p className={style.p}>We may update this Privacy Policy from time to time. When we do, we will update the "Effective date" above.</p>
         </div>
 
         <div className={style.section}>
-          <h2 className={style.h2}>15. Contact us</h2>
+          <h2 className={style.h2}>16. Contact us</h2>
           <ul className={style.ul}>
             <li><strong>Email:</strong> <a href="mailto:privacy@directmate.app" className={style.a}>privacy@directmate.app</a></li>
             <li><strong>Website:</strong> <a href="https://directmate.app" className={style.a}>https://directmate.app</a></li>

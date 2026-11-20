@@ -104,8 +104,10 @@ describe('TestChatService', () => {
       run: jest.fn(async () => ({ messages: [{ kind: 'reply', text: 'Так, є в M.' }], handoff: null })),
     };
     const onboarding = { markTested: jest.fn(async () => undefined) };
-    const svc = new TestChatService({ query: jest.fn() } as never, conversations as never, turnRunner as never, {} as never, {} as never, onboarding as never);
-    return { svc, conversations, turnRunner, onboarding };
+    const query = jest.fn(async (): Promise<unknown> => [{ n: 0 }]);
+    const config = { get: jest.fn((): unknown => undefined) };
+    const svc = new TestChatService({ query } as never, conversations as never, turnRunner as never, {} as never, {} as never, onboarding as never, config as never);
+    return { svc, conversations, turnRunner, onboarding, query, config };
   }
 
   it("answers on a paused store, in demo mode, in the owner's test channel", async () => {
@@ -135,7 +137,7 @@ describe('TestChatService', () => {
       { role: 'user', text: 'Є сорочка?', attachments: null, raw_payload: null, created_at: new Date('2026-11-08T12:32:00Z') },
       { role: 'assistant', text: 'Так.', attachments: null, raw_payload: { imageUrls: ['/a.jpg'] }, created_at: new Date('2026-11-08T12:32:07Z') },
     ]);
-    const svc = new TestChatService({ query } as never, {} as never, {} as never, {} as never, {} as never, {} as never);
+    const svc = new TestChatService({ query } as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never);
     expect(await svc.history('t1')).toEqual([
       { role: 'customer', text: 'Є сорочка?', createdAt: '2026-11-08T12:32:00.000Z' },
       { role: 'bot', text: 'Так.', imageUrls: ['/a.jpg'], createdAt: '2026-11-08T12:32:07.000Z' },
@@ -146,5 +148,26 @@ describe('TestChatService', () => {
     const t = chat();
     for (let i = 0; i < 60; i++) await t.svc.send('t1', { text: `${i}` });
     await expect(t.svc.send('t1', { text: 'ще' })).rejects.toThrow(/Too many/);
+  });
+
+  it('stops a store at its daily limit, counted from the test-chat traces of the last 24 hours', async () => {
+    const t = chat();
+    t.config.get.mockReturnValue(100);
+    t.query.mockResolvedValueOnce([{ n: 100 }]);
+    await expect(t.svc.send('t1', { text: 'ще' })).rejects.toThrow(/daily limit of 100/);
+    expect(t.turnRunner.run).not.toHaveBeenCalled();
+    expect(t.query).toHaveBeenCalledWith(expect.stringContaining("source = 'owner_test'"), ['t1']);
+
+    t.query.mockResolvedValueOnce([{ n: 99 }]);
+    await t.svc.send('t1', { text: 'ще' });
+    expect(t.turnRunner.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('has no daily limit when it is set to 0', async () => {
+    const t = chat();
+    t.config.get.mockReturnValue(0);
+    t.query.mockResolvedValue([{ n: 5000 }]);
+    await t.svc.send('t1', { text: 'Привіт' });
+    expect(t.turnRunner.run).toHaveBeenCalledTimes(1);
   });
 });

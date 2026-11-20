@@ -7,6 +7,7 @@ import { join } from 'path';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { createDemoCorsMiddleware } from './modules/demo/demo-cors.middleware';
+import { McpHttpService } from './modules/mcp/mcp-http.service';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { rawBody: true });
@@ -45,6 +46,12 @@ async function bootstrap() {
   const demoAllowedOrigins =
     config.get<string[]>('demo.cors.allowedOrigins') ?? [];
   app.use('/demo', createDemoCorsMiddleware(demoAllowedOrigins));
+
+  // The Claude connector (MCP + its OAuth endpoints): plain Express handlers,
+  // after the body parsers above and before the admin CORS layer, so Nest's
+  // exception filter and single-origin CORS don't touch them.
+  const mcp = app.get(McpHttpService);
+  if (mcp.enabled) app.use(mcp.router());
 
   app.enableCors({
     origin: process.env.ADMIN_ORIGIN ?? 'http://localhost:5173',

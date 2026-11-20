@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { StoreConfigController } from './store-config.controller';
+import { StoreConfigService } from './store-config.service';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator';
 
 const OWNER: JwtPayload = { sub: 'u1', email: 'o@shop.ua', role: 'owner', tenantId: 't1' };
@@ -17,13 +18,14 @@ function setup(mode: string, missing: string[] = []) {
   const telegram = { notifyPlatform: jest.fn(async () => undefined) };
   const onboarding = { markCompleted: jest.fn(async () => undefined) };
   const subscriptions = { startTrial: jest.fn(async () => undefined) };
-  const controller = new StoreConfigController(
+  const storeConfig = new StoreConfigService(
     repo as never,
     readiness as never,
     telegram as never,
     onboarding as never,
     subscriptions as never,
   );
+  const controller = new StoreConfigController(repo as never, storeConfig);
   return { controller, repo, readiness, telegram, subscriptions };
 }
 

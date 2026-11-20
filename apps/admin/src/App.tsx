@@ -22,6 +22,9 @@ import RegisterPage from './pages/RegisterPage';
 import SetupPage from './pages/onboarding/SetupPage';
 import SuccessPage from './pages/onboarding/SuccessPage';
 import { PrivacyPage, TermsPage, DataDeletionPage } from './pages/PrivacyPage';
+import AuthorizePage from './pages/claude/AuthorizePage';
+import { ClaudeDonePage, ClaudeInstagramPage, ClaudeShopifyPage } from './pages/claude/HandoffPages';
+import { SetupWithClaudePage } from './pages/claude/SetupWithClaudePage';
 import { TenantProvider } from './contexts/TenantContext';
 import Layout from './components/Layout';
 
@@ -42,6 +45,12 @@ export default function App() {
         <Route path="/data-deletion" element={<DataDeletionPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
+        {/* Setup from Claude: the consent page and the pages Claude's links open. Public: each authorizes itself. */}
+        <Route path="/claude" element={<SetupWithClaudePage />} />
+        <Route path="/claude/authorize" element={<AuthorizePage />} />
+        <Route path="/claude/instagram" element={<ClaudeInstagramPage />} />
+        <Route path="/claude/shopify" element={<ClaudeShopifyPage />} />
+        <Route path="/claude/done" element={<ClaudeDonePage />} />
         {/* Setup is full-screen, outside the admin layout. */}
         <Route path="/onboarding" element={<PrivateRoute><SetupPage /></PrivateRoute>} />
         <Route path="/onboarding/done" element={<PrivateRoute><SuccessPage /></PrivateRoute>} />

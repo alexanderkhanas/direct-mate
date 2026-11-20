@@ -10,6 +10,7 @@ import { LoadingState } from '../components/ui/Spinner';
 import { EmptyState } from '../components/ui/EmptyState';
 import { useT } from '../i18n';
 import { TelegramConnectSection } from '../components/connections/TelegramConnectSection';
+import { ClaudeConnectSection } from '../components/connections/ClaudeConnectSection';
 import { InstagramConnectButton, useInstagramOAuthResult } from '../components/connections/InstagramConnect';
 
 type BadgeVariant = 'connected' | 'disconnected' | 'error' | 'pending';
@@ -186,6 +187,8 @@ export default function ConnectionsPage() {
       )}
 
       <TelegramConnectSection />
+
+      <ClaudeConnectSection />
 
       {isLoading ? (
         <LoadingState />

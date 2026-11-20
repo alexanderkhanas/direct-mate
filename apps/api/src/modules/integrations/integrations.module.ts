@@ -7,9 +7,10 @@ import { IntegrationsService } from './integrations.service';
 import { IntegrationsController, InternalConnectionsController, InstagramOAuthController } from './integrations.controller';
 import { CryptoService } from '../../common/crypto.service';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { SetupEventsModule } from '../mcp/setup-events.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Connection, SyncJob, TelegramConnectToken]), NotificationsModule],
+  imports: [TypeOrmModule.forFeature([Connection, SyncJob, TelegramConnectToken]), NotificationsModule, SetupEventsModule],
   controllers: [IntegrationsController, InternalConnectionsController, InstagramOAuthController],
   providers: [IntegrationsService, CryptoService],
   exports: [IntegrationsService],

@@ -25,6 +25,6 @@ import { TestChatService } from './test-chat.service';
     GraphHistoryClient,
     HistoryImportService,
   ],
-  exports: [OnboardingReadiness, OnboardingService],
+  exports: [OnboardingReadiness, OnboardingService, NotesDrafterService, TestChatService],
 })
 export class OnboardingModule {}

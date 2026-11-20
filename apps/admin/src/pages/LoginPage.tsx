@@ -6,6 +6,7 @@ import { api } from '../lib/api';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { useT } from '../i18n';
+import { safeNext } from '../lib/next';
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -16,6 +17,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const next = safeNext(searchParams.get('next'));
 
   // Impersonation: superadmin opened tenant panel in new tab
   useEffect(() => {
@@ -36,7 +38,8 @@ export default function LoginPage() {
       // A new session: nothing cached from the previous store may leak into this one.
       queryClient.clear();
       localStorage.setItem('accessToken', data.accessToken);
-      navigate('/');
+      // A sign-in that started on Claude's consent page goes back there.
+      navigate(next ?? '/');
     } catch {
       setError(t('auth.login_error'));
     } finally {
@@ -96,7 +99,7 @@ export default function LoginPage() {
 
         <p className="text-center text-sm text-gray-500 mt-4">
           {t('auth.no_account')}{' '}
-          <Link to="/register" className="text-gray-900 font-medium hover:underline">
+          <Link to={next ? `/register?next=${encodeURIComponent(next)}` : '/register'} className="text-gray-900 font-medium hover:underline">
             {t('auth.create_store')}
           </Link>
         </p>

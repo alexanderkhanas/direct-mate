@@ -178,7 +178,7 @@ export function checkGrounding(
  * the store refuses. Only words right next to the promise word count, so
  * «Знижка 10% на другу річ, але не діє на акційні» is still an offer.
  */
-function offeredFamilies(notes: string): Set<string> {
+export function offeredFamilies(notes: string): Set<string> {
   const offered = new Set<string>();
   for (const sentence of notes.split(/(?<=[.!?…])\s+|\n+/)) {
     for (const { family, pattern } of PROMISE_FAMILIES) {

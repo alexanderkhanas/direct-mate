@@ -64,7 +64,7 @@ docs/v2-agent/   — The agent rework: decisions and the phase-by-phase implemen
 ### External services
 - **OpenAI** — the agent model (`AGENT_MODEL`, gpt-6.1-terra in use), moderation on replies
   (omni-moderation, free), vision for photo matching, product attribute extraction, reading size charts,
-  the comment screen
+  the comment screen, transcribing customers' voice messages (`TRANSCRIBE_MODEL`, gpt-4o-mini-transcribe)
 - **Meta** — Instagram API with Unified Login: webhooks + messaging via `graph.facebook.com/v27.0` (see below)
 - **Replicate** — CLIP image embeddings for photo matching
 - **Telegram** — handoff notifications to managers
@@ -92,7 +92,9 @@ admin simulator and Live DM console, the CLI simulator.
    `instagram_media_mappings.image_path`); a video becomes a 2×2 sheet of its most different frames (`ffmpeg-static`,
    ≤180 s, ≤50 MB), falling back to its cover, then the caption. The runner waits up to 3 s for a copy in progress
    (`ContentMediaService.prepare`). The label and caption sit inside the customer's message, and the grounding check
-   reads only what the customer typed (`said`), so a caption's price is no fact.
+   reads only what the customer typed (`said`), so a caption's price is no fact. A voice message reads as its
+   transcript, which is part of `said` (the customer's own words); the runner waits up to 15 s for a transcription
+   in progress (`VoiceMessagesService.prepare`).
 4. **Media** (`MediaContextResolver`): a customer photo is matched to a product (mapping table, pHash, CLIP, then
    vision). Content (story, post, reel, comment): its confirmed products (`content_products`), then a pHash match of
    our copy (remembered as confirmed), else a note to read the text on it first (name, article, price) and search.
@@ -171,15 +173,24 @@ ready chart never stands in); otherwise from the height/weight ranges in `flow_c
 ### Instagram (`modules/channels/instagram/`)
 - **Webhook:** every POST must carry a valid `X-Hub-Signature-256` (Meta app secret); others get 401.
 - **Intake:** each message is saved on arrival, deduped by `mid` (unique index). Attachments are kept:
-  photos copied to `uploads/` (`CustomerMediaService`), video/voice/files/story mentions labelled for the
+  photos copied to `uploads/` (`CustomerMediaService`), video/files/story mentions labelled for the
   agent, quote-replies carry the quoted text. Edits (`message_edit`) are ingested as messages.
+- **Voice messages** (`VoiceMessagesService`): Meta sends an `audio` attachment, a link to an MP4 with only audio
+  (it expires). On arrival it is kept as a mono MP3 in `uploads/customer-media/` (≤180 s; longer keeps its start) and
+  transcribed; the transcript, length and model go onto the attachment. A file that can't be fetched or read gets
+  `error` and the agent asks the customer to write; a failed transcription is retried on a later turn from our copy.
+  The prompt has the agent read dictated names, phones and addresses back in the order summary. The admin
+  conversation page plays the copy and shows the transcript.
 - **Reply timer:** each message pushes `conversations.reply_due_at` 5s out (`INSTAGRAM_DEBOUNCE_MS`); a 1s
   poller claims due conversations atomically (`FOR UPDATE SKIP LOCKED`).
-- **Delivery** (`InstagramSender`): images first, then text split at Instagram's **1,000-byte** limit
-  (~500 Cyrillic characters). Every returned id goes into `instagram_sent_mids`. A failed send is marked
-  `delivery_status='failed'` (left out of the agent's history) and hands off to a manager.
-- **Echoes:** ours if the id is in `instagram_sent_mids`, the `app_id` is ours, or the text equals a recent
-  bot message (rechecked after 3s). Anything else is a manager reply: the bot pauses (takeover,
+- **Delivery** (`InstagramSender`): images first, several as one album (`message.attachments`, up to 10); if Meta
+  refuses the album they go one by one, and a refusal of the form itself (not of one file) keeps them one by one
+  until restart. Then text split at Instagram's **1,000-byte** limit (~500 Cyrillic characters). Every returned id
+  goes into `instagram_sent_mids`. A failed send is marked `delivery_status='failed'` (left out of the agent's
+  history) and hands off to a manager.
+- **Echoes:** ours if the id is in `instagram_sent_mids`, the `app_id` is ours, the text equals a recent
+  bot message (rechecked after 3s), or it is image-only within 2 min of an album to that conversation (an album may
+  echo under ids the send didn't return). Anything else is a manager reply: the bot pauses (takeover,
   auto-resume after 30 min).
 - **Comments** (`InstagramCommentService`): on a feed post (linked to a product or not: the agent sees the post), a small model
   (`INSTAGRAM_COMMENT_GATE_MODEL`) screens whether the comment asks the shop something. If so, the
@@ -216,6 +227,39 @@ ready chart never stands in); otherwise from the height/weight ranges in `flow_c
 ### Demo widget, simulator, manual API
 `modules/demo/` (debounce buffer, rate limiter, daily budget per model), `modules/testing/` (admin
 Simulator page, Live DM console with photo upload), `POST /conversation/reply` (manual).
+
+## Claude connector (`modules/mcp/`)
+
+An owner adds `https://mcp.directmate.app/mcp` to Claude as a custom connector (how-to: admin `/claude`), and Claude
+interviews them and sets the store up through tools. The tools wrap the services the admin setup uses, so both write
+the same store. Off unless `MCP_ENABLED=true`.
+- **Transport:** raw Express router (`McpHttpService.router()`), mounted in `main.ts` before CORS and outside Nest's
+  exception filter. `POST /mcp` only, stateless Streamable HTTP with JSON responses, one `McpServer` per request
+  (`mcp.server.ts`). Limited per grant (120 calls/min), not per IP: claude.ai users share Anthropic's addresses.
+- **OAuth 2.1, our own** (`oauth/`): RFC 9728/8414 metadata, dynamic client registration (public clients, PKCE S256),
+  redirects only to Claude's callbacks or loopback (`redirects.ts`). `/oauth/authorize` sets a 10-minute cookie
+  (`dm_claude_request`, domain `MCP_COOKIE_DOMAIN`) and sends the browser to the admin's `/claude/authorize`; only that
+  browser can allow (enforced in production). Approve loads the user from the DB: active owner of a live, non-demo
+  store. Opaque tokens, stored as sha256: access 1 h, refresh 90 days and rotating (a reused refresh token revokes the
+  grant). Owners revoke under Connections → Claude (`mcp_grants`).
+- **Tools** (`mcp-tools.service.ts`): status, notes (read and merge-save, never overwriting what Settings changed),
+  feed preview and connect (answers within ~25 s, a longer import carries on), Instagram / Shopify / Telegram links,
+  tone, sizing, skip a step, `try_agent` (the owner's test chat), `go_live` (`confirmed: true` only after the owner's
+  explicit yes; learning first). Every result carries `next` (`setup-guide.ts`): what to ask, which tool after.
+  Text that customers or feeds wrote comes back under `untrusted_content`, and the server instructions say it is data.
+- **Browser steps:** Instagram and Shopify links carry a one-time hand-off token (10 min, one action, `handoff_tokens`),
+  so the admin pages they open (`/claude/instagram`, `/claude/shopify`, `/claude/done`) need no admin session.
+- **Chat preview:** `try_agent` is an MCP App (`@modelcontextprotocol/ext-apps` 1.7.5; 2.x needs SDK v2). The page
+  (`app/chat-preview.ts`) draws the test conversation as a Direct chat, capped at 520 px and opened at the newest
+  message. Its `ui://` address carries a hash of the page: Claude keeps its own copy by address, so a changed page
+  needs a new one.
+- **Funnel:** `setup_events` (`source=claude`): authorized, catalog_connected, instagram_connected, first_try_agent,
+  go_live.
+- **Limits:** sign-up 5/min and login 10/min per client address (`ClientIpThrottlerGuard`, keyed on nginx's
+  `X-Real-IP`); test messages per store per 24 h (`TEST_CHAT_DAILY_LIMIT`, admin and Claude together, counted from
+  `conversation_traces`).
+- **Production:** `infra/production/nginx/conf.d/mcp.conf` proxies only the connector's routes; issue its certificate
+  before deploying it (steps in the file).
 
 ## Meta/Instagram Setup
 
@@ -327,7 +371,8 @@ mode for the side effects you want; never add `isDemo`-style flags inside the ag
   Not yet run end to end against a live account.
 - **Comment private replies are text only;** the agent is told, but a staged photo is silently dropped. Comments on
   reels are still ignored.
-- **Content images:** the in-progress and already-tried captures are per process (a second replica could copy twice).
+- **Content images and voice messages:** the in-progress and already-tried captures and transcriptions are per process
+  (a second replica could copy twice).
   Files under `uploads/content-media/` are never deleted: covers that only stood in, re-copies after a file went
   missing, and copies of other accounts' posts all stay. The content fetch cron skips its run while the history
   import's Graph budget pause (`app_state.instagram_history_budget`) is on; the «Fetch content» button doesn't.
@@ -406,10 +451,14 @@ HISTORY_IMPORT_WORKER_ENABLED (the Instagram history import cron; default on, th
 CONTENT_FETCH_WORKER_ENABLED (the Instagram content fetch cron: stories, posts, reels; default on, the CLI scripts turn it off)
 FFMPEG_BIN (optional: an ffmpeg binary for video frames instead of ffmpeg-static's)
 CONTENT_VISION_MODEL (the visual check of content, defaults to ATTRIBUTES_MODEL), CONTENT_VISION_REASONING_EFFORT (default low)
+TRANSCRIBE_MODEL (customers' voice messages, default gpt-4o-mini-transcribe)
 SIZE_CHART_MODEL (vision; reads uploaded size charts, defaults to ATTRIBUTES_MODEL), SIZE_CHART_REASONING_EFFORT (default low)
 TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, TELEGRAM_BOT_USERNAME
 DEMO_DEBOUNCE_MS, DEMO_MAX_MESSAGE_LENGTH, DEMO_RATE_LIMIT_SESSIONS_PER_HOUR, DEMO_BUDGET_CENTS_GPT54_MINI, DEMO_BUDGET_CENTS_GPT54
 ENCRYPTION_KEY (64-char hex), INTERNAL_API_KEY, ANTHROPIC_API_KEY (Phase 6)
+MCP_ENABLED, MCP_PUBLIC_URL (the MCP host's origin; the connector is `${MCP_PUBLIC_URL}/mcp`), MCP_COOKIE_DOMAIN (production:
+directmate.app), MCP_DEV_TENANT_ID / MCP_DEV_TOKEN (development only: a static bearer for MCP Inspector and curl)
+TEST_CHAT_DAILY_LIMIT (test messages per store per 24 h; default 100, 0 = no cap)
 ```
 
 ## File Conventions

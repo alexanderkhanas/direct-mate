@@ -1,9 +1,10 @@
 import { BadRequestException, HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { MessageDirection, MessageRole } from '@direct-mate/shared';
 import { ConversationsService } from '../conversations/conversations.service';
-import { TurnRunner } from '../conversations/turn-runner.service';
+import { TurnRunner, type TurnRunResult } from '../conversations/turn-runner.service';
 import type { MessageAttachment } from '../conversations/entities/message.entity';
 import { CustomerMediaService } from '../customer-media/customer-media.service';
 import { ScenarioRunner, type ScenarioIdentity } from '../testing/scenario-runner.service';
@@ -17,6 +18,8 @@ import { OnboardingService } from './onboarding.service';
 const OWNER_TEST: ScenarioIdentity = { externalUserId: 'owner-test', channel: 'test', channelAccountId: 'owner-test' };
 /** Messages per store per hour: enough to try everything, not enough to run up a bill. */
 const MAX_MESSAGES_PER_HOUR = 60;
+/** Per store per 24 hours unless `TEST_CHAT_DAILY_LIMIT` says otherwise; 0 turns it off. */
+const DEFAULT_DAILY_LIMIT = 100;
 
 export interface TestChatMessage {
   role: 'customer' | 'bot';
@@ -42,18 +45,26 @@ export class TestChatService {
     private readonly media: CustomerMediaService,
     private readonly scenarios: ScenarioRunner,
     private readonly onboarding: OnboardingService,
+    private readonly config: ConfigService,
   ) {}
 
   async send(
     tenantId: string,
     input: { text?: string; photoUrl?: string },
-  ): Promise<{ messages: TestChatMessage[]; handoff: boolean }> {
+  ): Promise<{
+    messages: TestChatMessage[];
+    handoff: boolean;
+    /** `busy` or `skipped` explain an empty `messages`. */
+    status: TurnRunResult['status'];
+    skipReason?: TurnRunResult['skipReason'];
+  }> {
     const text = (input.text ?? '').trim().slice(0, 1000);
     if (!text && !input.photoUrl) throw new BadRequestException('Write a message or attach a photo');
     // Only a photo this store uploaded here: the old console fetched any URL it was given.
     if (input.photoUrl && !input.photoUrl.startsWith(`/uploads/customer-media/${tenantId}/`)) {
       throw new BadRequestException('Upload the photo first');
     }
+    await this.checkDailyLimit(tenantId);
     this.throttle(tenantId);
 
     const customer = await this.conversations.findOrCreateCustomer(tenantId, OWNER_TEST.channel, OWNER_TEST.externalUserId);
@@ -80,6 +91,8 @@ export class TestChatService {
     return {
       messages: result.messages.map((m) => ({ role: 'bot', text: m.text, ...(m.imageUrls?.length && { imageUrls: m.imageUrls }) })),
       handoff: !!result.handoff,
+      status: result.status,
+      ...(result.skipReason && { skipReason: result.skipReason }),
     };
   }
 
@@ -121,6 +134,27 @@ export class TestChatService {
   /** Start over: the conversation, its draft and test orders, and uploaded photos. */
   async reset(tenantId: string): Promise<void> {
     await this.scenarios.cleanup(tenantId, OWNER_TEST);
+  }
+
+  /**
+   * Sign-up is free and every test message is a real model call, from the
+   * admin or from Claude. Counted from the traces, so the limit holds across
+   * processes and restarts (the hourly one below is per process).
+   */
+  private async checkDailyLimit(tenantId: string): Promise<void> {
+    const limit = this.config.get<number>('testChat.dailyLimit') ?? DEFAULT_DAILY_LIMIT;
+    if (!(limit > 0)) return;
+    const rows: Array<{ n: number }> | undefined = await this.dataSource.query(
+      `SELECT count(*)::int AS n FROM conversation_traces
+        WHERE tenant_id = $1 AND source = 'owner_test' AND started_at > now() - interval '24 hours'`,
+      [tenantId],
+    );
+    if ((rows?.[0]?.n ?? 0) >= limit) {
+      throw new HttpException(
+        `The daily limit of ${limit} test messages is reached — try again tomorrow`,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
   }
 
   private throttle(tenantId: string): void {

@@ -67,6 +67,10 @@ export default () => ({
     model: process.env.CONTENT_VISION_MODEL || process.env.ATTRIBUTES_MODEL || 'gpt-6.1-terra',
     reasoningEffort: process.env.CONTENT_VISION_REASONING_EFFORT || 'low',
   },
+  // Customers' voice messages, transcribed for the agent (VoiceMessagesService).
+  voice: {
+    transcribeModel: process.env.TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe',
+  },
   agent: {
     // v2 tool-calling agent (docs/v2-agent). The model id picks the provider;
     // a store can override it with tenant_settings.ai_settings.model.
@@ -118,6 +122,26 @@ export default () => ({
     // The founder's chat with the bot: sign-ups, Shopify connects, stores going
     // live. Unset = no platform notifications.
     platformChatId: process.env.PLATFORM_TELEGRAM_CHAT_ID ?? '',
+  },
+  mcp: {
+    // The Claude connector: a remote MCP server in this API. Off by default.
+    enabled: process.env.MCP_ENABLED === 'true',
+    // Public origin of the MCP host (the OAuth issuer). The connector URL
+    // owners paste into Claude is `${publicUrl}/mcp`.
+    publicUrl: (process.env.MCP_PUBLIC_URL ?? 'http://localhost:3000').replace(/\/+$/, ''),
+    // The sign-in cookie must reach the admin's API calls. In production the
+    // MCP host and the admin are subdomains of one site: set the parent
+    // domain (`directmate.app`). Empty = this host only.
+    cookieDomain: process.env.MCP_COOKIE_DOMAIN ?? '',
+    // Development and test only: a static bearer token for one tenant, for
+    // MCP Inspector and curl. Ignored in production.
+    devTenantId: process.env.MCP_DEV_TENANT_ID ?? '',
+    devToken: process.env.MCP_DEV_TOKEN ?? '',
+  },
+  // The owner's test chat (admin setup and Claude's try_agent): real model
+  // calls on a free sign-up, so capped per store per 24 hours. 0 = no cap.
+  testChat: {
+    dailyLimit: parseInt(process.env.TEST_CHAT_DAILY_LIMIT ?? '100', 10),
   },
   support: {
     // «Налаштуйте за мене» opens t.me/<this>?text=… with the message filled in.

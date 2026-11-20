@@ -20,7 +20,7 @@ import { CurrentUser, JwtPayload } from '../../common/decorators/current-user.de
 import { HELP_TOPICS, OnboardingService, type HelpTopic } from './onboarding.service';
 import { TestChatService } from './test-chat.service';
 import { NotesDrafterService } from './notes-drafter.service';
-import { CHECKOUT_FIELDS, NOTE_SECTIONS, WEEK_DAYS, type NotesDraft } from './store-notes';
+import { validDraft, type NotesDraft } from './store-notes';
 import { HistoryImportService } from './history/history-import.service';
 
 class HelpDto {
@@ -219,35 +219,3 @@ export class OnboardingController {
     return { ok: true };
   }
 }
-
-/** Keep only the known fields, with the right types and sane lengths. */
-function validDraft(raw: unknown): NotesDraft {
-  if (!raw || typeof raw !== 'object') throw new BadRequestException('No notes to save');
-  const d = raw as Record<string, any>;
-  const text = (v: unknown, max: number) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null);
-  const sections: NotesDraft['sections'] = {};
-  for (const key of NOTE_SECTIONS) {
-    const value = text(d.sections?.[key], 3000);
-    if (value) sections[key] = value;
-  }
-  const hours =
-    d.businessHours && typeof d.businessHours === 'object'
-      ? Object.fromEntries(
-          Object.entries(d.businessHours as Record<string, unknown>)
-            .filter(([day, h]) => (WEEK_DAYS as readonly string[]).includes(day) && typeof h === 'string')
-            .map(([day, h]) => [day, (h as string).slice(0, 20)]),
-        )
-      : null;
-  return {
-    sections,
-    paymentDetails: text(d.paymentDetails, 1000),
-    checkoutFields: Array.isArray(d.checkoutFields)
-      ? d.checkoutFields.filter((f: unknown): f is NotesDraft['checkoutFields'][number] => (CHECKOUT_FIELDS as readonly unknown[]).includes(f))
-      : [],
-    businessHours: hours && Object.keys(hours).length > 0 ? hours : null,
-    sizingAdvice: d.sizingAdvice === 'recommend' || d.sizingAdvice === 'consult' ? d.sizingAdvice : null,
-    questions: Array.isArray(d.questions) ? d.questions.filter((q: unknown) => typeof q === 'string').slice(0, 8) : [],
-    sources: Array.isArray(d.sources) ? d.sources.filter((q: unknown) => typeof q === 'string').slice(0, 10) : [],
-  };
-}
-

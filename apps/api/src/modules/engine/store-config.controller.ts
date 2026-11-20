@@ -8,12 +8,7 @@ import {
   JwtPayload,
 } from '../../common/decorators/current-user.decorator';
 import { StoreConfig } from './entities/store-config.entity';
-import { OnboardingReadiness } from '../onboarding/onboarding-readiness.service';
-import { OnboardingService } from '../onboarding/onboarding.service';
-import { SubscriptionsService } from '../subscriptions/subscriptions.service';
-import { TelegramService } from '../notifications/telegram.service';
-
-const OPERATING_MODES = ['learning', 'active', 'paused'] as const;
+import { OPERATING_MODES, StoreConfigService } from './store-config.service';
 
 @ApiTags('engine')
 @UseGuards(JwtAuthGuard)
@@ -23,10 +18,7 @@ export class StoreConfigController {
   constructor(
     @InjectRepository(StoreConfig)
     private readonly configRepo: Repository<StoreConfig>,
-    private readonly readiness: OnboardingReadiness,
-    private readonly telegram: TelegramService,
-    private readonly onboarding: OnboardingService,
-    private readonly subscriptions: SubscriptionsService,
+    private readonly storeConfig: StoreConfigService,
   ) {}
 
   // ─── Store Config ──────────────────────────────────────────────
@@ -96,49 +88,23 @@ export class StoreConfigController {
     if (body.knowledgeDoc !== undefined) {
       config.knowledgeDoc = typeof body.knowledgeDoc === 'string' && body.knowledgeDoc.trim() ? body.knowledgeDoc : null;
     }
-    // Turning the bot on is checked here, not only in the admin: a store with
-    // no catalog or notes would answer real customers with nothing to say.
-    const goingLive = body.operatingMode === 'active' && config.operatingMode !== 'active';
+    let change: { wentLive: boolean } | null = null;
     if (body.operatingMode !== undefined) {
       if (!OPERATING_MODES.includes(body.operatingMode)) {
         throw new BadRequestException(`operatingMode must be one of ${OPERATING_MODES.join(', ')}`);
       }
-      if (goingLive && user.role !== 'superadmin') {
-        const readiness = await this.readiness.check(user.tenantId);
-        if (!readiness.ready) {
-          // `details` is what AllExceptionsFilter passes through to the client.
-          throw new BadRequestException({
-            message: 'The store is not ready to go live',
-            details: { missing: readiness.missing },
-          });
-        }
+      const result = await this.storeConfig.applyMode(config, body.operatingMode, { skipGate: user.role === 'superadmin' });
+      if (!result.ok) {
+        // `details` is what AllExceptionsFilter passes through to the client.
+        throw new BadRequestException({
+          message: 'The store is not ready to go live',
+          details: { missing: result.missing },
+        });
       }
-      config.operatingMode = body.operatingMode;
-      if (body.operatingMode === 'learning' && !config.learningStartedAt) {
-        config.learningStartedAt = new Date();
-        config.learningNotifiedAt = null;
-      } else if (body.operatingMode === 'active') {
-        config.learningStartedAt = null;
-        config.learningNotifiedAt = null;
-      }
+      change = result;
     }
     const saved = await this.configRepo.save(config);
-    if (goingLive) {
-      // The free trial runs from the moment the bot answers customers, not from sign-up.
-      await this.subscriptions.startTrial(user.tenantId);
-      void this.announceGoLive(user.tenantId);
-    }
-    // Turned on, or set to watch first: either way setup is over.
-    if (body.operatingMode === 'active' || body.operatingMode === 'learning') {
-      await this.onboarding.markCompleted(user.tenantId);
-    }
+    if (change) await this.storeConfig.afterModeSaved(user.tenantId, body.operatingMode!, change.wentLive);
     return saved;
-  }
-
-  private async announceGoLive(tenantId: string): Promise<void> {
-    const [tenant]: Array<{ name: string; slug: string }> = await this.configRepo.manager
-      .query(`SELECT name, slug FROM tenants WHERE id = $1`, [tenantId])
-      .catch(() => []);
-    await this.telegram.notifyPlatform(`🚀 AI-агента увімкнено: «${tenant?.name ?? tenantId}» (${tenant?.slug ?? '—'})`);
   }
 }

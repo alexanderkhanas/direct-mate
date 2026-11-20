@@ -304,6 +304,36 @@ export class IntegrationsService {
 
   // ─── Instagram OAuth ─────────────────────────────────────────────
 
+  /**
+   * The Meta login page for connecting this store's Instagram account.
+   * `returnTo` rides in `state` (Meta returns it as given) and says which
+   * admin page the callback comes back to.
+   */
+  async instagramLoginUrl(tenantId: string, returnTo: 'onboarding' | 'connections' | 'claude'): Promise<string> {
+    const appId = this.config.get<string>('meta.appId');
+    const configId = this.config.get<string>('meta.loginConfigId');
+    const redirectUri = this.config.get<string>('meta.oauthRedirectUri');
+    if (!appId || !configId || !redirectUri) {
+      throw new BadRequestException('Instagram OAuth not configured');
+    }
+    // Saved in telegram_connect_tokens (reused): one use, ten minutes.
+    const token = await this.createOAuthState(tenantId);
+
+    // The Unified Login URL from the App Dashboard. The configuration carries
+    // the permissions, so no scopes here. Its `display=popup` is dropped: the
+    // admin opens this as a full page.
+    const params = new URLSearchParams({
+      client_id: appId,
+      config_id: configId,
+      redirect_uri: redirectUri,
+      response_type: 'code',
+      override_default_response_type: 'true',
+      state: `${token}.${returnTo}`,
+      prompt: 'login',
+    });
+    return `https://www.facebook.com/dialog/oauth?${params}`;
+  }
+
   async createOAuthState(tenantId: string): Promise<string> {
     const token = crypto.randomBytes(16).toString('hex');
     await this.connectTokenRepo.save(this.connectTokenRepo.create({
