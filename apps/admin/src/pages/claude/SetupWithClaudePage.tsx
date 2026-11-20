@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { publicApi } from '../../lib/publicApi';
 import { useT } from '../../i18n';
@@ -74,6 +74,19 @@ function Copyable({ text, wrap }: { text: string; wrap?: boolean }) {
 }
 
 /**
+ * Back to the admin page that linked here (it passes `state.back`), else to
+ * the homepage: `/` is the admin when signed in, the landing page when not.
+ */
+function useBack(): { to: string; label: string } {
+  const { t } = useT();
+  const from = (useLocation().state as { back?: unknown } | null)?.back;
+  if (typeof from === 'string' && from.startsWith('/') && !from.startsWith('//')) {
+    return { to: from, label: t('setup_claude.setup_back') };
+  }
+  return { to: '/', label: t('setup_claude.setup_home') };
+}
+
+/**
  * «Налаштуйте AI-агента разом із Claude» (/claude, public): how to add the
  * DirectMate connector to Claude. Linked from the Connections card; the page
  * marketing can point to.
@@ -81,10 +94,11 @@ function Copyable({ text, wrap }: { text: string; wrap?: boolean }) {
 export function SetupWithClaudePage() {
   const { t } = useT();
   const connector = useConnector();
+  const back = useBack();
 
   if (connector.isLoading) {
     return (
-      <ClaudeShell wide title={t('setup_claude.setup_title')}>
+      <ClaudeShell wide back={back} title={t('setup_claude.setup_title')}>
         <Skeleton className="h-40" />
       </ClaudeShell>
     );
@@ -93,7 +107,7 @@ export function SetupWithClaudePage() {
   const url = connector.data?.enabled ? connector.data.url : null;
   if (!url) {
     return (
-      <ClaudeShell wide title={t('setup_claude.setup_off_title')} lead={t('setup_claude.setup_off_text')}>
+      <ClaudeShell wide back={back} title={t('setup_claude.setup_off_title')} lead={t('setup_claude.setup_off_text')}>
         <Link to="/register" className={buttonClass('brand', 'lg', 'w-full')}>
           {t('setup_claude.setup_off_button')}
         </Link>
@@ -102,7 +116,7 @@ export function SetupWithClaudePage() {
   }
 
   return (
-    <ClaudeShell wide title={t('setup_claude.setup_title')} lead={t('setup_claude.setup_lead')}>
+    <ClaudeShell wide back={back} title={t('setup_claude.setup_title')} lead={t('setup_claude.setup_lead')}>
       <ol className="flex flex-col gap-3.5 lg:gap-4">
         <Step n={1} title={t('setup_claude.setup_step_copy')}>
           <Copyable text={url} />

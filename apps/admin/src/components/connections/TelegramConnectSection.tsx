@@ -47,8 +47,8 @@ export function TelegramConnectSection() {
       <Card>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-lg bg-blue-50 flex items-center justify-center">
-              <Telegram className="h-4 w-4 text-blue-500" />
+            <div className="h-9 w-9 rounded-lg bg-[#26A5E4]/10 flex items-center justify-center">
+              <Telegram className="h-6 w-6 text-[#26A5E4]" />
             </div>
             <div>
               <div className="flex items-center gap-2">
@@ -99,8 +99,8 @@ export function TelegramConnectSection() {
       <Card>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-lg bg-blue-50 flex items-center justify-center">
-              <Telegram className="h-4 w-4 text-blue-500" />
+            <div className="h-9 w-9 rounded-lg bg-[#26A5E4]/10 flex items-center justify-center">
+              <Telegram className="h-6 w-6 text-[#26A5E4]" />
             </div>
             <div>
               <div className="flex items-center gap-2">
@@ -131,8 +131,8 @@ export function TelegramConnectSection() {
     <Card>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded-lg bg-gray-100 flex items-center justify-center">
-            <Telegram className="h-4 w-4 text-gray-500" />
+          <div className="h-9 w-9 rounded-lg bg-[#26A5E4]/10 flex items-center justify-center">
+            <Telegram className="h-6 w-6 text-[#26A5E4]" />
           </div>
           <div>
             <p className="text-sm font-medium text-gray-900">{t('connections.telegram')}</p>

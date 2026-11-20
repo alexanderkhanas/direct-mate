@@ -1,6 +1,6 @@
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle, Sparkles, Trash2 } from '../icons';
+import { CheckCircle, Claude, Trash2 } from '../icons';
 import { api } from '../../lib/api';
 import { Card } from '../ui/Card';
 import { Badge } from '../ui/Badge';
@@ -24,6 +24,7 @@ export function ClaudeConnectSection() {
   const { t } = useT();
   const qc = useQueryClient();
   const connector = useConnector();
+  const { pathname } = useLocation();
   const enabled = connector.data?.enabled === true;
 
   const grants = useQuery<Grant[]>({
@@ -44,8 +45,8 @@ export function ClaudeConnectSection() {
     <Card>
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded-lg bg-orange-50 flex items-center justify-center">
-            <Sparkles className="h-4 w-4 text-orange-500" />
+          <div className="h-9 w-9 rounded-lg bg-[#D97757]/10 flex items-center justify-center">
+            <Claude className="h-6 w-6 text-[#D97757]" />
           </div>
           <div>
             <div className="flex items-center gap-2">
@@ -60,6 +61,7 @@ export function ClaudeConnectSection() {
         ) : (
           <Link
             to="/claude"
+            state={{ back: pathname }}
             className="inline-flex items-center px-3 py-1.5 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
           >
             {t('setup_claude.card_how')}
