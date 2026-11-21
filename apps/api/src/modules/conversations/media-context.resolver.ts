@@ -287,7 +287,7 @@ function unmatchedNote(ref: MediaReference, what: string): string {
       'something in it (a colour, a detail), offer what the shop has rather than asking them to describe it.'
     );
   }
-  return `The customer ${what}, but it wasn't recognised as one of the shop's products. Ask what they mean, or hand off if you can't tell.`;
+  return `The customer ${what}, but it wasn't recognised as one of the shop's products. Ask what they mean; if you still can't tell, offer to check with a manager.`;
 }
 
 /**

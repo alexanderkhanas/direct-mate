@@ -189,7 +189,7 @@ export function sendPaymentDetailsTool(deps: AgentToolDeps, scope: ToolScope, se
     inputSchema: z.object({}),
     execute: async () => {
       if (!settings.paymentDetails) {
-        return { ok: false, error: 'This store has no payment details set up. Offer payment on delivery or hand off.' };
+        return { ok: false, error: 'This store has no payment details set up. Offer payment on delivery, or offer to check with a manager.' };
       }
       const draft = await deps.drafts.getCurrentDraft(scope, settings.checkoutFields);
       if (!draft) return { ok: false, error: 'Create the order draft first.' };

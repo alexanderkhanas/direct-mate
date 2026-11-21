@@ -8,7 +8,7 @@ import { api } from '../../lib/api';
  * coverage together.
  */
 
-export const MEASUREMENT_KEYS = ['chest', 'waist', 'hips', 'height', 'weight', 'inseam', 'foot', 'other'] as const;
+export const MEASUREMENT_KEYS = ['chest', 'underbust', 'waist', 'hips', 'height', 'weight', 'inseam', 'foot', 'other'] as const;
 export type MeasurementKey = (typeof MEASUREMENT_KEYS)[number];
 
 export interface ChartMeasurement {
@@ -34,7 +34,8 @@ export type SizeChartStatus = 'image' | 'draft' | 'ready';
 export interface SizeChart {
   id: string;
   name: string;
-  imagePath: string;
+  /** Null for a chart read in the Claude chat: only its table was saved. */
+  imagePath: string | null;
   /** Stored lower-case; `displayNames` spells them as the catalog does. Empty = all. */
   brands: string[];
   categories: string[];

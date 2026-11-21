@@ -132,6 +132,13 @@ runner per mode: `show_products` (≤4 images), `send_size_chart`, `place_order`
 complete, idempotent per checkout session), `send_payment_details` (once per draft), `handoff`.
 Every tool is tenant-scoped; refs the model passes are resolved against the tenant's catalog.
 
+**Handoff is strict** (prompt «Handing off», `handoff.tool.ts`): the model hands off only when the customer asks for a
+person (or says yes to «Можу уточнити в менеджера»), when it can't follow the conversation after asking once
+(`lost_context`), or for what only a person can do (`payment_check`, `complaint_or_return`, `order_change`). What the
+tools and notes don't answer, it says so and offers a manager; being unsure is no reason. Calling `handoff` doesn't
+end the turn: the model gets one more step to write the reply (`repliedAfterHandoff` in `agent.service.ts`), so what
+it found (a size, photos) still goes out before the handoff line.
+
 ### Guards (`modules/agent/guards/`)
 - **Grounding:** every price, size and colour in the reply must come from a tool this turn, the store
   notes, or the customer's own words. "Placed / saved / added" needs the tool that did it. Discounts,
@@ -168,7 +175,10 @@ product). Kept in that order so the long prefix stays cacheable.
 `AgentStoreSettingsService` reads and validates all of it (zod; a malformed value falls back to the
 default). Size charts (`size_charts`) are an image plus, once a vision model has read it
 (`POST /size-charts/:id/read`) and the owner has checked it, a table of sizes × measurements
-(`status` image → draft → ready). Each chart covers brands × categories (empty = all); per product
+(`status` image → draft → ready). A chart saved from the Claude chat (`save_size_chart`) has no image
+(`image_path` null, `sendImage` false): Claude reads the picture the owner pastes, but can't pass the file on, so
+only the table is kept and the agent sends no picture. A chart holds up to 150 sizes; a bra chart is one row per band
+and cup («75B») with `underbust` and `chest`. Each chart covers brands × categories (empty = all); per product
 the most specific one wins, and `get_size_help` recommends from it only when it is ready (a broader
 ready chart never stands in); otherwise from the height/weight ranges in `flow_config.sizeChart`.
 
@@ -256,12 +266,15 @@ the same store. Off unless `MCP_ENABLED=true`.
   grant). Owners revoke under Connections → Claude (`mcp_grants`).
 - **Tools** (`mcp-tools.service.ts`): status, notes (read and merge-save, never overwriting what Settings changed),
   feed preview and connect (answers within ~25 s, a longer import carries on), Instagram / Shopify / Telegram links,
-  tone, sizing, skip a step, `try_agent` (the owner's test chat), `go_live` (`confirmed: true` only after the owner's
-  explicit yes; learning first), `set_instagram_permission` (read or reply, one at a time, `confirmed: true` only after
-  a yes) and `get_history_import` (the terms and the tone it learned; the reply examples quote customers, so Claude
-  gets only a link to review them in the setup). Right after Instagram connects, `next` has Claude say nothing is
-  read or answered without permission and ask for each separately, once. Every result carries `next`
-  (`setup-guide.ts`): what to ask, which tool after.
+  tone, sizing, size charts (`get_size_charts`; `save_size_chart`: Claude reads a chart the owner pastes, or builds one
+  from height and weight per size, reads it back, and saves it ready only with `confirmed: true`, else a draft; units
+  are converted in code by `toTable`; `delete_size_chart`), skip a step, `try_agent` (the owner's test chat),
+  `go_live` (`confirmed: true` only after the owner's explicit yes; learning first), `set_instagram_permission` (read
+  or reply, one at a time, `confirmed: true` only after a yes) and `get_history_import` (the terms and the tone it
+  learned; the reply examples quote customers, so Claude gets only a link to review them in the setup). Right after
+  Instagram connects, `next` has Claude say nothing is read or sent and ask only for reading, once; replying is asked
+  when the owner turns the agent on fully (`go_live` active). Every result carries `next` (`setup-guide.ts`): what to
+  ask, which tool after.
   Text that customers or feeds wrote comes back under `untrusted_content`, and the server instructions say it is data.
 - **Browser steps:** Instagram and Shopify links carry a one-time hand-off token (10 min, one action, `handoff_tokens`),
   so the admin pages they open (`/claude/instagram`, `/claude/shopify`, `/claude/done`) need no admin session.
@@ -287,7 +300,8 @@ the account id; the paths are the same on both hosts.
 - **Instagram Login (`instagram`, the default since 21 Nov 2026).** The owner logs in at instagram.com, no Facebook.
   `INSTAGRAM_APP_ID` / `INSTAGRAM_APP_SECRET` = the Instagram app under the Meta app's "API setup with Instagram
   login" (id 4566420570267244). Scopes `instagram_business_basic`, `instagram_business_manage_messages`,
-  `instagram_business_manage_comments` (comments not approved yet: granted only to people with a role on the app).
+  `instagram_business_manage_comments` (not approved: Meta accepts the `comments` subscription for any account but
+  delivers comment webhooks only for people with a role on the app).
   - OAuth: `www.instagram.com/oauth/authorize` (state `<token>.<returnTo>.ig`) → `/auth/instagram/callback` → code at
     `api.instagram.com/oauth/access_token` → 60-day token at `graph.instagram.com/access_token?grant_type=ig_exchange_token`
     (never saved short-lived) → `GET graph.instagram.com/v27.0/me?fields=user_id,username`: `user_id` is the
@@ -297,7 +311,10 @@ the account id; the paths are the same on both hosts.
     `POST /internal/instagram/refresh-tokens`); an expired one marks the connection `error` and the store reconnects.
   - History import: Meta returns content only for a conversation's 20 most recent messages, and Instagram Login's
     edge may list only ids, so the client then reads each message by id (2 calls/s per account).
-  - Webhooks are set under "API setup with Instagram login" and signed with the Instagram app secret.
+  - Webhooks are set under "API setup with Instagram login" (its own setting, apart from the Meta app's Instagram
+    webhook) and signed with the Instagram app secret. Its fields (`messages`, `comments`) must each be subscribed
+    there: without that, an account's `subscribed_apps` succeeds and nothing arrives. Our own sends come back as
+    echoes in `messages`, so `message_echoes` isn't needed.
 - **Unified Login (`unified`).** Facebook Login for Business with a system-user token. `META_APP_ID` /
   `META_APP_SECRET` = the **Meta** app's; `META_LOGIN_CONFIG_ID` = the "Instagram API (Unified Login)" configuration,
   which owns the permissions (the login URL carries no scopes). Calls on `GRAPH_API` (`graph.facebook.com/v27.0`).
@@ -354,8 +371,8 @@ State the classification before proposing a fix.
    history the agent was given.
 2. Reproduce in the simulator: `npm run simulate -- --tenant <slug> --message "<text> || <next turn>"`.
 3. Tool output wrong or missing → bug or architectural. Tool output right, reply wrong → the model.
-4. A handoff with reason `unsure` usually means a tool gave the model something it couldn't use — check
-   the last tool result before blaming the prompt.
+4. A handoff the rules don't call for (reason `lost_context` on a clear question, or one with no reply) usually means
+   a tool gave the model something it couldn't use — check the last tool result before blaming the prompt.
 
 ## Demo stores and seeds
 
@@ -401,7 +418,8 @@ mode for the side effects you want; never add `isDemo`-style flags inside the ag
   read budget is shared by every store, so two stores connecting in the same hour may wait for the next hour.
   Replies sent by other auto-reply tools (ManyChat and similar) look like a person's in history and can't be told
   apart. After the store connects, a reply counts as a person's only if its echo was saved as a `manager` message.
-  Not yet run end to end against a live account.
+  Run end to end on Instagram Login (21 Nov 2026: 30 conversations, 504 messages in ~40 s; the inline expansion
+  carried the text, the per-message fallback wasn't needed).
 - **Comment private replies are text only;** the agent is told, but a staged photo is silently dropped. Comments on
   reels are still ignored.
 - **Content images and voice messages:** the in-progress and already-tried captures and transcriptions are per process
@@ -411,10 +429,11 @@ mode for the side effects you want; never add `isDemo`-style flags inside the ag
   import's Graph budget pause (`app_state.instagram_history_budget`) is on; the «Fetch content» button doesn't.
   `ffmpeg-static` downloads its binary from GitHub during `npm ci`; if that fails a deploy, install ffmpeg with apt and
   set `FFMPEG_BIN`.
-- **Live Instagram checks still pending:** on Instagram Login, that manager replies arrive as echoes (else subscribe
-  `message_echoes`), that the history import reads message text and tells the shop's messages by `from.id`, and
-  stories/media on graph.instagram.com; on Unified Login, the echo `app_id` and `entry.id` shape. Comment replies for
-  real stores wait for `instagram_business_manage_comments` approval.
+- **Instagram Login, checked live on 21 Nov 2026** with an account that has no role on the app: login, 60-day token,
+  DMs in, replies delivered, our echoes recognised, the history import, posts fetched. Still unchecked: a manager's
+  reply from the Instagram app pausing the agent, and a live story on graph.instagram.com (the account had none). On
+  Unified Login, the echo `app_id` and `entry.id` shape. Comment replies for real stores wait for
+  `instagram_business_manage_comments` approval.
 - Three local tenants (`clothes-store`, `men-demo-store`, `luxe-space`) share one IG account id;
   `findByExternalAccountId` has no ordering, so a live DM lands in any of them. Keep one connected.
 - men-demo-store's brand tone says "Never reveal you are AI", which contradicts its welcome line.

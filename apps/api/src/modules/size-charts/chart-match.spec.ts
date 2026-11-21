@@ -1,5 +1,25 @@
 import { formatRange, matchSize } from './chart-match';
-import { DRESS_TABLE, TROUSERS_TABLE } from './__fixtures__/tables';
+import { BRA_TABLE, DRESS_TABLE, TROUSERS_TABLE } from './__fixtures__/tables';
+
+describe('matchSize on a bra chart (underbust bands × cups)', () => {
+  it('picks the one band and cup holding both measurements', () => {
+    expect(BRA_TABLE.rows).toHaveLength(62);
+    expect(matchSize(BRA_TABLE, { underbust: 74, chest: 92 })).toEqual({
+      kind: 'size',
+      size: '75C',
+      matchedOn: ['underbust', 'chest'],
+      outside: [],
+    });
+  });
+
+  it('offers both cups when the bust sits on their boundary, the larger first', () => {
+    expect(matchSize(BRA_TABLE, { underbust: 74, chest: 93 })).toMatchObject({ kind: 'size', size: '75D', between: ['75C', '75D'] });
+  });
+
+  it('still answers from the bust alone', () => {
+    expect(matchSize(BRA_TABLE, { chest: 92 })).toMatchObject({ kind: 'size', matchedOn: ['chest'] });
+  });
+});
 
 describe('matchSize', () => {
   it('picks the size whose ranges hold every measurement', () => {

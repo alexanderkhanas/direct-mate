@@ -141,17 +141,7 @@ export class SizeChartsService {
   ): Promise<SizeChart> {
     const existing = await this.get(tenantId, id);
 
-    let table: SizeChartTable | undefined;
-    if (dto.table !== undefined) {
-      const parsed = sizeChartTableSchema.safeParse(dto.table);
-      if (!parsed.success) {
-        throw new BadRequestException({
-          message: 'The size chart table is not valid.',
-          details: { reason: 'invalid_table', issues: parsed.error.issues.map((i) => i.message) },
-        });
-      }
-      table = pruneUncertain(parsed.data);
-    }
+    const table = dto.table !== undefined ? validTable(dto.table) : undefined;
     if (dto.status !== undefined && dto.status !== 'draft' && dto.status !== 'ready') {
       throw new BadRequestException('status must be draft or ready');
     }
@@ -194,9 +184,42 @@ export class SizeChartsService {
     });
   }
 
+  /**
+   * A chart that is only a table, read in the Claude chat: no picture, so
+   * nothing is sent to customers (`sendImage` false). Checked like a table the
+   * admin saves; `ready` clears `uncertain`, since the owner confirmed it.
+   */
+  async createFromTable(
+    tenantId: string,
+    dto: { name: string; brands?: string[]; categories?: string[]; table: unknown; status: 'draft' | 'ready' },
+  ): Promise<SizeChart> {
+    let table = validTable(dto.table);
+    if (dto.status === 'ready') {
+      const problems = readyProblems(table);
+      if (problems.length > 0) {
+        throw new BadRequestException({ message: problems.join('. '), details: { reason: 'not_ready', issues: problems } });
+      }
+      table = { ...table, uncertain: [] };
+    }
+    return this.repo.save(
+      this.repo.create({
+        tenantId,
+        name: dto.name.trim(),
+        imagePath: null,
+        brands: lowerTrimArray(dto.brands),
+        categories: lowerTrimArray(dto.categories),
+        isDefault: false,
+        table,
+        status: dto.status,
+        sendImage: false,
+      }),
+    );
+  }
+
   async delete(tenantId: string, id: string): Promise<void> {
     const existing = await this.get(tenantId, id);
     await this.repo.delete({ id, tenantId });
+    if (!existing.imagePath) return;
     // Best-effort unlink — orphaned files are cleaned by the nightly sweep.
     const uploadsDir = path.join(process.cwd(), 'uploads');
     const fileBasename = path.basename(existing.imagePath);
@@ -272,12 +295,18 @@ export class SizeChartsService {
   /** The sizes of the active products a chart covers, for reading the chart in the shop's size system. */
   async sizesInScope(tenantId: string, id: string): Promise<string[]> {
     const chart = await this.get(tenantId, id);
-    const ids = (await this.productScopes(tenantId)).filter((p) => chartCovers(chart, p)).map((p) => p.id);
+    return this.sizesFor(tenantId, chart);
+  }
+
+  /** The sizes of the active products a scope covers (empty lists = every product). */
+  async sizesFor(tenantId: string, filter: ScopeFilter): Promise<string[]> {
+    const scope = asScope(filter);
+    const ids = (await this.productScopes(tenantId)).filter((p) => chartCovers(scope, p)).map((p) => p.id);
     if (ids.length === 0) return [];
     const rows: Array<{ size: string }> = await this.dataSource.query(
       `SELECT DISTINCT trim(size) AS size FROM product_variants
         WHERE product_id = ANY($1) AND active = true AND size IS NOT NULL AND trim(size) <> ''
-        LIMIT 40`,
+        LIMIT 200`,
       [ids],
     );
     return rows.map((r) => r.size);
@@ -334,6 +363,18 @@ export class SizeChartsService {
       categories: [r.category, ...(r.linked ?? [])].filter((c): c is string => !!c && c.trim().length > 0),
     }));
   }
+}
+
+/** A table as the admin or Claude sends it, checked (`sizeChartTableSchema`), with stale `uncertain` entries dropped. */
+function validTable(input: unknown): SizeChartTable {
+  const parsed = sizeChartTableSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new BadRequestException({
+      message: 'The size chart table is not valid.',
+      details: { reason: 'invalid_table', issues: parsed.error.issues.map((i) => i.message) },
+    });
+  }
+  return pruneUncertain(parsed.data);
 }
 
 const UPLOADED_IMAGE = /^uploads\/[0-9a-f-]{36}\.(png|jpe?g|webp)$/i;

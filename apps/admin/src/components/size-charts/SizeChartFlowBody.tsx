@@ -281,7 +281,7 @@ function ReadingScreen({ flow }: { flow: SizeChartFlow }) {
   return (
     <>
       <ScreenTitle flow={flow} title={t('setup_sizes.reading_title')} />
-      {flow.working && (
+      {flow.working?.imagePath && (
         <img
           src={chartImageUrl(flow.working.imagePath)}
           alt={t('setup_sizes.chart_image')}
@@ -309,6 +309,8 @@ function CheckScreen({ flow }: { flow: SizeChartFlow }) {
   const [zoom, setZoom] = useState(false);
   const { working, edit } = flow;
   if (!working || !edit) return null;
+  // A chart read in the Claude chat has only its table.
+  const picture = working.imagePath;
   const productCount = flow.charts.find((c) => c.id === working.chartId)?.productCount;
   const asked = edit.columns.filter((c) => c.key !== 'other');
   const asksBodySize = asked.some((c) => c.key === 'height' || c.key === 'weight');
@@ -329,14 +331,18 @@ function CheckScreen({ flow }: { flow: SizeChartFlow }) {
 
       {/* Phone: picture, products and «Змінити» in one row. Desktop: products on one line; the picture sits beside the table. */}
       <div className="flex items-start gap-3 lg:items-center">
-        <button
-          type="button"
-          onClick={() => setZoom(true)}
-          aria-label={t('setup_sizes.open_image')}
-          className="flex-none cursor-zoom-in rounded-lg focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-100 lg:hidden"
-        >
-          <ChartThumb imagePath={working.imagePath} />
-        </button>
+        {picture ? (
+          <button
+            type="button"
+            onClick={() => setZoom(true)}
+            aria-label={t('setup_sizes.open_image')}
+            className="flex-none cursor-zoom-in rounded-lg focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-100 lg:hidden"
+          >
+            <ChartThumb imagePath={picture} />
+          </button>
+        ) : (
+          <ChartThumb imagePath={null} className="h-16 w-[52px] lg:hidden" />
+        )}
         <div className="flex min-w-0 flex-1 flex-col gap-1.5 lg:flex-row lg:flex-wrap lg:items-center lg:gap-2">
           <span className="text-[13px] text-dm-muted">{t('setup_sizes.for_products')}</span>
           <ScopeChips scope={working.scope} />
@@ -353,14 +359,23 @@ function CheckScreen({ flow }: { flow: SizeChartFlow }) {
         <Alert tone="warn">{plural(edit.uncertain.length, 'setup_sizes.uncertain')}</Alert>
       )}
 
-      <div className="flex flex-col gap-3.5 lg:grid lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)] lg:items-start lg:gap-6">
-        <figure className="m-0 hidden lg:block">
-          <img
-            src={chartImageUrl(working.imagePath)}
-            alt={t('setup_sizes.chart_image')}
-            className="w-full rounded-2xl border border-dm-line bg-white object-contain"
-          />
-        </figure>
+      {!picture && <Alert tone="info">{t('setup_sizes.no_picture_text')}</Alert>}
+
+      <div
+        className={cn(
+          'flex flex-col gap-3.5',
+          picture && 'lg:grid lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)] lg:items-start lg:gap-6',
+        )}
+      >
+        {picture && (
+          <figure className="m-0 hidden lg:block">
+            <img
+              src={chartImageUrl(picture)}
+              alt={t('setup_sizes.chart_image')}
+              className="w-full rounded-2xl border border-dm-line bg-white object-contain"
+            />
+          </figure>
+        )}
         <div className="flex min-w-0 flex-col gap-3.5">
           <ChartTableEditor table={edit} onChange={flow.setEdit} invalid={problems?.invalid} />
           {problems && (
@@ -382,10 +397,12 @@ function CheckScreen({ flow }: { flow: SizeChartFlow }) {
               </div>
               {!asksBodySize && <p className="text-sm text-dm-muted">{t('setup_sizes.ask_hint')}</p>}
             </div>
-            <label className="flex min-h-[52px] cursor-pointer items-center justify-between gap-3 rounded-[14px] border border-dm-line bg-white px-3.5 lg:flex-1 lg:rounded-2xl lg:py-3.5">
-              <span className="text-[15px] text-dm-ink lg:text-sm">{t('setup_sizes.send_image')}</span>
-              <Switch checked={flow.sendImage} onChange={flow.setSendImage} label={t('setup_sizes.send_image')} />
-            </label>
+            {picture && (
+              <label className="flex min-h-[52px] cursor-pointer items-center justify-between gap-3 rounded-[14px] border border-dm-line bg-white px-3.5 lg:flex-1 lg:rounded-2xl lg:py-3.5">
+                <span className="text-[15px] text-dm-ink lg:text-sm">{t('setup_sizes.send_image')}</span>
+                <Switch checked={flow.sendImage} onChange={flow.setSendImage} label={t('setup_sizes.send_image')} />
+              </label>
+            )}
           </div>
         </div>
       </div>
@@ -396,11 +413,13 @@ function CheckScreen({ flow }: { flow: SizeChartFlow }) {
         </Alert>
       )}
 
-      <Sheet open={zoom} onClose={() => setZoom(false)} title={t('setup_sizes.chart_image')} tall>
-        <div className="min-h-0 flex-1 overflow-auto px-4 pb-4">
-          <img src={chartImageUrl(working.imagePath)} alt={t('setup_sizes.chart_image')} className="w-full object-contain" />
-        </div>
-      </Sheet>
+      {picture && (
+        <Sheet open={zoom} onClose={() => setZoom(false)} title={t('setup_sizes.chart_image')} tall>
+          <div className="min-h-0 flex-1 overflow-auto px-4 pb-4">
+            <img src={chartImageUrl(picture)} alt={t('setup_sizes.chart_image')} className="w-full object-contain" />
+          </div>
+        </Sheet>
+      )}
     </>
   );
 }

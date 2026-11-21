@@ -40,6 +40,32 @@ describe('nextStep', () => {
     expect(next.then_call).toContain('confirmed: true only after');
   });
 
+  const perm = (allowed: boolean) => ({ allowed, decided: true });
+
+  it('asks to reply before turning the agent on fully, since the setup never asked', () => {
+    const next = nextStep(status(ORDER.filter((k) => k !== 'live')), {
+      permissions: { read_messages: perm(true), reply_to_customers: { allowed: false, decided: false } },
+    });
+    expect(next.then_call).toContain('"reply_to_customers"');
+    expect(next.then_call).toContain('May the AI agent reply to your customers');
+    expect(next.then_call).not.toContain('May DirectMate read');
+  });
+
+  it('asks nothing more when both permissions are given', () => {
+    const next = nextStep(status(ORDER.filter((k) => k !== 'live')), {
+      permissions: { read_messages: perm(true), reply_to_customers: perm(true) },
+    });
+    expect(next.then_call).not.toContain('set_instagram_permission');
+  });
+
+  it('in learning mode, asks to reply before offering to turn it on fully', () => {
+    const next = nextStep(status(ORDER, { operatingMode: 'learning' }), {
+      permissions: { read_messages: perm(true), reply_to_customers: perm(false) },
+    });
+    expect(next.step).toBe('done');
+    expect(next.then_call).toContain('"reply_to_customers"');
+  });
+
   it('treats a skipped step as dealt with', () => {
     const s = status(['products', 'instagram', 'knowledge', 'sizes', 'test']);
     s.steps.find((x) => x.key === 'tone')!.state = 'skipped';

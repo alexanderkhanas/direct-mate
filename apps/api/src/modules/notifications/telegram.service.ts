@@ -345,9 +345,11 @@ export class TelegramService {
       unknown: 'Невідома причина',
       // v2 agent
       customer_asked_for_human: 'Клієнт просить менеджера',
+      lost_context: 'AI-агент не зрозумів, чого хоче клієнт',
       complaint_or_return: 'Скарга, повернення або обмін',
       order_change: 'Зміна вже оформленого замовлення',
       payment_check: 'Клієнт надіслав підтвердження оплати — перевірте',
+      // Reasons the model no longer has, kept for handoffs made before Nov 21 2026:
       health_or_safety: "Питання про здоров'я чи безпеку",
       not_in_store_notes: 'Питання, на яке AI-агент не має відповіді',
       unsure: 'AI-агент не впевнений у відповіді',

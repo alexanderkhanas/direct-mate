@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { APICallError, hasToolCall, isStepCount, RetryError, ToolLoopAgent, type ModelMessage } from 'ai';
+import { APICallError, isStepCount, RetryError, ToolLoopAgent, type ModelMessage } from 'ai';
 import { CustomerMediaService, LoadedImage } from '../customer-media/customer-media.service';
 import { OrderDraftService } from '../orders/order-draft.service';
 import { SizeChartsService } from '../size-charts/size-charts.service';
@@ -30,6 +30,20 @@ import type {
 
 const DEFAULT_MAX_STEPS = 6;
 const DEFAULT_TIMEOUT_MS = 45_000;
+
+/**
+ * Ends the loop once a handoff has its reply. Models call tools first and write after, so stopping on the handoff
+ * call itself sent the customer only the handoff line, losing the size or products already found. A reply written
+ * with the call ends it there; otherwise the model gets one more step, where the handoff's result asks for it.
+ */
+export function repliedAfterHandoff({
+  steps,
+}: {
+  steps: ReadonlyArray<{ text: string; toolCalls: ReadonlyArray<{ toolName: string }> }>;
+}): boolean {
+  const at = steps.findIndex((s) => s.toolCalls.some((c) => c.toolName === HANDOFF_TOOL));
+  return at >= 0 && (steps.length > at + 1 || steps[at].text.trim().length > 0);
+}
 const PHOTO_UNAVAILABLE = "(a photo from this message couldn't be opened; ask them to send it again if you need it)";
 
 interface Outcome {
@@ -115,7 +129,7 @@ export class AgentService {
         model: resolved.model,
         instructions: buildSystemPrompt(settings, this.catalogFor(index, input.catalogPrompt)),
         tools: buildAgentTools(this.toolDeps, scope, settings),
-        stopWhen: [isStepCount(this.maxSteps()), hasToolCall(HANDOFF_TOOL)],
+        stopWhen: [isStepCount(this.maxSteps()), repliedAfterHandoff],
         allowSystemInMessages: true,
         providerOptions: resolved.providerOptions,
         ...(resolved.temperature != null && { temperature: resolved.temperature }),

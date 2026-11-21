@@ -62,7 +62,7 @@ describe('SizeChartReaderService', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  function setup(model: MockLanguageModelV4, imagePath = 'uploads/chart.png') {
+  function setup(model: MockLanguageModelV4, imagePath: string | null = 'uploads/chart.png') {
     const chart = { id: 'c1', tenantId: 't1', imagePath, table: null, status: 'image' } as unknown as SizeChart;
     const repo = {
       findOne: jest.fn(async ({ where }: { where: { id: string; tenantId: string } }) =>
@@ -124,6 +124,8 @@ describe('SizeChartReaderService', () => {
     const model = new MockLanguageModelV4({ doGenerate: [] });
     await expect(setup(model, '../chart.png').service.read('t1', 'c1')).rejects.toBeInstanceOf(BadRequestException);
     await expect(setup(model, 'uploads/gone.png').service.read('t1', 'c1')).rejects.toBeInstanceOf(BadRequestException);
+    // A chart saved from the Claude chat has no picture to read.
+    await expect(setup(model, null).service.read('t1', 'c1')).rejects.toBeInstanceOf(BadRequestException);
   });
 });
 
@@ -167,6 +169,22 @@ describe('toTable', () => {
     });
     expect(table?.rows[0].values.foot).toEqual({ min: 24.5, max: 24.5 });
     expect(table?.measurements[0].unit).toBe('cm');
+  });
+
+  it('keeps the underbust of a bra chart, one row per band and cup', () => {
+    const table = toTable({
+      isSizeChart: true,
+      measurements: [
+        { key: 'underbust', label: '', unit: 'cm' },
+        { key: 'chest', label: 'Обхват грудей', unit: 'cm' },
+      ],
+      rows: [
+        { size: '75B', cells: [{ key: 'underbust', min: 73, max: 77, uncertain: false }, { key: 'chest', min: 89, max: 91, uncertain: false }] },
+        { size: '75C', cells: [{ key: 'underbust', min: 73, max: 77, uncertain: false }, { key: 'chest', min: 91, max: 93, uncertain: false }] },
+      ],
+    });
+    expect(table?.measurements[0]).toEqual({ key: 'underbust', label: 'Обхват під грудьми', unit: 'cm' });
+    expect(table?.rows[1]).toEqual({ size: '75C', values: { underbust: { min: 73, max: 77 }, chest: { min: 91, max: 93 } } });
   });
 
   it('returns null when nothing usable was read', () => {

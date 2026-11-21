@@ -4,6 +4,7 @@ import { MEASUREMENT_KEYS, type SizeChartTable } from './size-chart-table';
 /** Ukrainian labels for each measurement, when the chart or the owner gives none. */
 export const DEFAULT_LABELS: Record<(typeof MEASUREMENT_KEYS)[number], string> = {
   chest: 'Обхват грудей',
+  underbust: 'Обхват під грудьми',
   waist: 'Обхват талії',
   hips: 'Обхват стегон',
   height: 'Зріст',
@@ -12,6 +13,9 @@ export const DEFAULT_LABELS: Record<(typeof MEASUREMENT_KEYS)[number], string> =
   foot: 'Довжина стопи',
   other: 'Інша мірка',
 };
+
+/** Sizes one chart can hold. */
+export const MAX_CHART_ROWS = 150;
 
 const keySchema = z.enum(MEASUREMENT_KEYS);
 
@@ -32,9 +36,10 @@ export const sizeChartTableSchema = z
       .array(z.object({ key: keySchema, label: z.string().trim().min(1).max(60), unit: z.enum(['cm', 'kg']) }))
       .max(MEASUREMENT_KEYS.length),
     rows: z
+      // A bra chart is bands × cups: 60–110 × AA–K is 132 rows.
       .array(z.object({ size: z.string().trim().min(1).max(24), values: z.partialRecord(keySchema, rangeSchema) }))
-      .max(60),
-    uncertain: z.array(z.object({ size: z.string(), key: keySchema })).max(500),
+      .max(MAX_CHART_ROWS),
+    uncertain: z.array(z.object({ size: z.string(), key: keySchema })).max(MAX_CHART_ROWS * MEASUREMENT_KEYS.length),
   })
   .superRefine((table, ctx) => {
     const keys = table.measurements.map((m) => m.key);

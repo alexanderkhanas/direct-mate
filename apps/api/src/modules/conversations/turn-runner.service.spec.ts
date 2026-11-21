@@ -187,7 +187,7 @@ describe('TurnRunner', () => {
     const share = '(shared a post, shown in the image)';
     const t = setup({
       history: [{ role: 'customer', text: share, said: '' }],
-      agent: agentResult({ reply: null, handoff: { reason: 'unsure', summaryForManager: null } }),
+      agent: agentResult({ reply: null, handoff: { reason: 'lost_context', summaryForManager: null } }),
     });
     await t.run('live');
     expect(t.telegram.notifyHandoff.mock.calls[0][0]).toMatchObject({ lastMessage: share });

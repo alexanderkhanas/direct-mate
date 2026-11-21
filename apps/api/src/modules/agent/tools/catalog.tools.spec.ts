@@ -1,5 +1,5 @@
 import { browseCategoryTool, getSizeHelpTool, MAX_CATEGORY_CARDS, searchProductsTool, sendSizeChartTool } from './catalog.tools';
-import { DRESS_TABLE, TROUSERS_TABLE } from '../../size-charts/__fixtures__/tables';
+import { BRA_TABLE, DRESS_TABLE, TROUSERS_TABLE } from '../../size-charts/__fixtures__/tables';
 import type { SizeChart } from '../../size-charts/size-chart.entity';
 import type { AgentProduct } from '../catalog/catalog-reader.service';
 import type { AgentStoreSettings } from '../store-settings.service';
@@ -220,6 +220,22 @@ describe('get_size_help', () => {
       const outOfStock = await chartHelp(DRESS, { measurements: { chest: 90, waist: 72, hips: 96 } }, { table: DRESS_TABLE });
       expect(outOfStock).toMatchObject({ recommendedSize: 'M', recommendedInStock: false });
       expect(outOfStock.note).toContain('M is out of stock');
+      // The customer's size, not one that doesn't fit, and other models in it rather than a handoff.
+      expect(outOfStock.note).toContain("Don't offer another size of this model");
+      expect(outOfStock.note).toContain('search_products or browse_category with size "M"');
+      expect(outOfStock.note).toContain("Don't hand off for this");
+    });
+
+    it('asks a bra chart for underbust and bust, and picks the band and cup from both', async () => {
+      const BRA = product('99999999', 'Бюстгальтер Daria', {}, [
+        ['Пудровий', '75C', 1],
+        ['Пудровий', '80B', 2],
+      ]);
+      const ask = await chartHelp(BRA, {}, { name: 'Бюстгальтери', table: BRA_TABLE });
+      expect((ask.chart as { askFor: Array<{ measurement: string }> }).askFor.map((a) => a.measurement)).toEqual(['underbust', 'chest']);
+
+      const out = await chartHelp(BRA, { measurements: { underbust: 74, chest: 92 } }, { name: 'Бюстгальтери', table: BRA_TABLE });
+      expect(out).toMatchObject({ recommendedSize: '75C', recommendedInStock: true });
     });
 
     it('recommends a number size for trousers in 48–58', async () => {

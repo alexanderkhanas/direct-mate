@@ -20,6 +20,8 @@ const uk = {
   // Which products (m31)
   scope_title: 'До яких товарів ця сітка?',
   chart_image: 'Розмірна сітка',
+  no_picture: 'Без картинки',
+  no_picture_text: 'Цю сітку прочитав Claude з картинки у чаті, тож тут лише таблиця. Покупцям AI-агент радить розмір, але картинку сітки не надсилає.',
   replace: 'Замінити',
   brands: 'Бренди',
   all_brands: 'Усі бренди',
@@ -93,6 +95,7 @@ const uk = {
 
   // Measurements: full names (what the bot asks) and short ones (column headings, cards)
   m_chest: 'Обхват грудей',
+  m_underbust: 'Обхват під грудьми',
   m_waist: 'Обхват талії',
   m_hips: 'Обхват стегон',
   m_height: 'Зріст',
@@ -100,6 +103,7 @@ const uk = {
   m_inseam: 'Довжина по внутрішньому шву',
   m_foot: 'Довжина стопи',
   short_chest: 'груди',
+  short_underbust: 'під грудьми',
   short_waist: 'талія',
   short_hips: 'стегна',
   short_height: 'зріст',
@@ -171,6 +175,8 @@ const en: typeof uk = {
   // Which products (m31)
   scope_title: 'Which products is this chart for?',
   chart_image: 'Size chart',
+  no_picture: 'No picture',
+  no_picture_text: 'Claude read this chart from a picture in the chat, so only the table is here. The AI agent recommends sizes to customers but doesn’t send them the chart picture.',
   replace: 'Replace',
   brands: 'Brands',
   all_brands: 'All brands',
@@ -244,6 +250,7 @@ const en: typeof uk = {
 
   // Measurements: full names (what the AI agent asks) and short ones (column headings, cards)
   m_chest: 'Chest',
+  m_underbust: 'Underbust',
   m_waist: 'Waist',
   m_hips: 'Hips',
   m_height: 'Height',
@@ -251,6 +258,7 @@ const en: typeof uk = {
   m_inseam: 'Inside leg',
   m_foot: 'Foot length',
   short_chest: 'chest',
+  short_underbust: 'underbust',
   short_waist: 'waist',
   short_hips: 'hips',
   short_height: 'height',

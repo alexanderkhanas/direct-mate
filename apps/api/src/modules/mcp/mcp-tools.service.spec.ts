@@ -27,10 +27,15 @@ function setup(
     read?: Perm;
     reply?: Perm;
     history?: Record<string, unknown> | null;
+    advice?: 'recommend' | 'consult';
+    charts?: Array<{ id: string; brands: string[]; categories: string[] }>;
+    matching?: number;
   } = {},
 ) {
   const dataSource = {
-    query: jest.fn(async () => [{ knowledge_doc: opts.doc ?? null, checkout_config: null }]),
+    query: jest.fn(async (sql: string) =>
+      sql.includes("'sizing'") ? [{ advice: opts.advice ?? null }] : [{ knowledge_doc: opts.doc ?? null, checkout_config: null }],
+    ),
   };
   const config = { get: jest.fn((key: string) => (key === 'app.baseUrl' ? 'https://directmate.app' : undefined)) };
   const onboarding = { status: jest.fn(async () => status(opts.done ?? [])), skip: jest.fn(async () => undefined) };
@@ -67,6 +72,18 @@ function setup(
     set: jest.fn(async (): Promise<unknown> => ({ permissions: current() })),
   };
   const history = { get: jest.fn(async () => ({ instagramConnected: true, import: opts.history ?? null })) };
+  const sizeCharts = {
+    listTenantBrands: jest.fn(async () => ['Lliana', 'Monte']),
+    listTenantCategories: jest.fn(async () => ['Сукні', 'Штани']),
+    matchCount: jest.fn(async () => ({ count: opts.matching ?? 5, total: 10 })),
+    listForTenant: jest.fn(async () => opts.charts ?? []),
+    listWithCounts: jest.fn(async () => []),
+    coverage: jest.fn(async () => ({ total: 10, covered: 5, uncovered: 5, uncoveredBrands: [], uncoveredCategories: ['Штани'] })),
+    sizesFor: jest.fn(async () => ['S', 'M', 'L', 'XL']),
+    createFromTable: jest.fn(async (_t: string, dto: Record<string, unknown>) => ({ id: 'chart-new', ...dto })),
+    update: jest.fn(async (_t: string, id: string, dto: Record<string, unknown>) => ({ id, ...dto })),
+    delete: jest.fn(async () => undefined),
+  };
   const tools = new McpToolsService(
     dataSource as never,
     config as never,
@@ -82,9 +99,19 @@ function setup(
     events as never,
     permissions as never,
     history as never,
+    sizeCharts as never,
   );
-  return { tools, onboarding, notes, testChat, feeds, storeConfig, handoffs, events, permissions, history };
+  return { tools, onboarding, notes, testChat, feeds, storeConfig, handoffs, events, permissions, history, sizeCharts };
 }
+
+/** Two sizes of a chart printed in inches, as Claude would send it. */
+const chestInches = {
+  measurements: [{ key: 'chest' as const, unit: 'in' as const }],
+  rows: [
+    { size: 'S', cells: [{ key: 'chest' as const, min: 34, max: 36 }] },
+    { size: 'M', cells: [{ key: 'chest' as const, min: 37, max: 39, uncertain: true }] },
+  ],
+};
 
 describe('McpToolsService', () => {
   afterEach(() => jest.useRealTimers());
@@ -271,25 +298,20 @@ describe('McpToolsService', () => {
   });
 
   describe('permissions in the steering', () => {
-    it('asks about reading first once Instagram is connected, after saying nothing is read until allowed', async () => {
+    it('asks only about reading once Instagram is connected, after saying nothing is read or sent', async () => {
       const { tools } = setup({ done: ['products', 'instagram'] });
       const { next } = await tools.getSetupStatus('t1');
       expect(next?.step).toBe('permissions');
-      expect(next?.ask_owner[0]).toMatch(/does not read your Direct and does not reply/);
+      expect(next?.ask_owner[0]).toMatch(/does not let DirectMate read your Direct, and the AI agent sends nothing/);
       expect(next?.then_call).toMatch(/"read_messages"/);
+      expect(next?.then_call).not.toMatch(/set_instagram_permission with permission "reply_to_customers"/);
     });
 
-    it('asks about replying separately, once reading is answered', async () => {
+    it('moves on to the notes once reading is answered, even with a «no», without asking about replying', async () => {
       const { tools } = setup({ done: ['products', 'instagram'], read: perm(false, true) });
       const { next } = await tools.getSetupStatus('t1');
-      expect(next?.step).toBe('permissions');
-      expect(next?.then_call).toMatch(/"reply_to_customers"/);
-    });
-
-    it('moves on once both are answered, even with a «no»', async () => {
-      const { tools } = setup({ done: ['products', 'instagram'], read: perm(false, true), reply: perm(false, true) });
-      const { next } = await tools.getSetupStatus('t1');
       expect(next?.step).toBe('knowledge');
+      expect(JSON.stringify(next)).not.toMatch(/reply_to_customers/);
     });
 
     it('reports both permissions and the import in the status', async () => {
@@ -298,6 +320,73 @@ describe('McpToolsService', () => {
       expect(result.instagram_permissions).toEqual({ read_messages: true, reply_to_customers: false });
       expect(result.history_import).toBe('running');
       expect(result.next?.then_call).toMatch(/being read/);
+    });
+  });
+
+  describe('size charts', () => {
+    it('saves a confirmed chart as ready: units converted, names spelled as the store has them, no picture', async () => {
+      const { tools, sizeCharts } = setup();
+      const result = await tools.saveSizeChart('t1', { brands: ['lliana'], ...chestInches, confirmed: true });
+
+      expect(sizeCharts.createFromTable).toHaveBeenCalledWith('t1', {
+        name: 'Lliana',
+        brands: ['Lliana'],
+        categories: [],
+        status: 'ready',
+        table: {
+          measurements: [{ key: 'chest', label: 'Обхват грудей', unit: 'cm' }],
+          rows: [
+            { size: 'S', values: { chest: { min: 86.5, max: 91.5 } } },
+            { size: 'M', values: { chest: { min: 94, max: 99 } } },
+          ],
+          uncertain: [{ size: 'M', key: 'chest' }],
+        },
+      });
+      expect(result.saved).toMatchObject({ chart_id: 'chart-new', status: 'ready', products: 5 });
+      expect((result.untrusted_content as Record<string, unknown>).sizes_sold_but_not_in_chart).toEqual(['L', 'XL']);
+    });
+
+    it('saves as a draft without the owner’s yes, and points at the uncertain cells', async () => {
+      const { tools, sizeCharts } = setup();
+      const result = await tools.saveSizeChart('t1', chestInches);
+      expect(sizeCharts.createFromTable).toHaveBeenCalledWith('t1', expect.objectContaining({ status: 'draft', name: 'Усі товари' }));
+      expect(result.warnings).toEqual([expect.stringContaining('M chest')]);
+    });
+
+    it('refuses names the store does not have, and a scope with no products', async () => {
+      const unknown = setup();
+      const bad = await unknown.tools.saveSizeChart('t1', { categories: ['Футболки'], ...chestInches, confirmed: true });
+      expect(bad.error?.code).toBe('unknown_scope');
+      expect(unknown.sizeCharts.createFromTable).not.toHaveBeenCalled();
+
+      const empty = setup({ matching: 0 });
+      const none = await empty.tools.saveSizeChart('t1', { brands: ['Monte'], categories: ['Сукні'], ...chestInches });
+      expect(none.error?.code).toBe('no_products');
+    });
+
+    it('names the chart that already covers the same products, and replaces it when given its id', async () => {
+      const charts = [{ id: '5f0c6c1e-0000-4000-8000-000000000001', brands: [], categories: ['штани'] }];
+      const { tools, sizeCharts } = setup({ charts });
+      const taken = await tools.saveSizeChart('t1', { categories: ['Штани'], ...chestInches });
+      expect(taken.error?.code).toBe('scope_taken');
+
+      await tools.saveSizeChart('t1', { chartId: charts[0].id, categories: ['Штани'], ...chestInches, confirmed: true });
+      expect(sizeCharts.update).toHaveBeenCalledWith('t1', charts[0].id, expect.objectContaining({ status: 'ready', categories: ['Штани'] }));
+      expect(sizeCharts.createFromTable).not.toHaveBeenCalled();
+    });
+
+    it('turns size advice back on when a store that chose a manager saves a ready chart', async () => {
+      const { tools, storeConfig } = setup({ advice: 'consult' });
+      await tools.saveSizeChart('t1', { ...chestInches, confirmed: true });
+      expect(storeConfig.setSizingAdvice).toHaveBeenCalledWith('t1', 'recommend');
+    });
+
+    it('deletes a chart only with the owner’s yes', async () => {
+      const { tools, sizeCharts } = setup();
+      expect((await tools.deleteSizeChart('t1', { chartId: 'c1' })).error?.code).toBe('not_confirmed');
+      expect(sizeCharts.delete).not.toHaveBeenCalled();
+      await tools.deleteSizeChart('t1', { chartId: 'c1', confirmed: true });
+      expect(sizeCharts.delete).toHaveBeenCalledWith('t1', 'c1');
     });
   });
 

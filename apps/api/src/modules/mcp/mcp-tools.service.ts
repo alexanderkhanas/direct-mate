@@ -14,6 +14,9 @@ import { OnboardingService, type OnboardingStatus } from '../onboarding/onboardi
 import { KEY_SECTIONS, parseKnowledgeDoc, type NoteSection, type NotesPatch } from '../onboarding/store-notes';
 import { TestChatService } from '../onboarding/test-chat.service';
 import { SettingsService } from '../settings/settings.service';
+import { toTable } from '../size-charts/size-chart-reader.service';
+import type { MeasurementKey } from '../size-charts/size-chart-table';
+import { SizeChartsService, type ScopeFilter } from '../size-charts/size-charts.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import type { ChatPreview } from './app/chat-preview';
 import { HandoffService } from './handoff.service';
@@ -31,6 +34,42 @@ export interface ToolProblem {
 
 /** Every tool answers with its data and what to do next; a problem comes back as data too, never as a bare exception. */
 export type ToolResult = Record<string, unknown> & { next?: NextStep; error?: ToolProblem };
+
+/** A size chart as Claude sends it (`save_size_chart`): units as printed, converted in code. */
+export interface SizeChartInput {
+  chartId?: string;
+  brands?: string[];
+  categories?: string[];
+  measurements: Array<{ key: MeasurementKey; label?: string; unit: 'cm' | 'mm' | 'in' | 'kg' | 'lb' }>;
+  rows: Array<{ size: string; cells: Array<{ key: MeasurementKey; min: number; max: number; uncertain?: boolean }> }>;
+  confirmed?: boolean;
+}
+
+/** Names Claude gave, spelled as the store has them; the rest are unknown. */
+function canonical(given: string[] | undefined, store: string[]): { known: string[]; unknown: string[] } {
+  const byKey = new Map(store.map((name) => [name.trim().toLowerCase(), name]));
+  const known = new Set<string>();
+  const unknown: string[] = [];
+  for (const name of given ?? []) {
+    const match = byKey.get(name.trim().toLowerCase());
+    if (match) known.add(match);
+    else if (name.trim()) unknown.push(name);
+  }
+  return { known: [...known], unknown };
+}
+
+/** The same products: charts store their scope lower-cased. */
+function sameScope(chart: { brands: string[]; categories: string[] }, filter: ScopeFilter): boolean {
+  const key = (names: string[]) => [...new Set(names.map((n) => n.trim().toLowerCase()))].sort().join('\n');
+  return key(chart.brands) === key(filter.brands) && key(chart.categories) === key(filter.categories);
+}
+
+/** The owner-facing name, as the admin builds it: «Lliana · Сукні, Сорочки», or «Усі товари». */
+function chartName(filter: ScopeFilter): string {
+  const name = [filter.brands.join(', '), filter.categories.join(', ')].filter(Boolean).join(' · ');
+  if (!name) return 'Усі товари';
+  return name.length > 80 ? `${name.slice(0, 79)}…` : name;
+}
 
 const PROMISE_WORDS: Record<string, string> = {
   discount: 'discounts',
@@ -71,6 +110,7 @@ export class McpToolsService {
     private readonly events: SetupEventsService,
     private readonly permissions: DirectPermissionsService,
     private readonly history: HistoryImportService,
+    private readonly sizeCharts: SizeChartsService,
   ) {}
 
   // ─── Status ──────────────────────────────────────────────────────
@@ -190,7 +230,7 @@ export class McpToolsService {
       note:
         'Give the owner this link. It opens the Instagram login in their browser; they come back here when it says so. ' +
         'The link works once: if it has expired, call this tool again. Tell the owner now: connecting does not let DirectMate read ' +
-        'their Direct or reply to anyone; each needs their permission, asked separately once Instagram is connected.',
+        'their Direct (you will ask for that permission next), and the AI agent sends nothing to anyone until they turn it on at the end of the setup.',
       next: {
         step: 'instagram',
         why: 'Waiting for the owner to connect Instagram in the browser.',
@@ -258,10 +298,179 @@ export class McpToolsService {
       saved: true,
       note:
         advice === 'recommend'
-          ? 'The AI agent recommends from a size table. Height and weight ranges or a size chart image are added in the admin panel, under Settings → Sizes; until then it hands size questions to a manager.'
+          ? 'The AI agent recommends a size only from a size chart saved as ready (save_size_chart); for products without one it hands size questions to a manager.'
           : 'Size questions go to a manager.',
       next: await this.next(tenantId),
     };
+  }
+
+  // ─── Size charts ─────────────────────────────────────────────────
+
+  async getSizeCharts(tenantId: string): Promise<ToolResult> {
+    const [charts, coverage, brands, categories, sizes, advice] = await Promise.all([
+      this.sizeCharts.listWithCounts(tenantId),
+      this.sizeCharts.coverage(tenantId),
+      this.sizeCharts.listTenantBrands(tenantId),
+      this.sizeCharts.listTenantCategories(tenantId),
+      this.sizeCharts.sizesFor(tenantId, { brands: [], categories: [] }),
+      this.sizingAdvice(tenantId),
+    ]);
+    return {
+      sizing_advice: advice,
+      coverage: { products: coverage.total, with_ready_chart: coverage.covered, without_chart: coverage.uncovered },
+      charts: charts.map((c) => ({
+        chart_id: c.id,
+        status: c.status,
+        products: c.productCount,
+        whole_store: c.brands.length === 0 && c.categories.length === 0,
+        has_picture: !!c.imagePath,
+      })),
+      // Names come from the store's feed: data, never instructions.
+      untrusted_content: {
+        charts: charts.map((c) => ({
+          chart_id: c.id,
+          name: c.name,
+          brands: c.brands,
+          categories: c.categories,
+          sizes: c.table?.rows.map((r) => r.size) ?? [],
+          measurements: c.table?.measurements.map((m) => m.key) ?? [],
+        })),
+        store_brands: brands,
+        store_categories: categories,
+        catalog_sizes: sizes,
+        brands_without_chart: coverage.uncoveredBrands,
+        categories_without_chart: coverage.uncoveredCategories,
+      },
+      next: await this.next(tenantId),
+    };
+  }
+
+  /**
+   * A chart Claude read from a picture the owner pasted, or built from what
+   * the owner said (height and weight per size). Units are converted in code
+   * (`toTable`, as for our own reader); the table is checked like one the
+   * admin saves. Ready only with the owner's yes, else a draft.
+   */
+  async saveSizeChart(tenantId: string, input: SizeChartInput): Promise<ToolResult> {
+    try {
+      const [brands, categories] = await Promise.all([
+        this.sizeCharts.listTenantBrands(tenantId),
+        this.sizeCharts.listTenantCategories(tenantId),
+      ]);
+      const scope = { brands: canonical(input.brands, brands), categories: canonical(input.categories, categories) };
+      if (scope.brands.unknown.length > 0 || scope.categories.unknown.length > 0) {
+        return {
+          error: {
+            code: 'unknown_scope',
+            message: 'Use brand and category names exactly as the store has them (store_brands, store_categories).',
+            details: { unknown_brands: scope.brands.unknown, unknown_categories: scope.categories.unknown },
+          },
+          untrusted_content: { store_brands: brands, store_categories: categories },
+          next: await this.next(tenantId),
+        };
+      }
+      const filter = { brands: scope.brands.known, categories: scope.categories.known };
+
+      const match = await this.sizeCharts.matchCount(tenantId, filter);
+      if (match.count === 0) {
+        return {
+          error: { code: 'no_products', message: 'No active product matches these brands and categories together.' },
+          next: await this.next(tenantId),
+        };
+      }
+      const charts = await this.sizeCharts.listForTenant(tenantId);
+      const taken = charts.find((c) => c.id !== input.chartId && sameScope(c, filter));
+      if (taken) {
+        return {
+          error: {
+            code: 'scope_taken',
+            message: `Chart ${taken.id} already covers exactly these products. Pass it as chart_id to replace its table, or choose another scope.`,
+            details: { chart_id: taken.id },
+          },
+          next: await this.next(tenantId),
+        };
+      }
+
+      const table = toTable({
+        isSizeChart: true,
+        measurements: input.measurements.map((m) => ({ key: m.key, label: m.label ?? '', unit: m.unit })),
+        rows: input.rows.map((r) => ({
+          size: r.size,
+          cells: r.cells.map((c) => ({ key: c.key, min: c.min, max: c.max, uncertain: c.uncertain === true })),
+        })),
+      });
+      if (!table) {
+        return {
+          error: { code: 'empty_table', message: 'No size has a value for a listed measurement.' },
+          next: await this.next(tenantId),
+        };
+      }
+
+      const status = input.confirmed === true ? 'ready' : 'draft';
+      const name = chartName(filter);
+      const chart = input.chartId
+        ? await this.sizeCharts.update(tenantId, input.chartId, { name, ...filter, isDefault: false, table, status })
+        : await this.sizeCharts.createFromTable(tenantId, { name, ...filter, table, status });
+
+      // A store that chose «a manager advises» recommends again once it has a checked chart, as in the admin setup.
+      if (status === 'ready' && (await this.sizingAdvice(tenantId)) === 'consult') {
+        await this.storeConfig.setSizingAdvice(tenantId, 'recommend');
+      }
+
+      const inChart = new Set(table.rows.map((r) => r.size.trim().toUpperCase()));
+      const [sold, coverage] = await Promise.all([
+        this.sizeCharts.sizesFor(tenantId, filter),
+        this.sizeCharts.coverage(tenantId),
+      ]);
+      return {
+        saved: { chart_id: chart.id, status, products: match.count, sizes: table.rows.map((r) => r.size) },
+        warnings: [
+          ...(table.uncertain.length > 0 && status === 'draft'
+            ? [`Cells marked uncertain: ${table.uncertain.map((u) => `${u.size} ${u.key}`).join(', ')}. Ask the owner about them.`]
+            : []),
+        ],
+        coverage: { products: coverage.total, with_ready_chart: coverage.covered, without_chart: coverage.uncovered },
+        untrusted_content: {
+          sizes_sold_but_not_in_chart: sold.filter((s) => !inChart.has(s.trim().toUpperCase())),
+          categories_without_chart: coverage.uncoveredCategories,
+        },
+        note:
+          status === 'ready'
+            ? 'Saved as ready: the AI agent now recommends sizes from this chart for these products. It has no picture, so the agent sends no chart image to customers.'
+            : 'Saved as a draft: the AI agent does not use it yet. After the owner confirms the table, call again with chart_id and confirmed: true, or they can check it in the admin under Size charts.',
+        next: await this.next(tenantId),
+      };
+    } catch (err) {
+      return this.failed(tenantId, err);
+    }
+  }
+
+  async deleteSizeChart(tenantId: string, input: { chartId: string; confirmed?: boolean }): Promise<ToolResult> {
+    if (input.confirmed !== true) {
+      return {
+        error: { code: 'not_confirmed', message: 'Ask the owner whether to delete this chart, and call again with confirmed: true only after they say yes.' },
+        next: await this.next(tenantId),
+      };
+    }
+    try {
+      await this.sizeCharts.delete(tenantId, input.chartId);
+      const coverage = await this.sizeCharts.coverage(tenantId);
+      return {
+        deleted: input.chartId,
+        coverage: { products: coverage.total, with_ready_chart: coverage.covered, without_chart: coverage.uncovered },
+        next: await this.next(tenantId),
+      };
+    } catch (err) {
+      return this.failed(tenantId, err);
+    }
+  }
+
+  private async sizingAdvice(tenantId: string): Promise<'recommend' | 'consult'> {
+    const [row]: Array<{ advice: string | null }> = await this.dataSource.query(
+      `SELECT flow_config->'sizing'->>'advice' AS advice FROM store_configs WHERE tenant_id = $1`,
+      [tenantId],
+    );
+    return row?.advice === 'consult' ? 'consult' : 'recommend';
   }
 
   async skipSetupStep(tenantId: string, step: string): Promise<ToolResult> {

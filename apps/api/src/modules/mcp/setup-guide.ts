@@ -53,25 +53,22 @@ const SECTION_QUESTIONS: Record<NoteSection, string> = {
  * admin setup uses; a skipped step counts as dealt with.
  */
 export function nextStep(status: OnboardingStatus, facts: GuideFacts = {}): NextStep {
-  // Right after Instagram connects: nothing is read or answered until the owner allows it, each on its own. Asked
-  // once: a «no» counts as an answer.
+  // Right after Instagram connects: only reading is asked, once (a «no» counts as an answer). Replying matters only
+  // when the owner turns the agent on fully, so it is asked then (the live and done steps).
   const instagram = status.steps.some((s) => s.key === 'instagram' && s.state === 'done');
   const perms = facts.permissions;
-  if (instagram && perms && (!perms.read_messages.decided || !perms.reply_to_customers.decided)) {
-    const first = !perms.read_messages.decided && !perms.reply_to_customers.decided;
-    const read = !perms.read_messages.decided;
+  if (instagram && perms && !perms.read_messages.decided) {
     return {
       step: 'permissions',
       why:
-        'Instagram is connected, but DirectMate does not read the Direct or reply to anyone until the owner allows it. ' +
-        'Reading and replying are two separate permissions; neither needs the other.',
+        'Instagram is connected, but DirectMate does not read the Direct until the owner allows it, and the AI agent sends nothing to anyone until the owner turns it on at the end of the setup.',
       ask_owner: [
-        ...(first ? ['Tell the owner first: until you allow it, DirectMate does not read your Direct and does not reply to anyone.'] : []),
-        read ? READ_QUESTION : REPLY_QUESTION,
+        'Tell the owner first: connecting Instagram does not let DirectMate read your Direct, and the AI agent sends nothing to anyone until you turn it on at the end of the setup.',
+        READ_QUESTION,
       ],
       then_call:
-        `set_instagram_permission with permission "${read ? 'read_messages' : 'reply_to_customers'}": allowed: true and confirmed: true only after the owner clearly said yes to this one; allowed: false if they said no. ` +
-        (read ? 'Then ask about replying, as a separate question.' : 'Then carry on with the setup.'),
+        'set_instagram_permission with permission "read_messages": allowed: true and confirmed: true only after the owner clearly said yes; allowed: false if they said no. ' +
+        'Then carry on with the setup. Do not ask about replying to customers now: that comes when the owner turns the AI agent on fully.',
     };
   }
 
@@ -117,12 +114,16 @@ export function nextStep(status: OnboardingStatus, facts: GuideFacts = {}): Next
     case 'sizes':
       return {
         step: 'sizes',
-        why: 'For clothing, customers ask which size to take.',
+        why: 'For clothing, customers ask which size to take. The AI agent recommends one only from a size chart the owner checked.',
         ask_owner: [
-          'Should the AI agent recommend a size itself (from the customer’s height and weight), or pass size questions to a manager?',
+          'Do you have a size chart? Paste a screenshot of it here, one chart at a time (for example tops, then trousers).',
+          'No chart? Then either a manager advises on sizes, or tell me which height and weight fit each size and I will make a table from that.',
         ],
         then_call:
-          'set_sizing with "recommend" or "consult". Size tables and size chart images are added in the admin panel.',
+          'get_size_charts first (brands, categories, the sizes the products come in). For a picture: read it, then show the owner every size with its measurements in one compact list, ' +
+          'say which cells you were unsure of, and ask which products it is for (all, or brands and categories from get_size_charts). ' +
+          'After their yes, save_size_chart with confirmed: true. Then offer the next chart for what has no chart yet, and a try_agent size question. ' +
+          'If they want a manager to advise instead: set_sizing "consult".',
       };
     case 'test':
       return {
@@ -159,7 +160,7 @@ export function nextStep(status: OnboardingStatus, facts: GuideFacts = {}): Next
         ],
         then_call:
           'go_live with the mode the owner chose, and confirmed: true only after they said yes to that exact mode. Suggest "learning" first, and "active" only after they have seen results. ' +
-          'Learning needs the read permission and active the reply permission (set_instagram_permission); if the one needed is missing, ask for it first.',
+          permissionHint(facts.permissions, true),
       };
     default:
       return {
@@ -172,7 +173,23 @@ export function nextStep(status: OnboardingStatus, facts: GuideFacts = {}): Next
               : 'Setup is complete.',
         ask_owner: [],
         then_call:
-          'Offer to adjust anything: the notes (save_store_notes), the tone (set_tone), another test (try_agent), or the mode (go_live).',
+          'Offer to adjust anything: the notes (save_store_notes), the size charts (get_size_charts), the tone (set_tone), another test (try_agent), or the mode (go_live).' +
+          (status.operatingMode === 'active' ? '' : ' ' + permissionHint(facts.permissions, false)),
       };
   }
+}
+
+/**
+ * What a mode needs before go_live, in words for Claude: learning needs reading, active needs replying. Replying is
+ * never asked during the setup, so this is where its question comes up.
+ */
+function permissionHint(perms: GuideFacts['permissions'], learningToo: boolean): string {
+  const ask: string[] = [];
+  if (!perms?.reply_to_customers.allowed) {
+    ask.push(`If the owner chooses to turn it on fully ("active"), first ask: «${REPLY_QUESTION}» Then set_instagram_permission "reply_to_customers" (confirmed: true only after a clear yes), then go_live.`);
+  }
+  if (learningToo && !perms?.read_messages.allowed) {
+    ask.push(`If they choose "learning", first ask: «${READ_QUESTION}» Then set_instagram_permission "read_messages", then go_live.`);
+  }
+  return ask.length > 0 ? ask.join(' ') : 'Both permissions are given.';
 }

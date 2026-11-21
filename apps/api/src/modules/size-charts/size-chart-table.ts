@@ -4,8 +4,11 @@
  * the owner, then `ready` for the agent's `get_size_help`.
  */
 
-/** Measurements a chart can have; `other` covers anything else, under its own label. */
-export const MEASUREMENT_KEYS = ['chest', 'waist', 'hips', 'height', 'weight', 'inseam', 'foot', 'other'] as const;
+/**
+ * Measurements a chart can have; `other` covers anything else, under its own label. `underbust` is for bras: a row
+ * per band and cup («75B»), with the underbust and the bust over the cup (`chest`).
+ */
+export const MEASUREMENT_KEYS = ['chest', 'underbust', 'waist', 'hips', 'height', 'weight', 'inseam', 'foot', 'other'] as const;
 export type MeasurementKey = (typeof MEASUREMENT_KEYS)[number];
 
 export interface ChartMeasurement {

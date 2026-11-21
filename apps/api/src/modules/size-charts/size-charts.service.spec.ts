@@ -52,13 +52,16 @@ function setup(charts: SizeChart[]) {
     }
     return [];
   });
+  const save = jest.fn(async (entity: SizeChart) => entity);
   const repo = {
     find: jest.fn(async ({ where }: { where: { status?: string } }) =>
       charts.filter((c) => !where.status || c.status === where.status),
     ),
     findOne: jest.fn(async ({ where }: { where: { id: string } }) => charts.find((c) => c.id === where.id) ?? null),
+    create: jest.fn((entity: Partial<SizeChart>) => entity),
+    save,
+    delete: jest.fn(async () => undefined),
   };
-  const save = jest.fn(async (entity: SizeChart) => entity);
   const dataSource = {
     query,
     transaction: async (fn: (m: unknown) => unknown) => fn({ getRepository: () => ({ save, update: jest.fn() }) }),
@@ -182,6 +185,28 @@ describe('SizeChartsService', () => {
     it('turns an image-only chart into a draft when a table is saved without a status', async () => {
       const { service } = setup([chart('img2', [], [])]);
       expect(await service.update('t1', 'img2', { table: TABLE })).toMatchObject({ status: 'draft' });
+    });
+  });
+
+  describe('a chart read in the Claude chat (a table, no picture)', () => {
+    it('is saved without a picture and sends none to customers; ready clears the uncertain marks', async () => {
+      const { service } = setup([]);
+      const saved = await service.createFromTable('t1', { name: 'Lliana', brands: [' Lliana '], table: TABLE, status: 'ready' });
+      expect(saved).toMatchObject({ imagePath: null, sendImage: false, status: 'ready', brands: ['lliana'], categories: [] });
+      expect(saved.table?.uncertain).toEqual([]);
+    });
+
+    it('keeps the uncertain marks on a draft, and checks the table like the admin', async () => {
+      const { service } = setup([]);
+      expect((await service.createFromTable('t1', { name: 'x', table: TABLE, status: 'draft' })).table?.uncertain).toHaveLength(1);
+      await expect(service.createFromTable('t1', { name: 'x', table: { ...TABLE, rows: [] }, status: 'ready' })).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('is deleted without trying to remove a file', async () => {
+      const { service } = setup([chart('claude', [], [], { imagePath: null })]);
+      await expect(service.delete('t1', 'claude')).resolves.toBeUndefined();
     });
   });
 });

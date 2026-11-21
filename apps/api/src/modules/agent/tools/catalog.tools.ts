@@ -210,7 +210,8 @@ export function getProductTool(deps: AgentToolDeps, scope: ToolScope) {
 
 /** Measurements the customer gave, as get_size_help takes them: cm, weight in kg. */
 const measurementsInput = z.object({
-  chest: z.number().min(40).max(200).optional().describe('Chest or bust girth.'),
+  chest: z.number().min(40).max(200).optional().describe('Chest or bust girth (for a bra, the bust over the cup).'),
+  underbust: z.number().min(40).max(200).optional().describe('Underbust girth, for bras.'),
   waist: z.number().min(30).max(200).optional().describe('Waist girth.'),
   hips: z.number().min(40).max(200).optional().describe('Hip girth.'),
   height: z.number().min(50).max(230).optional(),
@@ -293,7 +294,7 @@ export function getSizeHelpTool(deps: AgentToolDeps, scope: ToolScope, settings:
             "Don't ask for height and weight and don't convert a letter size into these. Ask which of the sizes in " +
             'stock the customer usually wears' +
             (sizeChartImage ? ', and offer the size chart if they are not sure' : '') +
-            '. If they still can\'t tell, hand off with what they told you.',
+            '. If they still can\'t tell, offer to check with a manager, and hand off only if they want that.',
         };
       }
 
@@ -301,12 +302,15 @@ export function getSizeHelpTool(deps: AgentToolDeps, scope: ToolScope, settings:
       const height = heightCm ?? measurements?.height;
       const weight = weightKg ?? measurements?.weight;
       const recommended = chart && (height || weight) ? recommendSize({ heightCm: height, weightKg: weight }, chart) : null;
+      const recommendedInStock = recommended && inStockSizes ? inStockSizes.some((s) => sameSize(s, recommended)) : undefined;
       if (!chart && !sizeChartImage) {
         return {
           source: 'none' as const,
           ...unread,
           available: false,
-          note: 'This store has no size ranges or size chart. Do not guess a size; hand off if the customer needs one.',
+          note:
+            'This store has no size ranges or size chart. Do not guess a size; offer to check with a manager, and hand ' +
+            'off only if they want that.',
         };
       }
       return {
@@ -314,9 +318,7 @@ export function getSizeHelpTool(deps: AgentToolDeps, scope: ToolScope, settings:
         ...unread,
         available: true,
         recommendedSize: recommended,
-        ...(recommended && inStockSizes && {
-          recommendedInStock: inStockSizes.some((s) => sameSize(s, recommended)),
-        }),
+        ...(recommendedInStock !== undefined && { recommendedInStock }),
         ...(inStockSizes && { inStockSizes }),
         ...(chart && {
           sizeRanges: Object.entries(chart).map(([size, r]) => ({
@@ -329,9 +331,23 @@ export function getSizeHelpTool(deps: AgentToolDeps, scope: ToolScope, settings:
         ...(!recommended && chart && !(height || weight) && {
           note: 'Ask for height and weight to recommend a size.',
         }),
+        ...(recommended && recommendedInStock === false && { note: outOfStockNote(normSize(recommended)) }),
       };
     },
   });
+}
+
+/**
+ * The customer's size exists but this product doesn't have it now. Without this the model handed off: the prompt
+ * only says to recommend a size that is in stock.
+ */
+function outOfStockNote(size: string): string {
+  return (
+    `${size} is out of stock for this product. Tell the customer ${size} is their size and this model doesn't have it now. ` +
+    "Don't offer another size of this model in its place: the sizes in stock don't fit them. " +
+    `Offer other models in ${size}: search_products or browse_category with size "${size}". ` +
+    "Don't hand off for this; only if they want a person or want to wait for this model."
+  );
 }
 
 /**
@@ -366,7 +382,7 @@ function chartAnswer(
         "This product's size chart is in a different size system, so there is no recommendation. Ask which of the " +
         'sizes in stock the customer usually wears' +
         (sizeChartImage ? ', and offer the size chart if they are not sure' : '') +
-        ". If they still can't tell, hand off with what they told you.",
+        ". If they still can't tell, offer to check with a manager, and hand off only if they want that.",
     };
   }
 
@@ -411,7 +427,7 @@ function chartAnswer(
     match.between && `The measurements are between ${match.between[0]} and ${match.between[1]}: offer both, or ${size} for a looser fit.`,
     ...match.outside.map((o) => `${labels([o.key])} ${o.value} is outside ${size} (${formatRange(o.range)}).`),
     missing.length > 0 && `Based on ${labels(match.matchedOn)} only; ${labels(missing)} would make it surer.`,
-    inStock === false && `${size} is out of stock for this product.`,
+    inStock === false && outOfStockNote(size),
   ].filter(Boolean);
   return {
     available: true,
@@ -441,7 +457,7 @@ export function sendSizeChartTool(deps: AgentToolDeps, scope: ToolScope) {
       }
       const chart = await deps.sizeCharts.resolveForContext(scope.tenantId, context);
       if (!chart) return { ok: false, error: 'This store has no size chart image.' };
-      if (!chart.sendImage) {
+      if (!chart.sendImage || !chart.imagePath) {
         return { ok: false, note: "This store doesn't send its size chart as a picture. Don't say you're sending one." };
       }
       const staged: StagedEffect = {

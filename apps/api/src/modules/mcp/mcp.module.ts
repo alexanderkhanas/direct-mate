@@ -4,6 +4,7 @@ import { EngineModule } from '../engine/engine.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { OnboardingModule } from '../onboarding/onboarding.module';
 import { SettingsModule } from '../settings/settings.module';
+import { SizeChartsModule } from '../size-charts/size-charts.module';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 import { HandoffService } from './handoff.service';
 import { McpHttpService } from './mcp-http.service';
@@ -28,6 +29,7 @@ import { IntegrationsModule } from '../integrations/integrations.module';
     IntegrationsModule,
     NotificationsModule,
     SettingsModule,
+    SizeChartsModule,
     SubscriptionsModule,
     SetupEventsModule,
   ],

@@ -34,6 +34,12 @@ describe('size chart table validation', () => {
     expect(issues({ ...TABLE, rows: [{ size: '', values: {} }] }).length).toBeGreaterThan(0);
   });
 
+  it('holds up to 150 sizes, enough for a bra chart of bands × cups', () => {
+    const rows = (n: number) => Array.from({ length: n }, (_, i) => ({ size: `S${i}`, values: { chest: { min: 60 + i, max: 61 + i } } }));
+    expect(issues({ ...TABLE, rows: rows(150), uncertain: [] })).toEqual([]);
+    expect(issues({ ...TABLE, rows: rows(151), uncertain: [] }).length).toBeGreaterThan(0);
+  });
+
   it('is ready only with sizes, measurements and a value in every row', () => {
     expect(readyProblems(TABLE)).toEqual([]);
     expect(readyProblems({ ...TABLE, rows: [] })).toEqual(['The chart has no sizes']);

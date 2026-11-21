@@ -20,9 +20,9 @@ import { DEFAULT_LABELS } from './table-schema';
 const INSTRUCTIONS = `You read a clothing or footwear size chart from an image, for a shop's assistant that recommends a size from a customer's body measurements.
 
 - isSizeChart: false when the image is not a size chart; then return empty lists.
-- rows: one per size, in the order printed. size: the size label exactly as printed («S», «42», «W30»). When the chart has several size systems side by side (letters and numbers), label rows in the system the shop's products use (listed below, when known); otherwise the first size column.
+- rows: one per size, in the order printed. size: the size label exactly as printed («S», «42», «W30»). A bra chart (underbust bands × cups) is one row per band and cup, labelled band then cup («75B»), band by band, cups in order; skip combinations the chart leaves empty. When the chart has several size systems side by side (letters and numbers), label rows in the system the shop's products use (listed below, when known); otherwise the first size column.
 - measurements: the body measurements the chart gives, in column order, each mapped to one key:
-  chest = chest or bust (груди, обхват грудей); waist = waist (талія); hips = hips (стегна, обхват стегон); height = body height (зріст); weight = body weight (вага); inseam = inside leg length (довжина по внутрішньому шву); foot = foot length (довжина стопи, устілка); other = one more body measurement that matters for fit (neck, shoulders), at most one.
+  chest = chest or bust (груди, обхват грудей; on a bra chart the bust over the cup, «по чашці»); underbust = underbust (під грудьми, обхват під грудьми), on bra charts; waist = waist (талія); hips = hips (стегна, обхват стегон); height = body height (зріст); weight = body weight (вага); inseam = inside leg length (довжина по внутрішньому шву); foot = foot length (довжина стопи, устілка); other = one more body measurement that matters for fit (neck, shoulders), at most one.
   Leave out measurements of the garment itself (length of the item, sleeve length) and columns that only convert between size systems.
 - label: the measurement's name in Ukrainian, as a customer would understand it: «Обхват грудей», «Обхват талії», «Обхват стегон», «Зріст», «Вага», «Довжина по внутрішньому шву», «Довжина стопи».
 - unit: as printed: cm, mm, in, kg or lb. When the chart gives both centimetres and inches, read only the centimetres.
@@ -120,7 +120,7 @@ export class SizeChartReaderService {
     const chart = await this.repo.findOne({ where: { id, tenantId } });
     if (!chart) throw new NotFoundException('Size chart not found');
 
-    const image = await this.imagePart(chart.imagePath);
+    const image = chart.imagePath ? await this.imagePart(chart.imagePath) : null;
     if (!image) {
       throw new BadRequestException({ message: 'The chart image is missing; upload it again.', details: { reason: 'image_missing' } });
     }

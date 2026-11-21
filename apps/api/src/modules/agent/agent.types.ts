@@ -46,14 +46,12 @@ export type StagedEffect =
   | { type: 'content_pick'; productId: string; color: string | null };
 
 export type HandoffReason =
+  // The model's own (`MODEL_HANDOFF_REASONS`):
   | 'customer_asked_for_human'
+  | 'lost_context'
+  | 'payment_check'
   | 'complaint_or_return'
   | 'order_change'
-  | 'payment_check'
-  | 'health_or_safety'
-  | 'not_in_store_notes'
-  | 'unsure'
-  | 'other'
   // Set by the agent itself, not by the model:
   | 'ungrounded_reply'
   | 'step_limit'

@@ -167,15 +167,65 @@ describe('AgentService.runTurn', () => {
     expect(result.handoff).toEqual({ reason: 'ungrounded_reply', summaryForManager: null });
   });
 
-  it('stops at the handoff tool and passes on the summary for the manager', async () => {
+  it('after a handoff, gives the model one step to write its reply, and passes on the summary for the manager', async () => {
     const model = new MockLanguageModelV4({
-      doGenerate: [call('handoff', { reason: 'complaint_or_return', summaryForManager: 'Хоче повернути сорочку' })],
+      doGenerate: [
+        call('handoff', { reason: 'complaint_or_return', summaryForManager: 'Хоче повернути сорочку' }),
+        text('Шкода, що так сталося. Менеджер оформить повернення.'),
+      ],
     });
     const result = await run(buildAgent(model), 'Хочу повернути сорочку, вона брак');
 
     expect(result.handoff).toEqual({ reason: 'complaint_or_return', summaryForManager: 'Хоче повернути сорочку' });
-    expect(result.reply).toBeNull();
+    expect(result.reply).toBe('Шкода, що так сталося. Менеджер оформить повернення.');
+    expect(model.doGenerateCalls).toHaveLength(2);
+    // The handoff's result is what asks for the reply.
+    expect(JSON.stringify(model.doGenerateCalls[1].prompt)).toContain('Now write your reply to the customer');
+  });
+
+  it('keeps what was found before the handoff: the photos go out with the reply', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        call('show_products', { productRefs: ['aaaaaaaa'] }),
+        call('handoff', { reason: 'customer_asked_for_human', summaryForManager: 'Просить менеджера' }),
+        text('Ось фото сорочки. Передаю менеджеру.'),
+      ],
+    });
+    const result = await run(buildAgent(model), 'Покажіть сорочку і покличте менеджера');
+
+    expect(result.reply).toBe('Ось фото сорочки. Передаю менеджеру.');
+    expect(result.effects.map((e) => e.type)).toEqual(['show_products']);
+    expect(result.handoff?.reason).toBe('customer_asked_for_human');
+  });
+
+  it('ends at the handoff when the model wrote its reply with the call', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        {
+          content: [
+            { type: 'text' as const, text: 'Зараз покличу менеджера.' },
+            { type: 'tool-call' as const, toolCallId: 'h', toolName: 'handoff', input: JSON.stringify({ reason: 'customer_asked_for_human', summaryForManager: 'Просить менеджера' }) },
+          ],
+          finishReason: { unified: 'tool-calls' as const, raw: undefined },
+          usage: USAGE,
+          warnings: [],
+        },
+      ],
+    });
+    const result = await run(buildAgent(model), 'Покличте менеджера');
+
+    expect(result.reply).toBe('Зараз покличу менеджера.');
     expect(model.doGenerateCalls).toHaveLength(1);
+  });
+
+  it('still hands off, with no reply, when the model writes nothing after the handoff', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: [call('handoff', { reason: 'lost_context', summaryForManager: 'Незрозуміло, що потрібно' }), text('')],
+    });
+    const result = await run(buildAgent(model), 'ммм ну те саме');
+
+    expect(result.handoff?.reason).toBe('lost_context');
+    expect(result.reply).toBeNull();
   });
 
   it('sends a reply that still has a style slip after the retry, flagged', async () => {

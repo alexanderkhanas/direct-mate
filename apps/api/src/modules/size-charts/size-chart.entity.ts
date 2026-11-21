@@ -20,8 +20,9 @@ export class SizeChart {
   @Column({ type: 'text' })
   name!: string;
 
-  @Column({ type: 'text' })
-  imagePath!: string;
+  /** Null for a chart read in the Claude chat: only its table was saved. */
+  @Column({ type: 'text', nullable: true })
+  imagePath!: string | null;
 
   @Column({ type: 'text', array: true, default: '{}' })
   categories!: string[];

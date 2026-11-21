@@ -1,12 +1,28 @@
 import type { ButtonHTMLAttributes } from 'react';
-import { Check } from '../icons';
+import { Check, Table } from '../icons';
 import { Chip } from '../setup/ui';
 import { cn } from '../../lib/cn';
 import { useT } from '../../i18n';
 import { chartImageUrl, isWholeStore, type ChartMeasurement, type ChartScope } from './api';
 
-/** The chart's picture as a small portrait thumbnail (the design's 52×64 / 44×54 tiles). */
-export function ChartThumb({ imagePath, className }: { imagePath: string; className?: string }) {
+/**
+ * The chart's picture as a small portrait thumbnail (the design's 52×64 / 44×54 tiles). A chart read in the Claude
+ * chat has no picture: a table icon stands in.
+ */
+export function ChartThumb({ imagePath, className }: { imagePath: string | null; className?: string }) {
+  const { t } = useT();
+  if (!imagePath) {
+    return (
+      <span
+        role="img"
+        aria-label={t('setup_sizes.no_picture')}
+        title={t('setup_sizes.no_picture')}
+        className={cn('flex flex-none items-center justify-center rounded-lg border border-dm-line bg-dm-sunken text-dm-muted', className ?? 'h-16 w-[52px]')}
+      >
+        <Table className="h-5 w-5" aria-hidden="true" />
+      </span>
+    );
+  }
   return (
     <img
       src={chartImageUrl(imagePath)}

@@ -27,6 +27,29 @@ const sizes = (settings: AgentStoreSettings) => {
   return prompt.slice(prompt.indexOf('## Sizes'), prompt.indexOf('## Details needed'));
 };
 
+describe('handing off', () => {
+  const prompt = buildSystemPrompt(SETTINGS, { mode: 'list', text: '(catalog)' });
+  const section = prompt.slice(prompt.indexOf('## Handing off'), prompt.indexOf('## Safety'));
+
+  it('hands off only when asked, when lost, or for what only a person can do', () => {
+    expect(section).toContain('Call handoff only when');
+    expect(section).toContain('the customer asks for a person, or says yes after you offered');
+    expect(section).toContain("you asked once what they mean and still don't understand");
+    expect(section).toContain('check a payment they sent, a return, exchange or complaint');
+    expect(section).toContain('Being unsure is not a reason to hand off');
+    expect(section).toContain('When you hand off, still write your reply');
+  });
+
+  it('offers a manager for what the tools and notes don’t answer, instead of handing off', () => {
+    expect(prompt).not.toMatch(/when you are unsure/i);
+    expect(prompt).not.toContain("don't answer a question, call handoff");
+    expect(prompt).toContain("don't answer a question, say so plainly and offer to check with a manager");
+    expect(buildSystemPrompt({ ...SETTINGS, knowledgeDoc: null }, { mode: 'list', text: '' })).toContain(
+      "say you don't have that information and offer to check with a manager",
+    );
+  });
+});
+
 describe('parseSizing', () => {
   it('defaults to recommending, without asking measurements first', () => {
     expect(parseSizing(undefined)).toEqual({ advice: 'recommend', askMeasurementsFirst: false });

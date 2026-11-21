@@ -31,7 +31,8 @@ export type ChartView = 'loading' | 'start' | 'scope' | 'reading' | 'check' | 'l
 interface Working {
   /** Null until «Прочитати сітку» creates it. */
   chartId: string | null;
-  imagePath: string;
+  /** Null for a chart read in the Claude chat. */
+  imagePath: string | null;
   fileName: string | null;
   scope: ChartScope;
   /** A new picture for an existing chart, not read yet. */
