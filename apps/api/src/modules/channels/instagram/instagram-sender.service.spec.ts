@@ -28,7 +28,7 @@ describe('splitForInstagram', () => {
 });
 
 describe('InstagramSender.sendImages', () => {
-  const account = { token: 'tok', igAccountId: 'ig1' };
+  const account = { token: 'tok', igAccountId: 'ig1', api: 'https://graph.facebook.com/v27.0' };
   const to = { id: 'cust' };
   const ctx = { tenantId: 't1', conversationId: 'c1', messageId: 'm1' };
   const config = { get: (key: string) => (key === 'app.baseUrl' ? 'https://shop.example' : undefined) };
@@ -48,6 +48,18 @@ describe('InstagramSender.sendImages', () => {
   }
 
   afterEach(() => jest.restoreAllMocks());
+
+  it("sends on the account's own host: graph.instagram.com for an Instagram Login connection", async () => {
+    const urls: string[] = [];
+    jest.spyOn(global, 'fetch').mockImplementation(async (url) => {
+      urls.push(String(url));
+      return new Response(JSON.stringify({ message_id: 'mid-1' }), { status: 200 });
+    });
+    const sender = new InstagramSender(config as never, { query: jest.fn(async () => []) } as never);
+    await sender.sendText({ ...account, api: 'https://graph.instagram.com/v27.0' }, to, 'Привіт', ctx);
+    await sender.sendText(account, to, 'Привіт', ctx);
+    expect(urls).toEqual(['https://graph.instagram.com/v27.0/ig1/messages', 'https://graph.facebook.com/v27.0/ig1/messages']);
+  });
 
   it('sends several photos as one message, and remembers the album for its echoes', async () => {
     const t = setup(['mid-album']);

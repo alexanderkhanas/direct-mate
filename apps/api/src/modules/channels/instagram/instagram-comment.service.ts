@@ -11,7 +11,7 @@ import { TurnRunner, TurnRunResult } from '../../conversations/turn-runner.servi
 import { AgentStoreSettingsService } from '../../agent/store-settings.service';
 import { CryptoService } from '../../../common/crypto.service';
 import { withRetry } from '../../../common/retry';
-import { GRAPH_API } from '../../../common/meta-graph';
+import { igAccountOf, type IgAccount } from '../../integrations/ig-account';
 import { CommentChangeValue } from './instagram.service';
 import { InstagramSender } from './instagram-sender.service';
 import { ContentMediaService } from '../../content-media/content-media.service';
@@ -174,15 +174,12 @@ export class InstagramCommentService {
     }
     if (result.messages.length === 0) return;
 
-    const account = {
-      token: this.cryptoService.decrypt(connection.accessTokenEncrypted),
-      igAccountId: connection.externalAccountId,
-    };
+    const account = igAccountOf(connection, this.cryptoService)!;
     const sent = await this.sendPrivateReply(account, commentId, tenantId, conversation.id, result);
     if (!sent) return;
 
     const publicText = commentCfg.publicReply?.trim() || PUBLIC_REPLY_FALLBACK;
-    await withRetry(() => this.replyToComment(commentId, publicText, account.token), {
+    await withRetry(() => this.replyToComment(account, commentId, publicText), {
       label: `comment-public-reply-${commentId}`,
       maxAttempts: 3,
       baseDelayMs: 2000,
@@ -194,7 +191,7 @@ export class InstagramCommentService {
 
   /** Every message the runner produced (welcome, reply, handoff line), as one text. */
   private async sendPrivateReply(
-    account: { token: string; igAccountId: string },
+    account: IgAccount,
     commentId: string,
     tenantId: string,
     conversationId: string,
@@ -256,10 +253,10 @@ export class InstagramCommentService {
   }
 
   /** Public reply threaded under the comment. */
-  private async replyToComment(commentId: string, text: string, token: string): Promise<void> {
-    const res = await fetch(`${GRAPH_API}/${commentId}/replies`, {
+  private async replyToComment(account: IgAccount, commentId: string, text: string): Promise<void> {
+    const res = await fetch(`${account.api}/${commentId}/replies`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${account.token}` },
       body: JSON.stringify({ message: text }),
     });
     if (!res.ok) {

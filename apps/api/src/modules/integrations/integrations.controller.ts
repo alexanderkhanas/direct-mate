@@ -10,6 +10,7 @@ import { CurrentUser, JwtPayload } from '../../common/decorators/current-user.de
 import { IntegrationsService, withoutTokens } from './integrations.service';
 import { TelegramService } from '../notifications/telegram.service';
 import { SetupEventsService } from '../mcp/setup-events.service';
+import type { InstagramLoginMethod } from '../../common/meta-graph';
 
 class ConnectInstagramDto {
   @ApiProperty({ example: '123456789' })
@@ -58,6 +59,12 @@ export class IntegrationsController {
   @Get()
   findAll(@CurrentUser() user: JwtPayload) {
     return this.integrationsService.findAll(user.tenantId);
+  }
+
+  /** Which login «Connect Instagram» opens, so the admin describes the right one. */
+  @Get('instagram/login-method')
+  instagramLoginMethod() {
+    return { method: this.integrationsService.loginMethod() };
   }
 
   @Post('instagram')
@@ -169,13 +176,15 @@ export class InstagramOAuthController {
     @Res() res: Response,
   ) {
     const adminBaseUrl = this.config.get<string>('admin.baseUrl') ?? 'http://localhost:5173';
-    const [state, returnKey] = (rawState ?? '').split('.');
+    const [state, returnKey, methodKey] = (rawState ?? '').split('.');
     // Only the pages that start a connection; never a URL from the query.
     const fromClaude = returnKey === 'claude';
     const page = `${adminBaseUrl}/${fromClaude ? 'claude/done' : returnKey === 'onboarding' ? 'onboarding' : 'connections'}`;
+    // The login the state was issued for; a state without one predates the choice.
+    const method: InstagramLoginMethod = methodKey === 'ig' ? 'instagram' : 'unified';
 
     if (!code || !state) {
-      // Meta sends `error=access_denied` when the owner closes or declines the login.
+      // Both logins send `error=access_denied` when the owner closes or declines.
       const reason = error === 'access_denied' ? 'cancelled' : 'missing_params';
       return res.redirect(`${page}?instagram=error&reason=${reason}`);
     }
@@ -187,31 +196,10 @@ export class InstagramOAuthController {
         return res.redirect(`${page}?instagram=error&reason=invalid_state`);
       }
 
-      const { accessToken, expiresAt } = await this.integrationsService.exchangeCodeForToken(code);
+      const result = await this.integrationsService.completeInstagramLogin(tenantId, code, method);
+      if (!result.ok) return res.redirect(`${page}?instagram=error&reason=${result.reason}`);
 
-      // One token can cover several accounts; a tenant is one account. Picking
-      // one for the store could wire the wrong account, so ask them to
-      // reconnect sharing just one.
-      const accounts = await this.integrationsService.getAssignedInstagramAccounts(accessToken);
-      if (accounts.length !== 1) {
-        const reason = accounts.length === 0 ? 'no_account' : 'multiple_accounts';
-        this.logger.warn(`Instagram OAuth for tenant ${tenantId}: ${accounts.length} accounts shared — ${reason}`);
-        return res.redirect(`${page}?instagram=error&reason=${reason}`);
-      }
-      const [account] = accounts;
-
-      try {
-        await this.integrationsService.subscribeToWebhooks(account.id, accessToken);
-      } catch (err) {
-        // Saving now would show a connected account that never hears a message.
-        this.logger.error(`Instagram OAuth for tenant ${tenantId}`, (err as Error).message);
-        return res.redirect(`${page}?instagram=error&reason=subscribe_failed`);
-      }
-
-      // The account id is what webhooks put in entry.id.
-      await this.integrationsService.connectInstagram(tenantId, account.id, accessToken, account.username, expiresAt);
-
-      this.logger.log(`Instagram OAuth connected for tenant ${tenantId}, account ${account.id}`);
+      this.logger.log(`Instagram OAuth (${method}) connected for tenant ${tenantId}, account ${result.accountId}`);
       if (fromClaude) await this.setupEvents.record(tenantId, 'instagram_connected');
       return res.redirect(`${page}?instagram=connected`);
     } catch (err) {

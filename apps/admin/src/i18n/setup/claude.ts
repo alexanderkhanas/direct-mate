@@ -25,7 +25,7 @@ const uk = {
   auth_error: 'Не вдалося дозволити. Спробуйте ще раз.',
 
   ig_title: 'Підключіть Instagram магазину',
-  ig_lead: 'AI-агент відповідає у Direct вашого магазину. Потрібен професійний акаунт (бізнес або автор). Під час входу оберіть лише один акаунт.',
+  ig_lead: 'AI-агент відповідає у Direct вашого магазину. Потрібен професійний акаунт (бізнес або автор). Увійдіть саме в акаунт магазину.',
   ig_button: 'Підключити Instagram',
   shopify_title: 'Підключіть Shopify',
   shopify_lead: 'Введіть адресу магазину і токен доступу Admin API. Токен зберігається зашифрованим, у чат його вводити не треба.',
@@ -100,7 +100,7 @@ const en: typeof uk = {
   auth_error: 'Could not allow. Try again.',
 
   ig_title: 'Connect your store’s Instagram',
-  ig_lead: 'The AI agent answers in your store’s Direct. It needs a professional account (business or creator). Choose only one account when you log in.',
+  ig_lead: 'The AI agent answers in your store’s Direct. It needs a professional account (business or creator). Log in to the shop’s own account.',
   ig_button: 'Connect Instagram',
   shopify_title: 'Connect Shopify',
   shopify_lead: 'Enter the store address and the Admin API access token. The token is stored encrypted; don’t type it into the chat.',

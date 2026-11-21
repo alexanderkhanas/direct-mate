@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { CryptoService } from '../../../common/crypto.service';
-import { GRAPH_API } from '../../../common/meta-graph';
+import { graphApi, isInstagramLoginMethod } from '../../../common/meta-graph';
 
 /**
  * Meta's throttling codes. 4 is the app-level budget the messages edge uses
@@ -12,6 +12,10 @@ import { GRAPH_API } from '../../../common/meta-graph';
  */
 const THROTTLE_CODES = new Set([4, 17, 32, 613, 80002]);
 const TIMEOUT_MS = 15_000;
+/** Instagram Login allows 2 conversation calls a second per account. */
+const PER_MESSAGE_GAP_MS = 500;
+/** Instagram Login returns content only for a conversation's 20 most recent messages. */
+const MESSAGES_PER_CONVERSATION = 20;
 
 /** The app's hourly budget ran out (code 4): stop reading and come back in an hour. */
 export class RateLimitedError extends Error {
@@ -40,6 +44,8 @@ export interface InstagramAccount {
   /** The Instagram account id (`connections.external_account_id`): the shop's side of every message. */
   accountId: string;
   token: string;
+  /** The connection's Graph host: graph.instagram.com for Instagram Login, graph.facebook.com for Unified Login. */
+  api: string;
   /** When the store connected DirectMate: shop messages before it were written by a person. */
   connectedAt: Date;
 }
@@ -92,17 +98,22 @@ export class GraphHistoryClient {
 
   /** The store's connected Instagram account, or null when it has none. */
   async account(tenantId: string): Promise<InstagramAccount | null> {
-    const [row]: Array<{ external_account_id: string | null; access_token_encrypted: string | null; created_at: Date }> =
-      await this.dataSource.query(
-        `SELECT external_account_id, access_token_encrypted, created_at FROM connections
-          WHERE tenant_id = $1 AND type = 'instagram' AND status = 'connected'
-          ORDER BY created_at DESC LIMIT 1`,
-        [tenantId],
-      );
+    const [row]: Array<{
+      external_account_id: string | null;
+      access_token_encrypted: string | null;
+      login_method: string | null;
+      created_at: Date;
+    }> = await this.dataSource.query(
+      `SELECT external_account_id, access_token_encrypted, login_method, created_at FROM connections
+        WHERE tenant_id = $1 AND type = 'instagram' AND status = 'connected'
+        ORDER BY created_at DESC LIMIT 1`,
+      [tenantId],
+    );
     if (!row?.external_account_id || !row.access_token_encrypted) return null;
     return {
       accountId: row.external_account_id,
       token: this.crypto.decrypt(row.access_token_encrypted),
+      api: graphApi(isInstagramLoginMethod(row.login_method) ? row.login_method : null),
       connectedAt: new Date(row.created_at),
     };
   }
@@ -125,17 +136,35 @@ export class GraphHistoryClient {
     };
   }
 
-  /** A conversation's 20 latest messages, newest first. This is the call that spends the app's budget. */
+  /**
+   * A conversation's 20 latest messages, newest first. On Unified Login this is
+   * the call that spends the app's budget. Instagram Login's edge may list only
+   * the messages' ids (Meta's docs read each message on its own); then each of
+   * them is read by id, at Meta's pace, and one that can't be read is skipped.
+   */
   async messages(account: InstagramAccount, conversationId: string): Promise<{ messages: GraphMessage[]; usage: number | null }> {
-    const fields = encodeURIComponent('messages.limit(20){id,created_time,from,message}');
+    const fields = encodeURIComponent(`messages.limit(${MESSAGES_PER_CONVERSATION}){id,created_time,from,message}`);
     const { body, usage } = await this.get<{ messages?: { data?: GraphMessage[] } }>(account, `/${conversationId}?fields=${fields}`);
-    return { messages: body.messages?.data ?? [], usage };
+    const listed = body.messages?.data ?? [];
+    if (listed.length === 0 || listed.some((m) => m.from)) return { messages: listed, usage };
+
+    const messages: GraphMessage[] = [];
+    for (const { id } of listed.slice(0, MESSAGES_PER_CONVERSATION)) {
+      await new Promise((r) => setTimeout(r, PER_MESSAGE_GAP_MS));
+      try {
+        const one = await this.get<GraphMessage>(account, `/${id}?fields=id,created_time,from,message`);
+        messages.push(one.body);
+      } catch (err) {
+        if (err instanceof RateLimitedError) throw err;
+      }
+    }
+    return { messages, usage };
   }
 
   private async get<T>(account: InstagramAccount, path: string): Promise<{ body: T; usage: number | null }> {
     let res: Response;
     try {
-      res = await fetch(`${GRAPH_API}${path}`, {
+      res = await fetch(`${account.api}${path}`, {
         headers: { Authorization: `Bearer ${account.token}` },
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });

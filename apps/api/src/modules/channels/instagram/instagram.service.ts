@@ -18,7 +18,7 @@ import { TelegramService } from '../../notifications/telegram.service';
 import { LearningObserverService } from '../../screenshot-training/learning-observer.service';
 import { CryptoService } from '../../../common/crypto.service';
 import { returnedRows } from '../../../common/db';
-import { GRAPH_API } from '../../../common/meta-graph';
+import { igAccountOf } from '../../integrations/ig-account';
 import { InstagramCommentService } from './instagram-comment.service';
 import { InstagramSender, splitForInstagram } from './instagram-sender.service';
 
@@ -168,16 +168,24 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
     if (this.pollInterval) clearInterval(this.pollInterval);
   }
 
+  /**
+   * Meta signs each delivery with the secret of the app the account subscribed
+   * through: the Meta app's for Unified Login, the Instagram app's for
+   * Instagram Login. Either one is ours.
+   */
   verifySignature(rawBody: Buffer, signature: string): boolean {
-    const appSecret = this.config.get<string>('meta.appSecret') ?? '';
-    if (!appSecret) {
-      this.logger.error('META_APP_SECRET is not configured — rejecting webhook');
+    const secrets = [this.config.get<string>('meta.appSecret'), this.config.get<string>('meta.instagramAppSecret')].filter(
+      (s): s is string => !!s,
+    );
+    if (secrets.length === 0) {
+      this.logger.error('Neither META_APP_SECRET nor INSTAGRAM_APP_SECRET is configured — rejecting webhook');
       return false;
     }
-    const expected = `sha256=${crypto.createHmac('sha256', appSecret).update(rawBody).digest('hex')}`;
     const given = Buffer.from(signature);
-    const wanted = Buffer.from(expected);
-    return given.length === wanted.length && crypto.timingSafeEqual(given, wanted);
+    return secrets.some((secret) => {
+      const wanted = Buffer.from(`sha256=${crypto.createHmac('sha256', secret).update(rawBody).digest('hex')}`);
+      return given.length === wanted.length && crypto.timingSafeEqual(given, wanted);
+    });
   }
 
   verifyWebhook(mode: string, token: string, challenge: string): string {
@@ -383,11 +391,11 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
   /** Dev-mode quirk: a new message arrives as message_edit with no text, so it is fetched. */
   private async ingestEditedMessage(entryId: string, mid: string): Promise<void> {
     const connection = await this.integrationsService.findByExternalAccountId(entryId, ConnectionType.Instagram);
-    if (!connection?.accessTokenEncrypted) return;
-    const token = this.cryptoService.decrypt(connection.accessTokenEncrypted);
+    const account = connection && igAccountOf(connection, this.cryptoService);
+    if (!connection || !account) return;
     try {
-      const res = await fetch(`${GRAPH_API}/${mid}?fields=from,to,message`, {
-        headers: { Authorization: `Bearer ${token}` },
+      const res = await fetch(`${account.api}/${mid}?fields=from,to,message`, {
+        headers: { Authorization: `Bearer ${account.token}` },
       });
       if (!res.ok) {
         this.logger.warn(`Failed to fetch message ${mid}: ${res.status} - ${await res.text()}`);
@@ -408,11 +416,11 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
 
   /** The customer's Instagram username and name, once. Never fails intake. */
   private async fetchProfile(connection: Connection, customerId: string, igUserId: string): Promise<void> {
-    if (!connection.accessTokenEncrypted) return;
     try {
-      const token = this.cryptoService.decrypt(connection.accessTokenEncrypted);
-      const res = await fetch(`${GRAPH_API}/${igUserId}?fields=username,name`, {
-        headers: { Authorization: `Bearer ${token}` },
+      const account = igAccountOf(connection, this.cryptoService);
+      if (!account) return;
+      const res = await fetch(`${account.api}/${igUserId}?fields=username,name`, {
+        headers: { Authorization: `Bearer ${account.token}` },
       });
       if (!res.ok) return;
       const profile = (await res.json()) as { username?: string; name?: string };
@@ -522,15 +530,12 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
       [conversation.customer_id],
     );
     const ids = result.messages.map((m) => m.messageId).filter((id): id is string => !!id);
-    if (!connection?.accessTokenEncrypted || !connection.externalAccountId || !customer) {
+    const account = connection && igAccountOf(connection, this.cryptoService);
+    if (!account || !customer) {
       this.logger.error(`Cannot send to Instagram for conversation ${conversation.id}: no connection token or customer`);
       await this.markFailed(ids);
       return;
     }
-    const account = {
-      token: this.cryptoService.decrypt(connection.accessTokenEncrypted),
-      igAccountId: connection.externalAccountId,
-    };
     const recipient = { id: customer.external_user_id };
 
     for (const [i, message] of result.messages.entries()) {
@@ -596,8 +601,9 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
   private async handleEcho(messaging: MetaMessagingEvent, entryId: string): Promise<void> {
     const message = messaging.message!;
     if (await this.sender.isOwnMessage(message.mid)) return;
-    const appId = this.config.get<string>('meta.appId');
-    if (message.app_id != null && appId && String(message.app_id) === appId) return;
+    // The Meta app's id on Unified Login, the Instagram app's on Instagram Login.
+    const ourApps = [this.config.get<string>('meta.appId'), this.config.get<string>('meta.instagramAppId')].filter(Boolean);
+    if (message.app_id != null && ourApps.includes(String(message.app_id))) return;
 
     const customerIgId = messaging.recipient?.id;
     if (!customerIgId) return;

@@ -1,6 +1,7 @@
 import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { IsNull, LessThan, MoreThan, Not, Repository } from 'typeorm';
 import * as crypto from 'crypto';
 import { Connection } from './entities/connection.entity';
@@ -8,7 +9,19 @@ import { SyncJob } from './entities/sync-job.entity';
 import { TelegramConnectToken } from '../notifications/entities/telegram-connect-token.entity';
 import { ConnectionStatus, ConnectionType } from '@direct-mate/shared';
 import { CryptoService } from '../../common/crypto.service';
-import { GRAPH_API } from '../../common/meta-graph';
+import { GRAPH_API, IG_GRAPH_API, type InstagramLoginMethod } from '../../common/meta-graph';
+import type { IgAccount } from './ig-account';
+
+/**
+ * What Instagram Login asks for. Comments are granted only once Meta approves
+ * the permission, or to people with a role on the app; without them the
+ * account is subscribed to messages alone.
+ */
+const INSTAGRAM_LOGIN_SCOPES = ['instagram_business_basic', 'instagram_business_manage_messages', 'instagram_business_manage_comments'];
+/** An Instagram Login token's life, and when it is renewed. */
+const INSTAGRAM_TOKEN_DAYS = 60;
+const INSTAGRAM_REFRESH_WITHIN_DAYS = 10;
+const DAY_SECONDS = 24 * 60 * 60;
 
 /** A connection as the admin sees it: tokens stay on the server, even encrypted. */
 export type PublicConnection = Omit<Connection, 'accessTokenEncrypted' | 'refreshTokenEncrypted'>;
@@ -39,6 +52,7 @@ export class IntegrationsService {
     accessToken: string,
     accountName?: string,
     tokenExpiresAt: Date | null = null,
+    loginMethod: InstagramLoginMethod = 'unified',
   ): Promise<Connection> {
     // Webhooks route by account id, so an account feeds one tenant. Another
     // tenant still connected to it would win the lookup half the time and
@@ -62,6 +76,7 @@ export class IntegrationsService {
         externalAccountId: pageId,
         accessTokenEncrypted: encrypted,
         tokenExpiresAt,
+        loginMethod,
         status: ConnectionStatus.Connected,
         metadata: accountName ? { accountName } : (conn.metadata ?? null),
       } as any);
@@ -75,6 +90,7 @@ export class IntegrationsService {
       externalAccountId: pageId,
       accessTokenEncrypted: encrypted,
       tokenExpiresAt,
+      loginMethod,
       metadata: accountName ? { accountName } : null,
     });
     return this.connectionRepo.save(conn);
@@ -304,34 +320,105 @@ export class IntegrationsService {
 
   // ─── Instagram OAuth ─────────────────────────────────────────────
 
+  /** The login new connections use (`INSTAGRAM_LOGIN_METHOD`); existing connections keep theirs. */
+  loginMethod(): InstagramLoginMethod {
+    return this.config.get<string>('meta.loginMethod') === 'unified' ? 'unified' : 'instagram';
+  }
+
   /**
-   * The Meta login page for connecting this store's Instagram account.
-   * `returnTo` rides in `state` (Meta returns it as given) and says which
-   * admin page the callback comes back to.
+   * The login page for connecting this store's Instagram account: Instagram's
+   * own (instagram.com) or Meta's Unified Login (facebook.com), by
+   * `loginMethod()`. `state` carries the one-time token, the admin page the
+   * callback returns to, and the method (`ig` / `fb`); Meta returns it as given.
    */
   async instagramLoginUrl(tenantId: string, returnTo: 'onboarding' | 'connections' | 'claude'): Promise<string> {
-    const appId = this.config.get<string>('meta.appId');
-    const configId = this.config.get<string>('meta.loginConfigId');
+    const method = this.loginMethod();
     const redirectUri = this.config.get<string>('meta.oauthRedirectUri');
-    if (!appId || !configId || !redirectUri) {
+    const appId = this.config.get<string>(method === 'instagram' ? 'meta.instagramAppId' : 'meta.appId');
+    const configId = this.config.get<string>('meta.loginConfigId');
+    if (!appId || !redirectUri || (method === 'unified' && !configId)) {
       throw new BadRequestException('Instagram OAuth not configured');
     }
     // Saved in telegram_connect_tokens (reused): one use, ten minutes.
     const token = await this.createOAuthState(tenantId);
+    const state = `${token}.${returnTo}.${method === 'instagram' ? 'ig' : 'fb'}`;
+
+    if (method === 'instagram') {
+      // `force_reauth`: the owner signs in to the shop's account rather than
+      // whichever account the browser already has open.
+      const params = new URLSearchParams({
+        client_id: appId,
+        redirect_uri: redirectUri,
+        response_type: 'code',
+        scope: INSTAGRAM_LOGIN_SCOPES.join(','),
+        state,
+        force_reauth: 'true',
+      });
+      return `https://www.instagram.com/oauth/authorize?${params}`;
+    }
 
     // The Unified Login URL from the App Dashboard. The configuration carries
     // the permissions, so no scopes here. Its `display=popup` is dropped: the
     // admin opens this as a full page.
     const params = new URLSearchParams({
       client_id: appId,
-      config_id: configId,
+      config_id: configId!,
       redirect_uri: redirectUri,
       response_type: 'code',
       override_default_response_type: 'true',
-      state: `${token}.${returnTo}`,
+      state,
       prompt: 'login',
     });
     return `https://www.facebook.com/dialog/oauth?${params}`;
+  }
+
+  /**
+   * Finishes a login the callback received: the code becomes a token, the
+   * account is found and subscribed to webhooks, and the connection is saved.
+   * A reason the owner can act on comes back as data; anything else throws.
+   */
+  async completeInstagramLogin(
+    tenantId: string,
+    code: string,
+    method: InstagramLoginMethod,
+  ): Promise<{ ok: true; accountId: string } | { ok: false; reason: 'no_account' | 'multiple_accounts' | 'subscribe_failed' }> {
+    let account: IgAccount;
+    let username: string | undefined;
+    let expiresAt: Date | null;
+
+    if (method === 'instagram') {
+      const exchanged = await this.exchangeInstagramCode(code);
+      const profile = await this.instagramProfile(exchanged.accessToken);
+      account = { igAccountId: profile.userId, token: exchanged.accessToken, api: IG_GRAPH_API };
+      username = profile.username;
+      expiresAt = exchanged.expiresAt;
+    } else {
+      const exchanged = await this.exchangeCodeForToken(code);
+      // One token can cover several accounts; a tenant is one account. Picking
+      // one for the store could wire the wrong account, so ask them to
+      // reconnect sharing just one.
+      const accounts = await this.getAssignedInstagramAccounts(exchanged.accessToken);
+      if (accounts.length !== 1) {
+        const reason = accounts.length === 0 ? 'no_account' : 'multiple_accounts';
+        this.logger.warn(`Instagram OAuth for tenant ${tenantId}: ${accounts.length} accounts shared — ${reason}`);
+        return { ok: false, reason };
+      }
+      account = { igAccountId: accounts[0].id, token: exchanged.accessToken, api: GRAPH_API };
+      username = accounts[0].username;
+      expiresAt = exchanged.expiresAt;
+    }
+
+    try {
+      await this.subscribeToWebhooks(account);
+    } catch (err) {
+      // Saving now would show a connected account that never hears a message.
+      this.logger.error(`Instagram OAuth for tenant ${tenantId}`, (err as Error).message);
+      return { ok: false, reason: 'subscribe_failed' };
+    }
+
+    // The account id is what webhooks put in entry.id.
+    await this.connectInstagram(tenantId, account.igAccountId, account.token, username, expiresAt, method);
+    return { ok: true, accountId: account.igAccountId };
   }
 
   async createOAuthState(tenantId: string): Promise<string> {
@@ -413,42 +500,143 @@ export class IntegrationsService {
   }
 
   /**
-   * Subscribes the app to the account's webhooks. Unified Login connections
-   * get no notifications until this is called, once per account.
+   * Instagram Login: the code becomes a short-lived token at instagram.com,
+   * then a 60-day one. A connection is never saved with the short-lived token,
+   * which would stop working within the hour.
    */
-  async subscribeToWebhooks(igAccountId: string, token: string): Promise<void> {
-    const res = await fetch(`${GRAPH_API}/${igAccountId}/subscribed_apps?subscribed_fields=messages,comments`, {
+  private async exchangeInstagramCode(code: string): Promise<{ accessToken: string; expiresAt: Date }> {
+    const clientSecret = this.config.get<string>('meta.instagramAppSecret') ?? '';
+    const res = await fetch('https://api.instagram.com/oauth/access_token', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: this.config.get<string>('meta.instagramAppId') ?? '',
+        client_secret: clientSecret,
+        grant_type: 'authorization_code',
+        redirect_uri: this.config.get<string>('meta.oauthRedirectUri') ?? '',
+        // Instagram appends `#_` to the code in the redirect; a copied code may still carry it.
+        code: code.replace(/#_$/, ''),
+      }),
     });
-    const body = res.ok ? await res.json() as { success?: boolean } : null;
-    if (!body?.success) {
-      throw new Error(`Webhook subscription failed for ${igAccountId}: ${res.status}${body ? '' : ` — ${await res.text()}`}`);
+    if (!res.ok) throw new Error(`Instagram code exchange failed: ${res.status} — ${await res.text()}`);
+    const short = (await res.json()) as { access_token?: string; data?: Array<{ access_token?: string }> };
+    const shortToken = short.access_token ?? short.data?.[0]?.access_token;
+    if (!shortToken) throw new Error('Instagram code exchange returned no token');
+
+    const params = new URLSearchParams({ grant_type: 'ig_exchange_token', client_secret: clientSecret, access_token: shortToken });
+    const longRes = await fetch(`https://graph.instagram.com/access_token?${params}`);
+    if (!longRes.ok) throw new Error(`Instagram long-lived token exchange failed: ${longRes.status} — ${await longRes.text()}`);
+    const long = (await longRes.json()) as { access_token?: string; expires_in?: number };
+    if (!long.access_token) throw new Error('Instagram long-lived token exchange returned no token');
+    return { accessToken: long.access_token, expiresAt: new Date(Date.now() + (long.expires_in ?? INSTAGRAM_TOKEN_DAYS * DAY_SECONDS) * 1000) };
+  }
+
+  /**
+   * The account behind an Instagram Login token. `user_id` is the professional
+   * account id that webhooks put in `entry.id`; the login's own user id is a
+   * different one, so a missing `user_id` fails the connect instead of saving
+   * an account no webhook would ever reach. The id is read from the raw text:
+   * it is longer than a JS number holds exactly, and Instagram has sent it
+   * unquoted before, which `JSON.parse` would round to another account's id.
+   */
+  private async instagramProfile(token: string): Promise<{ userId: string; username?: string }> {
+    const res = await fetch(`${IG_GRAPH_API}/me?fields=user_id,username`, { headers: { Authorization: `Bearer ${token}` } });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`Instagram profile lookup failed: ${res.status} — ${text}`);
+    const userId = /"user_id"\s*:\s*"?(\d+)/.exec(text)?.[1];
+    if (!userId) throw new Error('Instagram profile has no user_id');
+    const { username } = JSON.parse(text) as { username?: string };
+    return { userId, username };
+  }
+
+  /**
+   * Subscribes the app to the account's webhooks; neither login delivers any
+   * until this is called, once per account. Comments need a permission real
+   * accounts may not have granted, so when Meta refuses them the account is
+   * subscribed to messages alone. Throws only when messages fail too.
+   */
+  async subscribeToWebhooks(account: IgAccount): Promise<{ comments: boolean }> {
+    const subscribe = async (fields: string): Promise<void> => {
+      const res = await fetch(`${account.api}/${account.igAccountId}/subscribed_apps?subscribed_fields=${fields}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${account.token}` },
+      });
+      const body = res.ok ? ((await res.json()) as { success?: boolean }) : null;
+      if (!body?.success) {
+        throw new Error(`Webhook subscription (${fields}) failed for ${account.igAccountId}: ${res.status}${body ? '' : ` — ${await res.text()}`}`);
+      }
+    };
+    try {
+      await subscribe('messages,comments');
+      return { comments: true };
+    } catch (err) {
+      this.logger.warn(`${(err as Error).message}. Subscribing to messages alone: comments won't be answered for this account`);
     }
+    await subscribe('messages');
+    return { comments: false };
   }
 
   // ─── Instagram token expiry ─────────────────────────────────────
 
   /**
-   * Unified Login tokens have no refresh grant: an expiring one means the
-   * store has to connect again. Kept on the n8n schedule so that need shows
-   * up in the logs a week ahead, in the shape the workflow already reads.
+   * Instagram Login tokens last 60 days and are renewed here, daily, once
+   * fewer than 10 days are left (by then a token is well past the 24 hours
+   * Meta asks before a renewal). A token already expired can't be renewed:
+   * its connection is marked `error` and the store connects again. Unified
+   * Login tokens have no renewal; an expiring one is only logged.
    */
-  async reportExpiringTokens(): Promise<{ refreshed: number; failed: number; expiring: number }> {
-    const sevenDaysFromNow = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-    const expiring = await this.connectionRepo.find({
+  async refreshInstagramTokens(): Promise<{ refreshed: number; failed: number; expired: number; expiring: number }> {
+    const now = Date.now();
+    const due = await this.connectionRepo.find({
       where: {
         type: ConnectionType.Instagram,
         status: ConnectionStatus.Connected,
-        tokenExpiresAt: LessThan(sevenDaysFromNow),
+        tokenExpiresAt: LessThan(new Date(now + INSTAGRAM_REFRESH_WITHIN_DAYS * DAY_SECONDS * 1000)),
       },
     });
 
-    for (const conn of expiring) {
-      this.logger.warn(
-        `Instagram token for tenant ${conn.tenantId} (connection ${conn.id}) expires ${conn.tokenExpiresAt?.toISOString()} — the store must reconnect`,
-      );
+    let refreshed = 0;
+    let failed = 0;
+    let expired = 0;
+    let expiring = 0;
+    for (const conn of due) {
+      if (conn.loginMethod !== 'instagram') {
+        expiring++;
+        this.logger.warn(
+          `Instagram token for tenant ${conn.tenantId} (connection ${conn.id}) expires ${conn.tokenExpiresAt?.toISOString()} — the store must reconnect`,
+        );
+        continue;
+      }
+      if (!conn.accessTokenEncrypted || (conn.tokenExpiresAt && conn.tokenExpiresAt.getTime() <= now)) {
+        expired++;
+        await this.connectionRepo.update(conn.id, { status: ConnectionStatus.Error });
+        this.logger.warn(`Instagram token for tenant ${conn.tenantId} (connection ${conn.id}) expired — the store must reconnect`);
+        continue;
+      }
+      try {
+        const token = this.crypto.decrypt(conn.accessTokenEncrypted);
+        const res = await fetch(`https://graph.instagram.com/refresh_access_token?${new URLSearchParams({ grant_type: 'ig_refresh_token', access_token: token })}`);
+        if (!res.ok) throw new Error(`${res.status} — ${await res.text()}`);
+        const body = (await res.json()) as { access_token?: string; expires_in?: number };
+        if (!body.access_token) throw new Error('no token in the response');
+        await this.connectionRepo.update(conn.id, {
+          accessTokenEncrypted: this.crypto.encrypt(body.access_token),
+          tokenExpiresAt: new Date(Date.now() + (body.expires_in ?? INSTAGRAM_TOKEN_DAYS * DAY_SECONDS) * 1000),
+        });
+        refreshed++;
+      } catch (err) {
+        failed++;
+        this.logger.error(`Renewing the Instagram token for tenant ${conn.tenantId} (connection ${conn.id}) failed: ${(err as Error).message}`);
+      }
     }
-    return { refreshed: 0, failed: 0, expiring: expiring.length };
+    if (due.length) this.logger.log(`Instagram tokens: ${refreshed} renewed, ${failed} failed, ${expired} expired, ${expiring} Unified expiring`);
+    return { refreshed, failed, expired, expiring };
+  }
+
+  /** Daily. Off with INSTAGRAM_TOKEN_REFRESH_WORKER_ENABLED=false (the CLI scripts do that). */
+  @Cron(CronExpression.EVERY_DAY_AT_4AM)
+  async refreshTokensDaily(): Promise<void> {
+    if (!this.config.get<boolean>('instagram.tokenRefreshWorkerEnabled')) return;
+    await this.refreshInstagramTokens().catch((err) => this.logger.error(`Instagram token renewal failed: ${(err as Error).message}`));
   }
 }

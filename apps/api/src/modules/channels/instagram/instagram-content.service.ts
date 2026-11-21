@@ -17,9 +17,10 @@ import { ConnectionType, ConnectionStatus } from '@direct-mate/shared';
 import { readFile } from 'fs/promises';
 import { extname } from 'path';
 import { uploadPath } from '../../../common/uploads';
-import { GRAPH_API, GRAPH_BUDGET_KEY } from '../../../common/meta-graph';
+import { GRAPH_BUDGET_KEY } from '../../../common/meta-graph';
+import { igAccountOf } from '../../integrations/ig-account';
 import { safeFetch } from '../../../common/safe-fetch';
-import type { IgAccount } from './instagram-sender.service';
+import type { IgAccount } from '../../integrations/ig-account';
 import { ContentLinksService, type ContentLinkView } from './content-links.service';
 import { ContentVerifierService } from './content-verifier.service';
 
@@ -409,12 +410,12 @@ export class InstagramContentService {
       const connection = await this.connectionRepo.findOne({
         where: { tenantId, type: ConnectionType.Instagram, status: ConnectionStatus.Connected },
       });
-      if (!connection?.accessTokenEncrypted) return { details: null, refused: true };
+      const account = connection && igAccountOf(connection, this.crypto);
+      if (!account) return { details: null, refused: true };
 
-      const token = this.crypto.decrypt(connection.accessTokenEncrypted);
       const res = await fetch(
-        `${GRAPH_API}/${mediaId}?fields=id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp`,
-        { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(GRAPH_TIMEOUT_MS) },
+        `${account.api}/${mediaId}?fields=id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp`,
+        { headers: { Authorization: `Bearer ${account.token}` }, signal: AbortSignal.timeout(GRAPH_TIMEOUT_MS) },
       );
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as { error?: { code?: number; error_subcode?: number } } | null;
@@ -612,10 +613,8 @@ export class InstagramContentService {
     opts: { posts: boolean },
   ): Promise<{ fetched: number; matched: number; newStoryIds: string[] }> {
     const tenantId = connection.tenantId;
-    const account: IgAccount = {
-      token: this.crypto.decrypt(connection.accessTokenEncrypted!),
-      igAccountId: connection.externalAccountId!,
-    };
+    const account = igAccountOf(connection, this.crypto);
+    if (!account) return { fetched: 0, matched: 0, newStoryIds: [] };
 
     const stories = await this.fetchStories(tenantId, account);
     if (!opts.posts) return { fetched: stories.count, matched: 0, newStoryIds: stories.newIds };
@@ -688,7 +687,7 @@ export class InstagramContentService {
    * so the stories fetched before it still reach the vision pass.
    */
   private async fetchPosts(tenantId: string, account: IgAccount, fullSync: boolean): Promise<number> {
-    const base = `${GRAPH_API}/${account.igAccountId}/media?fields=${MEDIA_FIELDS}&limit=${POSTS_PAGE_SIZE}`;
+    const base = `${account.api}/${account.igAccountId}/media?fields=${MEDIA_FIELDS}&limit=${POSTS_PAGE_SIZE}`;
     let fetched = 0;
 
     try {
@@ -727,7 +726,7 @@ export class InstagramContentService {
    * Returns the stories new to us, for the vision pass.
    */
   private async fetchStories(tenantId: string, account: IgAccount): Promise<{ count: number; newIds: string[] }> {
-    const base = `${GRAPH_API}/${account.igAccountId}/stories?fields=${MEDIA_FIELDS}`;
+    const base = `${account.api}/${account.igAccountId}/stories?fields=${MEDIA_FIELDS}`;
     let count = 0;
     const newIds: string[] = [];
 

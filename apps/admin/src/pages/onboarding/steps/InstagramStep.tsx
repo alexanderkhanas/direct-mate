@@ -16,6 +16,7 @@ import {
   type HistoryImport,
   type HistoryImportView,
 } from '../../../components/onboarding/historyImport';
+import { useInstagramLoginMethod } from '../../../components/connections/InstagramConnect';
 import { useSetup, useSetupStep } from '../SetupContext';
 import { storeInitial } from '../SetupShell';
 
@@ -36,10 +37,11 @@ function reasonKey(reason: string | null): string {
 
 /**
  * Instagram (boards m50, m51), right after products: what to check before the
- * Facebook login, whether to read recent chats (they draft the notes and the
- * tone), the login itself, what went wrong when Meta sends the owner back, and
- * the connected account with the reading's progress. The bot stays off until
- * the last step; «Підключити пізніше» moves on without connecting.
+ * login (Instagram's own, or Meta's through Facebook), whether to read recent
+ * chats (they draft the notes and the tone), the login itself, what went wrong
+ * when the owner comes back, and the connected account with the reading's
+ * progress. The AI agent stays off until the last step; «Підключити пізніше»
+ * moves on without connecting.
  */
 export default function InstagramStep() {
   const { t } = useT();
@@ -223,14 +225,18 @@ function ImportLine({ imp, offerRead }: { imp: HistoryImport | null; offerRead: 
   );
 }
 
-type CheckKey = 'professional' | 'facebook' | 'single';
+type CheckKey = 'professional' | 'shop_login' | 'facebook' | 'single';
 
-/** «Перед входом перевірте»: three things to have ready. The ticks are the owner's own checklist and block nothing. */
+/**
+ * «Перед входом перевірте»: what to have ready. Instagram's own login needs a
+ * professional account and the shop's account signed in; Unified Login also
+ * goes through Facebook and Meta's account picker. The ticks are the owner's
+ * own checklist and block nothing.
+ */
 function Preflight() {
   const { t } = useT();
-  const whyId = useId();
-  const [ticked, setTicked] = useState<Record<CheckKey, boolean>>({ professional: false, facebook: false, single: false });
-  const [whyOpen, setWhyOpen] = useState(false);
+  const method = useInstagramLoginMethod();
+  const [ticked, setTicked] = useState<Record<CheckKey, boolean>>({ professional: false, shop_login: false, facebook: false, single: false });
   const tick = (key: CheckKey) => (next: boolean) => setTicked((prev) => ({ ...prev, [key]: next }));
 
   return (
@@ -246,36 +252,57 @@ function Preflight() {
           }
         />
         <Divider />
-        <PreflightRow
-          checked={ticked.facebook}
-          onChange={tick('facebook')}
-          title={t('setup_launch.ig_check_facebook')}
-          description={<span className="text-sm text-dm-muted">{t('setup_launch.ig_check_facebook_desc')}</span>}
-          aside={
-            <button
-              type="button"
-              aria-expanded={whyOpen}
-              aria-controls={whyId}
-              onClick={() => setWhyOpen((open) => !open)}
-              className="-my-2.5 inline-flex h-11 flex-none items-center px-1 text-sm font-medium text-blue-800 underline decoration-1 underline-offset-[3px] hover:text-blue-700"
-            >
-              {t('setup_launch.ig_why')}
-            </button>
-          }
-        />
-        <p id={whyId} hidden={!whyOpen} className="mb-3 ml-12 mr-3 rounded-[10px] bg-dm-bg px-3 py-2.5 text-sm text-dm-ink2">
-          {t('setup_launch.ig_why_text')}
-        </p>
-        <Divider />
-        <PreflightRow
-          checked={ticked.single}
-          onChange={tick('single')}
-          title={t('setup_launch.ig_check_single')}
-          description={<span className="text-sm text-dm-muted">{t('setup_launch.ig_check_single_desc')}</span>}
-        />
+        {method === 'instagram' ? (
+          <PreflightRow
+            checked={ticked.shop_login}
+            onChange={tick('shop_login')}
+            title={t('setup_launch.ig_check_shop_login')}
+            description={<span className="text-sm text-dm-muted">{t('setup_launch.ig_check_shop_login_desc')}</span>}
+          />
+        ) : (
+          <UnifiedChecks ticked={ticked} tick={tick} />
+        )}
       </div>
       <p className="text-[13px] text-dm-muted">{t('setup_launch.ig_checks_note')}</p>
     </section>
+  );
+}
+
+/** Unified Login's two extra checks: the Facebook window (with why), and picking one account in Meta's picker. */
+function UnifiedChecks({ ticked, tick }: { ticked: Record<CheckKey, boolean>; tick: (key: CheckKey) => (next: boolean) => void }) {
+  const { t } = useT();
+  const whyId = useId();
+  const [whyOpen, setWhyOpen] = useState(false);
+  return (
+    <>
+      <PreflightRow
+        checked={ticked.facebook}
+        onChange={tick('facebook')}
+        title={t('setup_launch.ig_check_facebook')}
+        description={<span className="text-sm text-dm-muted">{t('setup_launch.ig_check_facebook_desc')}</span>}
+        aside={
+          <button
+            type="button"
+            aria-expanded={whyOpen}
+            aria-controls={whyId}
+            onClick={() => setWhyOpen((open) => !open)}
+            className="-my-2.5 inline-flex h-11 flex-none items-center px-1 text-sm font-medium text-blue-800 underline decoration-1 underline-offset-[3px] hover:text-blue-700"
+          >
+            {t('setup_launch.ig_why')}
+          </button>
+        }
+      />
+      <p id={whyId} hidden={!whyOpen} className="mb-3 ml-12 mr-3 rounded-[10px] bg-dm-bg px-3 py-2.5 text-sm text-dm-ink2">
+        {t('setup_launch.ig_why_text')}
+      </p>
+      <Divider />
+      <PreflightRow
+        checked={ticked.single}
+        onChange={tick('single')}
+        title={t('setup_launch.ig_check_single')}
+        description={<span className="text-sm text-dm-muted">{t('setup_launch.ig_check_single_desc')}</span>}
+      />
+    </>
   );
 }
 

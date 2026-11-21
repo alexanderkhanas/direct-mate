@@ -139,7 +139,7 @@
   <p>DirectMate integrates with the Instagram Messaging API provided by Meta Platforms, Inc. When a business connects their Instagram account to DirectMate:</p>
   <ul>
     <li>we receive and process Instagram Direct Messages sent to the connected business account</li>
-    <li>we use page access tokens (encrypted with AES-256-GCM) to send responses on behalf of the business</li>
+    <li>we use the access tokens Instagram issues to the business (encrypted with AES-256-GCM) to send responses on its behalf</li>
     <li>we store Instagram account identifiers and business profile information necessary to operate the service</li>
     <li>message content may be sent to AI providers to generate automated replies</li>
     <li>we process Direct Messages only after the business allows it: reading them (a one-time read of recent conversations to learn its terms and tone, and drafting replies for its review) and replying to customers are separate permissions, each can be withdrawn at any time, and until either is given incoming messages are not stored</li>

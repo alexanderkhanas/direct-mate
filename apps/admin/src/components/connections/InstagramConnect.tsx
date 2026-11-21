@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { Instagram } from '../icons';
 import { api } from '../../lib/api';
 import { Button } from '../ui/Button';
@@ -39,9 +39,26 @@ export function useInstagramOAuthResult(): { ok: boolean; message: string } | nu
   return result;
 }
 
-/** What the owner needs before the Facebook login, then the button that starts it. */
+/**
+ * The login «Connect Instagram» opens: Instagram's own (`instagram`) or Meta's
+ * Unified Login through Facebook (`unified`). Set on the server; Instagram's
+ * own until it answers.
+ */
+export type InstagramLoginMethod = 'instagram' | 'unified';
+
+export function useInstagramLoginMethod(): InstagramLoginMethod {
+  const { data } = useQuery({
+    queryKey: ['instagram-login-method'],
+    queryFn: () => api.get<{ method: InstagramLoginMethod }>('/connections/instagram/login-method').then((r) => r.data),
+    staleTime: Infinity,
+  });
+  return data?.method ?? 'instagram';
+}
+
+/** What the owner needs before the login, then the button that starts it. */
 export function InstagramConnectButton({ returnTo }: { returnTo: 'onboarding' | 'connections' }) {
   const { t } = useT();
+  const method = useInstagramLoginMethod();
   const start = useMutation({
     mutationFn: () => api.post('/connections/instagram/oauth/start', { returnTo }).then((r) => r.data),
     onSuccess: (data: { redirectUrl: string }) => {
@@ -52,8 +69,14 @@ export function InstagramConnectButton({ returnTo }: { returnTo: 'onboarding' | 
     <div className="space-y-3">
       <ul className="text-xs text-gray-500 space-y-1 list-disc pl-4">
         <li>{t('instagram_connect.need_professional')}</li>
-        <li>{t('instagram_connect.need_facebook')}</li>
-        <li>{t('instagram_connect.one_account')}</li>
+        {method === 'instagram' ? (
+          <li>{t('instagram_connect.need_instagram')}</li>
+        ) : (
+          <>
+            <li>{t('instagram_connect.need_facebook')}</li>
+            <li>{t('instagram_connect.one_account')}</li>
+          </>
+        )}
       </ul>
       <Button onClick={() => start.mutate()} loading={start.isPending}>
         <Instagram className="h-4 w-4" />

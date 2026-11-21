@@ -20,6 +20,16 @@ export default () => ({
     // The "Instagram API (Unified Login)" configuration in the App Dashboard.
     loginConfigId: process.env.META_LOGIN_CONFIG_ID ?? '',
     oauthRedirectUri: process.env.INSTAGRAM_OAUTH_REDIRECT_URI ?? '',
+    // Instagram API with Instagram Login (instagram.com): the Instagram app under
+    // the Meta app's "API setup with Instagram login". Its secret also signs
+    // that login's webhooks.
+    instagramAppId: process.env.INSTAGRAM_APP_ID ?? '',
+    instagramAppSecret: process.env.INSTAGRAM_APP_SECRET ?? '',
+    // The login new connections use: `instagram` (the default; any account can
+    // connect) or `unified` (Facebook Login for Business with system-user
+    // tokens, which Meta opens only to people with a role on the app until the
+    // business is a Tech Provider). Existing connections keep theirs.
+    loginMethod: process.env.INSTAGRAM_LOGIN_METHOD === 'unified' ? 'unified' : 'instagram',
   },
   admin: {
     baseUrl: process.env.ADMIN_BASE_URL ?? 'http://localhost:5173',
@@ -103,6 +113,9 @@ export default () => ({
     debounceMs: parseInt(process.env.INSTAGRAM_DEBOUNCE_MS ?? '5000', 10),
     // Decides whether a comment under a post is a question for the shop.
     commentGateModel: process.env.INSTAGRAM_COMMENT_GATE_MODEL ?? 'gpt-5.4-mini',
+    // Renews Instagram Login tokens (60 days) once a day. On for the API; the
+    // CLI scripts that boot AppModule turn it off.
+    tokenRefreshWorkerEnabled: process.env.INSTAGRAM_TOKEN_REFRESH_WORKER_ENABLED !== 'false',
   },
   anthropic: {
     // For `claude-*` agent models once the Anthropic provider is installed

@@ -1,3 +1,4 @@
+import { createHmac } from 'crypto';
 import { ConversationStatus, MessageRole } from '@direct-mate/shared';
 import { InstagramService } from './instagram.service';
 import type { IgAccount } from './instagram-sender.service';
@@ -35,6 +36,7 @@ function setup(opts: {
   sendFails?: boolean;
   appId?: string;
   albumSent?: boolean;
+  loginMethod?: 'instagram' | 'unified';
 } = {}) {
   const queries: Array<{ sql: string; params: unknown[] }> = [];
   const savedMids = new Set<string>();
@@ -91,11 +93,22 @@ function setup(opts: {
   const voice = { startForMessage: jest.fn() };
 
   const service = new InstagramService(
-    { get: (key: string) => ({ 'instagram.debounceMs': 5000, 'meta.appId': opts.appId ?? '777' })[key] } as never,
+    {
+      get: (key: string) =>
+        ({
+          'instagram.debounceMs': 5000,
+          'meta.appId': opts.appId ?? '777',
+          'meta.instagramAppId': '888',
+          'meta.appSecret': 'meta-secret',
+          'meta.instagramAppSecret': 'ig-secret',
+        })[key],
+    } as never,
     conversations as never,
     {
       findByExternalAccountId: async (id: string) =>
-        id === SHOP ? { id: 'conn1', tenantId: 't1', accessTokenEncrypted: 'enc', externalAccountId: SHOP } : null,
+        id === SHOP
+          ? { id: 'conn1', tenantId: 't1', accessTokenEncrypted: 'enc', externalAccountId: SHOP, loginMethod: opts.loginMethod ?? 'unified' }
+          : null,
     } as never,
     { decrypt: () => 'token' } as never,
     telegram as never,
@@ -342,6 +355,16 @@ describe('InstagramService answering', () => {
     expect(t.telegram.notifyHandoff).toHaveBeenCalledWith(expect.objectContaining({ reason: 'send_failed' }));
   });
 
+  it("sends from an Instagram Login connection on graph.instagram.com, a Unified one on graph.facebook.com", async () => {
+    const ig = setup({ loginMethod: 'instagram' });
+    await ig.answer();
+    expect(ig.sender.sendText.mock.calls[0][0]).toEqual({ igAccountId: SHOP, token: 'token', api: 'https://graph.instagram.com/v27.0' });
+
+    const unified = setup();
+    await unified.answer();
+    expect(unified.sender.sendText.mock.calls[0][0]).toMatchObject({ api: 'https://graph.facebook.com/v27.0' });
+  });
+
   it('runs a learning-mode store as a dry run and sends nothing', async () => {
     const t = setup({ operatingMode: 'learning' });
     await t.answer();
@@ -362,10 +385,11 @@ describe('InstagramService echoes', () => {
     await jest.advanceTimersByTimeAsync(5000);
   };
 
-  it('ignores the echo of a message we sent, by id or by our app id', async () => {
+  it("ignores the echo of a message we sent, by id or by either app's id", async () => {
     const t = setup({ ownMids: ['ours'] });
     await handle(t, echo({ mid: 'ours', text: 'Так, є в L.' }));
     await handle(t, echo({ mid: 'unknown', text: 'Щось', app_id: 777 }));
+    await handle(t, echo({ mid: 'unknown-2', text: 'Ще щось', app_id: 888 }));
     expect(t.conversations.takeover).not.toHaveBeenCalled();
     expect(t.conversations.saveChannelMessage).not.toHaveBeenCalled();
   });
@@ -409,5 +433,18 @@ describe('InstagramService echoes', () => {
       null,
     );
     expect(t.conversations.takeover).toHaveBeenCalledWith('conv1', null, 'auto_detected');
+  });
+});
+
+describe('InstagramService webhook signature', () => {
+  const body = Buffer.from(JSON.stringify({ object: 'instagram', entry: [] }));
+  const sign = (secret: string) => `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`;
+
+  it("accepts a delivery signed with either app's secret: the Meta app's (Unified Login) or the Instagram app's", () => {
+    const { service } = setup();
+    expect(service.verifySignature(body, sign('meta-secret'))).toBe(true);
+    expect(service.verifySignature(body, sign('ig-secret'))).toBe(true);
+    expect(service.verifySignature(body, sign('someone-else'))).toBe(false);
+    expect(service.verifySignature(body, 'sha256=short')).toBe(false);
   });
 });

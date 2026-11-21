@@ -614,7 +614,8 @@ describe('cleanAnalysis', () => {
 });
 
 describe('GraphHistoryClient', () => {
-  const account = { accountId: SHOP, token: 'tkn', connectedAt: CONNECTED };
+  const account = { accountId: SHOP, token: 'tkn', api: 'https://graph.facebook.com/v27.0', connectedAt: CONNECTED };
+  const igAccount = { ...account, api: 'https://graph.instagram.com/v27.0' };
   const client = () => new GraphHistoryClient({} as never, {} as never);
 
   it('reads the usage as the highest of the three numbers', () => {
@@ -646,6 +647,35 @@ describe('GraphHistoryClient', () => {
     const err = await client().messages(account, 'c').catch((e) => e);
     expect(err).toBeInstanceOf(GraphRequestError);
     expect(err.status).toBe(0);
+  });
+
+  it('reads an Instagram Login connection on graph.instagram.com', async () => {
+    const fetchMock = jest.fn(async () => respond({ messages: { data: [msg('m1', 'u', '2026-10-01T00:00:00Z', 'hi')] } }));
+    global.fetch = fetchMock as never;
+    await client().messages(igAccount, 'conv-1');
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toMatch(/^https:\/\/graph\.instagram\.com\/v27\.0\/conv-1\?fields=/);
+  });
+
+  it("reads each message by id when the conversation lists only the messages' ids, skipping one it can't read", async () => {
+    jest.useFakeTimers();
+    try {
+      const fetchMock = jest.fn(async (url: string) => {
+        if (url.includes('/conv-1?')) {
+          return respond({ messages: { data: [{ id: 'm1', created_time: 'a' }, { id: 'm2', created_time: 'b' }, { id: 'm3', created_time: 'c' }] } });
+        }
+        if (url.includes('/m2?')) return respond({ error: { message: 'deleted', code: 100 } }, { status: 400 });
+        const id = url.includes('/m1?') ? 'm1' : 'm3';
+        return respond(msg(id, 'u', '2026-10-01T00:00:00Z', `text ${id}`));
+      });
+      global.fetch = fetchMock as never;
+      const pending = client().messages(igAccount, 'conv-1');
+      await jest.runAllTimersAsync();
+      const res = await pending;
+      expect(res.messages.map((m) => m.message)).toEqual(['text m1', 'text m3']);
+      expect((fetchMock.mock.calls[1] as unknown as [string])[0]).toBe('https://graph.instagram.com/v27.0/m1?fields=id,created_time,from,message');
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('pages the conversation list by cursor', async () => {

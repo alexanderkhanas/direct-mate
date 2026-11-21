@@ -65,7 +65,8 @@ docs/v2-agent/   — The agent rework: decisions and the phase-by-phase implemen
 - **OpenAI** — the agent model (`AGENT_MODEL`, gpt-6.1-terra in use), moderation on replies
   (omni-moderation, free), vision for photo matching, product attribute extraction, reading size charts,
   the comment screen, transcribing customers' voice messages (`TRANSCRIBE_MODEL`, gpt-4o-mini-transcribe)
-- **Meta** — Instagram API with Unified Login: webhooks + messaging via `graph.facebook.com/v27.0` (see below)
+- **Meta** — Instagram API with Instagram Login (`graph.instagram.com`) or Unified Login (`graph.facebook.com`),
+  per connection: webhooks + messaging (see below)
 - **Replicate** — CLIP image embeddings for photo matching
 - **Telegram** — handoff notifications to managers
 - **n8n** — local Docker instance on port 5678, API key auth
@@ -278,23 +279,40 @@ the same store. Off unless `MCP_ENABLED=true`.
 
 ## Meta/Instagram Setup
 
-- **Instagram API with Unified Login** (since Nov 2026; replaced Instagram Login, hard cutover — every
-  store reconnected once). `META_APP_ID` / `META_APP_SECRET` are the **Meta** app's, not the Instagram
-  app's; the same secret signs webhooks. `META_LOGIN_CONFIG_ID` = the "Instagram API (Unified Login)"
-  configuration in the App Dashboard, which owns the permissions (`instagram_basic`,
-  `instagram_manage_messages`, `instagram_manage_comments`, …) — the login URL carries no scopes.
-- OAuth: `facebook.com/dialog/oauth?config_id=…` → `/auth/instagram/callback` → code exchanged at
-  `graph.facebook.com/v27.0/oauth/access_token` for a Business Integration System User token (expiry is
-  set on the configuration; there is no refresh grant — an expiring token means reconnect).
-- `external_account_id` = the id from `GET /me/assigned_instagram_accounts`, which is webhook
-  `entry.id`. **`/me` is the system user, never the account** — every call names the account id.
-  More than one shared account → the callback refuses (`reason=multiple_accounts`).
-- The callback subscribes the account with `POST /{ig-id}/subscribed_apps?subscribed_fields=messages,comments`.
-  Without it a Unified Login connection receives no webhooks at all.
-- All Graph calls go through `GRAPH_API` (`apps/api/src/common/meta-graph.ts`, `graph.facebook.com/v27.0`).
-  Messages: `POST {GRAPH_API}/{ig-id}/messages`.
-- Webhook URL: `https://{ngrok}/channels/instagram/webhook`, set on the Meta app's **Instagram** webhook object
-- Verify token: `directmate_verify_a3f7b9c2e1d4`
+Two logins, recorded per connection in `connections.login_method`. `INSTAGRAM_LOGIN_METHOD` picks the one new
+connections use (default `instagram`); existing connections keep theirs. Every Graph call takes its host from the
+connection (`igAccountOf()` in `modules/integrations/ig-account.ts`, `graphApi()` in `common/meta-graph.ts`) and names
+the account id; the paths are the same on both hosts.
+
+- **Instagram Login (`instagram`, the default since 21 Nov 2026).** The owner logs in at instagram.com, no Facebook.
+  `INSTAGRAM_APP_ID` / `INSTAGRAM_APP_SECRET` = the Instagram app under the Meta app's "API setup with Instagram
+  login" (id 4566420570267244). Scopes `instagram_business_basic`, `instagram_business_manage_messages`,
+  `instagram_business_manage_comments` (comments not approved yet: granted only to people with a role on the app).
+  - OAuth: `www.instagram.com/oauth/authorize` (state `<token>.<returnTo>.ig`) → `/auth/instagram/callback` → code at
+    `api.instagram.com/oauth/access_token` → 60-day token at `graph.instagram.com/access_token?grant_type=ig_exchange_token`
+    (never saved short-lived) → `GET graph.instagram.com/v27.0/me?fields=user_id,username`: `user_id` is the
+    professional account id = webhook `entry.id` = `external_account_id` (no `user_id` → `exchange_failed`).
+  - Calls on `IG_GRAPH_API` (`graph.instagram.com/v27.0`). Tokens are renewed daily once fewer than 10 days are left
+    (`IntegrationsService.refreshInstagramTokens`, `@Cron` 04:00, `INSTAGRAM_TOKEN_REFRESH_WORKER_ENABLED`; also
+    `POST /internal/instagram/refresh-tokens`); an expired one marks the connection `error` and the store reconnects.
+  - History import: Meta returns content only for a conversation's 20 most recent messages, and Instagram Login's
+    edge may list only ids, so the client then reads each message by id (2 calls/s per account).
+  - Webhooks are set under "API setup with Instagram login" and signed with the Instagram app secret.
+- **Unified Login (`unified`).** Facebook Login for Business with a system-user token. `META_APP_ID` /
+  `META_APP_SECRET` = the **Meta** app's; `META_LOGIN_CONFIG_ID` = the "Instagram API (Unified Login)" configuration,
+  which owns the permissions (the login URL carries no scopes). Calls on `GRAPH_API` (`graph.facebook.com/v27.0`).
+  - OAuth: `facebook.com/dialog/oauth?config_id=…` (state `….fb`) → code at `graph.facebook.com/v27.0/oauth/access_token`
+    for a Business Integration System User token (no refresh grant; an expiring one is only logged) →
+    `GET /me/assigned_instagram_accounts`: its id is `entry.id`. **`/me` is the system user, never the account.**
+    More than one shared account → `reason=multiple_accounts`.
+  - **Blocked for real stores:** Meta opens system-user-token configurations only to people with a role on the app
+    ("Feature Unavailable" for everyone else) until the business is a Tech Provider; a user-token configuration
+    opens. Kept for when Meta lifts that.
+- **Both:** the callback subscribes the account with `POST {host}/{ig-id}/subscribed_apps?subscribed_fields=messages,comments`,
+  or `messages` alone when Meta refuses comments (not granted); without it no webhook arrives. The webhook check
+  accepts a signature from either app's secret, and an echo's `app_id` from either app.
+- Webhook URL: `https://directmate.app/channels/instagram/webhook` (one callback per webhook setting: pointing one at
+  ngrok takes it away from production). Verify token: `directmate_verify_a3f7b9c2e1d4`.
 - Token stored encrypted in `connections` table
 - Both sender and receiver must be app testers in development mode (Instagram Tester role, accepted on instagram.com)
 
@@ -393,8 +411,10 @@ mode for the side effects you want; never add `isDemo`-style flags inside the ag
   import's Graph budget pause (`app_state.instagram_history_budget`) is on; the «Fetch content» button doesn't.
   `ffmpeg-static` downloads its binary from GitHub during `npm ci`; if that fails a deploy, install ffmpeg with apt and
   set `FFMPEG_BIN`.
-- **Live Instagram checks still pending on Unified Login:** echo `app_id`, `entry.id` shape, the
-  3-message burst and manager takeover on a real account.
+- **Live Instagram checks still pending:** on Instagram Login, that manager replies arrive as echoes (else subscribe
+  `message_echoes`), that the history import reads message text and tells the shop's messages by `from.id`, and
+  stories/media on graph.instagram.com; on Unified Login, the echo `app_id` and `entry.id` shape. Comment replies for
+  real stores wait for `instagram_business_manage_comments` approval.
 - Three local tenants (`clothes-store`, `men-demo-store`, `luxe-space`) share one IG account id;
   `findByExternalAccountId` has no ordering, so a live DM lands in any of them. Keep one connected.
 - men-demo-store's brand tone says "Never reveal you are AI", which contradicts its welcome line.
@@ -456,6 +476,8 @@ cd apps/api && npm test
 ```
 NODE_ENV, PORT, DATABASE_URL, JWT_SECRET, JWT_EXPIRES_IN
 META_APP_ID, META_APP_SECRET, META_WEBHOOK_VERIFY_TOKEN, META_LOGIN_CONFIG_ID, INSTAGRAM_OAUTH_REDIRECT_URI
+INSTAGRAM_APP_ID, INSTAGRAM_APP_SECRET (Instagram Login), INSTAGRAM_LOGIN_METHOD (instagram | unified; new connections)
+INSTAGRAM_TOKEN_REFRESH_WORKER_ENABLED (daily renewal of Instagram Login tokens; default on, the CLI scripts turn it off)
 APP_BASE_URL, BACKEND_BASE_URL, ADMIN_BASE_URL
 OPENAI_API_KEY, OPENAI_VISION_MODEL
 AGENT_MODEL, AGENT_MAX_STEPS, AGENT_TIMEOUT_MS, AGENT_REASONING_EFFORT, AGENT_TEMPERATURE

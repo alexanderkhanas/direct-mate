@@ -92,8 +92,9 @@ export class InstagramContentController {
   }
 }
 
-// ─── Internal endpoint (n8n: the token-expiry report) ─────────
+// ─── Internal endpoint (n8n: token renewal) ──────────────────
 // Content fetching is an in-process cron (InstagramContentService.tick), not n8n.
+// Token renewal runs in process too (daily); this runs the same pass on demand.
 
 @ApiTags('internal/instagram')
 @UseGuards(InternalApiKeyGuard)
@@ -103,6 +104,6 @@ export class InternalInstagramContentController {
 
   @Post('refresh-tokens')
   refreshTokens() {
-    return this.integrationsService.reportExpiringTokens();
+    return this.integrationsService.refreshInstagramTokens();
   }
 }

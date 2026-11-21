@@ -2,7 +2,9 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 import { withRetry } from '../../../common/retry';
-import { GRAPH_API } from '../../../common/meta-graph';
+import type { IgAccount } from '../../integrations/ig-account';
+
+export type { IgAccount } from '../../integrations/ig-account';
 
 /** Meta's limit for one text message: 1,000 bytes of UTF-8, which is about 500 Cyrillic characters. */
 export const IG_TEXT_LIMIT_BYTES = 1000;
@@ -32,12 +34,6 @@ export class MetaSendError extends Error {
 }
 
 export type IgRecipient = { id: string } | { comment_id: string };
-
-/** The connected account a message is sent from: the send path names it, `/me` doesn't. */
-export interface IgAccount {
-  token: string;
-  igAccountId: string;
-}
 
 export interface SendContext {
   tenantId: string;
@@ -187,7 +183,8 @@ export class InstagramSender {
     message: Record<string, unknown>,
     ctx: SendContext,
   ): Promise<string | null> {
-    const res = await fetch(`${GRAPH_API}/${account.igAccountId}/messages`, {
+    // The account is named on either host: on Unified Login `/me` is the system user.
+    const res = await fetch(`${account.api}/${account.igAccountId}/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${account.token}` },
       body: JSON.stringify({ recipient, message }),

@@ -7,5 +7,6 @@
  */
 process.env.HISTORY_IMPORT_WORKER_ENABLED = 'false';
 process.env.CONTENT_FETCH_WORKER_ENABLED = 'false';
+process.env.INSTAGRAM_TOKEN_REFRESH_WORKER_ENABLED = 'false';
 
 export {};
