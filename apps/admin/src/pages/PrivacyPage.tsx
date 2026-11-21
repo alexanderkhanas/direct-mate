@@ -152,6 +152,7 @@ export function PrivacyPage() {
             <li>we use page access tokens (encrypted with AES-256-GCM) to send responses on behalf of the business</li>
             <li>we store Instagram account identifiers and business profile information necessary to operate the service</li>
             <li>message content may be sent to AI providers to generate automated replies</li>
+            <li>we process Direct Messages only after the business allows it: reading them (a one-time read of recent conversations to learn its terms and tone, and drafting replies for its review) and replying to customers are separate permissions, each can be withdrawn at any time, and until either is given incoming messages are not stored</li>
           </ul>
           <p className={style.p}>Use of data received from Meta APIs complies with the Meta Platform Terms and Meta Developer Policies.</p>
         </div>
@@ -160,8 +161,8 @@ export function PrivacyPage() {
           <h2 className={style.h2}>8. AI assistants you connect</h2>
           <p className={style.p}>If you connect DirectMate to an AI assistant, such as Claude by Anthropic, through our connector, the assistant acts on your instructions and on your behalf:</p>
           <ul className={style.ul}>
-            <li>it can read your store’s setup status, store notes (including the payment details you entered for customers), product counts, examples from a product feed you give it, and the conversations in your private test chat;</li>
-            <li>it can change the settings you ask it to change, send test messages to your AI agent, and turn the AI agent on only after you confirm;</li>
+            <li>it can read your store’s setup status, store notes (including the payment details you entered for customers), product counts, examples from a product feed you give it, and the conversations in your private test chat; with your permission it can start the one-time reading of your recent Instagram conversations, and it then receives what we drew from them (the store terms your managers stated and a description of your tone), not the messages themselves;</li>
+            <li>it can change the settings you ask it to change, send test messages to your AI agent, record the Instagram permissions you give, and turn the AI agent on, each only after you confirm;</li>
             <li>it does not receive your customers’ Instagram messages, your password, or the access tokens of your connected accounts.</li>
           </ul>
           <p className={style.p}>What the assistant’s provider does with the information it receives is governed by that provider’s own terms and privacy policy.</p>

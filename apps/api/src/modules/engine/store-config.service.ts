@@ -32,9 +32,17 @@ export class StoreConfigService {
    * Put the new mode on a config that the caller then saves. Turning the bot
    * on is checked here, not only in the admin: a store with no catalog or
    * notes would answer real customers with nothing to say.
+   *
+   * Each mode also needs the owner's permission for the Direct
+   * (`DirectPermissionsService`): active needs `reply_permission`, learning
+   * `read_permission`. Not skipped for a superadmin: it is the owner's to give.
    */
   async applyMode(config: StoreConfig, mode: OperatingMode, opts: { skipGate?: boolean } = {}): Promise<ModeChange> {
     const wentLive = mode === 'active' && config.operatingMode !== 'active';
+    if ((mode === 'active' || mode === 'learning') && config.operatingMode !== mode && config.tenantId) {
+      const missing = await this.missingPermission(config.tenantId, mode);
+      if (missing) return { ok: false, missing: [missing] };
+    }
     if (wentLive && !opts.skipGate) {
       const readiness = await this.readiness.check(config.tenantId);
       if (!readiness.ready) return { ok: false, missing: readiness.missing };
@@ -48,6 +56,16 @@ export class StoreConfigService {
       config.learningNotifiedAt = null;
     }
     return { ok: true, wentLive };
+  }
+
+  private async missingPermission(tenantId: string, mode: 'active' | 'learning'): Promise<string | null> {
+    const [row]: Array<{ read: boolean; reply: boolean }> = await this.configRepo.manager.query(
+      `SELECT direct_read_allowed_at IS NOT NULL AS read, direct_reply_allowed_at IS NOT NULL AS reply
+         FROM tenant_settings WHERE tenant_id = $1`,
+      [tenantId],
+    );
+    if (mode === 'active') return row?.reply ? null : 'reply_permission';
+    return row?.read ? null : 'read_permission';
   }
 
   /** After the config with its new mode is saved. */

@@ -17,7 +17,18 @@ function status(done: OnboardingStepKey[]): OnboardingStatus {
   } as OnboardingStatus;
 }
 
-function setup(opts: { done?: OnboardingStepKey[]; doc?: string | null } = {}) {
+type Perm = { allowed: boolean; since: string | null; decided: boolean };
+const perm = (allowed: boolean, decided = allowed): Perm => ({ allowed, since: allowed ? '2026-11-20T00:00:00.000Z' : null, decided });
+
+function setup(
+  opts: {
+    done?: OnboardingStepKey[];
+    doc?: string | null;
+    read?: Perm;
+    reply?: Perm;
+    history?: Record<string, unknown> | null;
+  } = {},
+) {
   const dataSource = {
     query: jest.fn(async () => [{ knowledge_doc: opts.doc ?? null, checkout_config: null }]),
   };
@@ -50,6 +61,12 @@ function setup(opts: { done?: OnboardingStepKey[]; doc?: string | null } = {}) {
   };
   const handoffs = { issue: jest.fn(async (_t: string, action: string) => ({ url: `https://directmate.app/claude/${action}?t=tok`, expiresInSeconds: 600 })) };
   const events = { record: jest.fn(async () => undefined) };
+  const current = () => ({ read_messages: opts.read ?? perm(false), reply_to_customers: opts.reply ?? perm(false) });
+  const permissions = {
+    get: jest.fn(async () => current()),
+    set: jest.fn(async (): Promise<unknown> => ({ permissions: current() })),
+  };
+  const history = { get: jest.fn(async () => ({ instagramConnected: true, import: opts.history ?? null })) };
   const tools = new McpToolsService(
     dataSource as never,
     config as never,
@@ -63,8 +80,10 @@ function setup(opts: { done?: OnboardingStepKey[]; doc?: string | null } = {}) {
     subscriptions as never,
     handoffs as never,
     events as never,
+    permissions as never,
+    history as never,
   );
-  return { tools, onboarding, notes, testChat, feeds, storeConfig, handoffs, events };
+  return { tools, onboarding, notes, testChat, feeds, storeConfig, handoffs, events, permissions, history };
 }
 
 describe('McpToolsService', () => {
@@ -199,6 +218,14 @@ describe('McpToolsService', () => {
       expect(events.record).not.toHaveBeenCalled();
     });
 
+    it('names the permission active mode needs', async () => {
+      const { tools, storeConfig } = setup({ done: ['products', 'instagram'] });
+      storeConfig.setOperatingMode.mockResolvedValue({ ok: false, missing: ['reply_permission'] });
+      const result = await tools.goLive('t1', { mode: 'active', confirmed: true });
+      expect(result.error).toMatchObject({ code: 'permission_needed' });
+      expect(result.error?.message).toMatch(/reply_to_customers/);
+    });
+
     it('turns the agent on and records it', async () => {
       const { tools, storeConfig, events } = setup({ done: ORDER.filter((k) => k !== 'live') });
       const result = await tools.goLive('t1', { mode: 'active', confirmed: true });
@@ -211,6 +238,98 @@ describe('McpToolsService', () => {
       const { tools } = setup({ done: ['products', 'instagram'] });
       const result = await tools.goLive('t1', { mode: 'learning', confirmed: true });
       expect(result.note).toContain('free trial has not started');
+    });
+  });
+
+  describe('set_instagram_permission', () => {
+    it('grants nothing without the owner’s confirmation', async () => {
+      const { tools, permissions } = setup({ done: ['products', 'instagram'] });
+      const result = await tools.setInstagramPermission('t1', { permission: 'read_messages', allowed: true });
+      expect(result.error).toMatchObject({ code: 'not_confirmed' });
+      expect(permissions.set).not.toHaveBeenCalled();
+    });
+
+    it('records a confirmed grant as given through Claude, by the owner who connected it', async () => {
+      const { tools, permissions } = setup({ done: ['products', 'instagram'] });
+      const result = await tools.setInstagramPermission('t1', { permission: 'read_messages', allowed: true, confirmed: true }, 'u1');
+      expect(permissions.set).toHaveBeenCalledWith('t1', 'read_messages', true, { source: 'claude', userId: 'u1' });
+      expect(String(result.note)).toMatch(/up to an hour/);
+    });
+
+    it('records a «no» without asking for confirmation', async () => {
+      const { tools, permissions } = setup({ done: ['products', 'instagram'] });
+      await tools.setInstagramPermission('t1', { permission: 'reply_to_customers', allowed: false });
+      expect(permissions.set).toHaveBeenCalledWith('t1', 'reply_to_customers', false, { source: 'claude', userId: undefined });
+    });
+
+    it('says when withdrawing paused the agent', async () => {
+      const { tools, permissions } = setup({ done: ['products', 'instagram'] });
+      permissions.set.mockResolvedValueOnce({ permissions: { read_messages: perm(false, true), reply_to_customers: perm(false, true) }, operatingMode: 'paused' });
+      const result = await tools.setInstagramPermission('t1', { permission: 'reply_to_customers', allowed: false });
+      expect(result.operating_mode).toBe('paused');
+    });
+  });
+
+  describe('permissions in the steering', () => {
+    it('asks about reading first once Instagram is connected, after saying nothing is read until allowed', async () => {
+      const { tools } = setup({ done: ['products', 'instagram'] });
+      const { next } = await tools.getSetupStatus('t1');
+      expect(next?.step).toBe('permissions');
+      expect(next?.ask_owner[0]).toMatch(/does not read your Direct and does not reply/);
+      expect(next?.then_call).toMatch(/"read_messages"/);
+    });
+
+    it('asks about replying separately, once reading is answered', async () => {
+      const { tools } = setup({ done: ['products', 'instagram'], read: perm(false, true) });
+      const { next } = await tools.getSetupStatus('t1');
+      expect(next?.step).toBe('permissions');
+      expect(next?.then_call).toMatch(/"reply_to_customers"/);
+    });
+
+    it('moves on once both are answered, even with a «no»', async () => {
+      const { tools } = setup({ done: ['products', 'instagram'], read: perm(false, true), reply: perm(false, true) });
+      const { next } = await tools.getSetupStatus('t1');
+      expect(next?.step).toBe('knowledge');
+    });
+
+    it('reports both permissions and the import in the status', async () => {
+      const { tools } = setup({ done: ['products', 'instagram'], read: perm(true), reply: perm(false, true), history: { consent: true, status: 'running' } });
+      const result = await tools.getSetupStatus('t1');
+      expect(result.instagram_permissions).toEqual({ read_messages: true, reply_to_customers: false });
+      expect(result.history_import).toBe('running');
+      expect(result.next?.then_call).toMatch(/being read/);
+    });
+  });
+
+  describe('get_history_import', () => {
+    it('reads nothing without the read permission', async () => {
+      const { tools } = setup();
+      expect((await tools.getHistoryImport('t1')).status).toBe('not_allowed');
+    });
+
+    it('returns the terms and the tone as untrusted content, and the examples only as a review link', async () => {
+      const { tools } = setup({
+        read: perm(true),
+        history: {
+          consent: true,
+          status: 'done',
+          stats: { conversations: 30, messages: 400, humanReplies: 120 },
+          tone: 'Пишемо на «ви», коротко.',
+          traits: ['на «ви»'],
+          facts: [{ section: 'delivery', text: 'Нова пошта, 1–2 дні', count: 9 }],
+          examples: [{ customer: 'Є M?', manager: 'Так, є.' }],
+        },
+      });
+      const result = await tools.getHistoryImport('t1');
+      expect(result.status).toBe('done');
+      expect(result.untrusted_content).toEqual({
+        facts: [{ section: 'delivery', text: 'Нова пошта, 1–2 дні', count: 9 }],
+        tone: 'Пишемо на «ви», коротко.',
+        traits: ['на «ви»'],
+      });
+      expect(result.examples_to_review).toBe(1);
+      expect(String(result.review_examples_url)).toMatch(/\/onboarding\?step=instagram$/);
+      expect(JSON.stringify(result)).not.toContain('Є M?');
     });
   });
 

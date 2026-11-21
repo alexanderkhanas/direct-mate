@@ -50,17 +50,17 @@ export default function InstagramStep() {
 
   const history = useHistoryImport({ poll: true });
   const imp = history.data?.import ?? null;
-  // On by default; a choice saved earlier wins until the owner flips it here.
+  // Off until the owner turns it on (it is their read permission); a choice saved earlier wins until they flip it here.
   const [consentPick, setConsentPick] = useState<boolean | null>(null);
-  const consent = consentPick ?? imp?.consent ?? true;
+  const consent = consentPick ?? imp?.consent ?? false;
 
   const start = useMutation({
     mutationFn: async () => {
       // Saved before the login, so the reading can start as soon as Meta sends the owner back. Only a
-      // choice that's known: one the owner made here, or the saved one (or the default) once it's loaded,
-      // never the default while that's still loading or failed to load. Not a reason to stop the login:
-      // «Прочитати переписки» asks again later.
-      if (consentPick !== null || history.isSuccess) {
+      // choice the owner made here: the saved one is already saved, and leaving the switch alone is no
+      // answer (Claude and the launch step still ask). Not a reason to stop the login: «Прочитати
+      // переписки» asks again later.
+      if (consentPick !== null) {
         await api.post('/onboarding/history/consent', { read: consent }).catch(() => undefined);
       }
       return api.post<{ redirectUrl: string }>('/connections/instagram/oauth/start', { returnTo: 'onboarding' }).then((r) => r.data);
@@ -109,7 +109,7 @@ export default function InstagramStep() {
 
   const showHelp = !connected && (failed !== null || start.isError);
   // Connected: whether the chats are (being) read, once that's known.
-  const reads = connected ? !history.data || !!imp?.consent : consent;
+  const reads = connected ? !!imp?.consent : consent;
 
   return (
     <>

@@ -226,13 +226,13 @@ export class McpHttpService {
   // ─── MCP ─────────────────────────────────────────────────────────
 
   /** The tenant a request acts for, and the key its calls are counted under. */
-  private async caller(req: Request): Promise<{ tenantId: string; key: string } | undefined> {
+  private async caller(req: Request): Promise<{ tenantId: string; key: string; userId?: string } | undefined> {
     const token = /^Bearer\s+(\S+)$/i.exec(req.headers.authorization ?? '')?.[1];
     if (!token) return undefined;
     const devTenant = this.devTenant(token);
     if (devTenant) return { tenantId: devTenant, key: 'dev' };
     const identity = await this.oauth.identify(token);
-    return identity && { tenantId: identity.tenantId, key: identity.grantId };
+    return identity && { tenantId: identity.tenantId, key: identity.grantId, userId: identity.userId };
   }
 
   private overLimit(key: string): boolean {
@@ -267,7 +267,7 @@ export class McpHttpService {
         .json({ jsonrpc: '2.0', error: { code: -32000, message: 'Too many requests, try again in a minute' }, id: null });
       return;
     }
-    const server = buildMcpServer({ tenantId: caller.tenantId }, this.tools);
+    const server = buildMcpServer({ tenantId: caller.tenantId, userId: caller.userId ?? null }, this.tools);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on('close', () => {
       void transport.close();

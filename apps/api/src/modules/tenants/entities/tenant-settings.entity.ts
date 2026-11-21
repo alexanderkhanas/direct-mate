@@ -55,6 +55,18 @@ export class TenantSettings {
   @Column({ type: 'jsonb', nullable: true })
   aiSettings!: AiSettings | null;
 
+  /**
+   * The owner allowed DirectMate to read the store's Instagram Direct: the
+   * one-time history import and learning mode. Null = not allowed. Written
+   * only by `DirectPermissionsService`.
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  directReadAllowedAt!: Date | null;
+
+  /** The owner allowed the AI agent to answer customers (active mode, comment replies). Null = not allowed. */
+  @Column({ type: 'timestamptz', nullable: true })
+  directReplyAllowedAt!: Date | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt!: Date;
 

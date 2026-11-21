@@ -8,6 +8,7 @@ import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { LoadingState } from '../components/ui/Spinner';
 import { useT } from '../i18n';
+import { useDirectPermissions, type DirectPermission } from '../components/onboarding/directPermissions';
 import {
   BrandToneSection,
   BusinessHoursSection,
@@ -93,6 +94,55 @@ function OperatingModeSection() {
           {notReady.map((m) => t(`operating_mode.requirement_${m}`)).join(', ')}.
         </p>
       )}
+    </Card>
+  );
+}
+
+/**
+ * «Дозволи для Instagram»: the owner's two permissions for the Direct, each on
+ * its own. Withdrawing one the current mode uses pauses the AI agent.
+ */
+function DirectPermissionsSection() {
+  const { t } = useT();
+  const { permissions, set } = useDirectPermissions();
+  if (!permissions) return null;
+  const order: DirectPermission[] = ['reply_to_customers', 'read_messages'];
+
+  return (
+    <Card>
+      <h2 className="text-sm font-semibold text-gray-900 mb-1">{t('setup_launch.perm_title')}</h2>
+      <p className="text-xs text-gray-500 mb-4">{t('setup_launch.perm_lead')}</p>
+      <div className="space-y-3">
+        {order.map((p) => {
+          const state = permissions[p];
+          return (
+            <label key={p} className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 rounded border-gray-300"
+                checked={state.allowed}
+                disabled={set.isPending}
+                onChange={(e) => {
+                  const allowed = e.target.checked;
+                  if (!allowed && !window.confirm(t(`setup_launch.perm_withdraw_${p}`))) return;
+                  set.mutate({ permission: p, allowed });
+                }}
+              />
+              <span>
+                <span className="block text-sm font-medium text-gray-900">{t(`setup_launch.perm_${p}`)}</span>
+                <span className="block text-xs text-gray-500 mt-0.5">{t(`setup_launch.perm_${p}_desc`)}</span>
+                {state.since && (
+                  <span className="block text-xs text-gray-400 mt-0.5">
+                    {t('settings_ext.permission_since', { date: new Date(state.since).toLocaleDateString() })}
+                  </span>
+                )}
+              </span>
+            </label>
+          );
+        })}
+      </div>
+      {set.data?.operatingMode === 'paused' && <p className="text-xs text-amber-700 mt-3">{t('setup_launch.perm_paused')}</p>}
+      {set.isError && <p className="text-xs text-red-600 mt-3">{t('setup_launch.perm_failed')}</p>}
     </Card>
   );
 }
@@ -331,6 +381,7 @@ export default function SettingsPage() {
         <p className="text-sm text-gray-500 mt-1">{t('settings_ext.configure_subtitle')}</p>
       </div>
       <OperatingModeSection />
+      <DirectPermissionsSection />
       <BrandToneSection settings={data} />
       <KnowledgeSection />
       <BusinessHoursSection settings={data} />

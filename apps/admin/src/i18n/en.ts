@@ -391,6 +391,7 @@ export const en = {
 
   // Settings (extended)
   settings_ext: {
+    permission_since: 'Allowed {date}',
     knowledge_title: 'What the AI agent knows',
     knowledge_desc: 'The AI agent answers from your catalog and these notes, and sends the fixed lines below word for word.',
     store_notes: 'Store notes',
@@ -516,6 +517,8 @@ export const en = {
     requirement_instagram: 'connect Instagram',
     requirement_products: 'add products that are in stock',
     requirement_knowledge: 'fill in «What the AI agent knows»',
+    requirement_reply_permission: 'allow the AI agent to reply to customers (below, «Instagram permissions»)',
+    requirement_read_permission: 'allow DirectMate to read your Direct (below, «Instagram permissions»)',
   },
 
   // Testing (extended)

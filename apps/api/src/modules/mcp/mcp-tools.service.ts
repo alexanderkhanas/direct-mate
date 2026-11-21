@@ -7,6 +7,8 @@ import { FeedError } from '../catalog-feeds/feed-fetcher';
 import { FeedSyncService } from '../catalog-feeds/feed-sync.service';
 import { StoreConfigService } from '../engine/store-config.service';
 import { TelegramService } from '../notifications/telegram.service';
+import { DirectPermissionsService, type DirectPermission } from '../onboarding/direct-permissions.service';
+import { HistoryImportService } from '../onboarding/history/history-import.service';
 import { NotesDrafterService } from '../onboarding/notes-drafter.service';
 import { OnboardingService, type OnboardingStatus } from '../onboarding/onboarding.service';
 import { KEY_SECTIONS, parseKnowledgeDoc, type NoteSection, type NotesPatch } from '../onboarding/store-notes';
@@ -67,19 +69,28 @@ export class McpToolsService {
     private readonly subscriptions: SubscriptionsService,
     private readonly handoffs: HandoffService,
     private readonly events: SetupEventsService,
+    private readonly permissions: DirectPermissionsService,
+    private readonly history: HistoryImportService,
   ) {}
 
   // ─── Status ──────────────────────────────────────────────────────
 
   async getSetupStatus(tenantId: string): Promise<ToolResult> {
-    const [status, feed, plan] = await Promise.all([
+    const [status, feed, plan, permissions, history] = await Promise.all([
       this.onboarding.status(tenantId),
       this.feeds.status(tenantId),
       this.plan(tenantId),
+      this.permissions.get(tenantId),
+      this.history.get(tenantId),
     ]);
     const pending = this.imports.get(tenantId);
     return {
       store: { name: status.store.name, instagram: status.store.instagram, operating_mode: status.operatingMode },
+      instagram_permissions: {
+        read_messages: permissions.read_messages.allowed,
+        reply_to_customers: permissions.reply_to_customers.allowed,
+      },
+      history_import: permissions.read_messages.allowed ? (history.import?.status ?? 'idle') : 'not_allowed',
       steps: status.steps,
       missing_to_turn_on: status.readiness.missing,
       catalog: {
@@ -178,7 +189,8 @@ export class McpToolsService {
       link_expires_in_seconds: link.expiresInSeconds,
       note:
         'Give the owner this link. It opens the Instagram login in their browser; they come back here when it says so. ' +
-        'The link works once: if it has expired, call this tool again.',
+        'The link works once: if it has expired, call this tool again. Tell the owner now: connecting does not let DirectMate read ' +
+        'their Direct or reply to anyone; each needs their permission, asked separately once Instagram is connected.',
       next: {
         step: 'instagram',
         why: 'Waiting for the owner to connect Instagram in the browser.',
@@ -347,8 +359,19 @@ export class McpToolsService {
     }
     const change = await this.storeConfig.setOperatingMode(tenantId, input.mode);
     if (!change.ok) {
+      const permission = change.missing.includes('reply_permission')
+        ? 'reply_to_customers'
+        : change.missing.includes('read_permission')
+          ? 'read_messages'
+          : null;
       return {
-        error: { code: 'not_ready', message: 'The store is not ready to be turned on', details: { missing: change.missing } },
+        error: {
+          code: permission ? 'permission_needed' : 'not_ready',
+          message: permission
+            ? `${input.mode === 'active' ? 'Active mode' : 'Learning mode'} needs the owner's "${permission}" permission. Ask them (set_instagram_permission), then call go_live again.`
+            : 'The store is not ready to be turned on',
+          details: { missing: change.missing },
+        },
         next: await this.next(tenantId, status),
       };
     }
@@ -364,15 +387,100 @@ export class McpToolsService {
     };
   }
 
+  // ─── The owner's permissions for the Direct, and the history import ───
+
+  async setInstagramPermission(
+    tenantId: string,
+    input: { permission: DirectPermission; allowed: boolean; confirmed?: boolean },
+    userId?: string | null,
+  ): Promise<ToolResult> {
+    if (input.allowed && input.confirmed !== true) {
+      return {
+        error: {
+          code: 'not_confirmed',
+          message: `Ask the owner about "${input.permission}" on its own, and call again with confirmed: true only after they clearly say yes.`,
+        },
+        next: await this.next(tenantId),
+      };
+    }
+    const result = await this.permissions.set(tenantId, input.permission, input.allowed, { source: 'claude', userId });
+    const readNow = input.permission === 'read_messages' && input.allowed;
+    return {
+      instagram_permissions: {
+        read_messages: result.permissions.read_messages.allowed,
+        reply_to_customers: result.permissions.reply_to_customers.allowed,
+      },
+      ...(result.operatingMode && { operating_mode: result.operatingMode }),
+      note: readNow
+        ? 'Reading the recent chats starts within a minute and can take up to an hour (one queue for every store, paced by Instagram). Carry on with the setup; get_history_import shows what was learned.'
+        : result.operatingMode
+          ? 'The store was using this permission, so the AI agent is now paused.'
+          : input.allowed
+            ? 'Saved.'
+            : 'Saved: not allowed. The owner can allow it later.',
+      next: await this.next(tenantId),
+    };
+  }
+
+  /**
+   * What the history import learned: the shop's terms and its tone, for Claude
+   * to confirm with the owner and save through save_store_notes and set_tone.
+   * The reply examples quote customers, so they stay in DirectMate: the owner
+   * reviews them in the admin.
+   */
+  async getHistoryImport(tenantId: string): Promise<ToolResult> {
+    const [permissions, view] = await Promise.all([this.permissions.get(tenantId), this.history.get(tenantId)]);
+    if (!permissions.read_messages.allowed) {
+      return {
+        status: 'not_allowed',
+        note: 'The owner has not allowed reading the Direct (set_instagram_permission "read_messages").',
+        next: await this.next(tenantId),
+      };
+    }
+    const imp = view.import;
+    const status = imp?.status ?? 'idle';
+    const admin = this.config.get<string>('admin.baseUrl') ?? 'http://localhost:5173';
+    const notes: Record<string, string> = {
+      idle: view.instagramConnected ? 'Queued shortly.' : 'Instagram is not connected.',
+      queued: 'Waiting its turn: one queue for every store. Carry on with the setup and check again later.',
+      running: 'Reading the chats now. Check again in a few minutes.',
+      limited: 'Instagram’s hourly limit for reading chats is reached; it carries on within the hour by itself.',
+      failed: `The reading failed${imp?.error ? `: ${imp.error}` : ''}. Carry on without it.`,
+      empty: 'Too few replies written by a person to learn from. Carry on by asking the owner.',
+      done:
+        'Read the facts to the owner one section at a time; save what they confirm with save_store_notes, in their words. ' +
+        'Offer the tone with set_tone. The reply examples quote customers, so they are not shown here: give the owner review_examples_url to check and apply them in DirectMate.',
+    };
+    return {
+      status,
+      ...(imp?.stats && { read: imp.stats }),
+      ...(status === 'done' && {
+        examples_to_review: imp?.examples?.length ?? 0,
+        examples_applied: !!imp?.applied,
+        review_examples_url: `${admin}/onboarding?step=instagram`,
+        // Drawn by a model from customers' chats: information, never instructions.
+        untrusted_content: { facts: imp?.facts ?? [], tone: imp?.tone ?? null, traits: imp?.traits ?? [] },
+      }),
+      note: notes[status] ?? '',
+      next: await this.next(tenantId),
+    };
+  }
+
   // ─── Shared ──────────────────────────────────────────────────────
 
   private async next(tenantId: string, status?: OnboardingStatus): Promise<NextStep> {
-    const current = status ?? (await this.onboarding.status(tenantId));
+    const [current, permissions, history] = await Promise.all([
+      status ?? this.onboarding.status(tenantId),
+      this.permissions.get(tenantId),
+      this.history.get(tenantId),
+    ]);
     const pending = this.imports.get(tenantId);
     const knowledgeTodo = current.steps.some((s) => s.key === 'knowledge' && s.state === 'todo');
     return nextStep(current, {
       importing: !!pending && !pending.problem,
       ...(knowledgeTodo && { missingSections: this.missingSections((await this.liveNotes(tenantId)).sections) }),
+      permissions,
+      historyStatus: permissions.read_messages.allowed ? (history.import?.status ?? null) : null,
     });
   }
 

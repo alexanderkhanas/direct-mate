@@ -6,13 +6,19 @@ import type { JwtPayload } from '../../common/decorators/current-user.decorator'
 const OWNER: JwtPayload = { sub: 'u1', email: 'o@shop.ua', role: 'owner', tenantId: 't1' };
 const SUPERADMIN: JwtPayload = { ...OWNER, role: 'superadmin' };
 
-function setup(mode: string, missing: string[] = []) {
+function setup(mode: string, missing: string[] = [], perms: { read?: boolean; reply?: boolean } = {}) {
   const config = { tenantId: 't1', operatingMode: mode, learningStartedAt: null };
   const repo = {
     findOne: jest.fn(async () => config),
     create: jest.fn((row) => row),
     save: jest.fn(async (row) => row),
-    manager: { query: jest.fn(async () => [{ name: 'Alta', slug: 'alta' }]) },
+    manager: {
+      query: jest.fn(async (sql: string) =>
+        sql.includes('direct_read_allowed_at')
+          ? [{ read: perms.read ?? true, reply: perms.reply ?? true }]
+          : [{ name: 'Alta', slug: 'alta' }],
+      ),
+    },
   };
   const readiness = { check: jest.fn(async () => ({ ready: missing.length === 0, missing })) };
   const telegram = { notifyPlatform: jest.fn(async () => undefined) };
@@ -53,6 +59,25 @@ describe('StoreConfigController go-live', () => {
       operatingMode: 'active',
     });
     expect(readiness.check).not.toHaveBeenCalled();
+  });
+
+  it("refuses active mode without the owner's reply permission, even for a superadmin", async () => {
+    for (const user of [OWNER, SUPERADMIN]) {
+      const { controller, repo, subscriptions } = setup('paused', [], { reply: false });
+      const err = await controller.updateConfig(user, { operatingMode: 'active' }).catch((e) => e);
+      expect(err).toBeInstanceOf(BadRequestException);
+      expect(err.getResponse()).toMatchObject({ details: { missing: ['reply_permission'] } });
+      expect(repo.save).not.toHaveBeenCalled();
+      expect(subscriptions.startTrial).not.toHaveBeenCalled();
+    }
+  });
+
+  it("refuses learning mode without the owner's read permission; pausing needs none", async () => {
+    const { controller, repo } = setup('paused', [], { read: false, reply: false });
+    const err = await controller.updateConfig(OWNER, { operatingMode: 'learning' }).catch((e) => e);
+    expect(err.getResponse()).toMatchObject({ details: { missing: ['read_permission'] } });
+    await controller.updateConfig(OWNER, { operatingMode: 'paused' });
+    expect(repo.save).toHaveBeenCalledTimes(1);
   });
 
   it('allows learning and pausing without the checks, and rejects unknown modes', async () => {

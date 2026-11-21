@@ -64,6 +64,8 @@ const SETTINGS: AgentStoreSettings = {
   conversationIdleHours: 24,
   modelOverride: null,
   operatingMode: 'active',
+  directRead: true,
+  directReply: true,
 };
 
 const READY_DRAFT: OrderDraftView = {

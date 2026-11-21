@@ -22,6 +22,7 @@ import { TestChatService } from './test-chat.service';
 import { NotesDrafterService } from './notes-drafter.service';
 import { validDraft, type NotesDraft } from './store-notes';
 import { HistoryImportService } from './history/history-import.service';
+import { DIRECT_PERMISSIONS, DirectPermissionsService, type DirectPermission } from './direct-permissions.service';
 
 class HelpDto {
   @IsOptional()
@@ -62,6 +63,14 @@ class NotesDraftDto {
 class HistoryConsentDto {
   @IsBoolean()
   read!: boolean;
+}
+
+class PermissionDto {
+  @IsIn(DIRECT_PERMISSIONS)
+  permission!: DirectPermission;
+
+  @IsBoolean()
+  allowed!: boolean;
 }
 
 class HistoryExampleDto {
@@ -109,6 +118,7 @@ export class OnboardingController {
     private readonly testChat: TestChatService,
     private readonly notes: NotesDrafterService,
     private readonly history: HistoryImportService,
+    private readonly permissions: DirectPermissionsService,
   ) {}
 
   @Get('status')
@@ -172,10 +182,25 @@ export class OnboardingController {
     return this.history.get(user.tenantId);
   }
 
+  /** The Instagram step's switch: the read permission («read the Direct»), so it counts everywhere, not only for the import. */
   @Post('history/consent')
   @HttpCode(200)
-  historyConsent(@CurrentUser() user: JwtPayload, @Body() dto: HistoryConsentDto) {
-    return this.history.setConsent(user.tenantId, dto.read);
+  async historyConsent(@CurrentUser() user: JwtPayload, @Body() dto: HistoryConsentDto) {
+    await this.permissions.set(user.tenantId, 'read_messages', dto.read, { source: 'admin', userId: user.sub });
+    return this.history.get(user.tenantId);
+  }
+
+  // ─── The owner's permissions for the Direct: read, and reply ─────
+
+  @Get('permissions')
+  getPermissions(@CurrentUser() user: JwtPayload) {
+    return this.permissions.get(user.tenantId);
+  }
+
+  @Post('permissions')
+  @HttpCode(200)
+  setPermission(@CurrentUser() user: JwtPayload, @Body() dto: PermissionDto) {
+    return this.permissions.set(user.tenantId, dto.permission, dto.allowed, { source: 'admin', userId: user.sub });
   }
 
   @Post('history/import')

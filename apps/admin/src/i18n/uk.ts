@@ -391,6 +391,7 @@ export const uk = {
 
   // Settings (extended)
   settings_ext: {
+    permission_since: 'Дозволено {date}',
     knowledge_title: 'Що знає AI-агент',
     knowledge_desc: 'AI-агент відповідає з вашого каталогу та цих нотаток, а фіксовані рядки нижче надсилає дослівно.',
     store_notes: 'Нотатки магазину',
@@ -516,6 +517,8 @@ export const uk = {
     requirement_instagram: 'підключіть Instagram',
     requirement_products: 'додайте товари в наявності',
     requirement_knowledge: 'заповніть «Що знає AI-агент»',
+    requirement_reply_permission: 'дозвольте AI-агенту відповідати клієнтам (нижче, «Дозволи для Instagram»)',
+    requirement_read_permission: 'дозвольте DirectMate читати Direct (нижче, «Дозволи для Instagram»)',
   },
 
   // Testing (extended)

@@ -116,6 +116,11 @@ export class InstagramCommentService {
       this.logger.debug(`Comment ignored: store ${tenantId} is ${settings.operatingMode}`);
       return;
     }
+    // Answering a comment is replying: the owner's `reply_to_customers` permission.
+    if (!settings.directReply) {
+      this.logger.debug(`Comment ignored: store ${tenantId} hasn't allowed replying`);
+      return;
+    }
 
     // The post's image is copied while the comment is screened; the turn joins that copy rather than starting
     // another. Kept for later comments even if this one isn't answered.

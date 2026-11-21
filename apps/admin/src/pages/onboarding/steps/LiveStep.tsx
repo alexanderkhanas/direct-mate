@@ -8,6 +8,8 @@ import { useT } from '../../../i18n';
 import { usePlural } from '../../../lib/plural';
 import { Alert, StepTitle, TextLink, Tick } from '../../../components/setup/ui';
 import { TelegramCard } from '../../../components/onboarding/launch/TelegramCard';
+import { PermissionsCard } from '../../../components/onboarding/launch/PermissionsCard';
+import { NEEDED_FOR, useDirectPermissions, type DirectPermission } from '../../../components/onboarding/directPermissions';
 import { useCheapestPrice, useSubscriptionPlan } from '../../../components/onboarding/launch/plan';
 import { useSetup, useSetupStep } from '../SetupContext';
 
@@ -34,6 +36,9 @@ export default function LiveStep() {
   const { data: plan } = useSubscriptionPlan();
   const price = useCheapestPrice();
   const [refused, setRefused] = useState<Requirement[] | null>(null);
+  // The permission the pressed button needs and the owner hasn't given: the card below asks for it.
+  const [needs, setNeeds] = useState<DirectPermission | null>(null);
+  const { permissions } = useDirectPermissions();
 
   const setMode = useMutation({
     mutationFn: (mode: Mode) => api.patch('/engine/config', { operatingMode: mode }),
@@ -48,12 +53,25 @@ export default function LiveStep() {
     onError: (err) => {
       const missing: unknown = isAxiosError(err) ? err.response?.data?.error?.details?.missing : undefined;
       if (Array.isArray(missing)) {
+        if (missing.includes('reply_permission')) setNeeds('reply_to_customers');
+        else if (missing.includes('read_permission')) setNeeds('read_messages');
         setRefused(REQUIREMENTS.filter((r) => missing.includes(r)));
         void refresh();
       }
     },
   });
   const pending: Mode | null = setMode.isPending ? setMode.variables : null;
+  // Each mode needs its own permission: turning on, replying; watching first, reading.
+  const go = (mode: Mode) => {
+    const permission = NEEDED_FOR[mode];
+    if (permissions && !permissions[permission].allowed) {
+      setNeeds(permission);
+      return;
+    }
+    setNeeds(null);
+    setMode.mutate(mode);
+  };
+  const stillNeeded = needs && permissions && !permissions[needs].allowed ? needs : null;
 
   const missing = REQUIREMENTS.filter((r) => status.readiness.missing.includes(r));
   const instagramConnected = !missing.includes('instagram');
@@ -74,14 +92,14 @@ export default function LiveStep() {
               }
             : {
                 label: t('setup.go_live'),
-                onClick: () => setMode.mutate('active'),
+                onClick: () => go('active'),
                 loading: pending === 'active',
                 disabled: pending === 'learning',
               },
           secondary: instagramConnected
             ? {
                 label: t('setup.watch_first'),
-                onClick: () => setMode.mutate('learning'),
+                onClick: () => go('learning'),
                 loading: pending === 'learning',
                 disabled: pending === 'active',
               }
@@ -97,6 +115,8 @@ export default function LiveStep() {
 
       {live && <Alert tone="info" title={t(`setup.already_${status.operatingMode}`)} />}
 
+      {stillNeeded && <Alert tone="warn" title={t(`setup_launch.perm_needed_${stillNeeded}`)} />}
+
       {refused && refused.length > 0 ? (
         <Alert tone="error" title={t('setup_launch.refused_title')}>
           {t('setup_launch.refused_text')}
@@ -111,7 +131,7 @@ export default function LiveStep() {
           </ul>
         </Alert>
       ) : (
-        setMode.isError && (
+        setMode.isError && !needs && (
           <Alert tone="error" title={t('setup_launch.go_live_failed_title')}>
             {t('setup_launch.go_live_failed')}
           </Alert>
@@ -144,6 +164,8 @@ export default function LiveStep() {
       </ul>
 
       <TelegramCard />
+
+      {instagramConnected && !live && <PermissionsCard highlight={stillNeeded} />}
 
       {(trialAhead || (instagramConnected && !live)) && (
         <div className="grid gap-3.5 lg:grid-cols-2 lg:gap-4">

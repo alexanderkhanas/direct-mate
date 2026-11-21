@@ -28,6 +28,10 @@ export interface AgentStoreSettings {
   conversationIdleHours: number;
   modelOverride: string | null;
   operatingMode: 'learning' | 'active' | 'paused';
+  /** The owner allowed reading the Direct: the history import and learning mode (`DirectPermissionsService`). */
+  directRead: boolean;
+  /** The owner allowed the AI agent to answer customers. */
+  directReply: boolean;
 }
 
 /**
@@ -150,6 +154,8 @@ export class AgentStoreSettingsService {
       conversationIdleHours: flow.conversationIdleHours ?? DEFAULT_IDLE_HOURS,
       modelOverride: settings?.aiSettings?.model?.trim() || null,
       operatingMode: config?.operatingMode ?? 'active',
+      directRead: !!settings?.directReadAllowedAt,
+      directReply: !!settings?.directReplyAllowedAt,
     };
   }
 }

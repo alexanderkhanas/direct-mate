@@ -72,7 +72,7 @@ export interface TurnHandoff {
 
 export interface TurnRunResult {
   status: 'replied' | 'handed_off' | 'skipped' | 'busy' | 'superseded';
-  skipReason?: 'paused' | 'human_in_control' | 'nothing_to_answer' | 'subscription_inactive';
+  skipReason?: 'paused' | 'human_in_control' | 'nothing_to_answer' | 'subscription_inactive' | 'no_permission';
   /** In send order. Already saved as outbound messages unless the mode is dry_run. */
   messages: OutgoingMessage[];
   handoff: TurnHandoff | null;
@@ -110,7 +110,9 @@ interface ConversationRow {
  * simulator, the manual reply API and (Phase 4) Instagram all use:
  *
  *  1. lease the conversation, so two runs never answer the same thread;
- *  2. gates: paused store, manager in control, expired subscription, and (live)
+ *  2. gates: paused store, the owner's permission for the Direct (a live reply
+ *     needs `reply_to_customers`, a learning draft `read_messages`), manager in
+ *     control, expired subscription, and (live)
  *     a customer sending more messages an hour than any person would, which
  *     caps what a script can spend;
  *  3. history (with conversation boundaries, and the images of stories and
@@ -167,6 +169,10 @@ export class TurnRunner {
       const live = input.mode !== 'dry_run';
 
       if (live && settings.operatingMode === 'paused' && !input.ignorePause) return this.skipped('paused', traceId);
+      // The owner's permissions, checked here whoever calls: nothing is sent without `reply_to_customers`, and
+      // learning mode doesn't read the Direct without `read_messages`. Demo mode (test chat, simulator) needs neither.
+      if (input.mode === 'live' && !settings.directReply) return this.skipped('no_permission', traceId);
+      if (input.mode === 'dry_run' && !settings.directRead) return this.skipped('no_permission', traceId);
       if (live && conversation.status === ConversationStatus.HumanInControl) {
         return this.skipped('human_in_control', traceId);
       }

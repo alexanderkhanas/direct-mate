@@ -124,6 +124,11 @@ function shared(mediaId: string | undefined, payload: MetaAttachment['payload'])
  *   recognised by id (or app id, or the text of a reply we just sent); any
  *   other is a manager writing from the Instagram app, which pauses the bot.
  */
+/** DMs are kept only once the owner allowed reading the Direct or replying (`DirectPermissionsService`). */
+function keepsDirect(settings: { directRead: boolean; directReply: boolean }): boolean {
+  return settings.directRead || settings.directReply;
+}
+
 @Injectable()
 export class InstagramService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(InstagramService.name);
@@ -259,6 +264,13 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
     }
     const tenantId = connection.tenantId;
 
+    // Until the owner allows reading the Direct or replying, a DM isn't kept: not saved, its media not fetched.
+    const settings = await this.storeSettings.load(tenantId);
+    if (!keepsDirect(settings)) {
+      this.logger.log(`DM to ${tenantId} not kept: the owner hasn't allowed reading or replying`);
+      return;
+    }
+
     const attachments = await this.parseAttachments(tenantId, params.message);
     const text = params.text.trim();
     if (!text && attachments.length === 0) return;
@@ -303,7 +315,6 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
       }),
     );
 
-    const settings = await this.storeSettings.load(tenantId);
     if (settings.operatingMode === 'learning' && text) {
       this.learningObserver.recordCustomerMessage(conversation.id, text);
     }
@@ -592,6 +603,8 @@ export class InstagramService implements OnModuleInit, OnModuleDestroy {
     if (!customerIgId) return;
     const connection = await this.integrationsService.findByExternalAccountId(entryId, ConnectionType.Instagram);
     if (!connection) return;
+    // A manager's reply is the Direct too: not kept without the owner's permission.
+    if (!keepsDirect(await this.storeSettings.load(connection.tenantId))) return;
     const customer = await this.conversationsService.findCustomer(connection.tenantId, 'instagram', customerIgId);
     if (!customer) return;
     const conversation = await this.conversationsService.findConversationByCustomer(

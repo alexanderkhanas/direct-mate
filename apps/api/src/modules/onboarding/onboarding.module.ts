@@ -7,6 +7,7 @@ import { AgentModule } from '../agent/agent.module';
 import { CryptoService } from '../../common/crypto.service';
 import { GraphHistoryClient } from './history/graph-history.client';
 import { HistoryImportService } from './history/history-import.service';
+import { DirectPermissionsService } from './direct-permissions.service';
 import { NotesDrafterService } from './notes-drafter.service';
 import { OnboardingController } from './onboarding.controller';
 import { OnboardingReadiness } from './onboarding-readiness.service';
@@ -24,7 +25,8 @@ import { TestChatService } from './test-chat.service';
     CryptoService,
     GraphHistoryClient,
     HistoryImportService,
+    DirectPermissionsService,
   ],
-  exports: [OnboardingReadiness, OnboardingService, NotesDrafterService, TestChatService],
+  exports: [OnboardingReadiness, OnboardingService, NotesDrafterService, TestChatService, HistoryImportService, DirectPermissionsService],
 })
 export class OnboardingModule {}

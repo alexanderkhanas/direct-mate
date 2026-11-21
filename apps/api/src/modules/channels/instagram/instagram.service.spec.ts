@@ -26,6 +26,8 @@ function runResult(over: Partial<TurnRunResult> = {}): TurnRunResult {
 
 function setup(opts: {
   operatingMode?: string;
+  directRead?: boolean;
+  directReply?: boolean;
   run?: TurnRunResult;
   ownMids?: string[];
   ownAfterRecheck?: string[];
@@ -102,7 +104,13 @@ function setup(opts: {
     { handleComment: jest.fn(async () => undefined) } as never,
     dataSource as never,
     runner as never,
-    { load: async () => ({ operatingMode: opts.operatingMode ?? 'active' }) } as never,
+    {
+      load: async () => ({
+        operatingMode: opts.operatingMode ?? 'active',
+        directRead: opts.directRead ?? true,
+        directReply: opts.directReply ?? true,
+      }),
+    } as never,
     media as never,
     sender as never,
     contentMedia as never,
@@ -139,6 +147,31 @@ const echo = (message: Record<string, unknown>) => ({
 }) as never;
 
 describe('InstagramService intake', () => {
+  it("keeps no DM, and no manager's reply, until the owner allows reading or replying", async () => {
+    const t = setup({ directRead: false, directReply: false });
+    await t.service.handleWebhook(inbound({ mid: 'm1', text: 'Привіт', attachments: [{ type: 'image', payload: { url: 'https://cdn/p.jpg' } }] }));
+    await t.settle();
+    expect(t.conversations.findOrCreateCustomer).not.toHaveBeenCalled();
+    expect(t.conversations.saveChannelMessage).not.toHaveBeenCalled();
+    expect(t.media.attachmentFor).not.toHaveBeenCalled();
+    expect(t.timerArms()).toBe(0);
+
+    await (t.service as unknown as { handleEcho: (m: unknown, e: string) => Promise<void> }).handleEcho(
+      { sender: { id: SHOP }, recipient: { id: CUSTOMER }, message: { is_echo: true, mid: 'e1', text: 'Добрий день' } },
+      SHOP,
+    );
+    expect(t.conversations.saveChannelMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps DMs with either permission alone', async () => {
+    for (const perms of [{ directRead: true, directReply: false }, { directRead: false, directReply: true }]) {
+      const t = setup(perms);
+      await t.service.handleWebhook(inbound({ mid: 'm1', text: 'Привіт' }));
+      await t.settle();
+      expect(t.conversations.saveChannelMessage).toHaveBeenCalledTimes(1);
+    }
+  });
+
   it('saves a redelivered message once and arms the reply timer once', async () => {
     const t = setup();
     await t.service.handleWebhook(inbound({ mid: 'm1', text: 'Привіт' }));

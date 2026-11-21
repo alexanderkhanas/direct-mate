@@ -9,6 +9,8 @@ const SETTINGS = {
   welcomeLine: 'Вітаю, з вами AI-асистент',
   handoffAnnounce: 'Передаю менеджеру.',
   operatingMode: 'active',
+  directRead: true,
+  directReply: true,
 };
 
 function agentResult(over: Partial<AgentTurnResult> = {}): AgentTurnResult {
@@ -214,6 +216,18 @@ describe('TurnRunner', () => {
     expect((await setup({ settings: { operatingMode: 'paused' } }).run()).skipReason).toBe('paused');
     expect((await setup({ status: ConversationStatus.HumanInControl }).run()).skipReason).toBe('human_in_control');
     expect((await setup({ status: ConversationStatus.HumanInControl }).run('dry_run')).status).toBe('replied');
+  });
+
+  it("sends nothing live without the owner's reply permission, and drafts nothing in learning mode without the read one", async () => {
+    const noReply = setup({ settings: { directReply: false } });
+    expect(await noReply.run('live')).toMatchObject({ status: 'skipped', skipReason: 'no_permission', messages: [] });
+    expect(noReply.agent.runTurn).not.toHaveBeenCalled();
+    expect((await setup({ settings: { directRead: false } }).run('dry_run')).skipReason).toBe('no_permission');
+    // Each gate needs only its own permission.
+    expect((await setup({ settings: { directRead: false } }).run('live')).status).toBe('replied');
+    expect((await setup({ settings: { directReply: false } }).run('dry_run')).status).toBe('replied');
+    // The owner's test chat and the simulator run in demo mode: neither permission is needed.
+    expect((await setup({ settings: { directRead: false, directReply: false } }).run('demo')).status).toBe('replied');
   });
 
   it('goes quiet when the plan is unpaid: no reply, no handoff line, nothing the customer sees', async () => {

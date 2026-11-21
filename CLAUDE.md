@@ -83,7 +83,9 @@ rules: the classifier + template engine was deleted in Phase 5 (Nov 2026). Histo
 Every caller goes through it: Instagram DMs and comments, the demo widget, the manual reply API, the
 admin simulator and Live DM console, the CLI simulator.
 1. **Lease** the conversation (`processing_until`, atomic `UPDATE … RETURNING`). Someone else holds it → `busy`.
-2. **Gates:** store `paused`, conversation in human control → skip. Customer over
+2. **Gates:** store `paused`, conversation in human control → skip. The owner's permissions for the Direct
+   (`DirectPermissionsService`): a `live` reply needs `reply_to_customers`, a `dry_run` (learning) draft needs
+   `read_messages`, else skip (`no_permission`); demo mode needs neither. Customer over
    `AGENT_MAX_CUSTOMER_MESSAGES_PER_HOUR` (60) → announced handoff (`rate_limited`).
 3. **History** (`HistoryBuilder`): the current conversation, time-gap markers, the previous conversation's
    last messages as context, the customer's recent orders, and up to 10 images: customer photos (resized to
@@ -160,6 +162,7 @@ product). Kept in that order so the long prefix stays cacheable.
 | Brand tone, manager examples | `tenant_settings.brand_tone_prompt`, `manager_examples` | Settings |
 | Model override for one store | `tenant_settings.ai_settings.model` | — |
 | Operating mode: `active` / `learning` / `paused` | `store_configs.operating_mode` | Settings |
+| Permissions for the Direct: read, reply (independent) | `tenant_settings.direct_read_allowed_at`, `direct_reply_allowed_at` | Setup (Instagram step, launch), Settings → Дозволи для Instagram, Claude |
 
 `AgentStoreSettingsService` reads and validates all of it (zod; a malformed value falls back to the
 default). Size charts (`size_charts`) are an image plus, once a vision model has read it
@@ -172,7 +175,14 @@ ready chart never stands in); otherwise from the height/weight ranges in `flow_c
 
 ### Instagram (`modules/channels/instagram/`)
 - **Webhook:** every POST must carry a valid `X-Hub-Signature-256` (Meta app secret); others get 401.
-- **Intake:** each message is saved on arrival, deduped by `mid` (unique index). Attachments are kept:
+- **Permissions** (`onboarding/direct-permissions.service.ts`, the only writer): `read_messages` (the history import
+  and learning mode) and `reply_to_customers` (active mode, comment replies), independent of each other, each a
+  timestamp (null = not allowed); every answer, a «no» too, goes to `direct_permission_events` with who and where
+  (admin, Claude). Active mode needs reply, learning needs read (`StoreConfigService.applyMode`, also for a
+  superadmin); withdrawing one the mode uses pauses the store. The history import's
+  `tenant_onboarding.history_import.consent` is a copy of the read permission, written with it.
+- **Intake:** with neither permission, a DM (and a manager's echo) isn't kept at all. Otherwise each message is saved
+  on arrival, deduped by `mid` (unique index). Attachments are kept:
   photos copied to `uploads/` (`CustomerMediaService`), video/files/story mentions labelled for the
   agent, quote-replies carry the quoted text. Edits (`message_edit`) are ingested as messages.
 - **Voice messages** (`VoiceMessagesService`): Meta sends an `audio` attachment, a link to an MP4 with only audio
@@ -208,7 +218,8 @@ ready chart never stands in); otherwise from the height/weight ranges in `flow_c
 - **Learning mode:** turns run as `dry_run`; the learning observer records bot drafts next to manager replies.
 
 ### Instagram history import (setup)
-- Instagram is setup step 2. With the owner's consent (a switch on that step), recent DMs are read once to draft
+- Instagram is setup step 2. With the owner's read permission (the switch on that step, or Claude's
+  `set_instagram_permission`), recent DMs are read once to draft
   the store notes, the tone and up to 8 reply examples: `modules/onboarding/history/`. Endpoints under
   `/onboarding/history`; state in `tenant_onboarding.history_import` (only the conclusions; raw messages, the token
   and usernames are never stored).
@@ -245,7 +256,11 @@ the same store. Off unless `MCP_ENABLED=true`.
 - **Tools** (`mcp-tools.service.ts`): status, notes (read and merge-save, never overwriting what Settings changed),
   feed preview and connect (answers within ~25 s, a longer import carries on), Instagram / Shopify / Telegram links,
   tone, sizing, skip a step, `try_agent` (the owner's test chat), `go_live` (`confirmed: true` only after the owner's
-  explicit yes; learning first). Every result carries `next` (`setup-guide.ts`): what to ask, which tool after.
+  explicit yes; learning first), `set_instagram_permission` (read or reply, one at a time, `confirmed: true` only after
+  a yes) and `get_history_import` (the terms and the tone it learned; the reply examples quote customers, so Claude
+  gets only a link to review them in the setup). Right after Instagram connects, `next` has Claude say nothing is
+  read or answered without permission and ask for each separately, once. Every result carries `next`
+  (`setup-guide.ts`): what to ask, which tool after.
   Text that customers or feeds wrote comes back under `untrusted_content`, and the server instructions say it is data.
 - **Browser steps:** Instagram and Shopify links carry a one-time hand-off token (10 min, one action, `handoff_tokens`),
   so the admin pages they open (`/claude/instagram`, `/claude/shopify`, `/claude/done`) need no admin session.

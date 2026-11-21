@@ -38,7 +38,7 @@ function setup(
       saveChannelMessage: jest.fn().mockResolvedValue(opts.saved === undefined ? 'msg-in' : opts.saved),
     },
     runner: { run: jest.fn().mockResolvedValue(opts.result ?? runResult()) },
-    settings: { load: jest.fn().mockResolvedValue({ operatingMode: 'active' }) },
+    settings: { load: jest.fn().mockResolvedValue({ operatingMode: 'active', directRead: true, directReply: true }) },
     crypto: { decrypt: jest.fn().mockReturnValue('token') },
     sender: {
       sendText: opts.sendFails
@@ -69,6 +69,16 @@ function setup(
 }
 
 describe('InstagramCommentService', () => {
+  it("answers no comment without the owner's reply permission", async () => {
+    const { service, deps, fetchMock, gate } = setup();
+    deps.settings.load.mockResolvedValue({ operatingMode: 'active', directRead: true, directReply: false });
+    await service.handleComment('ig-shop', COMMENT);
+    expect(gate).not.toHaveBeenCalled();
+    expect(deps.conversations.saveChannelMessage).not.toHaveBeenCalled();
+    expect(deps.runner.run).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('leaves comments that ask the shop nothing alone', async () => {
     const { service, deps, fetchMock } = setup({ question: false });
     await service.handleComment('ig-shop', { ...COMMENT, text: 'Гарна 😍' });

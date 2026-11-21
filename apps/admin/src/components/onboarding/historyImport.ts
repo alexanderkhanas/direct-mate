@@ -103,6 +103,10 @@ export function useStartHistoryImport() {
       await api.post('/onboarding/history/consent', { read: true });
       return api.post<HistoryImportView>('/onboarding/history/import').then((r) => r.data);
     },
-    onSuccess: (view) => qc.setQueryData(HISTORY_KEY, view),
+    onSuccess: (view) => {
+      qc.setQueryData(HISTORY_KEY, view);
+      // The consent is the read permission («read the Direct»): Settings and the launch step show it.
+      void qc.invalidateQueries({ queryKey: ['direct-permissions'] });
+    },
   });
 }

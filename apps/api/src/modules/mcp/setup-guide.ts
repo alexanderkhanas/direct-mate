@@ -3,7 +3,7 @@ import { KEY_SECTIONS, type NoteSection } from '../onboarding/store-notes';
 
 /** What Claude should do next. Sent with every tool result: it steers better than a rule in the instructions. */
 export interface NextStep {
-  step: OnboardingStepKey | 'done';
+  step: OnboardingStepKey | 'permissions' | 'done';
   why: string;
   /** Questions to put to the owner, one topic at a time. */
   ask_owner: string[];
@@ -15,6 +15,28 @@ export interface GuideFacts {
   importing?: boolean;
   /** Key sections of the store notes with nothing in them. */
   missingSections?: NoteSection[];
+  /** The owner's permissions for the Direct: whether each is given, and whether they have answered at all. */
+  permissions?: Record<'read_messages' | 'reply_to_customers', { allowed: boolean; decided: boolean }>;
+  /** Where the Instagram history import stands (`HistoryImport.status`), when the owner allowed reading. */
+  historyStatus?: string | null;
+}
+
+const READ_QUESTION =
+  'May DirectMate read your Instagram Direct? It reads your recent chats once to learn your delivery and payment terms and how you talk to customers, ' +
+  'and it lets learning mode work (the AI agent drafts replies next to your managers’ and sends nothing). You can withdraw it at any time.';
+const REPLY_QUESTION =
+  'May the AI agent reply to your customers in Instagram Direct? This is what turning it on fully (active mode) needs; it also answers questions left under your posts, in Direct. ' +
+  'It is separate from reading your chat history, and you can withdraw it at any time.';
+
+/** The history import is reading, or has read: what the notes and tone steps should do with it. */
+function historyHint(status: string | null | undefined): string {
+  if (status === 'done') {
+    return ' First call get_history_import: it has the terms your managers stated in chats and a description of your tone. Read them to the owner to confirm instead of asking from scratch.';
+  }
+  if (status === 'queued' || status === 'running' || status === 'limited') {
+    return ' The Direct history is being read (it can take up to an hour): carry on asking, and call get_history_import later to compare.';
+  }
+  return '';
 }
 
 const SECTION_QUESTIONS: Record<NoteSection, string> = {
@@ -31,6 +53,28 @@ const SECTION_QUESTIONS: Record<NoteSection, string> = {
  * admin setup uses; a skipped step counts as dealt with.
  */
 export function nextStep(status: OnboardingStatus, facts: GuideFacts = {}): NextStep {
+  // Right after Instagram connects: nothing is read or answered until the owner allows it, each on its own. Asked
+  // once: a «no» counts as an answer.
+  const instagram = status.steps.some((s) => s.key === 'instagram' && s.state === 'done');
+  const perms = facts.permissions;
+  if (instagram && perms && (!perms.read_messages.decided || !perms.reply_to_customers.decided)) {
+    const first = !perms.read_messages.decided && !perms.reply_to_customers.decided;
+    const read = !perms.read_messages.decided;
+    return {
+      step: 'permissions',
+      why:
+        'Instagram is connected, but DirectMate does not read the Direct or reply to anyone until the owner allows it. ' +
+        'Reading and replying are two separate permissions; neither needs the other.',
+      ask_owner: [
+        ...(first ? ['Tell the owner first: until you allow it, DirectMate does not read your Direct and does not reply to anyone.'] : []),
+        read ? READ_QUESTION : REPLY_QUESTION,
+      ],
+      then_call:
+        `set_instagram_permission with permission "${read ? 'read_messages' : 'reply_to_customers'}": allowed: true and confirmed: true only after the owner clearly said yes to this one; allowed: false if they said no. ` +
+        (read ? 'Then ask about replying, as a separate question.' : 'Then carry on with the setup.'),
+    };
+  }
+
   const todo = status.steps.find((s) => s.state === 'todo');
   switch (todo?.key) {
     case 'products':
@@ -66,7 +110,8 @@ export function nextStep(status: OnboardingStatus, facts: GuideFacts = {}): Next
         why: 'Store notes are the only source the AI agent has for delivery, payment and returns. What is not there, it hands to a manager.',
         ask_owner: missing.map((s) => SECTION_QUESTIONS[s]),
         then_call:
-          'Ask about one section at a time. After each answer, read back what you will save, then save_store_notes with that section only.',
+          'Ask about one section at a time. After each answer, read back what you will save, then save_store_notes with that section only.' +
+          historyHint(facts.historyStatus),
       };
     }
     case 'sizes':
@@ -94,7 +139,9 @@ export function nextStep(status: OnboardingStatus, facts: GuideFacts = {}): Next
         ask_owner: [
           'How do you talk to customers: formal or friendly, «ви» or «ти», emoji or not? Anything it must never say?',
         ],
-        then_call: 'set_tone with a short description, then try_agent again so the owner hears the difference. Or skip_setup_step "tone".',
+        then_call:
+          'set_tone with a short description, then try_agent again so the owner hears the difference. Or skip_setup_step "tone".' +
+          historyHint(facts.historyStatus),
       };
     case 'telegram':
       return {
@@ -111,7 +158,8 @@ export function nextStep(status: OnboardingStatus, facts: GuideFacts = {}): Next
           'Start in learning mode? The AI agent writes its own drafts next to your managers’ replies and sends nothing, so you can compare first. When you are happy with them, turn it on fully: then it answers customers and the free trial starts.',
         ],
         then_call:
-          'go_live with the mode the owner chose, and confirmed: true only after they said yes to that exact mode. Suggest "learning" first, and "active" only after they have seen results.',
+          'go_live with the mode the owner chose, and confirmed: true only after they said yes to that exact mode. Suggest "learning" first, and "active" only after they have seen results. ' +
+          'Learning needs the read permission and active the reply permission (set_instagram_permission); if the one needed is missing, ask for it first.',
       };
     default:
       return {
