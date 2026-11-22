@@ -180,7 +180,10 @@ default). Size charts (`size_charts`) are an image plus, once a vision model has
 only the table is kept and the agent sends no picture. A chart holds up to 150 sizes; a bra chart is one row per band
 and cup («75B») with `underbust` and `chest`. Each chart covers brands × categories (empty = all); per product
 the most specific one wins, and `get_size_help` recommends from it only when it is ready (a broader
-ready chart never stands in); otherwise from the height/weight ranges in `flow_config.sizeChart`.
+ready chart never stands in); otherwise from the height/weight ranges in `flow_config.sizeChart`. A chart with none of
+the product's sizes is passed over for the next covering chart that has them (`pickChart`: a clothes chart in S–3XL
+that covers trousers, beside a trousers chart in 42–58), and the match uses only the rows of sizes the product is sold
+in (XXL ≡ 2XL), so one table may hold two size systems (trousers 42–58 and jeans 30–38).
 
 ## Channels
 

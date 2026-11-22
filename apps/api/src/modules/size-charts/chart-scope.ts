@@ -1,3 +1,4 @@
+import { sameSize } from '../agent/catalog/catalog-format';
 import { lowerTrim } from './normalize';
 
 /**
@@ -16,6 +17,8 @@ export interface ChartScope {
   categories: string[];
   isDefault: boolean;
   createdAt: Date;
+  /** The chart read into a table (draft or ready); null for a picture only. */
+  table?: { rows: Array<{ size: string }> } | null;
 }
 
 /** A product as a scope sees it: its brand and every category it is in. */
@@ -23,6 +26,8 @@ export interface ProductScope {
   brand: string | null;
   /** `products.category` and the `product_categories` names, as stored. */
   categories: string[];
+  /** The sizes it is sold in, in stock or not. Missing or empty: unknown. */
+  sizes?: string[];
 }
 
 /** How specific a chart is: brand + category 3, brand 2, category 1, whole store 0. */
@@ -45,19 +50,23 @@ export function chartCovers(chart: ChartScope, product: ProductScope): boolean {
 /**
  * The chart for a product: the most specific one that covers it (brand +
  * category, then brand, then category, then whole store), the newest within
- * a level. Null when none covers it.
+ * a level. A chart whose table has none of the product's sizes is skipped
+ * for the next one that has them: «Брюки» in 42–58 and jeans 30–38 beside a
+ * clothes chart in S–3XL that covers trousers too, for trousers sold in S–XL.
+ * When no covering chart has them, the most specific one still answers (it
+ * says the size systems differ). Null when none covers it.
  */
 export function pickChart<T extends ChartScope>(charts: T[], product: ProductScope): T | null {
-  let best: T | null = null;
-  for (const chart of charts) {
-    if (!chartCovers(chart, product)) continue;
-    if (
-      !best ||
-      chartLevel(chart) > chartLevel(best) ||
-      (chartLevel(chart) === chartLevel(best) && chart.createdAt.getTime() > best.createdAt.getTime())
-    ) {
-      best = chart;
-    }
-  }
-  return best;
+  const covering = charts
+    .filter((chart) => chartCovers(chart, product))
+    .sort((a, b) => chartLevel(b) - chartLevel(a) || b.createdAt.getTime() - a.createdAt.getTime());
+  return covering.find((chart) => !otherSizeSystem(chart, product)) ?? covering[0] ?? null;
+}
+
+/** The chart's table names none of the sizes the product is sold in. A picture only, or unknown sizes: not known, so no. */
+function otherSizeSystem(chart: ChartScope, product: ProductScope): boolean {
+  const rows = chart.table?.rows ?? [];
+  const sizes = product.sizes ?? [];
+  if (rows.length === 0 || sizes.length === 0) return false;
+  return !rows.some((row) => sizes.some((size) => sameSize(row.size, size)));
 }

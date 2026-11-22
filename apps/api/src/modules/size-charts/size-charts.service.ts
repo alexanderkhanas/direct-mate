@@ -54,6 +54,7 @@ interface ProductScopeRow {
   brand: string | null;
   category: string | null;
   linked: string[] | null;
+  sizes: string[] | null;
 }
 
 type ScopedProduct = ProductScope & { id: string };
@@ -313,10 +314,10 @@ export class SizeChartsService {
   }
 
   /**
-   * The chart for a product: the most specific one covering it, whatever its
-   * status (see `pickChart`). Pass `productId`, or a brand and categories.
-   * The bot recommends a size from it only when it is `ready`; a broader
-   * ready chart never stands in for it.
+   * The chart for a product: the most specific one covering it in the
+   * product's size system, whatever its status (see `pickChart`). Pass
+   * `productId`, or a brand and categories. The bot recommends a size from it
+   * only when it is `ready`; a broader ready chart never stands in for it.
    */
   async resolveForContext(
     tenantId: string,
@@ -342,14 +343,16 @@ export class SizeChartsService {
   }
 
   /**
-   * Each product's brand and categories (`products.category` plus the
-   * `product_categories` names). Every active product, or the one asked for
-   * whatever its status.
+   * Each product's brand, categories (`products.category` plus the
+   * `product_categories` names) and the sizes its active variants are sold in.
+   * Every active product, or the one asked for whatever its status.
    */
   private async productScopes(tenantId: string, productId?: string): Promise<ScopedProduct[]> {
     const rows: ProductScopeRow[] = await this.dataSource.query(
       `SELECT p.id, p.brand, p.category,
-              array_agg(c.name) FILTER (WHERE c.name IS NOT NULL) AS linked
+              array_agg(c.name) FILTER (WHERE c.name IS NOT NULL) AS linked,
+              (SELECT array_agg(DISTINCT trim(v.size)) FROM product_variants v
+                WHERE v.product_id = p.id AND v.active = true AND v.size IS NOT NULL AND trim(v.size) <> '') AS sizes
          FROM products p
          LEFT JOIN product_categories pc ON pc.product_id = p.id
          LEFT JOIN categories c ON c.id = pc.category_id
@@ -361,6 +364,7 @@ export class SizeChartsService {
       id: r.id,
       brand: r.brand,
       categories: [r.category, ...(r.linked ?? [])].filter((c): c is string => !!c && c.trim().length > 0),
+      sizes: r.sizes ?? [],
     }));
   }
 }

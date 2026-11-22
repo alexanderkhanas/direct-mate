@@ -1,5 +1,11 @@
 import { browseCategoryTool, getSizeHelpTool, MAX_CATEGORY_CARDS, searchProductsTool, sendSizeChartTool } from './catalog.tools';
-import { BRA_TABLE, DRESS_TABLE, TROUSERS_TABLE } from '../../size-charts/__fixtures__/tables';
+import {
+  BRA_TABLE,
+  DRESS_TABLE,
+  MENSWEAR_CLOTHES_TABLE,
+  MENSWEAR_TROUSERS_TABLE,
+  TROUSERS_TABLE,
+} from '../../size-charts/__fixtures__/tables';
 import type { SizeChart } from '../../size-charts/size-chart.entity';
 import type { AgentProduct } from '../catalog/catalog-reader.service';
 import type { AgentStoreSettings } from '../store-settings.service';
@@ -198,7 +204,9 @@ describe('get_size_help', () => {
         inStockSizes: ['S', 'L'],
         sizeChartImage: true,
       });
-      expect((out.sizes as unknown[])[1]).toEqual({ size: 'S', chest: '84–88', waist: '66–70', hips: '90–94' });
+      // Only the sizes the dress is sold in, not the chart's XS and XL.
+      expect((out.sizes as Array<{ size: string }>).map((s) => s.size)).toEqual(['S', 'M', 'L']);
+      expect((out.sizes as unknown[])[0]).toEqual({ size: 'S', chest: '84–88', waist: '66–70', hips: '90–94' });
       expect(out.note).toContain('Обхват грудей, Обхват талії, Обхват стегон');
       expect(out.sizeRanges).toBeUndefined();
 
@@ -255,6 +263,45 @@ describe('get_size_help', () => {
       const out = await chartHelp(DRESS, { measurements: { chest: 125, waist: 110, hips: 130 } }, { table: DRESS_TABLE });
       expect(out).toMatchObject({ available: true, recommendedSize: null });
       expect(out.note).toContain("Don't name a size");
+    });
+
+    it('matches only the sizes the product is sold in when a chart holds two size systems', async () => {
+      // Trousers in 46–54 and jeans in 30–38 in one table: 180 cm, 75 kg is a 48 here, never jeans 32.
+      const COTTON = product('ffffffff', 'Брюки котонові', {}, [
+        ['Бежевий', '46', 1],
+        ['Бежевий', '48', 2],
+        ['Бежевий', '50', 0],
+        ['Бежевий', '52', 1],
+        ['Бежевий', '54', 1],
+      ]);
+      const out = await chartHelp(COTTON, { heightCm: 180, weightKg: 75 }, { name: 'Брюки', table: MENSWEAR_TROUSERS_TABLE });
+      expect(out).toMatchObject({ recommendedSize: '48', recommendedInStock: true });
+      expect(out.note).toBeUndefined();
+
+      const ask = await chartHelp(COTTON, {}, { name: 'Брюки', table: MENSWEAR_TROUSERS_TABLE });
+      expect((ask.sizes as Array<{ size: string }>).map((s) => s.size)).toEqual(['46', '48', '50', '52', '54']);
+
+      const JEANS = product('abababab', 'Джинси', {}, [
+        ['Синій', '31', 1],
+        ['Синій', '32', 1],
+        ['Синій', '33', 1],
+      ]);
+      expect(await chartHelp(JEANS, { heightCm: 180, weightKg: 75 }, { name: 'Брюки', table: MENSWEAR_TROUSERS_TABLE })).toMatchObject({
+        recommendedSize: '32',
+        recommendedInStock: true,
+      });
+    });
+
+    it('reads XXL and 2XL in a chart as one size, named as the product names it', async () => {
+      const JUMPER = product('cdcdcdcd', 'Джемпер', {}, [
+        ['Сірий', 'XL', 1],
+        ['Сірий', 'XXL', 2],
+        ['Сірий', 'XXXL', 1],
+      ]);
+      const out = await chartHelp(JUMPER, { heightCm: 188, weightKg: 100 }, { name: 'Одяг', table: MENSWEAR_CLOTHES_TABLE });
+      expect(out).toMatchObject({ recommendedSize: 'XXL', recommendedInStock: true });
+      expect(out.between).toBeUndefined();
+      expect(out.note).toBeUndefined();
     });
 
     it("gives no recommendation when the chart's sizes aren't the product's", async () => {

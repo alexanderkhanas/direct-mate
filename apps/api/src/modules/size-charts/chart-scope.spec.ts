@@ -1,11 +1,17 @@
 import { chartCovers, chartLevel, pickChart, type ChartScope } from './chart-scope';
 
-const chart = (name: string, brands: string[], categories: string[], opts: { isDefault?: boolean; day?: number } = {}) => ({
+const chart = (
+  name: string,
+  brands: string[],
+  categories: string[],
+  opts: { isDefault?: boolean; day?: number; sizes?: string[] } = {},
+): ChartScope & { name: string } => ({
   name,
   brands,
   categories,
   isDefault: opts.isDefault ?? false,
   createdAt: new Date(2026, 10, opts.day ?? 1),
+  table: opts.sizes ? { rows: opts.sizes.map((size) => ({ size })) } : null,
 });
 
 const LLIANA_DRESS = { brand: 'Lliana', categories: ['Сукні'] };
@@ -38,6 +44,27 @@ describe('size chart scope', () => {
     const newer = chart('newer', [], ['сукні'], { day: 5 });
     expect(pickChart([older, newer], LLIANA_DRESS)?.name).toBe('newer');
     expect(pickChart([newer, older], LLIANA_DRESS)?.name).toBe('newer');
+  });
+
+  it("skips a chart whose table has none of the product's sizes for the next one that has them", () => {
+    // Claude saved clothes in S–3XL covering trousers too, then «Брюки» in 42–58 and jeans 30–38.
+    const clothes = chart('clothes', [], ['брюки', 'сорочки'], { day: 1, sizes: ['S', 'M', 'L', 'XL', '2XL', 'XXL'] });
+    const trousers = chart('trousers', [], ['брюки'], { day: 2, sizes: ['42', '44', '46', '48', '30', '32'] });
+    const charts = [clothes, trousers];
+
+    expect(pickChart(charts, { brand: null, categories: ['Брюки'], sizes: ['S', 'M', 'L', 'XL', '2XL'] })?.name).toBe('clothes');
+    expect(pickChart(charts, { brand: null, categories: ['Брюки'], sizes: ['48', '50'] })?.name).toBe('trousers');
+    expect(pickChart(charts, { brand: null, categories: ['Брюки'], sizes: ['30', '32'] })?.name).toBe('trousers');
+    // Sizes unknown: the most specific, newest chart, as before.
+    expect(pickChart(charts, { brand: null, categories: ['Брюки'] })?.name).toBe('trousers');
+    // No chart has them: the most specific one answers, and says the sizes differ.
+    expect(pickChart(charts, { brand: null, categories: ['Брюки'], sizes: ['W30L32'] })?.name).toBe('trousers');
+  });
+
+  it("never skips a picture-only chart: its sizes aren't known", () => {
+    const picture = chart('mango', ['lliana'], [], { day: 1 });
+    const whole = chart('whole', [], [], { day: 2, sizes: ['S', 'M'] });
+    expect(pickChart([picture, whole], { ...LLIANA_DRESS, sizes: ['S', 'M'] })?.name).toBe('mango');
   });
 
   it('matches any of the product categories, from either source, ignoring case and spaces', () => {

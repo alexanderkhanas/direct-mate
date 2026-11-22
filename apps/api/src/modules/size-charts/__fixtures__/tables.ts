@@ -59,3 +59,49 @@ export const TROUSERS_TABLE: SizeChartTable = {
   })),
   uncertain: [],
 };
+
+/** A table of sizes by height (cm) and weight (kg), as Claude saves one from what the owner said. */
+function heightWeight(rows: Array<[size: string, h1: number, h2: number, w1: number, w2: number]>): SizeChartTable {
+  return {
+    measurements: [
+      { key: 'height', label: 'Зріст', unit: 'cm' },
+      { key: 'weight', label: 'Вага', unit: 'kg' },
+    ],
+    rows: rows.map(([size, h1, h2, w1, w2]) => ({
+      size,
+      values: { height: { min: h1, max: h2 }, weight: { min: w1, max: w2 } },
+    })),
+    uncertain: [],
+  };
+}
+
+/** A menswear store's clothes chart as Claude saved it: S–3XL, with XXL and XXXL repeated under their other names. */
+export const MENSWEAR_CLOTHES_TABLE = heightWeight([
+  ['S', 168, 176, 60, 70],
+  ['M', 174, 182, 70, 78],
+  ['L', 178, 186, 78, 86],
+  ['XL', 180, 190, 86, 95],
+  ['2XL', 183, 193, 95, 105],
+  ['XXL', 183, 193, 95, 105],
+  ['3XL', 185, 195, 105, 115],
+  ['XXXL', 185, 195, 105, 115],
+]);
+
+/** The same store's trousers chart: two size systems in one table, 42–58 and then jeans 30–38. */
+export const MENSWEAR_TROUSERS_TABLE = heightWeight([
+  ['42', 160, 168, 50, 56],
+  ['44', 164, 172, 55, 62],
+  ['46', 168, 176, 60, 70],
+  ['48', 174, 182, 70, 78],
+  ['50', 178, 186, 78, 86],
+  ['52', 180, 190, 86, 95],
+  ['54', 183, 193, 95, 105],
+  ['56', 185, 195, 105, 115],
+  ['58', 186, 196, 115, 125],
+  ['30', 168, 176, 60, 67],
+  ['31', 170, 178, 66, 72],
+  ['32', 174, 182, 71, 78],
+  ['33', 176, 184, 77, 82],
+  ['34', 178, 186, 81, 87],
+  ['38', 182, 192, 95, 105],
+]);

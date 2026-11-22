@@ -386,13 +386,14 @@ function chartAnswer(
     };
   }
 
-  const match = matchSize(table, given);
+  const own = rowsForProduct(table, productSizes);
+  const match = matchSize(own, given);
   if (match.kind === 'none') {
     const unused = Object.keys(given).filter((k) => !askFor.some((a) => a.measurement === k));
     return {
       available: true,
       chart: { name, askFor },
-      sizes: table.rows.map((r) => ({
+      sizes: own.rows.map((r) => ({
         size: r.size,
         ...Object.fromEntries(
           table.measurements.flatMap((m) => {
@@ -439,6 +440,23 @@ function chartAnswer(
     sizeChartImage,
     ...(notes.length > 0 && { note: notes.join(' ') }),
   };
+}
+
+/**
+ * The chart's rows for the sizes this product is sold in, under the product's own labels, one row per size
+ * (XXL ≡ 2XL). A chart can hold two size systems (trousers 42–58 and jeans 30–38): matching across both gave
+ * trousers sold in 48 a jeans size. Without the product's sizes only the repeats go.
+ */
+function rowsForProduct(table: SizeChartTable, productSizes: string[]): SizeChartTable {
+  const seen = new Set<string>();
+  const rows = table.rows.flatMap((row) => {
+    const key = normSize(row.size);
+    const label = productSizes.length > 0 ? productSizes.find((s) => sameSize(s, row.size)) : row.size;
+    if (seen.has(key) || !label) return [];
+    seen.add(key);
+    return [{ ...row, size: label }];
+  });
+  return { ...table, rows };
 }
 
 export function sendSizeChartTool(deps: AgentToolDeps, scope: ToolScope) {
