@@ -7,7 +7,7 @@ import { formatRange, matchSize, type GivenMeasurements } from '../../size-chart
 import type { SizeChartTable } from '../../size-charts/size-chart-table';
 import { ATTRIBUTE_VALUES, ListedAttribute } from '../../catalog/attributes/product-attributes';
 import { findSizes, normSize, sameSize } from '../catalog/catalog-format';
-import type { AgentProduct } from '../catalog/catalog-reader.service';
+import type { AgentProduct, ProductPhoto } from '../catalog/catalog-reader.service';
 import { categoryCard, describeProduct, hasInStock, summarizeProduct } from './product-shapes';
 import type { StagedEffect } from '../agent.types';
 import type { AgentToolDeps, ToolScope } from './tool-deps';
@@ -488,41 +488,80 @@ export function sendSizeChartTool(deps: AgentToolDeps, scope: ToolScope) {
   });
 }
 
+/**
+ * The photo to send for one product. With a colour: a photo tagged with that
+ * colour, else one with no colour tag; never a photo tagged with another
+ * colour. Without one: the shop's first photo.
+ */
+export function pickPhoto(photos: ProductPhoto[], color: string | undefined): ProductPhoto | null {
+  if (photos.length === 0) return null;
+  if (!color) return photos[0];
+  return photos.find((p) => colorsMatch(p.color, color)) ?? photos.find((p) => !p.color) ?? null;
+}
+
 export function showProductsTool(deps: AgentToolDeps, scope: ToolScope) {
   return tool({
     description:
       'Send product photos with your reply, up to 4. Use it when the customer wants to see an item or when ' +
-      'you suggest specific products. Pass color to show that colour where a photo of it exists.',
+      'you suggest specific products. Give each product the colour being discussed for it, so its photo shows ' +
+      'that colour (the same product may come twice in two colours); leave color out only when no colour is ' +
+      'meant. The result says which colour each photo shows.',
     inputSchema: z.object({
-      productRefs: z.array(z.string()).min(1).max(MAX_IMAGES),
-      color: z.string().optional(),
+      items: z
+        .array(
+          z.object({
+            productRef: z.string(),
+            color: z.string().optional().describe('The colour to show, as the product lists it.'),
+          }),
+        )
+        .min(1)
+        .max(MAX_IMAGES),
     }),
-    execute: async ({ productRefs, color }) => {
-      const ids: string[] = [];
+    execute: async ({ items }) => {
       const errors: string[] = [];
-      for (const ref of productRefs) {
-        const resolved = await deps.catalog.resolveProductRef(scope.tenantId, ref);
+      const wanted: Array<{ id: string; color: string | undefined }> = [];
+      for (const item of items) {
+        const resolved = await deps.catalog.resolveProductRef(scope.tenantId, item.productRef);
         if ('error' in resolved) errors.push(resolved.error);
-        else ids.push(resolved.id);
+        else wanted.push({ id: resolved.id, color: item.color?.trim() || undefined });
       }
-      const products = await deps.catalog.loadProducts(scope.tenantId, ids);
-      const images = products
-        .map((p) => {
-          const colored = color ? p.variants.find((v) => v.imageUrl && colorsMatch(v.color, color)) : undefined;
-          const url = colored?.imageUrl ?? p.imageUrl;
-          return url ? { productId: p.id, url } : null;
-        })
-        .filter((i): i is { productId: string; url: string } => i !== null)
-        .slice(0, MAX_IMAGES);
+      const ids = [...new Set(wanted.map((w) => w.id))];
+      const [products, photos] = await Promise.all([
+        deps.catalog.loadProducts(scope.tenantId, ids),
+        deps.catalog.loadPhotos(scope.tenantId, ids),
+      ]);
+      const titles = new Map(products.map((p) => [p.id, p.title]));
+
+      const images: Array<{ productId: string; url: string }> = [];
+      const sent: Array<{ product: string; color: string }> = [];
+      const noPhoto: string[] = [];
+      for (const w of wanted) {
+        const title = titles.get(w.id);
+        if (!title) continue;
+        const photo = pickPhoto(photos.get(w.id) ?? [], w.color);
+        if (!photo) {
+          noPhoto.push(w.color ? `«${title}» in ${w.color}` : `«${title}»`);
+          continue;
+        }
+        if (images.some((i) => i.url === photo.url)) continue;
+        images.push({ productId: w.id, url: photo.url });
+        sent.push({ product: title, color: photo.color ?? "not tagged: don't name a colour for this photo" });
+      }
+      const missing =
+        noPhoto.length > 0
+          ? { noPhoto, noPhotoNote: "There's no photo of these, so none is sent for them; don't say you're sending one." }
+          : {};
 
       if (images.length === 0) {
-        return { ok: false, error: errors[0] ?? 'These products have no photos.' };
+        return { ok: false, error: errors[0] ?? 'No photo to send.', ...missing };
       }
       const staged: StagedEffect = { type: 'show_products', images };
       return {
         ok: true,
         staged,
-        note: `${images.length} photo(s) are sent with your reply.`,
+        photos: sent,
+        note: `${images.length} photo(s) are sent with your reply. Don't call a photo a colour other than the one listed.`,
+        ...missing,
         ...(errors.length > 0 && { skipped: errors }),
       };
     },

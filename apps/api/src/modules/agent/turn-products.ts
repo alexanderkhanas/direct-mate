@@ -35,7 +35,10 @@ export function productsInReply(steps: AgentStepRecord[], reply: string | null):
     for (const call of step.toolCalls) {
       const input = (call.input ?? {}) as Record<string, any>;
       if (call.toolName === 'get_product') pick(input.productRef);
-      if (call.toolName === 'show_products') (input.productRefs ?? []).forEach(pick);
+      if (call.toolName === 'show_products') {
+        (input.items ?? []).forEach((item: { productRef?: unknown }) => pick(item?.productRef));
+        (input.productRefs ?? []).forEach(pick); // traces from before per-product colours
+      }
       if (call.toolName === 'update_order_draft') pick(input.addItem?.productRef);
     }
   }

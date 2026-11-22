@@ -94,6 +94,7 @@ function buildAgent(
       resolveProductRef: async (_t: string, ref: string) =>
         ref === 'aaaaaaaa' ? { id: SHIRT.id } : { error: `No product with ref "${ref}" in this store.` },
       loadProducts: async () => [SHIRT],
+      loadPhotos: async () => new Map([[SHIRT.id, [{ url: '/uploads/shirt.jpg', color: null }]]]),
     } as never,
     { search: async () => ({ ids: [SHIRT.id], total: 1 }) } as never,
     { resolveForContext: async () => null, listForTenant: async () => [], publicUrl: (p: string) => p } as never,
@@ -186,7 +187,7 @@ describe('AgentService.runTurn', () => {
   it('keeps what was found before the handoff: the photos go out with the reply', async () => {
     const model = new MockLanguageModelV4({
       doGenerate: [
-        call('show_products', { productRefs: ['aaaaaaaa'] }),
+        call('show_products', { items: [{ productRef: 'aaaaaaaa' }] }),
         call('handoff', { reason: 'customer_asked_for_human', summaryForManager: 'Просить менеджера' }),
         text('Ось фото сорочки. Передаю менеджеру.'),
       ],

@@ -189,3 +189,26 @@ describe('MediaContextResolver: customer photos', () => {
     expect(visual.notes[0]).toContain('sent a photo, probably showing «Сукня льон»');
   });
 });
+
+describe('MediaContextResolver: a story from earlier in the conversation', () => {
+  const EARLIER: MediaReference = { ...STORY, earlier: true };
+
+  it("keeps naming the owner's confirmed product on later turns", async () => {
+    const t = setup({ links: [link({ color: null, source: 'vision' })] });
+    const out = await t.resolve(EARLIER);
+    expect(out.notes).toEqual([
+      "Earlier in this conversation the customer replied to the shop's story showing «Сукня льон» (ref 5d041fb6). " +
+        'The shop confirmed this, so when they mean the item from it, it is this product, not just a similar one.',
+    ]);
+    expect(out.productId).toBe(PRODUCT);
+  });
+
+  it('only looks the links up: no matching, no visual check, no note when nothing is confirmed', async () => {
+    const t = setup({ links: [link({ status: 'suggested', source: 'conversation' })], phash: { productId: PRODUCT, color: null } });
+    const out = await t.resolve(EARLIER);
+    expect(out.notes).toEqual([]);
+    expect(t.contentMedia.matchCatalogImage).not.toHaveBeenCalled();
+    expect(t.verifier.verifyInBackground).not.toHaveBeenCalled();
+    expect(t.content.saveUnlinkedMedia).not.toHaveBeenCalled();
+  });
+});

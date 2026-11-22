@@ -18,6 +18,11 @@ export interface MediaReference {
   /** Another account's post, not the shop's. */
   foreign?: boolean;
   reel?: boolean;
+  /**
+   * Pointed at earlier in the conversation, not in the new messages: only the
+   * shop's confirmed products for it are named (a lookup; nothing is matched).
+   */
+  earlier?: boolean;
 }
 
 export interface MediaContext {
@@ -72,7 +77,7 @@ export class MediaContextResolver {
     private readonly dataSource: DataSource,
   ) {}
 
-  /** `references`: what the customer's new messages pointed at, oldest first. */
+  /** `references`: what the customer's new messages pointed at, oldest first, then any `earlier` one. */
   async resolve(
     tenantId: string,
     conversationId: string,
@@ -82,8 +87,8 @@ export class MediaContextResolver {
     let text = messageText;
     let refs = references.slice(0, MAX_REFERENCES);
 
-    // A pasted post link counts as a post reply.
-    const link = refs.length === 0 ? text.match(POST_LINK)?.[0] : undefined;
+    // A pasted post link counts as a post reply, and replaces content from earlier in the conversation.
+    const link = refs.every((r) => r.earlier) ? text.match(POST_LINK)?.[0] : undefined;
     if (link) {
       const mediaId = await this.content.resolveMediaIdByPostUrl(tenantId, link).catch((err) => {
         this.logger.warn(`Post link resolution failed (non-fatal): ${err}`);
@@ -112,13 +117,36 @@ export class MediaContextResolver {
   ): Promise<{ note: string | null; productId: string | null }> {
     const what = describe(ref);
     try {
+      if (ref.earlier) return await this.resolveEarlier(tenantId, ref, what);
       return ref.type === 'customer_photo'
         ? await this.resolvePhoto(tenantId, conversationId, ref, what)
         : await this.resolveContent(tenantId, ref, what);
     } catch (err) {
       this.logger.error(`Media resolution failed for ${ref.type} (treated as no match): ${err}`);
-      return { note: unmatchedNote(ref, what), productId: null };
+      return { note: ref.earlier ? null : unmatchedNote(ref, what), productId: null };
     }
+  }
+
+  /**
+   * The story or post from earlier in the conversation, on a later turn: its
+   * confirmed products, so the owner's link still counts after the turn it
+   * came with. Nothing when none is confirmed; that turn's note already said so.
+   */
+  private async resolveEarlier(
+    tenantId: string,
+    ref: MediaReference,
+    what: string,
+  ): Promise<{ note: string | null; productId: string | null }> {
+    const confirmed = (await this.links.forMedia(tenantId, ref.mediaId)).filter((l) => l.status === 'confirmed');
+    if (confirmed.length === 0) return { note: null, productId: null };
+    const items = confirmed.map(named).join(', ');
+    return {
+      note:
+        `Earlier in this conversation the customer ${what} showing ${items}` +
+        (confirmed.length > 1 ? ': these are the items pictured.' : '.') +
+        ' The shop confirmed this, so when they mean the item from it, it is this product, not just a similar one.',
+      productId: confirmed[0].productId,
+    };
   }
 
   private async resolvePhoto(

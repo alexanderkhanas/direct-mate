@@ -105,6 +105,8 @@ admin simulator and Live DM console, the CLI simulator.
    else said so with alternatives; several confirmed → «which one?». Otherwise the agent sees the catalog as text only,
    so it says it can't tell which model and shows the closest 2–3, suggestions first, never as the item pictured.
    Content it couldn't copy is labelled «you can't see it». Another account's post is «looks like», never the same item.
+   On later turns whose messages point at nothing, the shop's content the customer pointed at last
+   (`HistoryBuilder.buildTurn().focus`) is looked up again (`earlier`): its confirmed products are named, nothing is matched.
 5. **Agent** (`AgentService.runTurn`): a tool loop, then the **guards**. A failed check regenerates once
    with the violations fed back; a second grounding failure is an announced handoff.
 6. **Supersede:** on Instagram, a reply is dropped if the customer wrote again meanwhile, and re-run once.
@@ -128,7 +130,8 @@ Read: `search_products` (words, or an exact `sku` / article; optional `price` ±
 sizing is `consult`). State: `get_order_draft`, `update_order_draft` (lives in `checkout_sessions` /
 `checkout_items` / `checkout_customer_info`; price always from the DB; `addItem.fromContent` marks the item the
 customer chose from a story, post or reel). Staged effects, committed by the
-runner per mode: `show_products` (≤4 images), `send_size_chart`, `place_order` (only when the draft is
+runner per mode: `show_products` (≤4 images, a colour per product: that colour's photo, else an untagged one, never
+another colour's; the result says which colour each photo shows), `send_size_chart`, `place_order` (only when the draft is
 complete, idempotent per checkout session), `send_payment_details` (once per draft), `handoff`.
 Every tool is tenant-scoped; refs the model passes are resolved against the tenant's catalog.
 

@@ -41,6 +41,7 @@ function setup(opts: {
   newAttachments?: unknown[];
   history?: unknown[];
   focusMediaId?: string | null;
+  focus?: unknown;
 } = {}) {
   const queries: string[] = [];
   const dataSource = {
@@ -93,6 +94,7 @@ function setup(opts: {
         history: opts.history ?? [{ role: 'customer', text: 'Скільки коштує сорочка?' }],
         newAttachments: opts.newAttachments ?? [],
         focusMediaId: opts.focusMediaId ?? null,
+        focus: opts.focus ?? null,
       };
     }),
   };
@@ -193,6 +195,19 @@ describe('TurnRunner', () => {
     expect(t.telegram.notifyHandoff.mock.calls[0][0]).toMatchObject({ lastMessage: share });
     expect(t.media.resolve.mock.calls[0][3]).toBe(share);
     expect(t.traces.persistAgentTurn.mock.calls[0]).toEqual(expect.arrayContaining([expect.objectContaining({ inboundMessageText: share })]));
+  });
+
+  it('keeps the story from earlier in the conversation in view when the new messages point at nothing', async () => {
+    const story = { type: 'story_reply', mediaId: 's1', url: '/uploads/content-media/t1/s.jpg', image: 'picture' };
+    const t = setup({ focus: story });
+    await t.run();
+    expect(t.media.resolve.mock.calls[0][2]).toEqual([{ ...story, earlier: true }]);
+
+    // A new photo or story is what the customer means now: the earlier one isn't added.
+    const photo = { type: 'customer_photo', mediaId: 'https://cdn/x.jpg' };
+    const fresh = setup({ focus: story, newAttachments: [photo] });
+    await fresh.run();
+    expect(fresh.media.resolve.mock.calls[0][2]).toEqual([photo]);
   });
 
   it("takes a reference the caller passed from its saved message, which carries the copy", async () => {

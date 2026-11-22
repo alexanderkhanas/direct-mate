@@ -218,9 +218,15 @@ export class TurnRunner {
       const fromMessages = mediaReferences(built.newAttachments);
       const given = input.mediaReference;
       // A reference the caller passed is the same one its saved message carries, which has the copy and caption.
+      // When the new messages point at nothing, the shop's story or post from earlier in the conversation stays in
+      // view: «так, давайте» is still about it, and the owner's link to it still counts.
+      const earlier =
+        given === undefined && fromMessages.length === 0 && built.focus
+          ? mediaReferences([built.focus]).map((r) => ({ ...r, earlier: true }))
+          : [];
       const references =
         given === undefined
-          ? fromMessages
+          ? [...fromMessages, ...earlier]
           : given
             ? [fromMessages.find((r) => r.type === given.type && r.mediaId === given.mediaId) ?? given]
             : [];

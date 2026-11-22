@@ -1,4 +1,4 @@
-import { browseCategoryTool, getSizeHelpTool, MAX_CATEGORY_CARDS, searchProductsTool, sendSizeChartTool } from './catalog.tools';
+import { browseCategoryTool, getSizeHelpTool, MAX_CATEGORY_CARDS, pickPhoto, searchProductsTool, sendSizeChartTool, showProductsTool } from './catalog.tools';
 import {
   BRA_TABLE,
   DRESS_TABLE,
@@ -395,5 +395,71 @@ describe('search_products', () => {
     expect(refs(await search({ query: 'сорочка', price: 2000 }, deps([onSale], [onSale.id])))).toEqual(['dddddddd']);
     expect(refs(await search({ query: 'сорочка', price: 3250 }, deps([onSale], [onSale.id])))).toEqual(['dddddddd']);
     expect(refs(await search({ query: 'сорочка', price: 2600 }, deps([onSale], [onSale.id])))).toEqual([]);
+  });
+});
+
+describe('show_products', () => {
+  const POLO = product('dddddddd', 'Поло з кашеміром', {}, [['Хакі', 'L', 2], ['Гірчичний', 'M', 1], ['Бургунді', 'M', 1]]);
+  const TROUSERS = product('eeeeeeee', "Брюки на зав'язках", {}, [['Сірий', '48', 2], ['Бежевий', '50', 1]]);
+  const PHOTOS = new Map([
+    [
+      POLO.id,
+      [
+        { url: '/uploads/polo-girchychne.jpg', color: 'Гірчичний' },
+        { url: '/uploads/polo-chorne.jpg', color: null },
+        { url: '/uploads/polo-haki.jpg', color: 'Хакі' },
+      ],
+    ],
+    [TROUSERS.id, [{ url: '/uploads/bryuky-bezhevi.jpg', color: 'Бежевий' }]],
+  ]);
+  const showDeps = {
+    catalog: {
+      resolveProductRef: async (_t: string, ref: string) =>
+        [POLO, TROUSERS].find((p) => p.ref === ref) ? { id: `${ref}-0000-0000-0000-000000000000` } : { error: `No product with ref "${ref}"` },
+      loadProducts: async (_t: string, ids: string[]) => [POLO, TROUSERS].filter((p) => ids.includes(p.id)),
+      loadPhotos: async () => PHOTOS,
+    },
+  } as unknown as AgentToolDeps;
+  const show = (items: Array<{ productRef: string; color?: string }>) =>
+    showProductsTool(showDeps, SCOPE).execute!({ items } as never, CALL) as unknown as Promise<Record<string, any>>;
+
+  it('picks the photo of the colour asked, then an untagged one, never another colour', () => {
+    const photos = PHOTOS.get(POLO.id)!;
+    expect(pickPhoto(photos, 'хакі')?.url).toBe('/uploads/polo-haki.jpg');
+    expect(pickPhoto(photos, 'Бургунді')?.url).toBe('/uploads/polo-chorne.jpg');
+    expect(pickPhoto(photos, undefined)?.url).toBe('/uploads/polo-girchychne.jpg');
+    expect(pickPhoto(PHOTOS.get(TROUSERS.id)!, 'Сірий')).toBeNull();
+  });
+
+  it('shows each product in its own colour and says which colour each photo shows', async () => {
+    const r = await show([{ productRef: 'dddddddd', color: 'Хакі' }, { productRef: 'eeeeeeee', color: 'Бежевий' }]);
+    expect(r.ok).toBe(true);
+    expect(r.staged.images.map((i: { url: string }) => i.url)).toEqual(['/uploads/polo-haki.jpg', '/uploads/bryuky-bezhevi.jpg']);
+    expect(r.photos).toEqual([
+      { product: 'Поло з кашеміром', color: 'Хакі' },
+      { product: "Брюки на зав'язках", color: 'Бежевий' },
+    ]);
+  });
+
+  it("sends nothing for a colour with no photo, and says so instead of sending another colour's", async () => {
+    const r = await show([{ productRef: 'dddddddd', color: 'Хакі' }, { productRef: 'eeeeeeee', color: 'Сірий' }]);
+    expect(r.staged.images).toHaveLength(1);
+    expect(r.noPhoto).toEqual(["«Брюки на зав'язках» in Сірий"]);
+  });
+
+  it("marks an untagged photo so the reply doesn't name its colour", async () => {
+    const r = await show([{ productRef: 'dddddddd', color: 'Бургунді' }]);
+    expect(r.photos[0].color).toMatch(/not tagged/);
+  });
+
+  it('can show one product in two colours', async () => {
+    const r = await show([{ productRef: 'dddddddd', color: 'Хакі' }, { productRef: 'dddddddd', color: 'Гірчичний' }]);
+    expect(r.staged.images.map((i: { url: string }) => i.url)).toEqual(['/uploads/polo-haki.jpg', '/uploads/polo-girchychne.jpg']);
+  });
+
+  it('fails when nothing can be shown', async () => {
+    const r = await show([{ productRef: 'eeeeeeee', color: 'Сірий' }]);
+    expect(r.ok).toBe(false);
+    expect(r.noPhoto).toHaveLength(1);
   });
 });

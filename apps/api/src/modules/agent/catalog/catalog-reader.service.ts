@@ -51,6 +51,12 @@ export interface AgentProduct {
 
 export type RefResolution = { id: string } | { error: string };
 
+export interface ProductPhoto {
+  url: string;
+  /** The colour the photo is tagged with; null when it isn't tagged. */
+  color: string | null;
+}
+
 export interface CategoryCount {
   name: string;
   products: number;
@@ -92,6 +98,29 @@ export class CatalogReader {
     if (rows.length === 0) return { error: `No product with ref "${ref}" in this store.` };
     if (rows.length > 1) return { error: `Ref "${ref}" matches more than one product; use a longer ref.` };
     return { id: rows[0].id };
+  }
+
+  /**
+   * Each product's photos in the shop's order, with the colour each is tagged
+   * with (null: not tagged; such a photo may still show one colour). Ids from
+   * another tenant are dropped.
+   */
+  async loadPhotos(tenantId: string, productIds: string[]): Promise<Map<string, ProductPhoto[]>> {
+    const photos = new Map<string, ProductPhoto[]>();
+    if (productIds.length === 0) return photos;
+    const rows: Array<{ product_id: string; url: string; color: string | null }> = await this.dataSource.query(
+      `SELECT m.product_id, m.url, m.color
+         FROM product_media m
+         JOIN products p ON p.id = m.product_id
+        WHERE p.tenant_id = $1 AND m.product_id = ANY($2)
+        ORDER BY m.product_id, m.sort_order, m.created_at`,
+      [tenantId, productIds],
+    );
+    for (const row of rows) {
+      if (!photos.has(row.product_id)) photos.set(row.product_id, []);
+      photos.get(row.product_id)!.push({ url: row.url, color: row.color });
+    }
+    return photos;
   }
 
   /**
