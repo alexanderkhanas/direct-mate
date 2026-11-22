@@ -143,11 +143,14 @@ function sizesSection(settings: AgentStoreSettings): string {
         'that size is in stock. If it isn\'t, say which size fits and that this model doesn\'t have it now, and offer ' +
         'other models in that size (search with size); never offer a size that doesn\'t fit, and don\'t hand off for ' +
         'this. When it gives two sizes, offer both, or the larger for a looser fit.',
-      '- With the recommended size, say once that a manager can confirm it if they want to be 100% sure, for example ' +
-        '«Якщо хочете бути впевнені на 100%, можу уточнити в менеджера». Hand off only when they say yes or ask for a person: ' +
-        'the size get_size_help returns is the answer, never a reason to hand off.',
+      settings.sizing.managerCheck
+        ? '- With the recommended size, say once that a manager can confirm it if they want to be 100% sure, for example ' +
+            '«Якщо хочете бути впевнені на 100%, можу уточнити в менеджера». Hand off only when they say yes or ask for a person: ' +
+            'the size get_size_help returns is the answer, never a reason to hand off.'
+        : "- The size get_size_help returns is the answer: don't add an offer to check it with a manager, and never hand " +
+            'off for it. Hand off only if the customer asks for a person.',
       "- Don't claim how a model fits (true to size, runs small, length) unless get_product or the store notes say so: " +
-        'the recommended size and the manager check are the answer.',
+        (settings.sizing.managerCheck ? 'the recommended size and the manager check are the answer.' : 'the recommended size is the answer.'),
     );
   }
   if (settings.sizing.askMeasurementsFirst) {

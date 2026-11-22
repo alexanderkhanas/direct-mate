@@ -60,7 +60,7 @@ const SETTINGS: AgentStoreSettings = {
   paymentDetails: 'IBAN UA00',
   handoffAnnounce: null,
   sizeChart: null,
-  sizing: { advice: 'recommend', askMeasurementsFirst: false },
+  sizing: { advice: 'recommend', askMeasurementsFirst: false, managerCheck: true },
   conversationIdleHours: 24,
   modelOverride: null,
   operatingMode: 'active',

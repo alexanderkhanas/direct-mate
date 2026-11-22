@@ -164,6 +164,7 @@ product). Kept in that order so the long prefix stays cacheable.
 | Disallowed phrases / emoji | `brand_config.disallowedPhrases` | — |
 | Checkout fields | `checkout_config.fields` | — |
 | Sizing: `recommend` or `consult`, ask measurements first | `flow_config.sizing` | Settings → Sizes |
+| Offer a manager's check with a recommended size (default on) | `flow_config.sizing.managerCheck` | — (SQL) |
 | Height/weight → size ranges | `flow_config.sizeChart` | Settings → Sizes |
 | Conversation idle cut-off (default 24h) | `flow_config.conversationIdleHours` | advanced JSON |
 | Comment answering on/off, public reply copy | `flow_config.commentHandling` | advanced JSON |

@@ -44,10 +44,14 @@ export interface AgentStoreSettings {
  *
  * `askMeasurementsFirst`: ask height and weight before suggesting clothes
  * (the old engine's `before_search`).
+ *
+ * `managerCheck` (default on): with a recommended size, offer a manager's
+ * check «to be 100% sure». A store whose charts are enough turns it off.
  */
 export interface SizingSettings {
   advice: 'recommend' | 'consult';
   askMeasurementsFirst: boolean;
+  managerCheck: boolean;
 }
 
 const MAX_MANAGER_EXAMPLES = 8;
@@ -68,6 +72,7 @@ const handoffSchema = z.object({ announceText: text });
 const sizingSchema = z.object({
   advice: z.enum(['recommend', 'consult']).optional().catch(undefined),
   askMeasurementsFirst: z.boolean().optional().catch(undefined),
+  managerCheck: z.boolean().optional().catch(undefined),
 });
 const flowSchema = z.object({
   sizeChart: z.unknown().optional(),
@@ -79,7 +84,11 @@ const flowSchema = z.object({
 export function parseSizing(raw: unknown): SizingSettings {
   const parsed = sizingSchema.safeParse(raw ?? {});
   const sizing = parsed.success ? parsed.data : {};
-  return { advice: sizing.advice ?? 'recommend', askMeasurementsFirst: sizing.askMeasurementsFirst ?? false };
+  return {
+    advice: sizing.advice ?? 'recommend',
+    askMeasurementsFirst: sizing.askMeasurementsFirst ?? false,
+    managerCheck: sizing.managerCheck ?? true,
+  };
 }
 
 function parse<T extends z.ZodTypeAny>(schema: T, raw: unknown): z.infer<T> {

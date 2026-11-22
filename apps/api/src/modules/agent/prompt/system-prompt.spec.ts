@@ -14,7 +14,7 @@ const SETTINGS: AgentStoreSettings = {
   paymentDetails: null,
   handoffAnnounce: null,
   sizeChart: null,
-  sizing: { advice: 'recommend', askMeasurementsFirst: false },
+  sizing: { advice: 'recommend', askMeasurementsFirst: false, managerCheck: true },
   conversationIdleHours: 24,
   modelOverride: null,
   operatingMode: 'active',
@@ -52,17 +52,19 @@ describe('handing off', () => {
 
 describe('parseSizing', () => {
   it('defaults to recommending, without asking measurements first', () => {
-    expect(parseSizing(undefined)).toEqual({ advice: 'recommend', askMeasurementsFirst: false });
+    expect(parseSizing(undefined)).toEqual({ advice: 'recommend', askMeasurementsFirst: false, managerCheck: true });
   });
 
   it('keeps valid values and drops a malformed one', () => {
-    expect(parseSizing({ advice: 'consult', askMeasurementsFirst: true })).toEqual({
+    expect(parseSizing({ advice: 'consult', askMeasurementsFirst: true, managerCheck: false })).toEqual({
       advice: 'consult',
       askMeasurementsFirst: true,
+      managerCheck: false,
     });
-    expect(parseSizing({ advice: 'guess', askMeasurementsFirst: 'yes' })).toEqual({
+    expect(parseSizing({ advice: 'guess', askMeasurementsFirst: 'yes', managerCheck: 'no' })).toEqual({
       advice: 'recommend',
       askMeasurementsFirst: false,
+      managerCheck: true,
     });
   });
 });
@@ -76,6 +78,15 @@ describe('the Sizes section', () => {
     expect(section).not.toContain("Before suggesting clothes, ask the customer's height and weight");
   });
 
+  it('leaves out the manager check when the store turned it off, still without handing off for a size', () => {
+    const section = sizes({ ...SETTINGS, sizing: { ...SETTINGS.sizing, managerCheck: false } });
+    expect(section).not.toContain('100%');
+    expect(section).not.toContain('уточнити в менеджера');
+    expect(section).not.toContain('the manager check are the answer');
+    expect(section).toContain("don't add an offer to check it with a manager, and never hand off for it");
+    expect(section).toContain('get_size_help');
+  });
+
   it("asks for the measurements the product's chart lists, then calls get_size_help again with them", () => {
     const section = sizes(SETTINGS);
     expect(section).toContain('call get_size_help with the product first');
@@ -86,19 +97,19 @@ describe('the Sizes section', () => {
   });
 
   it('collects measurements and hands off when sizes need a manager', () => {
-    const section = sizes({ ...SETTINGS, sizing: { advice: 'consult', askMeasurementsFirst: false } });
+    const section = sizes({ ...SETTINGS, sizing: { ...SETTINGS.sizing, advice: 'consult' } });
     expect(section).toContain("don't name a size yourself");
     expect(section).not.toContain('get_size_help');
   });
 
   it("asks first for the measurements get_size_help lists when the store wants that, not height and weight", () => {
-    const section = sizes({ ...SETTINGS, sizing: { advice: 'recommend', askMeasurementsFirst: true } });
+    const section = sizes({ ...SETTINGS, sizing: { ...SETTINGS.sizing, askMeasurementsFirst: true } });
     expect(section).toContain("Before suggesting clothes, ask for the customer's measurements: the ones get_size_help lists");
     expect(section).not.toContain("ask the customer's height and weight");
   });
 
   it('asks height and weight first for a manager when sizes need one', () => {
-    const section = sizes({ ...SETTINGS, sizing: { advice: 'consult', askMeasurementsFirst: true } });
+    const section = sizes({ ...SETTINGS, sizing: { ...SETTINGS.sizing, advice: 'consult', askMeasurementsFirst: true } });
     expect(section).toContain("Before suggesting clothes, ask the customer's height and weight");
     expect(section).not.toContain('get_size_help');
   });

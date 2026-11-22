@@ -227,7 +227,8 @@ export function SizingSection({ hideAdvanced = false }: { hideAdvanced?: boolean
       return api.patch('/engine/config', {
         flowConfig: {
           ...advanced,
-          sizing: { advice, askMeasurementsFirst: askFirst },
+          // Keys this form doesn't show (e.g. `managerCheck`) stay as stored.
+          sizing: { ...((storedFlow.sizing as Record<string, unknown> | undefined) ?? {}), advice, askMeasurementsFirst: askFirst },
           sizeChart: rowsToSizeChart(sizeRows) ?? null,
         },
       });
