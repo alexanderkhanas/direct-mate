@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ShoppingCart, ChevronDown, ChevronUp, Package, User, Phone, MapPin, Building2, ExternalLink } from '../components/icons';
 import { api } from '../lib/api';
@@ -37,10 +38,16 @@ function formatCurrency(amount: number | null, currency: string) {
   return `${Number(amount).toFixed(2)} ${currency}`;
 }
 
-function OrderRow({ order }: { order: Order }) {
+/** `focused`: the order a link pointed at (`?order=<id>`, from the new-order message in Telegram): opened and scrolled to. */
+function OrderRow({ order, focused = false }: { order: Order; focused?: boolean }) {
   const { t } = useT();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(focused);
+  const rowRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
+
+  useEffect(() => {
+    if (focused) rowRef.current?.scrollIntoView({ block: 'center' });
+  }, [focused]);
 
   const statusConfig: Record<string, { label: string; variant: BadgeVariant }> = {
     draft: { label: t('orders.status_draft'), variant: 'default' },
@@ -93,7 +100,7 @@ function OrderRow({ order }: { order: Order }) {
       : '--';
 
   return (
-    <div className="border-b border-gray-100 last:border-b-0">
+    <div ref={rowRef} className={`border-b border-gray-100 last:border-b-0 ${focused ? 'bg-blue-50/60' : ''}`}>
       {/* Summary row */}
       <button
         onClick={() => setExpanded(!expanded)}
@@ -298,6 +305,8 @@ function OrderRow({ order }: { order: Order }) {
 
 export default function OrdersPage() {
   const { t } = useT();
+  const [searchParams] = useSearchParams();
+  const focusedId = searchParams.get('order');
   const { data: orders, isLoading } = useQuery<Order[]>({
     queryKey: ['orders'],
     queryFn: () => api.get('/orders').then((r) => r.data),
@@ -367,7 +376,7 @@ export default function OrdersPage() {
           </div>
           <div className="divide-y divide-gray-100">
             {orders.map((order) => (
-              <OrderRow key={order.id} order={order} />
+              <OrderRow key={order.id} order={order} focused={order.id === focusedId} />
             ))}
           </div>
         </Card>

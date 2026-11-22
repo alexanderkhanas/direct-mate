@@ -529,20 +529,62 @@ export class TurnRunner {
     try {
       const order = await this.dataSource.getRepository(Order).findOneByOrFail({ id: orderId, tenantId });
       await this.orders.triggerExternalSync(order);
-      const [details]: Array<{ titles: string; full_name: string | null }> = await this.dataSource.query(
-        `SELECT string_agg(p.title, ', ') AS titles, max(ci.full_name) AS full_name
-           FROM order_items oi
-           JOIN products p ON p.id = oi.product_id
-           LEFT JOIN checkout_customer_info ci ON ci.checkout_session_id = $2
-          WHERE oi.order_id = $1`,
-        [orderId, order.checkoutSessionId],
-      );
+      const [items, delivery, customer]: [
+        Array<{ title: string; color: string | null; size: string | null; qty: number; unit_price: string | null }>,
+        Array<{
+          full_name: string | null;
+          phone: string | null;
+          city: string | null;
+          branch: string | null;
+          payment_method: string | null;
+          comment: string | null;
+        }>,
+        Array<{ full_name: string | null; username: string | null }>,
+      ] = await Promise.all([
+        this.dataSource.query(
+          `SELECT p.title, v.color, v.size, oi.qty, oi.unit_price
+             FROM order_items oi
+             JOIN products p ON p.id = oi.product_id
+             LEFT JOIN product_variants v ON v.id = oi.variant_id
+            WHERE oi.order_id = $1
+            ORDER BY oi.created_at`,
+          [orderId],
+        ),
+        order.checkoutSessionId
+          ? this.dataSource.query(
+              `SELECT full_name, phone, city, branch, payment_method, comment
+                 FROM checkout_customer_info WHERE checkout_session_id = $1 LIMIT 1`,
+              [order.checkoutSessionId],
+            )
+          : Promise.resolve([]),
+        order.customerId
+          ? this.dataSource.query(`SELECT full_name, username FROM customers WHERE id = $1`, [order.customerId])
+          : Promise.resolve([]),
+      ]);
+      const ig = customer[0];
       await this.telegram.notifyNewOrder({
         tenantId,
-        productName: details?.titles ?? '',
+        orderId,
+        items: items.map((i) => ({
+          title: i.title,
+          color: i.color,
+          size: i.size,
+          qty: Number(i.qty),
+          unitPrice: i.unit_price != null ? Number(i.unit_price) : null,
+        })),
         totalAmount: Number(order.totalAmount ?? 0),
         currency: order.currency,
-        customerName: details?.full_name ?? 'Клієнт',
+        delivery: delivery[0]
+          ? {
+              fullName: delivery[0].full_name,
+              phone: delivery[0].phone,
+              city: delivery[0].city,
+              branch: delivery[0].branch,
+              paymentMethod: delivery[0].payment_method,
+              comment: delivery[0].comment,
+            }
+          : null,
+        customerName: [ig?.full_name, ig?.username && `@${ig.username}`].filter(Boolean).join(' ') || 'Клієнт',
       });
     } catch (err) {
       this.logger.error(`Order ${orderId} follow-up (sync / notification) failed: ${err}`);

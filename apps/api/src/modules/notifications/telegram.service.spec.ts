@@ -66,3 +66,52 @@ describe('TelegramService: questions with buttons', () => {
     ]);
   });
 });
+
+describe('TelegramService: new order message', () => {
+  const config = { get: (key: string) => (key === 'admin.baseUrl' ? 'https://directmate.app/' : undefined) };
+  const service = new TelegramService(config as never, {} as never, {} as never);
+  const order = {
+    tenantId: 't1',
+    orderId: 'fe4fb7c7-b9ce-4d1d-aa30-70d0768bc5ab',
+    items: [
+      { title: 'Поло з кашеміром', color: 'Хакі', size: 'L', qty: 1, unitPrice: 4700 },
+      { title: 'Джинси денім', color: 'Синій', size: '33', qty: 2, unitPrice: 3500 },
+    ],
+    totalAmount: 11700,
+    currency: 'UAH',
+    delivery: {
+      fullName: 'Ханас Олександр Ярославович',
+      phone: '0991345713',
+      city: 'Тернопіль',
+      branch: '2',
+      paymentMethod: 'cod',
+      comment: null,
+    },
+    customerName: 'Alexander Khanas @_khanas',
+  };
+
+  it('has the order number, each variant, the delivery details and a link to the order in the admin', () => {
+    expect(service.newOrderMessage(order)).toBe(
+      [
+        '📦 Нове замовлення № fe4fb7c7',
+        '',
+        '🛍 Поло з кашеміром (Хакі, L) — 4700 грн',
+        '🛍 Джинси денім (Синій, 33) × 2 — 7000 грн',
+        '💰 Разом: 11700 грн',
+        '',
+        '👤 Ханас Олександр Ярославович',
+        '📞 0991345713',
+        '📍 Тернопіль, Нова Пошта: 2',
+        '💳 Накладений платіж',
+        '',
+        'https://directmate.app/orders?order=fe4fb7c7-b9ce-4d1d-aa30-70d0768bc5ab',
+      ].join('\n'),
+    );
+  });
+
+  it('falls back to the Instagram name when no delivery details were saved', () => {
+    const text = service.newOrderMessage({ ...order, delivery: null });
+    expect(text).toContain('👤 Alexander Khanas @_khanas');
+    expect(text).not.toContain('📞');
+  });
+});

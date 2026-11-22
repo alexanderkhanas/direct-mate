@@ -6,6 +6,7 @@ import * as crypto from 'crypto';
 import { TelegramConnectToken } from './entities/telegram-connect-token.entity';
 import { StoreConfig } from '../engine/entities/store-config.entity';
 import { withRetry } from '../../common/retry';
+import { formatCurrency } from '../../common/format';
 import { uploadPath } from '../../common/uploads';
 import { readFile } from 'fs/promises';
 import { basename } from 'path';
@@ -41,12 +42,33 @@ export interface OwnerQuestion {
   buttons: Array<{ text: string; data: string }>;
 }
 
-interface NewOrderParams {
+export interface NewOrderParams {
   tenantId: string;
-  productName: string;
-  customerName: string;
+  orderId: string;
+  items: Array<{ title: string; color: string | null; size: string | null; qty: number; unitPrice: number | null }>;
   totalAmount: number;
   currency: string;
+  /** What the customer gave for delivery (`checkout_customer_info`); null when nothing was saved. */
+  delivery: {
+    fullName: string | null;
+    phone: string | null;
+    city: string | null;
+    branch: string | null;
+    paymentMethod: string | null;
+    comment: string | null;
+  } | null;
+  /** Instagram name or username, when the customer gave no name for delivery. */
+  customerName: string;
+}
+
+const PAYMENT_METHODS: Record<string, string> = {
+  cod: 'Накладений платіж',
+  prepay: 'Передоплата на картку',
+};
+
+/** The order number the admin shows («ID: fe4fb7c7…»), so a manager can find it there. */
+export function orderNumber(orderId: string): string {
+  return orderId.slice(0, 8);
 }
 
 @Injectable()
@@ -322,15 +344,38 @@ export class TelegramService {
   }
 
   async notifyNewOrder(params: NewOrderParams): Promise<void> {
-    const message = [
-      '📦 Нове замовлення',
-      '',
-      `🛍 ${params.productName}`,
-      `💰 ${params.totalAmount} ${params.currency}`,
-      `👤 ${params.customerName}`,
-    ].join('\n');
+    await this.sendToAll(params.tenantId, this.newOrderMessage(params));
+  }
 
-    await this.sendToAll(params.tenantId, message);
+  /** Plain text (no parse mode): names, addresses and comments are the customer's own words. */
+  newOrderMessage(params: NewOrderParams): string {
+    const currency = formatCurrency(params.currency);
+    const money = (amount: number) => `${amount} ${currency}`;
+    const items = params.items.map((item) => {
+      const variant = [item.color, item.size].filter(Boolean).join(', ');
+      const qty = item.qty > 1 ? ` × ${item.qty}` : '';
+      const price = item.unitPrice != null ? ` — ${money(item.unitPrice * item.qty)}` : '';
+      return `🛍 ${item.title}${variant ? ` (${variant})` : ''}${qty}${price}`;
+    });
+    const d = params.delivery;
+    const place = [d?.city, d?.branch && `Нова Пошта: ${d.branch}`].filter(Boolean).join(', ');
+    const payment = d?.paymentMethod ? (PAYMENT_METHODS[d.paymentMethod] ?? d.paymentMethod) : null;
+    const comment = d?.comment?.trim();
+    const adminBase = (this.config.get<string>('admin.baseUrl') ?? '').replace(/\/$/, '');
+
+    return [
+      `📦 Нове замовлення № ${orderNumber(params.orderId)}`,
+      '',
+      ...items,
+      `💰 Разом: ${money(params.totalAmount)}`,
+      '',
+      `👤 ${d?.fullName || params.customerName}`,
+      ...(d?.phone ? [`📞 ${d.phone}`] : []),
+      ...(place ? [`📍 ${place}`] : []),
+      ...(payment ? [`💳 ${payment}`] : []),
+      ...(comment ? [`💬 ${comment.length > 300 ? `${comment.slice(0, 300)}…` : comment}`] : []),
+      ...(adminBase ? ['', `${adminBase}/orders?order=${params.orderId}`] : []),
+    ].join('\n');
   }
 
   private humanReadableReason(reason: string): string {
