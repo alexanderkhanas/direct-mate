@@ -3,6 +3,7 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { CryptoService } from '../../../common/crypto.service';
 import { graphApi, isInstagramLoginMethod } from '../../../common/meta-graph';
+import { DEFAULT_MESSAGES_PER_CONVERSATION } from './history-limits';
 
 /**
  * Meta's throttling codes. 4 is the app-level budget the messages edge uses
@@ -14,8 +15,14 @@ const THROTTLE_CODES = new Set([4, 17, 32, 613, 80002]);
 const TIMEOUT_MS = 15_000;
 /** Instagram Login allows 2 conversation calls a second per account. */
 const PER_MESSAGE_GAP_MS = 500;
-/** Instagram Login returns content only for a conversation's 20 most recent messages. */
-const MESSAGES_PER_CONVERSATION = 20;
+/**
+ * Meta's largest page of messages (`messages.limit(100)` still returns 50).
+ * Older messages come with their text on both logins: checked on Unified
+ * Login on 7 Nov 2026 and on Instagram Login on 24 Nov 2026 (200 messages back
+ * to July, read by id at positions up to 180), whatever Meta's docs say about
+ * only the 20 most recent.
+ */
+const MESSAGES_PAGE = 50;
 
 /** The app's hourly budget ran out (code 4): stop reading and come back in an hour. */
 export class RateLimitedError extends Error {
@@ -71,14 +78,19 @@ export interface GraphMessage {
 
 /**
  * The `x-app-usage` header: the share of the app's hourly budget used, as the
- * highest of `call_count`, `total_time` and `total_cputime` (percent). Null
- * when the call didn't report it (the conversation list doesn't).
+ * highest of its numbers (percent). graph.facebook.com names them
+ * `call_count`, `total_time`, `total_cputime`; graph.instagram.com
+ * `call_volume`, `cpu_time`. Null when the call didn't report it.
  */
+const USAGE_KEYS = ['call_count', 'total_time', 'total_cputime', 'call_volume', 'cpu_time'];
+
 export function parseAppUsage(header: string | null): number | null {
   if (!header) return null;
   try {
     const usage = JSON.parse(header) as Record<string, unknown>;
-    const values = ['call_count', 'total_time', 'total_cputime'].map((k) => Number(usage[k])).filter((n) => Number.isFinite(n));
+    const values = USAGE_KEYS.filter((k) => k in usage)
+      .map((k) => Number(usage[k]))
+      .filter((n) => Number.isFinite(n));
     return values.length > 0 ? Math.max(...values) : null;
   } catch {
     return null;
@@ -137,19 +149,40 @@ export class GraphHistoryClient {
   }
 
   /**
-   * A conversation's 20 latest messages, newest first. On Unified Login this is
-   * the call that spends the app's budget. Instagram Login's edge may list only
-   * the messages' ids (Meta's docs read each message on its own); then each of
-   * them is read by id, at Meta's pace, and one that can't be read is skipped.
+   * A conversation's `limit` latest messages, newest first, 50 a page. On
+   * Unified Login this is the call that spends the app's budget, so paging
+   * stops once a page reports `stopAtUsage` (%) or more; `usage` is the highest
+   * reading seen. Instagram Login's edge may list only the messages' ids
+   * (Meta's docs read each message on its own); then each of them is read by
+   * id, at Meta's pace, and one that can't be read is skipped.
    */
-  async messages(account: InstagramAccount, conversationId: string): Promise<{ messages: GraphMessage[]; usage: number | null }> {
-    const fields = encodeURIComponent(`messages.limit(${MESSAGES_PER_CONVERSATION}){id,created_time,from,message}`);
-    const { body, usage } = await this.get<{ messages?: { data?: GraphMessage[] } }>(account, `/${conversationId}?fields=${fields}`);
-    const listed = body.messages?.data ?? [];
+  async messages(
+    account: InstagramAccount,
+    conversationId: string,
+    opts: { limit?: number; stopAtUsage?: number } = {},
+  ): Promise<{ messages: GraphMessage[]; usage: number | null }> {
+    const limit = Math.max(1, opts.limit ?? DEFAULT_MESSAGES_PER_CONVERSATION);
+    type Page = { data?: GraphMessage[]; paging?: { next?: string } };
+    const fields = encodeURIComponent(`messages.limit(${Math.min(limit, MESSAGES_PAGE)}){id,created_time,from,message}`);
+    const first = await this.get<{ messages?: Page }>(account, `/${conversationId}?fields=${fields}`);
+    let usage = first.usage;
+    let page = first.body.messages;
+    const listed: GraphMessage[] = [...(page?.data ?? [])];
+    while (listed.length < limit && page?.paging?.next) {
+      if (opts.stopAtUsage !== undefined && usage !== null && usage >= opts.stopAtUsage) break;
+      const next = sameHost(page.paging.next, account.api);
+      if (!next) break;
+      await new Promise((r) => setTimeout(r, PER_MESSAGE_GAP_MS));
+      const res = await this.request<Page>(account, next);
+      if (res.usage !== null) usage = Math.max(usage ?? 0, res.usage);
+      page = res.body;
+      listed.push(...(page.data ?? []));
+    }
+    listed.splice(limit);
     if (listed.length === 0 || listed.some((m) => m.from)) return { messages: listed, usage };
 
     const messages: GraphMessage[] = [];
-    for (const { id } of listed.slice(0, MESSAGES_PER_CONVERSATION)) {
+    for (const { id } of listed) {
       await new Promise((r) => setTimeout(r, PER_MESSAGE_GAP_MS));
       try {
         const one = await this.get<GraphMessage>(account, `/${id}?fields=id,created_time,from,message`);
@@ -161,10 +194,14 @@ export class GraphHistoryClient {
     return { messages, usage };
   }
 
-  private async get<T>(account: InstagramAccount, path: string): Promise<{ body: T; usage: number | null }> {
+  private get<T>(account: InstagramAccount, path: string): Promise<{ body: T; usage: number | null }> {
+    return this.request<T>(account, `${account.api}${path}`);
+  }
+
+  private async request<T>(account: InstagramAccount, url: string): Promise<{ body: T; usage: number | null }> {
     let res: Response;
     try {
-      res = await fetch(`${account.api}${path}`, {
+      res = await fetch(url, {
         headers: { Authorization: `Bearer ${account.token}` },
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });
@@ -180,5 +217,17 @@ export class GraphHistoryClient {
       throw new GraphRequestError(message, res.status, code);
     }
     return { body, usage };
+  }
+}
+
+/**
+ * Meta's `paging.next` link, followed only when it points at the connection's
+ * own Graph host: the bearer token goes with it.
+ */
+function sameHost(next: string, api: string): string | null {
+  try {
+    return new URL(next).origin === new URL(api).origin ? next : null;
+  } catch {
+    return null;
   }
 }

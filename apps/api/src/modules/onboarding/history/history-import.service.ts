@@ -17,13 +17,15 @@ import {
   type GraphMessage,
   type InstagramAccount,
 } from './graph-history.client';
+import { historyLimits, type HistoryLimits } from './history-limits';
 import { hasPersonalData, redact, redactCustomer } from './redact';
 import type { HistoryExample, HistoryFact, HistoryFactSection, HistoryImport, HistoryImportView } from './history-import.types';
 
-/** Read until this many conversations have a reply from the shop… */
-const WANT_CONVERSATIONS = 30;
-/** …or this many conversations have been read. */
-const MAX_READ = 60;
+/**
+ * Read until the store's number of conversations (`history-limits.ts`) have a
+ * reply from the shop, or this many times that number have been read.
+ */
+const READ_FACTOR = 2;
 /** Stop fetching once a messages call reports this share (%) of the app's hourly budget used. */
 const USAGE_CEILING = 75;
 /** Fewer replies by a person than this is too little to learn from. */
@@ -38,9 +40,13 @@ const BACKOFF_MS = (attempt: number) => 5 * 60 * 1000 * 3 ** (attempt - 1);
 const STALE_RUNNING_MINUTES = 10;
 /** Conversations whose messages call fails for another reason are skipped, up to this many. */
 const SKIPPABLE_ERRORS = 3;
-const INPUT_MAX_CHARS = 40_000;
+/**
+ * What the analysis reads, newest conversations first (~40k tokens, about
+ * $0.04 once per store). Past it, the remaining exchanges are left out.
+ */
+const INPUT_MAX_CHARS = 120_000;
 const MESSAGE_MAX_CHARS = 600;
-const ANALYSIS_TIMEOUT_MS = 90_000;
+const ANALYSIS_TIMEOUT_MS = 120_000;
 /** Meta allows 2 calls a second per Instagram account. */
 const CALL_GAP_MS = 500;
 /** What the agent reads of `manager_examples` (store-settings.service.ts, MAX_MANAGER_EXAMPLES). */
@@ -432,7 +438,7 @@ export class HistoryImportService {
         await this.finish(tenantId, runId, { status: 'failed', error: 'Instagram is not connected' });
         return;
       }
-      const read = await this.read(tenantId, runId, account);
+      const read = await this.read(tenantId, runId, account, await this.limits(tenantId));
       const exchanges = await this.exchanges(tenantId, account, read.threads);
       const stats = { conversations: read.read, messages: read.messages, humanReplies: exchanges.length };
       this.logger.log(
@@ -487,7 +493,7 @@ export class HistoryImportService {
    * enough conversations, at the budget ceiling, or when Meta refuses; checks
    * before every call that the run still holds (consent, not reset).
    */
-  private async read(tenantId: string, runId: string, account: InstagramAccount): Promise<ReadResult> {
+  private async read(tenantId: string, runId: string, account: InstagramAccount, limits: HistoryLimits): Promise<ReadResult> {
     const result: ReadResult = { threads: [], read: 0, messages: 0, stop: 'done' };
     let skipped = 0;
     let after: string | null = null;
@@ -496,12 +502,17 @@ export class HistoryImportService {
         await this.heartbeat(tenantId, runId);
         const page = await this.graph.conversations(account, after);
         for (const conversation of page.conversations) {
+          // A group chat: Meta refuses to read it (code 100, subcode 33), and it isn't a customer talking to the shop.
+          if ((conversation.participants?.data?.length ?? 0) > 2) continue;
           await this.gap();
           await this.heartbeat(tenantId, runId);
           let messages: GraphMessage[];
           let usage: number | null;
           try {
-            ({ messages, usage } = await this.graph.messages(account, conversation.id));
+            ({ messages, usage } = await this.graph.messages(account, conversation.id, {
+              limit: limits.messagesPerConversation,
+              stopAtUsage: USAGE_CEILING,
+            }));
           } catch (err) {
             const tokenProblem = err instanceof GraphRequestError && (err.status === 401 || err.code === 190);
             if (err instanceof GraphRequestError && !tokenProblem && ++skipped <= SKIPPABLE_ERRORS) continue;
@@ -516,7 +527,7 @@ export class HistoryImportService {
             await this.recordUsage(usage);
             if (usage >= USAGE_CEILING) return { ...result, stop: 'budget' };
           }
-          if (result.threads.length >= WANT_CONVERSATIONS || result.read >= MAX_READ) return result;
+          if (result.threads.length >= limits.conversations || result.read >= limits.conversations * READ_FACTOR) return result;
         }
         after = page.next;
         if (after) await this.gap();
@@ -529,6 +540,15 @@ export class HistoryImportService {
       throw err;
     }
     return result;
+  }
+
+  /** How much history this store reads: `store_configs.flow_config.historyImport`, else the defaults. */
+  private async limits(tenantId: string): Promise<HistoryLimits> {
+    const [row]: Array<{ limits: unknown }> = await this.dataSource.query(
+      `SELECT flow_config->'historyImport' AS limits FROM store_configs WHERE tenant_id = $1`,
+      [tenantId],
+    );
+    return historyLimits(row?.limits);
   }
 
   /**

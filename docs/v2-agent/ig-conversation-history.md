@@ -7,7 +7,8 @@ What we know about pulling a store's past Instagram DMs through the Graph API. I
 ## TL;DR
 
 - **The history is readable.** It covers every conversation, messages months old, and replies a manager typed in the Instagram app. Text comes 50 messages per call.
-- **Meta's 20-message cap doesn't apply here.** The cap in `decisions.md` (only a conversation's 20 most recent messages return content) comes from the Instagram Login docs. A message 149 back and four months old returned its text.
+- **Meta's 20-message cap doesn't apply here.** The cap (only a conversation's 20 most recent messages return content) comes from the Instagram Login docs. A message 149 back and four months old returned its text.
+- **Nor on Instagram Login** (24 Nov 2026, `alta-men-09w8` on graph.instagram.com): 4 pages of `messages.limit(50){id,created_time,from,message,attachments}` returned 200 messages back to July with sender and text, and reading by id at positions 5–180 returned text too. Its `x-app-usage` names the numbers `call_volume` and `cpu_time` and read 0 % throughout.
 - **The limit is the app's hourly budget for message reads, not a call count.** One page of 50 messages costs about **7%** of it. A blocked read keeps the block going, so back off for a full hour.
 - **Onboarding doesn't need a long job.** About 30 conversations × 20 messages fits inside one hour's budget and takes under a minute. Shadow mode collects the rest from webhooks at no cost.
 
@@ -125,7 +126,6 @@ The budget is per app, shared by every store. Several stores onboarding in the s
 - Budget scaling in Live mode, and real cost per page on a store with long threads and many photos.
 - Whether the Requests-folder 30-day rule holds under Unified Login.
 - How to detect replies sent by other automation tools (ManyChat and similar) in history. Possible signals are identical repeated texts and instant reply times.
-- `decisions.md`, Product direction item 3, still states the 20-message cap. Update it when the import is designed.
 
 ## Sources
 

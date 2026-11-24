@@ -3,6 +3,7 @@ import { MockLanguageModelV4 } from 'ai/test';
 import { GraphHistoryClient, GraphRequestError, RateLimitedError, parseAppUsage, type GraphMessage } from './graph-history.client';
 import { BUDGET_KEY, CLAIM_LOCK, HISTORY_EXAMPLE_TAG, HistoryImportService, cleanAnalysis, humanExchanges } from './history-import.service';
 import type { HistoryImport } from './history-import.types';
+import { historyLimits } from './history-limits';
 
 const SHOP = 'shop-ig';
 const CONNECTED = new Date('2026-11-01T00:00:00Z');
@@ -65,7 +66,10 @@ const LIMIT_REACHED = { error: { message: '(#4) Application request limit reache
  * number in `limitAt` makes that messages call answer with code 4;
  * `onMessages(i)` runs before the i-th messages call answers.
  */
-function fakeGraph(threads: GraphMessage[][], opts: { usage?: (i: number) => number; limitAt?: number; onMessages?: (i: number) => void } = {}) {
+function fakeGraph(
+  threads: GraphMessage[][],
+  opts: { usage?: (i: number) => number; limitAt?: number; onMessages?: (i: number) => void; groups?: number[] } = {},
+) {
   const calls: string[] = [];
   let messageCalls = 0;
   const fetchMock = jest.fn(async (url: string) => {
@@ -75,7 +79,13 @@ function fakeGraph(threads: GraphMessage[][], opts: { usage?: (i: number) => num
       const after = Number(new URL(url).searchParams.get('after') ?? 0);
       const page = threads.slice(after, after + 25).map((_, i) => ({
         id: `conv-${after + i}`,
-        participants: { data: [{ id: SHOP, username: 'lliana.store' }, { id: `user-${after + i}`, username: `olena${after + i}` }] },
+        participants: {
+          data: [
+            { id: SHOP, username: 'lliana.store' },
+            { id: `user-${after + i}`, username: `olena${after + i}` },
+            ...(opts.groups?.includes(after + i) ? [{ id: 'friend', username: 'friend' }] : []),
+          ],
+        },
       }));
       const next = after + 25 < threads.length;
       return respond({ data: page, paging: next ? { next: 'https://graph/next', cursors: { after: String(after + 25) } } : {} });
@@ -100,6 +110,8 @@ interface SetupOpts {
   /** The owner's own active examples (not from history), for the cap on applied ones. */
   ownExamples?: number;
   workerEnabled?: boolean;
+  /** The store's `flow_config.historyImport`. */
+  limits?: unknown;
 }
 
 /**
@@ -117,6 +129,7 @@ function setup(opts: SetupOpts = {}) {
     if (sql.includes('FROM messages') && sql.includes("role = 'manager'")) {
       return (params[1] as string[]).filter((id) => opts.managerMids?.includes(id)).map((mid) => ({ mid }));
     }
+    if (sql.includes("flow_config->'historyImport'")) return opts.limits === undefined ? [] : [{ limits: opts.limits }];
     if (sql.includes('FROM tenants t')) return [{ history_import: row, instagram: opts.connected !== false }];
     if (sql.includes("jsonb_build_object('startedAt', now())")) {
       const holds = row.runId === params[1] && row.status === 'running' && row.consent;
@@ -211,7 +224,7 @@ describe('HistoryImportService', () => {
 
       expect(graph.messageCalls()).toBe(8);
       expect(graph.calls[0]).toContain(`/${SHOP}/conversations?platform=instagram&fields=id%2Cupdated_time%2Cparticipants&limit=25`);
-      expect(decodeURIComponent(graph.calls[1])).toContain('/conv-0?fields=messages.limit(20){id,created_time,from,message}');
+      expect(decodeURIComponent(graph.calls[1])).toContain('/conv-0?fields=messages.limit(30){id,created_time,from,message}');
 
       // The model saw redacted exchanges: the phone message is one token, the username and the vocative are gone.
       const prompt = JSON.stringify(t.model.doGenerateCalls[0].prompt);
@@ -250,6 +263,25 @@ describe('HistoryImportService', () => {
       await t.service.run('t1', t.row);
       expect(graph.messageCalls()).toBe(60);
       expect(t.row.status).toBe('done');
+    });
+
+    it("reads as many conversations and messages as the store's settings say", async () => {
+      const graph = fakeGraph(Array.from({ length: 20 }, (_, i) => thread(i)));
+      const t = setup({ limits: { conversations: 5, messagesPerConversation: 120 } });
+      await t.service.run('t1', t.row);
+      expect(graph.messageCalls()).toBe(5);
+      // 120 is read 50 a page; the fake thread has no second page.
+      expect(decodeURIComponent(graph.calls[1])).toContain('/conv-0?fields=messages.limit(50){id,created_time,from,message}');
+      expect(t.row.stats).toMatchObject({ conversations: 5, humanReplies: 5 });
+    });
+
+    it('skips group chats without reading them', async () => {
+      const graph = fakeGraph(Array.from({ length: 6 }, (_, i) => thread(i)), { groups: [1, 3] });
+      const t = setup();
+      await t.service.run('t1', t.row);
+      expect(graph.messageCalls()).toBe(4);
+      expect(graph.calls.some((u) => /\/conv-[13]\?/.test(u))).toBe(false);
+      expect(t.row.stats).toMatchObject({ conversations: 4, humanReplies: 4 });
     });
 
     it('refreshes its heartbeat before every Graph call', async () => {
@@ -597,6 +629,16 @@ describe('HistoryImportService', () => {
   });
 });
 
+describe('historyLimits', () => {
+  it('falls back to the defaults, per number, and holds a number at its ceiling', () => {
+    expect(historyLimits(null)).toEqual({ conversations: 30, messagesPerConversation: 30 });
+    expect(historyLimits('junk')).toEqual({ conversations: 30, messagesPerConversation: 30 });
+    expect(historyLimits({ messagesPerConversation: 100 })).toEqual({ conversations: 30, messagesPerConversation: 100 });
+    expect(historyLimits({ conversations: -1, messagesPerConversation: 'many' })).toEqual({ conversations: 30, messagesPerConversation: 30 });
+    expect(historyLimits({ conversations: 5000, messagesPerConversation: 5000 })).toEqual({ conversations: 100, messagesPerConversation: 300 });
+  });
+});
+
 describe('cleanAnalysis', () => {
   it('caps the lists and keeps a fact count of at least one', () => {
     const out = cleanAnalysis({
@@ -618,8 +660,10 @@ describe('GraphHistoryClient', () => {
   const igAccount = { ...account, api: 'https://graph.instagram.com/v27.0' };
   const client = () => new GraphHistoryClient({} as never, {} as never);
 
-  it('reads the usage as the highest of the three numbers', () => {
+  it('reads the usage as the highest of its numbers, under either host\'s names', () => {
     expect(parseAppUsage('{"call_count":19,"total_time":126,"total_cputime":40}')).toBe(126);
+    expect(parseAppUsage('{"call_volume":12,"cpu_time":80}')).toBe(80);
+    expect(parseAppUsage('{"call_volume":0,"cpu_time":0}')).toBe(0);
     expect(parseAppUsage(null)).toBeNull();
     expect(parseAppUsage('not json')).toBeNull();
   });
@@ -676,6 +720,64 @@ describe('GraphHistoryClient', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  describe('paging messages', () => {
+    const page = (from: number, count: number, next?: string) => ({
+      data: Array.from({ length: count }, (_, i) => msg(`m${from + i}`, 'u', '2026-10-01T00:00:00Z', `t${from + i}`)),
+      ...(next ? { paging: { next } } : {}),
+    });
+
+    async function run(fetchMock: jest.Mock, opts: { limit?: number; stopAtUsage?: number }, acc = igAccount) {
+      global.fetch = fetchMock as never;
+      jest.useFakeTimers();
+      try {
+        const pending = client().messages(acc, 'conv-1', opts);
+        await jest.runAllTimersAsync();
+        return await pending;
+      } finally {
+        jest.useRealTimers();
+      }
+    }
+
+    it('follows paging.next 50 at a time up to the limit, and returns the highest usage', async () => {
+      const fetchMock = jest.fn(async (url: string) => {
+        if (url.includes('/conv-1?')) return respond({ messages: page(0, 50, 'https://graph.instagram.com/v27.0/conv-1/messages?after=A') }, { usage: 3 });
+        if (url.endsWith('after=A')) return respond(page(50, 50, 'https://graph.instagram.com/v27.0/conv-1/messages?after=B'), { usage: 9 });
+        return respond(page(100, 50, 'https://graph.instagram.com/v27.0/conv-1/messages?after=C'), { usage: 6 });
+      });
+      const res = await run(fetchMock, { limit: 120 });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(decodeURIComponent((fetchMock.mock.calls[0] as unknown as [string])[0])).toContain('messages.limit(50)');
+      expect(res.messages).toHaveLength(120);
+      expect(res.messages.at(-1)!.id).toBe('m119');
+      expect(res.usage).toBe(9);
+      const [, init] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+      expect(init.headers).toEqual({ Authorization: 'Bearer tkn' });
+    });
+
+    it('asks for no more than the limit when it fits one page', async () => {
+      const fetchMock = jest.fn(async () => respond({ messages: page(0, 20, 'https://graph.instagram.com/v27.0/next') }));
+      const res = await run(fetchMock, { limit: 20 });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(decodeURIComponent((fetchMock.mock.calls[0] as unknown as [string])[0])).toContain('messages.limit(20)');
+      expect(res.messages).toHaveLength(20);
+    });
+
+    it('stops paging once a page reports the usage ceiling', async () => {
+      const fetchMock = jest.fn(async () => respond({ messages: page(0, 50, 'https://graph.instagram.com/v27.0/next') }, { usage: 80 }));
+      const res = await run(fetchMock, { limit: 200, stopAtUsage: 75 });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(res).toMatchObject({ usage: 80 });
+      expect(res.messages).toHaveLength(50);
+    });
+
+    it("never follows a next link to another host (the token goes with it)", async () => {
+      const fetchMock = jest.fn(async () => respond({ messages: page(0, 50, 'https://evil.example/v27.0/next') }));
+      const res = await run(fetchMock, { limit: 200 });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(res.messages).toHaveLength(50);
+    });
   });
 
   it('pages the conversation list by cursor', async () => {

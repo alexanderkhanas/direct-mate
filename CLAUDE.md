@@ -171,6 +171,7 @@ product). Kept in that order so the long prefix stays cacheable.
 | Height/weight → size ranges | `flow_config.sizeChart` | Settings → Sizes |
 | Conversation idle cut-off (default 24h) | `flow_config.conversationIdleHours` | advanced JSON |
 | Comment answering on/off, public reply copy | `flow_config.commentHandling` | advanced JSON |
+| Instagram history read at setup (default 30 conversations × 30 messages) | `flow_config.historyImport` | advanced JSON |
 | Brand tone, manager examples | `tenant_settings.brand_tone_prompt`, `manager_examples` | Settings |
 | Model override for one store | `tenant_settings.ai_settings.model` | — |
 | Operating mode: `active` / `learning` / `paused` | `store_configs.operating_mode` | Settings |
@@ -242,10 +243,13 @@ in (XXL ≡ 2XL), so one table may hold two size systems (trousers 42–58 and j
   `/onboarding/history`; state in `tenant_onboarding.history_import` (only the conclusions; raw messages, the token
   and usernames are never stored).
 - **One app-wide queue** (a 1-minute cron, one store at a time, an advisory lock across processes): Meta's
-  message-read budget is per app, not per store. ~30 conversations × 20 messages per store. The last `x-app-usage`
-  reading and any pause live in `app_state` (`instagram_history_budget`): at 75 % or on code 4 the whole queue waits
-  an hour, with no polling. `HISTORY_IMPORT_WORKER_ENABLED` turns the cron off (the CLI scripts do). Limits and costs
-  measured: `docs/v2-agent/ig-conversation-history.md`.
+  message-read budget is per app, not per store. Per store: 30 conversations with a shop reply × the last 30 messages
+  each (50 a page), unless `flow_config.historyImport` sets `conversations` (≤100) / `messagesPerConversation` (≤300)
+  (`history-limits.ts`); group chats are skipped (Meta won't read them); the analysis reads up to 120k characters,
+  newest conversations first. The last `x-app-usage` reading (`call_count`/`total_time`/`total_cputime` on
+  graph.facebook.com, `call_volume`/`cpu_time` on graph.instagram.com) and any pause live in `app_state`
+  (`instagram_history_budget`): at 75 % or on code 4 the whole queue waits an hour, with no polling.
+  `HISTORY_IMPORT_WORKER_ENABLED` turns the cron off (the CLI scripts do). Limits and costs measured: `docs/v2-agent/ig-conversation-history.md`.
 - Only replies a person wrote become examples: before the store connected, every shop reply; after, only those whose
   mid matches a saved `manager` message (an echo). Before the analysis call, `redact.ts` removes phones (UA and
   international), emails, cards, IBAN, Nova Poshta numbers, street addresses, participant usernames and names after a
@@ -316,8 +320,9 @@ the account id; the paths are the same on both hosts.
   - Calls on `IG_GRAPH_API` (`graph.instagram.com/v27.0`). Tokens are renewed daily once fewer than 10 days are left
     (`IntegrationsService.refreshInstagramTokens`, `@Cron` 04:00, `INSTAGRAM_TOKEN_REFRESH_WORKER_ENABLED`; also
     `POST /internal/instagram/refresh-tokens`); an expired one marks the connection `error` and the store reconnects.
-  - History import: Meta returns content only for a conversation's 20 most recent messages, and Instagram Login's
-    edge may list only ids, so the client then reads each message by id (2 calls/s per account).
+  - History import: Meta's docs say only a conversation's 20 most recent messages return content; not so (24 Nov 2026:
+    200 messages back to July, with text, paged and read by id). If the edge ever lists only ids, the client reads
+    each message by id (2 calls/s per account).
   - Webhooks are set under "API setup with Instagram login" (its own setting, apart from the Meta app's Instagram
     webhook) and signed with the Instagram app secret. Its fields (`messages`, `comments`) must each be subscribed
     there: without that, an account's `subscribed_apps` succeeds and nothing arrives. Our own sends come back as
