@@ -6,7 +6,8 @@ import { HistoryImportService } from './history/history-import.service';
 
 export const DIRECT_PERMISSIONS = ['read_messages', 'reply_to_customers'] as const;
 export type DirectPermission = (typeof DIRECT_PERMISSIONS)[number];
-export type PermissionSource = 'admin' | 'claude';
+/** Where the owner answered: the admin, Claude, or a connect link (`connect.controller.ts`). */
+export type PermissionSource = 'admin' | 'claude' | 'link';
 
 export interface DirectPermissionState {
   allowed: boolean;

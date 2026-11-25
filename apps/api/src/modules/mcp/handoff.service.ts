@@ -5,7 +5,13 @@ import { DataSource } from 'typeorm';
 import { returnedRows } from '../../common/db';
 import { randomToken, tokenHash } from './oauth/pkce';
 
-export type HandoffAction = 'instagram' | 'shopify';
+/**
+ * `instagram` / `shopify`: a step Claude sends the owner to, one use, ten
+ * minutes. `connect`: a link we send a prospect to allow reading their Direct
+ * and connect Instagram (`connect.controller.ts`), valid for days; it works
+ * until the store has Instagram connected.
+ */
+export type HandoffAction = 'instagram' | 'shopify' | 'connect';
 export const HANDOFF_TTL_SECONDS = 600;
 
 /**
@@ -20,15 +26,31 @@ export class HandoffService {
     private readonly config: ConfigService,
   ) {}
 
-  async issue(tenantId: string, action: HandoffAction): Promise<{ url: string; expiresInSeconds: number }> {
+  async issue(
+    tenantId: string,
+    action: HandoffAction,
+    ttlSeconds = HANDOFF_TTL_SECONDS,
+  ): Promise<{ url: string; expiresInSeconds: number }> {
     const token = randomToken();
     await this.dataSource.query(
       `INSERT INTO handoff_tokens (token_hash, tenant_id, action, expires_at)
        VALUES ($1, $2, $3, now() + make_interval(secs => $4))`,
-      [tokenHash(token), tenantId, action, HANDOFF_TTL_SECONDS],
+      [tokenHash(token), tenantId, action, ttlSeconds],
     );
     const admin = this.config.get<string>('admin.baseUrl') ?? 'http://localhost:5173';
-    return { url: `${admin}/claude/${action}?t=${token}`, expiresInSeconds: HANDOFF_TTL_SECONDS };
+    const page = action === 'connect' ? 'connect' : `claude/${action}`;
+    return { url: `${admin}/${page}?t=${token}`, expiresInSeconds: ttlSeconds };
+  }
+
+  /** The store a link acts for, without spending it; undefined if it was used, has expired, or is for another action. */
+  async peek(token: unknown, action: HandoffAction): Promise<string | undefined> {
+    if (typeof token !== 'string' || !token) return undefined;
+    const [row]: Array<{ tenant_id: string }> = await this.dataSource.query(
+      `SELECT tenant_id FROM handoff_tokens
+        WHERE token_hash = $1 AND action = $2 AND used_at IS NULL AND expires_at > now()`,
+      [tokenHash(token), action],
+    );
+    return row?.tenant_id;
   }
 
   /** The store a link acts for; undefined if it was used, has expired, or is for another action. */

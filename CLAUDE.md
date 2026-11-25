@@ -197,7 +197,7 @@ in (XXL ≡ 2XL), so one table may hold two size systems (trousers 42–58 and j
 - **Permissions** (`onboarding/direct-permissions.service.ts`, the only writer): `read_messages` (the history import
   and learning mode) and `reply_to_customers` (active mode, comment replies), independent of each other, each a
   timestamp (null = not allowed); every answer, a «no» too, goes to `direct_permission_events` with who and where
-  (admin, Claude). Active mode needs reply, learning needs read (`StoreConfigService.applyMode`, also for a
+  (admin, Claude, a connect link). Active mode needs reply, learning needs read (`StoreConfigService.applyMode`, also for a
   superadmin); withdrawing one the mode uses pauses the store. The history import's
   `tenant_onboarding.history_import.consent` is a copy of the read permission, written with it.
 - **Intake:** with neither permission, a DM (and a manager's echo) isn't kept at all. Otherwise each message is saved
@@ -289,6 +289,11 @@ the same store. Off unless `MCP_ENABLED=true`.
   Text that customers or feeds wrote comes back under `untrusted_content`, and the server instructions say it is data.
 - **Browser steps:** Instagram and Shopify links carry a one-time hand-off token (10 min, one action, `handoff_tokens`),
   so the admin pages they open (`/claude/instagram`, `/claude/shopify`, `/claude/done`) need no admin session.
+- **Connect links** (`connect.controller.ts`, `npm run connect-link[:prod] -- --tenant <slug> [--days 7]`): for an owner
+  we set the store up for (a prospect whose Direct we analyse). `/connect?t=` says what happens, takes their «allow
+  reading» (permission source `link`) and sends them to the Instagram login, then `/connect/done`; no admin login.
+  Same `handoff_tokens` table (action `connect`), valid for days, not spent on a click: it works until it expires or
+  the store has Instagram connected.
 - **Chat preview:** `try_agent` is an MCP App (`@modelcontextprotocol/ext-apps` 1.7.5; 2.x needs SDK v2). The page
   (`app/chat-preview.ts`) draws the test conversation as a Direct chat, capped at 520 px and opened at the newest
   message. Its `ui://` address carries a hash of the page: Claude keeps its own copy by address, so a changed page

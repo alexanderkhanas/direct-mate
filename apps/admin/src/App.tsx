@@ -24,6 +24,7 @@ import SuccessPage from './pages/onboarding/SuccessPage';
 import { PrivacyPage, TermsPage, DataDeletionPage } from './pages/PrivacyPage';
 import AuthorizePage from './pages/claude/AuthorizePage';
 import { ClaudeDonePage, ClaudeInstagramPage, ClaudeShopifyPage } from './pages/claude/HandoffPages';
+import { ConnectDonePage, ConnectPage } from './pages/connect/ConnectPages';
 import { SetupWithClaudePage } from './pages/claude/SetupWithClaudePage';
 import { TenantProvider } from './contexts/TenantContext';
 import Layout from './components/Layout';
@@ -51,6 +52,9 @@ export default function App() {
         <Route path="/claude/instagram" element={<ClaudeInstagramPage />} />
         <Route path="/claude/shopify" element={<ClaudeShopifyPage />} />
         <Route path="/claude/done" element={<ClaudeDonePage />} />
+        {/* A connect link: an owner allows reading their Direct and connects Instagram, without signing in. */}
+        <Route path="/connect" element={<ConnectPage />} />
+        <Route path="/connect/done" element={<ConnectDonePage />} />
         {/* Setup is full-screen, outside the admin layout. */}
         <Route path="/onboarding" element={<PrivateRoute><SetupPage /></PrivateRoute>} />
         <Route path="/onboarding/done" element={<PrivateRoute><SuccessPage /></PrivateRoute>} />

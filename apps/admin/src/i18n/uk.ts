@@ -5,6 +5,7 @@ import bot from './setup/bot';
 import launch from './setup/launch';
 import outside from './setup/outside';
 import claude from './setup/claude';
+import connect from './setup/connect';
 import sizes from './setup/sizes';
 import history from './setup/history';
 
@@ -619,6 +620,7 @@ export const uk = {
   setup_launch: launch.uk,
   setup_outside: outside.uk,
   setup_claude: claude.uk,
+  setup_connect: connect.uk,
   setup_sizes: sizes.uk,
   setup_history: history.uk,
 };

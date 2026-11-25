@@ -331,7 +331,7 @@ export class IntegrationsService {
    * `loginMethod()`. `state` carries the one-time token, the admin page the
    * callback returns to, and the method (`ig` / `fb`); Meta returns it as given.
    */
-  async instagramLoginUrl(tenantId: string, returnTo: 'onboarding' | 'connections' | 'claude'): Promise<string> {
+  async instagramLoginUrl(tenantId: string, returnTo: 'onboarding' | 'connections' | 'claude' | 'link'): Promise<string> {
     const method = this.loginMethod();
     const redirectUri = this.config.get<string>('meta.oauthRedirectUri');
     const appId = this.config.get<string>(method === 'instagram' ? 'meta.instagramAppId' : 'meta.appId');

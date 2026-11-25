@@ -179,7 +179,9 @@ export class InstagramOAuthController {
     const [state, returnKey, methodKey] = (rawState ?? '').split('.');
     // Only the pages that start a connection; never a URL from the query.
     const fromClaude = returnKey === 'claude';
-    const page = `${adminBaseUrl}/${fromClaude ? 'claude/done' : returnKey === 'onboarding' ? 'onboarding' : 'connections'}`;
+    const path =
+      fromClaude ? 'claude/done' : returnKey === 'link' ? 'connect/done' : returnKey === 'onboarding' ? 'onboarding' : 'connections';
+    const page = `${adminBaseUrl}/${path}`;
     // The login the state was issued for; a state without one predates the choice.
     const method: InstagramLoginMethod = methodKey === 'ig' ? 'instagram' : 'unified';
 

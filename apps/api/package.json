@@ -46,7 +46,9 @@
     "agent:spike": "ts-node -r tsconfig-paths/register src/scripts/agent-spike.ts",
     "agent:try": "ts-node -r tsconfig-paths/register src/scripts/agent-try.ts",
     "attributes:extract": "ts-node -r tsconfig-paths/register src/scripts/extract-attributes.ts",
-    "content:eval": "ts-node -r tsconfig-paths/register src/scripts/content-eval.ts"
+    "content:eval": "ts-node -r tsconfig-paths/register src/scripts/content-eval.ts",
+    "connect-link": "ts-node -r tsconfig-paths/register src/scripts/connect-link.ts",
+    "connect-link:prod": "node dist/scripts/connect-link.js"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.108",
