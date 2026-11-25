@@ -772,6 +772,49 @@ describe('GraphHistoryClient', () => {
       expect(res.messages).toHaveLength(50);
     });
 
+    it('stops on a page that adds nothing, even when Meta sends another next link', async () => {
+      let n = 0;
+      const fetchMock = jest.fn(async (url: string) => {
+        if (url.includes('/conv-1?')) return respond({ messages: page(0, 9, 'https://graph.instagram.com/v27.0/next?after=0') });
+        n += 1;
+        return respond({ data: [], paging: { next: `https://graph.instagram.com/v27.0/next?after=${n}` } });
+      });
+      const res = await run(fetchMock, { limit: 30 });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(res.messages).toHaveLength(9);
+    });
+
+    it('stops when a page only repeats messages, or the same link comes back', async () => {
+      const repeat = jest.fn(async (url: string) => {
+        if (url.includes('/conv-1?')) return respond({ messages: page(0, 50, 'https://graph.instagram.com/v27.0/next?after=A') });
+        return respond(page(0, 50, 'https://graph.instagram.com/v27.0/next?after=B'));
+      });
+      expect((await run(repeat, { limit: 200 })).messages).toHaveLength(50);
+      expect(repeat).toHaveBeenCalledTimes(2);
+
+      let i = 0;
+      const sameLink = jest.fn(async (url: string) => {
+        if (url.includes('/conv-1?')) return respond({ messages: page(0, 50, 'https://graph.instagram.com/v27.0/next?after=A') });
+        i += 1;
+        return respond(page(i * 50, 50, 'https://graph.instagram.com/v27.0/next?after=A'));
+      });
+      expect((await run(sameLink, { limit: 300 })).messages).toHaveLength(100);
+      expect(sameLink).toHaveBeenCalledTimes(2);
+    });
+
+    it('reads at most a couple of pages more than the limit needs', async () => {
+      let i = 0;
+      const sparse = jest.fn(async (url: string) => {
+        if (url.includes('/conv-1?')) return respond({ messages: page(0, 1, 'https://graph.instagram.com/v27.0/next?after=0') });
+        i += 1;
+        return respond(page(i, 1, `https://graph.instagram.com/v27.0/next?after=${i}`));
+      });
+      const res = await run(sparse, { limit: 30 });
+      // 30 fits one page of 50, so the first page and two more.
+      expect(sparse).toHaveBeenCalledTimes(3);
+      expect(res.messages).toHaveLength(3);
+    });
+
     it("never follows a next link to another host (the token goes with it)", async () => {
       const fetchMock = jest.fn(async () => respond({ messages: page(0, 50, 'https://evil.example/v27.0/next') }));
       const res = await run(fetchMock, { limit: 200 });

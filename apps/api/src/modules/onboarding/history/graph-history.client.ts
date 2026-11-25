@@ -168,15 +168,25 @@ export class GraphHistoryClient {
     let usage = first.usage;
     let page = first.body.messages;
     const listed: GraphMessage[] = [...(page?.data ?? [])];
-    while (listed.length < limit && page?.paging?.next) {
+    const seen = new Set(listed.map((m) => m.id));
+    const followed = new Set<string>();
+    // Meta can answer with a page of nothing and yet another next link, without end (25 Nov 2026: a
+    // 9-message thread was paged for 7 minutes until Meta refused with code 4). So paging stops on a
+    // page that adds no message, on a link already followed, and after a few pages more than the limit needs.
+    const maxPages = Math.ceil(limit / MESSAGES_PAGE) + 2;
+    for (let pages = 1; listed.length < limit && page?.paging?.next && pages < maxPages; pages++) {
       if (opts.stopAtUsage !== undefined && usage !== null && usage >= opts.stopAtUsage) break;
       const next = sameHost(page.paging.next, account.api);
-      if (!next) break;
+      if (!next || followed.has(next)) break;
+      followed.add(next);
       await new Promise((r) => setTimeout(r, PER_MESSAGE_GAP_MS));
       const res = await this.request<Page>(account, next);
       if (res.usage !== null) usage = Math.max(usage ?? 0, res.usage);
       page = res.body;
-      listed.push(...(page.data ?? []));
+      const fresh = (page.data ?? []).filter((m) => !seen.has(m.id));
+      if (fresh.length === 0) break;
+      for (const m of fresh) seen.add(m.id);
+      listed.push(...fresh);
     }
     listed.splice(limit);
     if (listed.length === 0 || listed.some((m) => m.from)) return { messages: listed, usage };
