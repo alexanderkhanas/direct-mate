@@ -159,7 +159,8 @@ function ImpersonateButton({ tenantId }: { tenantId: string }) {
   const impersonate = useMutation({
     mutationFn: () => api.post(`/admin/tenants/${tenantId}/impersonate`).then(r => r.data),
     onSuccess: (data: { accessToken: string }) => {
-      const url = `${window.location.origin}/login?impersonate=${data.accessToken}`;
+      // After `#`: the token never reaches the server or its logs. It lasts 2 hours.
+      const url = `${window.location.origin}/login#impersonate=${data.accessToken}`;
       window.open(url, '_blank');
     },
   });

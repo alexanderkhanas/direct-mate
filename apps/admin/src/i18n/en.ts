@@ -6,6 +6,7 @@ import launch from './setup/launch';
 import outside from './setup/outside';
 import claude from './setup/claude';
 import connect from './setup/connect';
+import twoFactor from './two-factor';
 import sizes from './setup/sizes';
 import history from './setup/history';
 
@@ -621,6 +622,7 @@ export const en = {
   setup_outside: outside.en,
   setup_claude: claude.en,
   setup_connect: connect.en,
+  two_factor: twoFactor.en,
   setup_sizes: sizes.en,
   setup_history: history.en,
 };

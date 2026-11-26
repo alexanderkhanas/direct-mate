@@ -13,8 +13,11 @@ import { JwtService } from '@nestjs/jwt';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { CurrentUser, JwtPayload } from '../../common/decorators/current-user.decorator';
 import { AdminService } from './admin.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
+
+const IMPERSONATION_SECONDS = 2 * 3600;
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -98,17 +101,15 @@ export class AdminController {
 
   // ─── Impersonation: generate token to view tenant's admin panel ──
 
+  // The token acts as the owner but belongs to the superadmin (`imp`): it counts while the superadmin's
+  // own sessions do (SessionsService), works even when the owner can't sign in, and lasts 2 hours.
   @Post('tenants/:id/impersonate')
-  async impersonate(@Param('id') tenantId: string) {
+  async impersonate(@Param('id') tenantId: string, @CurrentUser() admin: JwtPayload) {
     const user = await this.adminService.getTenantOwner(tenantId);
     if (!user) throw new NotFoundException('No owner found for this tenant');
 
-    const token = this.jwtService.sign({
-      sub: user.id,
-      email: user.email,
-      role: user.role,
-      tenantId,
-    });
+    const payload: JwtPayload = { sub: user.id, email: user.email, role: user.role, tenantId, imp: admin.sub, iatMs: Date.now() };
+    const token = this.jwtService.sign(payload, { expiresIn: IMPERSONATION_SECONDS });
 
     return { accessToken: token };
   }

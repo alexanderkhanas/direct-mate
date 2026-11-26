@@ -17,6 +17,7 @@ import {
   KnowledgeSection,
   SizingSection,
 } from '../components/settings/StoreSettingsSections';
+import { SecuritySection } from '../components/settings/SecuritySection';
 
 type OperatingMode = 'learning' | 'active' | 'paused';
 
@@ -389,6 +390,7 @@ export default function SettingsPage() {
       <SizingSection />
       <ExamplesSection />
       <SubscriptionSection />
+      <SecuritySection />
       <DeleteAccountSection />
     </div>
   );

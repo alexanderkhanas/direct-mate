@@ -31,7 +31,7 @@ docs/v2-agent/   — The agent rework: decisions and the phase-by-phase implemen
 - **n8n for external orchestration** (Shopify/OpenCart sync workflows, the token-expiry report) — calls backend
   internal endpoints. Instagram content is **not** fetched by n8n any more: that is an in-process cron (see Channels)
 - **InternalApiKeyGuard** for n8n-facing endpoints (`x-internal-key` header)
-- **JwtAuthGuard** for admin-facing endpoints
+- **JwtAuthGuard** for admin-facing endpoints; a token also has to pass `SessionsService` (see Sign-in)
 - **Demo tenant isolation** — `tenants.is_demo BOOLEAN`. The public demo widget (`/demo/message`) takes an
   optional `tenantSlug` (default `demo-women-clothes`); the rate limiter keys on `(ip, tenantSlug)`. Demo
   turns run in `demo` mode: orders are placed in the DB so the conversation stays truthful, but nothing
@@ -174,6 +174,7 @@ product). Kept in that order so the long prefix stays cacheable.
 | Instagram history read at setup (default 30 conversations × 30 messages) | `flow_config.historyImport` | advanced JSON |
 | Brand tone, manager examples | `tenant_settings.brand_tone_prompt`, `manager_examples` | Settings |
 | Model override for one store | `tenant_settings.ai_settings.model` | — |
+| Two-factor sign-in required for the store's users | `tenant_settings.require_two_factor` | — (SQL) |
 | Operating mode: `active` / `learning` / `paused` | `store_configs.operating_mode` | Settings |
 | Permissions for the Direct: read, reply (independent) | `tenant_settings.direct_read_allowed_at`, `direct_reply_allowed_at` | Setup (Instagram step, launch), Settings → Дозволи для Instagram, Claude |
 
@@ -305,6 +306,26 @@ the same store. Off unless `MCP_ENABLED=true`.
   `conversation_traces`).
 - **Production:** `infra/production/nginx/conf.d/mcp.conf` proxies only the connector's routes; issue its certificate
   before deploying it (steps in the file).
+
+## Sign-in (`modules/auth/`)
+
+- Password (bcrypt), then for accounts with two-factor sign-in a code from an authenticator app (TOTP, RFC 6238:
+  `two-factor/totp.ts`, our own; the QR code by `qrcode`). Login answers with a token, or with
+  `{ twoFactor: 'verify' | 'setup', challenge }`: a 5-minute JWT with `purpose: '2fa'`, good only for
+  `/auth/2fa/verify`, `/setup`, `/enable` (JwtStrategy refuses it). Required of superadmins always and of every user of a
+  store with `tenant_settings.require_two_factor`; anyone else turns it on in Settings («Вхід у ваш акаунт»). The secret is
+  encrypted with `CryptoService`, a code works once (`users.totp_last_step`), and the 10 recovery codes are kept as
+  sha256 only, each good once.
+- Every request checks the person behind the token (`SessionsService`, cached 60 s per process): active, 2FA on if
+  required, and the token issued (`iatMs`) after `users.sessions_valid_after`. Turning 2FA on or off and «sign out
+  everywhere» move that time, so older tokens stop at once, and the API hands this tab a fresh one. Accounts with 2FA
+  get 12-hour tokens, others `JWT_EXPIRES_IN`. A deactivated user (`is_active = false`) can't sign in and their tokens stop.
+- 10 failed attempts in a row (password or code) lock the account for 15 minutes, on top of 10 logins a minute per
+  address. An unknown email and a wrong password get the same answer. `/auth/me` returns only public fields.
+- Impersonation tokens carry `imp` (the superadmin), last 2 hours, are checked against that superadmin (so they work
+  when the owner can't sign in), and travel after `#` (`/login#impersonate=…`), out of the server's logs.
+- Lost phone and recovery codes: `npm run 2fa:reset[:prod] -- --email … [--unlock]`. There is no password change or
+  reset yet.
 
 ## Meta/Instagram Setup
 
@@ -505,6 +526,9 @@ cd apps/api && npm run content:eval -- --tenant demo-altamen   # visual check vs
 
 # Unit tests (free)
 cd apps/api && npm test
+
+# Two-factor sign-in: turn it off for someone who lost their phone and codes (or --unlock after failed attempts)
+cd apps/api && npm run 2fa:reset -- --email <email>
 ```
 
 ## Environment Variables (apps/api/.env)

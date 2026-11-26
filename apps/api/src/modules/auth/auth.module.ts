@@ -11,6 +11,9 @@ import { StoreConfig } from '../engine/entities/store-config.entity';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
+import { SessionsService } from './sessions.service';
+import { TwoFactorService } from './two-factor/two-factor.service';
+import { CryptoService } from '../../common/crypto.service';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 
@@ -31,7 +34,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy],
-  exports: [AuthService],
+  providers: [AuthService, JwtStrategy, SessionsService, TwoFactorService, CryptoService],
+  exports: [AuthService, SessionsService],
 })
 export class AuthModule {}

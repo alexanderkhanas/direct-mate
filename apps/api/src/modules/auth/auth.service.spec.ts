@@ -23,6 +23,8 @@ describe('AuthService.register', () => {
       dataSource as never,
       subscriptions as never,
       telegram as never,
+      {} as never,
+      {} as never,
     );
 
     const result = await service.register({
@@ -59,6 +61,8 @@ describe('AuthService.register', () => {
       { transaction: jest.fn(async (cb) => cb(manager)) } as never,
       { createTrialForTenant: jest.fn(async () => ({})) } as never,
       { notifyPlatform: jest.fn(async () => undefined) } as never,
+      {} as never,
+      {} as never,
     );
     await service.register({ storeName: 'Лляна', email: 'olena@lliana.ua', password: 'secret123' });
     expect(created.find((row) => 'slug' in row)).toMatchObject({ name: 'Лляна', businessType: 'fashion' });
