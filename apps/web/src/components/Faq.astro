@@ -1,0 +1,35 @@
+---
+/**
+ * Questions and answers, all open (Google reads them; nobody has to click). Adds the FAQPage structured data.
+ * Answers are plain text.
+ */
+interface Props {
+  items: Array<{ q: string; a: string }>;
+  title?: string;
+}
+const { items, title = 'Часті питання' } = Astro.props;
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'FAQPage',
+  mainEntity: items.map((item) => ({
+    '@type': 'Question',
+    name: item.q,
+    acceptedAnswer: { '@type': 'Answer', text: item.a },
+  })),
+};
+---
+
+<section class="dm-section mx-auto flex w-full max-w-[820px] flex-col gap-8 px-5 sm:px-6">
+  <h2 class="dm-h2">{title}</h2>
+  <div class="flex flex-col">
+    {
+      items.map((item) => (
+        <div class="flex flex-col gap-2 border-t border-dm-line2 py-[22px] last:border-b">
+          <h3 class="text-[19px] font-semibold leading-snug">{item.q}</h3>
+          <p class="text-base text-dm-ink2">{item.a}</p>
+        </div>
+      ))
+    }
+  </div>
+  <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
+</section>

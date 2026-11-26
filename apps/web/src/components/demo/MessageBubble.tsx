@@ -1,5 +1,5 @@
 import { ShieldAlert, BellRing, Send, Bookmark, Copy, User } from '../icons';
-import { DisplayedTurn } from './types';
+import type { DisplayedTurn } from './types';
 
 interface MessageBubbleProps {
   turn: DisplayedTurn;

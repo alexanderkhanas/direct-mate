@@ -93,3 +93,6 @@ apps/api/.simulator-backups/
 # Restore with: rsync -az root@<prod>:/opt/directmate-assets/altamen/ \
 #                 apps/api/test-assets/altamen/
 apps/api/test-assets/altamen/
+
+# Astro (apps/web): generated types
+apps/web/.astro

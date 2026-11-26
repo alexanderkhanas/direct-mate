@@ -1,0 +1,56 @@
+---
+/**
+ * DirectMate beside another product, row by row: a table from md up, one card per row below it (three columns
+ * don't fit a 375 px phone). Both come from the same rows; the one not shown is display:none, so a screen
+ * reader reads it once.
+ */
+interface Props {
+  /** The other product, the first column. */
+  other: string;
+  rows: Array<{ label: string; other: string; us: string }>;
+}
+const { other, rows } = Astro.props;
+---
+
+<div class="flex flex-col overflow-hidden rounded-[20px] border border-dm-line md:hidden">
+  {
+    rows.map((row) => (
+      <div class="flex flex-col gap-3 border-t border-dm-line p-5 first:border-t-0">
+        <h3 class="text-[17px] font-semibold leading-snug">{row.label}</h3>
+        <dl class="flex flex-col gap-3 text-base">
+          <div class="flex flex-col gap-0.5">
+            <dt class="text-sm font-semibold">{other}</dt>
+            <dd class="text-dm-ink2">{row.other}</dd>
+          </div>
+          <div class="flex flex-col gap-0.5">
+            <dt class="text-sm font-semibold text-blue-700">DirectMate</dt>
+            <dd class="text-dm-ink2">{row.us}</dd>
+          </div>
+        </dl>
+      </div>
+    ))
+  }
+</div>
+
+<div class="hidden overflow-x-auto rounded-[20px] border border-dm-line md:block">
+  <table class="w-full border-collapse text-left text-base">
+    <thead>
+      <tr class="bg-dm-bg">
+        <td class="w-[26%] px-5 py-4"></td>
+        <th scope="col" class="w-[37%] px-5 py-4 font-semibold">{other}</th>
+        <th scope="col" class="w-[37%] px-5 py-4 font-semibold text-blue-700">DirectMate</th>
+      </tr>
+    </thead>
+    <tbody>
+      {
+        rows.map((row) => (
+          <tr class="border-t border-dm-line">
+            <th scope="row" class="px-5 py-4 align-top font-semibold">{row.label}</th>
+            <td class="px-5 py-4 align-top text-dm-ink2">{row.other}</td>
+            <td class="px-5 py-4 align-top text-dm-ink2">{row.us}</td>
+          </tr>
+        ))
+      }
+    </tbody>
+  </table>
+</div>

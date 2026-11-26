@@ -6,7 +6,7 @@ import { MessageBubble } from './MessageBubble';
 import { TypingIndicator } from './TypingIndicator';
 import { ChatInput } from './ChatInput';
 import { CatalogPanel } from './CatalogPanel';
-import { DisplayedTurn, Scenario } from './types';
+import type { DisplayedTurn, Scenario } from './types';
 import { publicApi } from '../../lib/publicApi';
 import { analytics } from '../../lib/analytics';
 import './demo.css';
@@ -89,7 +89,8 @@ export function DemoWidget({
   // Read from sessionStorage at mount so React Strict Mode's double-mount
   // in dev doesn't double-fire demo_live_mode_started.
   const liveModeStartedRef = useRef(
-    sessionStorage.getItem('demo_live_mode_started') === '1',
+    // The site prerenders this widget on the server, where there is no sessionStorage.
+    typeof window !== 'undefined' && sessionStorage.getItem('demo_live_mode_started') === '1',
   );
 
   const widgetRootRef = useRef<HTMLDivElement>(null);

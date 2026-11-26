@@ -1,4 +1,4 @@
-import { Scenario } from '../types';
+import type { Scenario } from '../types';
 import { CLOTHING_SCENARIOS } from './clothing-scenarios';
 import { COSMETICS_SCENARIOS } from './cosmetics-scenarios';
 

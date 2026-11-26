@@ -2,7 +2,6 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from './App';
-import { initAnalytics } from './lib/analytics';
 import './index.css';
 
 const queryClient = new QueryClient({
@@ -11,21 +10,10 @@ const queryClient = new QueryClient({
   },
 });
 
-initAnalytics();
-
-const container = document.getElementById('root')!;
-const tree = (
+ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <App />
     </QueryClientProvider>
-  </React.StrictMode>
+  </React.StrictMode>,
 );
-
-// react-snap pre-renders static HTML into #root during build. When that
-// snapshot is served, hydrate it; otherwise mount fresh.
-if (container.hasChildNodes()) {
-  ReactDOM.hydrateRoot(container, tree);
-} else {
-  ReactDOM.createRoot(container).render(tree);
-}

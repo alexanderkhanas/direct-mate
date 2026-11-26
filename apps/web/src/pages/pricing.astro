@@ -1,0 +1,160 @@
+---
+import Base from '../layouts/Base.astro';
+import PlanCard from '../components/pricing/PlanCard.astro';
+import CheckList from '../components/CheckList.astro';
+import SectionHead from '../components/SectionHead.astro';
+import Faq from '../components/Faq.astro';
+import CtaBand from '../components/CtaBand.astro';
+import { INTEGRATION_REQUEST_URL, SITE_URL } from '../site';
+import { MIN_PRICE, PLANS, limitLines, uah, type PlanId } from '../data/plans';
+
+const title = 'Ціни на AI-агента для Instagram Direct | DirectMate';
+const description = `Тарифи AI-агента для Instagram Direct від ${uah(MIN_PRICE)} грн на місяць. Усі можливості в кожному тарифі, платите за обсяг. 14 днів або 200 розмов безкоштовно.`;
+
+/** The plan with the blue border. */
+const FEATURED: PlanId = 'professional';
+const pageUrl = `${SITE_URL}/pricing`;
+
+const jsonLd = [
+  {
+    '@context': 'https://schema.org',
+    '@type': 'Product',
+    name: 'DirectMate',
+    description,
+    url: pageUrl,
+    image: `${SITE_URL}/logo-square.png`,
+    brand: { '@type': 'Brand', name: 'DirectMate' },
+    offers: {
+      '@type': 'AggregateOffer',
+      priceCurrency: 'UAH',
+      lowPrice: MIN_PRICE,
+      highPrice: Math.max(...PLANS.map((plan) => plan.price)),
+      offerCount: PLANS.length,
+      offers: PLANS.map((plan) => ({
+        '@type': 'Offer',
+        name: plan.name,
+        description: [plan.audience, ...limitLines(plan.limits).map((l) => `${l.before}${l.value}${l.after}`)].join('. ') + '.',
+        url: pageUrl,
+        price: plan.price,
+        priceCurrency: 'UAH',
+        priceSpecification: {
+          '@type': 'UnitPriceSpecification',
+          price: plan.price,
+          priceCurrency: 'UAH',
+          referenceQuantity: { '@type': 'QuantitativeValue', value: 1, unitCode: 'MON' },
+        },
+      })),
+    },
+  },
+];
+
+const included = [
+  'Відповіді в Direct і на коментарі під дописами',
+  "Сторіз, дописи й Reels, пов'язані з каталогом",
+  'Підбір розміру за вашими розмірними сітками',
+  'Фото й голосові повідомлення від клієнтів',
+  'Оформлення замовлень і реквізити для оплати',
+  'Передача розмов менеджеру в Telegram',
+  'Режим навчання і тестовий чат',
+  'Налаштування в адмін-панелі або в розмові з Claude',
+];
+
+const comparison = [
+  {
+    title: 'Лише менеджер у Direct',
+    items: ['Відповідає в робочі години', 'Уночі й у вихідні повідомлення чекають', 'Більшість часу йде на однакові питання'],
+  },
+  {
+    title: 'Менеджер разом з AI-агентом',
+    items: [
+      'Клієнт отримує відповідь цілодобово',
+      'Типові питання й замовлення закриває AI-агент',
+      'Менеджер бере розмови, які йому передали',
+    ],
+  },
+];
+
+const faq = [
+  {
+    q: 'Коли починається пробний період?',
+    a: 'Коли ви вмикаєте AI-агента для клієнтів. Він триває 14 днів або 200 розмов, залежно від того, що настане раніше. Налаштування й тестовий чат до цього в нього не входять.',
+  },
+  {
+    q: 'Що буде, коли пробний період закінчиться?',
+    a: 'AI-агент перестане відповідати клієнтам, а повідомлення чекатимуть на менеджерів. Ми нагадаємо за три дні й за день до кінця. Оберете тариф, і він продовжить роботу.',
+  },
+];
+---
+
+<Base title={title} description={description} jsonLd={jsonLd}>
+  <!-- Hero -->
+  <section class="dm-page flex flex-col gap-5 pb-12 pt-12 md:pt-[72px]">
+    <p class="text-base font-medium text-blue-700">Ціни</p>
+    <h1 class="dm-h1 max-w-[860px] text-[clamp(34px,4.6vw,56px)]">Усі можливості в кожному тарифі. Платите за обсяг.</h1>
+    <p class="max-w-[680px] text-[19px] leading-[1.55] text-dm-ink2 text-pretty">
+      14 днів або 200 розмов безкоштовно. Відлік починається, коли ви вмикаєте AI-агента для клієнтів, а не під час
+      реєстрації.
+    </p>
+  </section>
+
+  <!-- Plans -->
+  <section class="dm-page grid items-stretch gap-5 pb-16 md:pb-[88px] lg:grid-cols-3">
+    {PLANS.map((plan) => <PlanCard plan={plan} featured={plan.id === FEATURED} />)}
+  </section>
+
+  <!-- In every plan -->
+  <section class="border-y border-dm-line bg-white">
+    <div class="dm-page flex flex-col gap-8 py-16 md:py-20">
+      <h2 class="dm-h2">У кожному тарифі</h2>
+      <CheckList
+        items={included}
+        class="grid gap-x-10 gap-y-3.5 md:grid-cols-2 lg:grid-cols-3 [&>li]:text-[17px] [&_svg]:mt-[3px]"
+      />
+    </div>
+  </section>
+
+  <!-- Manager alone vs with the AI agent -->
+  <section class="dm-page dm-section flex flex-col gap-9">
+    <SectionHead
+      title="AI-агент не замінює менеджера. Він забирає в нього рутину."
+      lead="«Ціна?», «є в наявності?», «який розмір?» повторюються щодня. Менеджеру залишаються розмови, де справді потрібна людина."
+    />
+    <div class="grid gap-5 md:grid-cols-2">
+      {
+        comparison.map((column) => (
+          <div class="dm-card flex flex-col gap-3.5 p-6 sm:p-7">
+            <h3 class="text-xl font-semibold">{column.title}</h3>
+            <ul class="flex flex-col gap-2.5 text-base text-dm-ink2">
+              {column.items.map((item) => (
+                <li>{item}</li>
+              ))}
+            </ul>
+          </div>
+        ))
+      }
+    </div>
+  </section>
+
+  <!-- Other CMS or CRM -->
+  <section class="dm-page pb-16 md:pb-[88px]">
+    <div class="flex flex-wrap items-center justify-between gap-x-10 gap-y-5 rounded-3xl bg-dm-tint p-6 sm:p-9">
+      <div class="flex min-w-0 flex-[1_1_420px] flex-col gap-2">
+        <h2 class="text-[26px] font-bold leading-[1.2] tracking-[-0.01em]">Потрібне підключення до вашої CMS чи CRM?</h2>
+        <p class="text-[17px] text-dm-ink2">
+          Самостійно підключаються Shopify, товарний фід і Google Таблиці. Працюєте з іншою системою: напишіть нам,
+          зробимо підключення для вашого магазину.
+        </p>
+      </div>
+      <a href={INTEGRATION_REQUEST_URL} class="dm-btn-primary px-[22px] py-3.5">Залишити запит</a>
+    </div>
+  </section>
+
+  <div class="border-t border-dm-line bg-white">
+    <Faq title="Питання про оплату" items={faq} />
+  </div>
+
+  <CtaBand
+    title="Почніть без оплати"
+    text="Налаштуйте AI-агента, перевірте його в тестовому чаті й увімкніть, коли будете готові."
+  />
+</Base>

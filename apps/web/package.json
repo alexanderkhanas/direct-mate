@@ -1,0 +1,28 @@
+{
+  "name": "@direct-mate/web",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "The marketing site on directmate.app (the admin lives on platform.directmate.app).",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@astrojs/react": "7.1.9",
+    "@astrojs/sitemap": "3.7.6",
+    "astro": "7.4.13",
+    "axios": "^1.6.8",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.3",
+    "typescript": "^5.4.5"
+  }
+}

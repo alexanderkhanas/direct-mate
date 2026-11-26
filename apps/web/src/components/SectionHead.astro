@@ -1,0 +1,15 @@
+---
+/** A section's heading (h2) and its one-line lead. */
+interface Props {
+  title: string;
+  lead?: string;
+  id?: string;
+  class?: string;
+}
+const { title, lead, id, class: className } = Astro.props;
+---
+
+<div class:list={['flex max-w-[760px] flex-col gap-3.5', className]}>
+  <h2 id={id} class="dm-h2">{title}</h2>
+  {lead && <p class="dm-lead">{lead}</p>}
+</div>

@@ -1,6 +1,6 @@
+import { useEffect } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { LangProvider } from './i18n';
-import LandingPage from './pages/LandingPage';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import ConversationsPage from './pages/ConversationsPage';
@@ -21,17 +21,28 @@ import PlanConfigPage from './pages/admin/PlanConfigPage';
 import RegisterPage from './pages/RegisterPage';
 import SetupPage from './pages/onboarding/SetupPage';
 import SuccessPage from './pages/onboarding/SuccessPage';
-import { PrivacyPage, TermsPage, DataDeletionPage } from './pages/PrivacyPage';
 import AuthorizePage from './pages/claude/AuthorizePage';
 import { ClaudeDonePage, ClaudeInstagramPage, ClaudeShopifyPage } from './pages/claude/HandoffPages';
 import { ConnectDonePage, ConnectPage } from './pages/connect/ConnectPages';
 import { SetupWithClaudePage } from './pages/claude/SetupWithClaudePage';
 import { TenantProvider } from './contexts/TenantContext';
 import Layout from './components/Layout';
+import { SITE_URL } from './lib/site';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = localStorage.getItem('accessToken');
-  return token ? <>{children}</> : <Navigate to="/welcome" replace />;
+  return token ? <>{children}</> : <Navigate to="/login" replace />;
+}
+
+/**
+ * The landing and legal pages moved to the marketing site (apps/web). nginx redirects these paths in production;
+ * this covers dev and anything that slips through.
+ */
+function ToSite({ path }: { path: string }) {
+  useEffect(() => {
+    window.location.replace(`${SITE_URL}${path}`);
+  }, [path]);
+  return null;
 }
 
 export default function App() {
@@ -40,10 +51,10 @@ export default function App() {
     <TenantProvider>
     <BrowserRouter>
       <Routes>
-        <Route path="/welcome" element={<LandingPage />} />
-        <Route path="/privacy" element={<PrivacyPage />} />
-        <Route path="/terms" element={<TermsPage />} />
-        <Route path="/data-deletion" element={<DataDeletionPage />} />
+        <Route path="/welcome" element={<ToSite path="/" />} />
+        <Route path="/privacy" element={<ToSite path="/privacy" />} />
+        <Route path="/terms" element={<ToSite path="/terms" />} />
+        <Route path="/data-deletion" element={<ToSite path="/data-deletion" />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
         {/* Setup from Claude: the consent page and the pages Claude's links open. Public: each authorizes itself. */}

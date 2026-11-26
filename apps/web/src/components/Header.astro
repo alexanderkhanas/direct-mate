@@ -1,0 +1,86 @@
+---
+import { LOGIN_URL, MAIN_NAV, REGISTER_URL } from '../site';
+
+const current = Astro.url.pathname.replace(/\.html$/, '');
+const linkClass =
+  'px-3 py-[11px] text-[15px] text-dm-ink2 no-underline hover:text-dm-ink aria-[current=page]:font-semibold aria-[current=page]:text-dm-ink';
+---
+
+<header class="relative z-20 border-b border-dm-line bg-white">
+  <div class="dm-page flex items-center justify-between gap-4 py-3">
+    <a href="/" class="flex min-h-[44px] items-center gap-2.5 text-dm-ink no-underline hover:text-dm-ink">
+      <img src="/logo-square.png" alt="" width="32" height="32" class="h-8 w-8 rounded-lg" />
+      <span class="text-xl font-bold">DirectMate</span>
+    </a>
+
+    <nav aria-label="Головна навігація" class="hidden lg:flex">
+      {
+        MAIN_NAV.map((item) => (
+          <a href={item.href} class={linkClass} aria-current={item.href === current ? 'page' : undefined}>
+            {item.label}
+          </a>
+        ))
+      }
+    </nav>
+
+    <div class="flex items-center gap-2">
+      <a href={LOGIN_URL} class:list={[linkClass, 'hidden lg:inline-flex']}>Увійти</a>
+      <a href={REGISTER_URL} data-cta="header" class="dm-btn-primary hidden px-[18px] py-[11px] text-[15px] sm:inline-flex">
+        Спробувати безкоштовно
+      </a>
+
+      <!-- Below 1024 px the navigation folds into a menu. No JS needed to open it. -->
+      <details class="dm-menu lg:hidden">
+        <summary
+          class="flex h-11 w-11 cursor-pointer list-none items-center justify-center rounded-xl text-dm-ink hover:bg-dm-bg [&::-webkit-details-marker]:hidden"
+          aria-label="Меню"
+        >
+          <svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+            <path class="dm-menu-open" d="M4 7h16M4 12h16M4 17h16"></path>
+            <path class="dm-menu-close" d="M6 6l12 12M18 6L6 18"></path>
+          </svg>
+        </summary>
+        <div class="absolute inset-x-0 top-full border-b border-dm-line bg-white shadow-dm">
+          <nav aria-label="Меню" class="dm-page flex flex-col py-3">
+            {
+              MAIN_NAV.map((item) => (
+                <a
+                  href={item.href}
+                  class="border-b border-dm-line py-3.5 text-[17px] text-dm-ink no-underline last:border-0 hover:text-blue-700"
+                  aria-current={item.href === current ? 'page' : undefined}
+                >
+                  {item.label}
+                </a>
+              ))
+            }
+            <div class="flex flex-wrap gap-3 pb-2 pt-4">
+              <a href={REGISTER_URL} data-cta="header" class="dm-btn-primary">Спробувати безкоштовно</a>
+              <a href={LOGIN_URL} class="dm-btn-secondary">Увійти</a>
+            </div>
+          </nav>
+        </div>
+      </details>
+    </div>
+  </div>
+</header>
+
+<style>
+  .dm-menu-close {
+    display: none;
+  }
+  .dm-menu[open] .dm-menu-open {
+    display: none;
+  }
+  .dm-menu[open] .dm-menu-close {
+    display: inline;
+  }
+</style>
+
+<script>
+  // A link inside the menu that stays on this page (#demo) would leave the menu open over it.
+  document.querySelectorAll<HTMLDetailsElement>('.dm-menu').forEach((menu) => {
+    menu.addEventListener('click', (event) => {
+      if ((event.target as Element).closest('a')) menu.open = false;
+    });
+  });
+</script>

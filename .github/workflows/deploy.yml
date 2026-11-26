@@ -38,8 +38,29 @@ jobs:
       - name: Build Admin
         run: cd apps/admin && npm run build
 
+  build-web:
+    # The marketing site: its own package and lockfile, outside the workspaces.
+    # Astro 7 refuses Node below 22.23.4, so Node 24 (as in web.prod.Dockerfile).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies
+        run: cd apps/web && npm ci
+
+      - name: Build site
+        run: cd apps/web && npm run build
+        env:
+          PUBLIC_PLATFORM_URL: https://platform.directmate.app
+
   deploy:
-    needs: build
+    needs: [build, build-web]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

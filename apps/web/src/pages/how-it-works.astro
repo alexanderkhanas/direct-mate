@@ -1,0 +1,239 @@
+---
+import Base from '../layouts/Base.astro';
+import Bubble from '../components/chat/Bubble.astro';
+import Group from '../components/chat/Group.astro';
+import Photo from '../components/chat/Photo.astro';
+import Caption from '../components/chat/Caption.astro';
+import SectionHead from '../components/SectionHead.astro';
+import CtaBand from '../components/CtaBand.astro';
+import Step from '../components/how-it-works/Step.astro';
+import dressBlack from '../assets/photos/dress-black.jpg';
+import dressBeige from '../assets/photos/dress-beige.jpg';
+
+const title = 'Як працює AI-агент: від сторіз до замовлення | DirectMate';
+const description =
+  'Одна розмова в Instagram Direct крок за кроком: AI-агент впізнає річ зі сторіз, відповідає з каталогу, підбирає розмір, оформлює замовлення й передає його вам.';
+
+// The size chart the AI agent sends in step 3. M is the row the chat quotes; S and L follow the same steps.
+const sizeChart = [
+  ['S', '84–88', '64–68', '90–94'],
+  ['M', '88–92', '68–72', '94–98'],
+  ['L', '92–96', '72–76', '98–102'],
+];
+
+const channels = [
+  {
+    title: 'Фото від клієнта',
+    text: 'Клієнт надсилає фото чи скриншот. AI-агент шукає цю річ у каталозі, а якщо її немає, показує найближчі й каже, що це схожі моделі.',
+  },
+  {
+    title: 'Голосове повідомлення',
+    text: "Розшифровує голосові до трьох хвилин і відповідає текстом. Продиктовані ім'я, телефон і адресу перечитує клієнту перед оформленням.",
+  },
+  {
+    title: 'Коментар під дописом',
+    text: 'Питання в коментарі отримує відповідь у Direct і коротку публічну відповідь під дописом, що деталі вже в особистих.',
+  },
+];
+
+const checks = [
+  {
+    title: 'Факти',
+    text: 'Кожна ціна, розмір, колір і обіцянка у відповіді мають джерело: каталог, ваші нотатки або слова самого клієнта.',
+  },
+  { title: 'Стиль', text: 'Без русизмів, без фраз і емодзі, які ви заборонили для свого магазину.' },
+  { title: 'Модерація', text: 'Автоматична перевірка тексту на неприйнятний вміст.' },
+];
+
+const modes = [
+  {
+    title: 'Навчання',
+    text: 'Клієнтам відповідають менеджери. AI-агент пише свої чернетки, і ви бачите їх поруч зі справжніми відповідями.',
+  },
+  { title: 'Активний', text: 'AI-агент відповідає клієнтам сам і передає менеджеру те, у чому не впевнений.' },
+  { title: 'Пауза', text: 'AI-агент мовчить. Усі повідомлення чекають на менеджерів.' },
+];
+---
+
+<Base title={title} description={description}>
+  <!-- Hero -->
+  <section class="dm-page flex flex-col gap-5 pb-12 pt-12 md:pb-14 md:pt-[72px]">
+    <p class="text-base font-medium text-blue-700">Як це працює</p>
+    <h1 class="dm-h1 max-w-[860px] text-[clamp(34px,4.6vw,56px)]">Одна розмова: від відповіді на сторіз до замовлення</h1>
+    <p class="max-w-[680px] text-[19px] leading-[1.55] text-dm-ink2 text-pretty">
+      П'ять кроків. На кожному видно, що написав клієнт, що відповів AI-агент і звідки він узяв цю відповідь.
+    </p>
+  </section>
+
+  <!-- The five steps -->
+  <section class="dm-page flex flex-col gap-6 pb-16 md:pb-[88px]">
+    <Step id="story" number={1} title="Клієнт відповідає на сторіз">
+      <Fragment slot="chat">
+        <Group side="customer">
+          <Caption>Відповідь на вашу сторіз</Caption>
+          <Photo src={dressBlack} alt="Сторіз магазину: чорна атласна сукня з мереживом" width={96} height={152} position="center 40%" loading="eager" />
+          <Bubble from="customer" grouped>Скільки коштує?</Bubble>
+        </Group>
+      </Fragment>
+      <p class="text-[17px] text-dm-ink2">
+        AI-агент бачить саму сторіз, а не лише текст «скільки коштує?». Товар він знаходить за артикулом у підписі, за тим
+        самим фото, що в каталозі, або за зв'язком, який ви підтвердили.
+      </p>
+      <p class="text-[15px] text-dm-muted">Так само працює з дописами й Reels, якими клієнт поділився, і з фото чи скриншотом від клієнта.</p>
+    </Step>
+
+    <Step id="catalog" number={2} title="AI-агент відповідає з каталогу">
+      <Fragment slot="chat">
+        <Group side="agent">
+          <div class="flex gap-1.5">
+            <Photo src={dressBlack} alt="Фото з каталогу: атласна сукня, чорна" width={104} height={130} />
+            <Photo src={dressBeige} alt="Фото з каталогу: атласна сукня, бежева" width={104} height={130} />
+          </div>
+          <Bubble from="agent" grouped>Це атласна сукня з мереживом, 1 890 грн. Є чорна й бежева, розміри S, M і L. Яка вам до вподоби?</Bubble>
+        </Group>
+      </Fragment>
+      <p class="text-[17px] text-dm-ink2">
+        Назва, ціна, кольори, розміри й фото приходять з вашого каталогу. Якщо товару немає в наявності, AI-агент каже про це
+        й показує схожі.
+      </p>
+      <ul class="flex flex-wrap gap-2">
+        {
+          ['Ціна: каталог', 'Наявність: каталог', 'Фото: каталог'].map((source) => (
+            <li class="rounded-full bg-dm-green-bg px-3 py-1.5 text-sm font-medium text-dm-green">{source}</li>
+          ))
+        }
+      </ul>
+    </Step>
+
+    <Step id="sizing" number={3} title="Підказує розмір">
+      <Fragment slot="chat">
+        <Bubble from="customer">Чорна. Який розмір мені брати?</Bubble>
+        <Bubble from="agent">Напишіть, будь ласка, обхват грудей, талії та стегон.</Bubble>
+        <Bubble from="customer">90, 70, 96</Bubble>
+        <Group side="agent">
+          <div class="max-w-full overflow-x-auto rounded-[14px] border border-dm-line2 bg-white">
+            <table class="text-left text-xs leading-tight tabular-nums text-dm-ink2">
+              <caption class="px-1.5 pb-1 pt-2 sm:px-2.5 text-left text-xs font-semibold text-dm-ink">Розмірна сітка</caption>
+              <thead>
+                <tr>
+                  {['Розмір', 'Груди', 'Талія', 'Стегна'].map((col) => (
+                    <th scope="col" class="px-1.5 py-1.5 sm:px-2.5 font-medium text-dm-muted">{col}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {
+                  sizeChart.map(([size, ...cells]) => (
+                    <tr class="border-t border-dm-line">
+                      <th scope="row" class="px-1.5 py-1.5 sm:px-2.5 font-semibold text-dm-ink">{size}</th>
+                      {cells.map((cell) => (
+                        <td class="whitespace-nowrap px-1.5 py-1.5 sm:px-2.5">{cell}</td>
+                      ))}
+                    </tr>
+                  ))
+                }
+              </tbody>
+            </table>
+          </div>
+          <Bubble from="agent" grouped>За нашою розмірною сіткою це M: груди 88–92, талія 68–72, стегна 94–98. Надсилаю сітку повністю.</Bubble>
+        </Group>
+      </Fragment>
+      <p class="text-[17px] text-dm-ink2">
+        AI-агент питає в клієнта заміри й порівнює їх із розмірною сіткою, яку ви завантажили для цього бренду й категорії.
+        Немає сітки для товару: радить за діапазонами зросту й ваги, які ви задали в налаштуваннях.
+      </p>
+      <p class="text-[15px] text-dm-muted">Не хочете, щоб AI-агент радив розмір? Увімкніть режим консультації: рекомендацій він не даватиме.</p>
+    </Step>
+
+    <Step id="order" number={4} title="Оформлює замовлення">
+      <Fragment slot="chat">
+        <Bubble from="customer">Олена Коваль, 067 ••• •• 12, Львів, відділення 12</Bubble>
+        <Bubble from="agent">Перевірте, будь ласка: атласна сукня, чорна, M, 1 890 грн. Нова пошта, Львів, відділення 12. Усе правильно?</Bubble>
+        <Bubble from="customer">Так</Bubble>
+      </Fragment>
+      <p class="text-[17px] text-dm-ink2">
+        Які дані питати в клієнта, вирішуєте ви. Ціна в замовленні завжди з каталогу. Замовлення оформлюється, лише коли всі
+        дані зібрано й клієнт підтвердив.
+      </p>
+      <p class="text-[15px] text-dm-muted">Працюєте за передоплатою? Після підтвердження AI-агент надсилає ваші реквізити.</p>
+    </Step>
+
+    <Step id="handoff" number={5} title="Ви отримуєте замовлення">
+      <Fragment slot="chat">
+        <Caption>Telegram, чат менеджерів</Caption>
+        <div class="flex flex-col gap-1 rounded-[14px] border border-dm-line bg-white px-4 py-3.5 text-[15px]">
+          <strong class="font-semibold">Нове замовлення</strong>
+          <span class="text-dm-ink2">Атласна сукня з мереживом, чорна, M</span>
+          <span class="text-dm-ink2">1 890 грн</span>
+          <span class="text-dm-ink2">Львів, Нова пошта, відділення 12</span>
+        </div>
+      </Fragment>
+      <p class="text-[17px] text-dm-ink2">Замовлення з'являється в адмін-панелі, а менеджер отримує сповіщення в Telegram.</p>
+      <p class="text-[15px] text-dm-muted">
+        Туди ж приходять розмови, які AI-агент передав людині: скарга, нестандартне прохання, питання, на яке немає відповіді
+        у ваших нотатках.
+      </p>
+    </Step>
+  </section>
+
+  <!-- Photos, voice messages, comments -->
+  <section class="border-y border-dm-line bg-white">
+    <div class="dm-page flex flex-col gap-9 py-16 md:py-20">
+      <SectionHead title="Розмова не завжди починається з тексту" />
+      <div class="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
+        {
+          channels.map((card) => (
+            <div class="flex flex-col gap-2.5 rounded-[20px] bg-dm-bg p-6 sm:p-7">
+              <h3 class="text-xl font-semibold">{card.title}</h3>
+              <p class="text-base text-dm-ink2">{card.text}</p>
+            </div>
+          ))
+        }
+      </div>
+    </div>
+  </section>
+
+  <!-- Three checks -->
+  <section id="checks" class="scroll-mt-4 bg-dm-ink text-white">
+    <div class="dm-page dm-section flex flex-col gap-10">
+      <div class="flex max-w-[760px] flex-col gap-3.5">
+        <h2 class="dm-h2">Три перевірки перед кожною відповіддю</h2>
+        <p class="text-lg text-dm-night-text">Клієнт бачить відповідь лише після того, як вона їх пройшла.</p>
+      </div>
+      <div class="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
+        {
+          checks.map((card) => (
+            <div class="flex flex-col gap-2.5 rounded-[20px] bg-dm-night-card p-6 sm:p-7">
+              <h3 class="text-xl font-semibold">{card.title}</h3>
+              <p class="text-base text-dm-night-text">{card.text}</p>
+            </div>
+          ))
+        }
+      </div>
+      <p class="max-w-[760px] text-lg">
+        Відповідь не пройшла: AI-агент переписує її з урахуванням зауважень. Не пройшла вдруге: клієнта попереджають, і
+        розмову отримує менеджер.
+      </p>
+    </div>
+  </section>
+
+  <!-- Three modes -->
+  <section id="modes" class="dm-page dm-section flex scroll-mt-4 flex-col gap-9">
+    <SectionHead title="Три режими роботи" lead="Ви вирішуєте, коли AI-агент готовий відповідати клієнтам." />
+    <div class="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
+      {
+        modes.map((card) => (
+          <div class="dm-card flex flex-col gap-2.5 p-6 sm:p-7">
+            <h3 class="text-xl font-semibold">{card.title}</h3>
+            <p class="text-base text-dm-ink2">{card.text}</p>
+          </div>
+        ))
+      }
+    </div>
+  </section>
+
+  <CtaBand
+    title="Подивіться це на власних розмовах"
+    text="Підключіть магазин і почніть із режиму навчання: клієнти нічого не помітять, а ви побачите, що відповів би AI-агент."
+  />
+</Base>

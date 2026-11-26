@@ -58,7 +58,8 @@ $COMPOSE up -d
 
 echo ""
 echo "==> Deployment complete!"
-echo "    Admin:    https://$DOMAIN"
+echo "    Site:     https://$DOMAIN"
+echo "    Admin:    https://platform.directmate.app"
 echo "    API docs: https://$DOMAIN/docs"
 echo "    n8n:      https://$DOMAIN/n8n/"
 echo ""

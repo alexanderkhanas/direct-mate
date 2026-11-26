@@ -29,7 +29,7 @@ api.interceptors.response.use(
   (err) => {
     if (err.response?.status === 401) {
       const path = window.location.pathname;
-      const publicPaths = ['/login', '/register', '/welcome', '/privacy', '/terms', '/data-deletion', '/claude'];
+      const publicPaths = ['/login', '/register', '/claude'];
       if (!publicPaths.some(p => path.startsWith(p))) {
         localStorage.removeItem('accessToken');
         setOverrideTenantId(null); // don't carry a tenant override across logins

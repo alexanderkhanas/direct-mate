@@ -1,0 +1,18 @@
+---
+import Base from '../layouts/Base.astro';
+import { LOGIN_URL } from '../site';
+---
+
+<Base title="Сторінку не знайдено | DirectMate" description="Такої сторінки на directmate.app немає." noindex>
+  <section class="dm-page flex flex-col items-start gap-5 py-24 md:py-32">
+    <p class="text-base font-medium text-blue-700">Помилка 404</p>
+    <h1 class="dm-h1">Такої сторінки немає</h1>
+    <p class="dm-lead max-w-[560px]">
+      Можливо, посилання застаріло. Кабінет магазину тепер за окремою адресою: platform.directmate.app.
+    </p>
+    <div class="flex flex-wrap gap-3">
+      <a href="/" class="dm-btn-primary">На головну</a>
+      <a href={LOGIN_URL} class="dm-btn-secondary">Увійти в кабінет</a>
+    </div>
+  </section>
+</Base>

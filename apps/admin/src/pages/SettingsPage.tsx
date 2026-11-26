@@ -17,6 +17,7 @@ import {
   KnowledgeSection,
   SizingSection,
 } from '../components/settings/StoreSettingsSections';
+import { SITE_URL } from '../lib/site';
 import { SecuritySection } from '../components/settings/SecuritySection';
 
 type OperatingMode = 'learning' | 'active' | 'paused';
@@ -314,7 +315,7 @@ function DeleteAccountSection() {
     mutationFn: () => api.delete('/auth/account'),
     onSuccess: () => {
       localStorage.removeItem('accessToken');
-      window.location.href = '/welcome';
+      window.location.href = SITE_URL;
     },
   });
 

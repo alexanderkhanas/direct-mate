@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://directmate.app/sitemap-index.xml

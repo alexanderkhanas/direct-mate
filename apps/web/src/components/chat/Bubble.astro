@@ -1,0 +1,21 @@
+---
+/**
+ * One chat message. `customer` is grey on the left; `agent` (DirectMate) is blue on the right; `bot` (a scenario
+ * chat-bot, for comparisons) is outlined on the right. Inside a Group, pass `grouped` so the group sets the width.
+ */
+interface Props {
+  from: 'customer' | 'agent' | 'bot';
+  grouped?: boolean;
+  class?: string;
+}
+const { from, grouped = false, class: className } = Astro.props;
+const look = {
+  customer: 'self-start rounded-[18px] rounded-bl-md bg-dm-bubble text-dm-ink',
+  agent: 'self-end rounded-[18px] rounded-br-md bg-blue-600 text-white',
+  bot: 'self-end rounded-[18px] rounded-br-md border border-dm-line2 bg-white text-dm-ink',
+}[from];
+---
+
+<div class:list={['px-3.5 py-2.5 text-[15px] leading-[1.4]', look, !grouped && 'max-w-[86%]', className]}>
+  <slot />
+</div>

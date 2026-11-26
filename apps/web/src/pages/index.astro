@@ -1,0 +1,352 @@
+---
+import Base from '../layouts/Base.astro';
+import DirectCard from '../components/chat/DirectCard.astro';
+import Bubble from '../components/chat/Bubble.astro';
+import Group from '../components/chat/Group.astro';
+import Photo from '../components/chat/Photo.astro';
+import Caption from '../components/chat/Caption.astro';
+import CheckList from '../components/CheckList.astro';
+import SectionHead from '../components/SectionHead.astro';
+import Faq from '../components/Faq.astro';
+import CtaBand from '../components/CtaBand.astro';
+import DemoSection from '../components/demo/DemoSection.tsx';
+import { CLAUDE_SETUP_URL, INTEGRATION_REQUEST_URL, REGISTER_URL, SITE_URL } from '../site';
+import { MIN_PRICE, PLAN_PRICES, uah } from '../data/plans';
+import dressBlack from '../assets/photos/dress-black.jpg';
+import dressBeige from '../assets/photos/dress-beige.jpg';
+
+const title = 'AI-агент для Instagram Direct: відповідає клієнтам і продає | DirectMate';
+const description =
+  'AI-агент відповідає клієнтам в Instagram Direct: показує товари з каталогу, впізнає річ зі сторіз, підбирає розмір і оформлює замовлення. 14 днів безкоштовно.';
+
+const jsonLd = [
+  {
+    '@context': 'https://schema.org',
+    '@graph': [
+      {
+        '@type': 'Organization',
+        '@id': `${SITE_URL}/#org`,
+        name: 'DirectMate',
+        url: SITE_URL,
+        logo: `${SITE_URL}/logo-square.png`,
+      },
+      {
+        '@type': 'WebSite',
+        '@id': `${SITE_URL}/#site`,
+        url: SITE_URL,
+        name: 'DirectMate',
+        inLanguage: 'uk',
+        publisher: { '@id': `${SITE_URL}/#org` },
+      },
+      {
+        '@type': 'SoftwareApplication',
+        name: 'DirectMate',
+        applicationCategory: 'BusinessApplication',
+        operatingSystem: 'Web',
+        url: SITE_URL,
+        description,
+        offers: {
+          '@type': 'AggregateOffer',
+          priceCurrency: 'UAH',
+          lowPrice: MIN_PRICE,
+          highPrice: Math.max(...Object.values(PLAN_PRICES)),
+          offerCount: Object.keys(PLAN_PRICES).length,
+        },
+      },
+    ],
+  },
+];
+
+const understands = [
+  ['Відповіді на сторіз.', 'Бачить саму сторіз, а не лише текст.'],
+  ['Дописи та Reels.', 'Ті, якими клієнт поділився в чаті.'],
+  ['Фото й скриншоти.', 'Шукає цю або схожу річ у каталозі.'],
+  ['Голосові.', 'Розшифровує й відповідає текстом.'],
+];
+
+// Icons: 24×24 line drawings, stroke from the card.
+const questions = [
+  {
+    icon: '<path d="M3.5 8L12 3.5 20.5 8v8L12 20.5 3.5 16V8z"/><path d="M3.5 8L12 12.5 20.5 8M12 12.5v8"/>',
+    title: 'Звідки він знає мої товари?',
+    text: 'Підключіть Shopify, товарний фід або Google Таблицю. Ціну й наявність AI-агент бере лише звідти.',
+    link: { label: 'Відповіді з каталогу', href: '/how-it-works#catalog' },
+  },
+  {
+    icon: '<rect x="3.5" y="4.5" width="17" height="15" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="M4 17l5-4.5 3.5 3 3-2.5 4.5 4"/>',
+    title: 'Клієнт відповів на сторіз. Він зрозуміє, про що мова?',
+    text: 'AI-агент бачить сторіз, допис чи Reels, на які відповіли, і знаходить цю річ у каталозі.',
+    link: { label: 'Сторіз, дописи, Reels', href: '/features/instagram-content' },
+  },
+  {
+    icon: '<rect x="2.5" y="8" width="19" height="8" rx="2"/><path d="M7 8v3M11 8v4M15 8v3"/>',
+    title: 'А якщо спитають про розмір?',
+    text: 'Завантажте фото розмірної сітки. AI-агент прочитає її, спитає в клієнта заміри й порадить розмір.',
+    link: { label: 'Як він підбирає розмір', href: '/how-it-works#sizing' },
+  },
+  {
+    icon: '<path d="M4.5 5.5h15a1 1 0 011 1v9a1 1 0 01-1 1H10l-4.5 3.5v-3.5h-1a1 1 0 01-1-1v-9a1 1 0 011-1z"/>',
+    title: 'Він писатиме так, як пишемо ми?',
+    text: 'З вашого дозволу читає недавні діалоги й переймає тон. У режимі навчання показує свої чернетки поруч із відповідями менеджера.',
+    link: { label: 'Режим навчання', href: '/how-it-works#modes' },
+  },
+  {
+    icon: '<path d="M5 8.5h14l-1 11H6l-1-11z"/><path d="M9 8.5V7a3 3 0 016 0v1.5"/>',
+    title: 'Хто оформить замовлення?',
+    text: 'AI-агент збирає дані для доставки, надсилає реквізити для оплати й передає замовлення вам.',
+    link: { label: 'Як оформлюється замовлення', href: '/how-it-works#order' },
+  },
+  {
+    icon: '<circle cx="12" cy="8" r="3.5"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/>',
+    title: 'А якщо він помилиться?',
+    text: 'Не впевнений: передає розмову менеджеру в Telegram. Менеджер відповів сам: AI-агент у цій розмові зупиняється.',
+    link: { label: 'Перевірки й передача менеджеру', href: '/how-it-works#checks' },
+  },
+];
+
+const steps = [
+  ['Підключіть Instagram і товари', 'Бізнес-акаунт Instagram і каталог: Shopify, товарний фід або Google Таблиця.'],
+  ['Розкажіть про магазин', 'Доставка, оплата, повернення. AI складе нотатки з вашого сайту й діалогів і спитає лише те, чого бракує.'],
+  ['Перевірте й увімкніть', 'Поспілкуйтеся з AI-агентом у тестовому чаті. Почніть із режиму навчання: він пише чернетки, а клієнтам відповідають менеджери.'],
+];
+
+const faq = [
+  {
+    q: 'Чи безпечно це для акаунта Instagram?',
+    a: 'DirectMate працює через офіційний Instagram API від Meta. AI-агент відповідає лише тим, хто написав вам першим.',
+  },
+  {
+    q: 'Клієнти знатимуть, що їм відповідає AI?',
+    a: 'Так. На початку розмови AI-агент представляється як AI-асистент магазину. Текст цього привітання ви задаєте самі.',
+  },
+  {
+    q: 'Що, як клієнт спитає те, чого AI-агент не знає?',
+    a: 'Він не вигадує. Попереджає клієнта, що відповість менеджер, і передає розмову в Telegram.',
+  },
+  {
+    q: 'Чи може менеджер втрутитися в розмову?',
+    a: 'Так. Щойно менеджер відповідає в Direct, AI-агент зупиняється в цій розмові й повертається через 30 хвилин.',
+  },
+  { q: 'У мене немає сайту. Це спрацює?', a: 'Так. Достатньо Google Таблиці з вашими товарами.' },
+];
+---
+
+<Base title={title} description={description} jsonLd={jsonLd}>
+  <!-- Hero -->
+  <section class="dm-page grid items-center gap-12 pb-16 pt-12 md:pt-[72px] lg:grid-cols-[minmax(0,1fr)_minmax(0,460px)] lg:gap-16">
+    <div class="flex min-w-0 flex-col gap-6">
+      <p class="text-base font-medium text-blue-700">AI-агент для Instagram Direct</p>
+      <h1 class="dm-h1">AI-агент, який продає у вашому Instagram Direct</h1>
+      <p class="max-w-[540px] text-[19px] leading-[1.55] text-dm-ink2 text-pretty">
+        Показує товари з вашого каталогу, впізнає річ зі сторіз, підказує розмір і оформлює замовлення. Складні розмови
+        передає менеджеру в Telegram.
+      </p>
+      <div class="flex flex-wrap items-center gap-x-5 gap-y-3">
+        <a href={REGISTER_URL} data-cta="hero" class="dm-btn-primary dm-btn-lg">Спробувати безкоштовно</a>
+        <a href="#demo" class="dm-link text-[17px]">Написати демо-магазину</a>
+      </div>
+      <p class="max-w-[480px] text-[15px] text-dm-muted">
+        14 днів або 200 розмов безкоштовно. Відлік починається, коли ви вмикаєте AI-агента для клієнтів.
+      </p>
+    </div>
+
+    <div class="flex w-full min-w-0 max-w-[460px] flex-col gap-4 justify-self-center lg:justify-self-end">
+      <DirectCard name="olena.koval">
+        <Group side="customer">
+          <Caption>Відповідь на вашу сторіз</Caption>
+          <Photo src={dressBlack} alt="Сторіз магазину: чорна атласна сукня з мереживом" width={84} height={132} position="center 40%" loading="eager" />
+          <Bubble from="customer" grouped>Скільки коштує ця сукня? Є в M?</Bubble>
+        </Group>
+        <Group side="agent">
+          <div class="flex gap-1.5">
+            <Photo src={dressBlack} alt="Фото з каталогу: атласна сукня, чорна" width={104} height={130} loading="eager" />
+            <Photo src={dressBeige} alt="Фото з каталогу: атласна сукня, бежева" width={104} height={130} loading="eager" />
+          </div>
+          <Bubble from="agent" grouped>Це атласна сукня з мереживом, 1 890 грн. M є в чорному й бежевому. Яка вам до вподоби?</Bubble>
+        </Group>
+        <Bubble from="customer">Чорна. Груди 90, талія 70, стегна 96. M підійде?</Bubble>
+        <Bubble from="agent">За нашою розмірною сіткою це якраз M. Оформлюємо замовлення?</Bubble>
+      </DirectCard>
+      <CheckList
+        items={[
+          'Знайшов сукню зі сторіз у каталозі',
+          'Ціну й наявність узяв з каталогу',
+          'Розмір підібрав за замірами клієнтки й вашою розмірною сіткою',
+        ]}
+      />
+    </div>
+  </section>
+
+  <!-- What customers send -->
+  <section class="border-y border-dm-line bg-white">
+    <div class="dm-page flex flex-col gap-5 py-9">
+      <h2 class="text-lg font-semibold">Розуміє все, що клієнти надсилають у Direct</h2>
+      <div class="grid gap-x-8 gap-y-4 sm:grid-cols-2 lg:grid-cols-4">
+        {
+          understands.map(([lead, rest]) => (
+            <p class="text-base text-dm-ink2">
+              <strong class="font-semibold text-dm-ink">{lead}</strong> {rest}
+            </p>
+          ))
+        }
+      </div>
+    </div>
+  </section>
+
+  <!-- Scenario bot vs AI agent -->
+  <section class="dm-page dm-section flex flex-col gap-10">
+    <SectionHead
+      title="Сценарний чат-бот чекає на кнопку. AI-агент відповідає на питання."
+      lead="Одне й те саме повідомлення від клієнта, два різні результати."
+    />
+    <div class="grid gap-6 md:grid-cols-2">
+      <div class="dm-card flex flex-col gap-[18px] p-6">
+        <h3 class="text-[17px] font-semibold text-dm-muted">Сценарний чат-бот</h3>
+        <div class="flex flex-col gap-2.5">
+          <Bubble from="customer">А ця куртка є в бежевому на зріст 175?</Bubble>
+          <Group side="agent">
+            <Bubble from="bot" grouped>Вітаємо! Оберіть розділ:</Bubble>
+            <div class="flex flex-wrap justify-end gap-1.5">
+              {['Каталог', 'Доставка', 'Менеджер'].map((b) => (
+                <span class="rounded-full border border-dm-line2 px-3 py-1.5 text-sm text-dm-ink2">{b}</span>
+              ))}
+            </div>
+          </Group>
+        </div>
+        <p class="text-[15px] text-dm-muted">Питання залишилося без відповіді. Клієнт чекає на менеджера.</p>
+      </div>
+      <div class="flex flex-col gap-[18px] rounded-[20px] border-2 border-blue-600 bg-white p-[23px]">
+        <h3 class="text-[17px] font-semibold text-blue-700">AI-агент DirectMate</h3>
+        <div class="flex flex-col gap-2.5">
+          <Bubble from="customer">А ця куртка є в бежевому на зріст 175?</Bubble>
+          <Bubble from="agent">Бежева є в M і L. На зріст 175 радимо L. Надіслати фото?</Bubble>
+        </div>
+        <p class="text-[15px] text-dm-ink2">Колір і наявність з каталогу, розмір з вашої розмірної сітки.</p>
+      </div>
+    </div>
+    <a href="/compare/manychat" class="dm-link self-start">Докладне порівняння з ManyChat</a>
+  </section>
+
+  <!-- Six owner questions -->
+  <section class="border-y border-dm-line bg-white">
+    <div class="dm-page dm-section flex flex-col gap-10">
+      <SectionHead title="Шість питань, які ставить кожен власник магазину" lead="І як DirectMate на них відповідає." />
+      <div class="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
+        {
+          questions.map((card) => (
+            <div class="flex flex-col gap-3 rounded-[20px] bg-dm-bg p-6 sm:p-7">
+              <svg aria-hidden="true" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#2563EB" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" set:html={card.icon} />
+              <h3 class="text-xl font-semibold leading-[1.3]">{card.title}</h3>
+              <p class="flex-grow text-base text-dm-ink2">{card.text}</p>
+              <a href={card.link.href} class="dm-link">
+                {card.link.label}
+              </a>
+            </div>
+          ))
+        }
+      </div>
+    </div>
+  </section>
+
+  <!-- Setup -->
+  <section class="dm-page dm-section flex flex-col gap-10">
+    <SectionHead title="Запуск за 10–15 хвилин" lead="Налаштуєте самі або ми зробимо це за вас." />
+    <ol class="grid gap-8 md:grid-cols-3">
+      {
+        steps.map(([stepTitle, text], i) => (
+          <li class="flex flex-col gap-3">
+            <span class="flex h-10 w-10 items-center justify-center rounded-full bg-dm-ink text-[17px] font-semibold text-white">{i + 1}</span>
+            <h3 class="text-xl font-semibold">{stepTitle}</h3>
+            <p class="text-base text-dm-ink2">{text}</p>
+          </li>
+        ))
+      }
+    </ol>
+    <div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 rounded-2xl bg-dm-tint px-6 py-5">
+      <p class="text-base">Не любите форми? Налаштуйте AI-агента в розмові з Claude: він розпитає про магазин і зробить усе сам.</p>
+      <a href={CLAUDE_SETUP_URL} class="dm-link">Налаштування з Claude</a>
+    </div>
+  </section>
+
+  <!-- AI writes, code controls -->
+  <section class="bg-dm-ink text-white">
+    <div class="dm-page dm-section flex flex-col gap-11">
+      <h2 class="dm-h2 max-w-[820px]">AI пише відповідь. Ціни, наявність і замовлення контролює код.</h2>
+      <div class="grid gap-x-16 gap-y-10 md:grid-cols-2">
+        <div class="flex flex-col gap-4">
+          <h3 class="text-lg font-semibold text-dm-night-text">Що робить AI</h3>
+          <ul class="flex flex-col text-[17px]">
+            {
+              ['Читає розмову й розуміє, чого хоче клієнт', 'Шукає товари у вашому каталозі', 'Пише відповідь вашим тоном'].map((item) => (
+                <li class="border-b border-dm-night-line py-3.5 first:pt-0 last:border-0">{item}</li>
+              ))
+            }
+          </ul>
+        </div>
+        <div class="flex flex-col gap-4">
+          <h3 class="text-lg font-semibold text-dm-night-text">Що гарантує код</h3>
+          <ul class="flex flex-col text-[17px]">
+            {
+              [
+                'Кожна ціна, розмір і колір у відповіді звіряються з каталогом',
+                'Знижки й подарунки: лише ті, що записані у ваших нотатках',
+                'Замовлення оформлюється, коли зібрано всі дані',
+                'Відповідь двічі не пройшла перевірку: розмову отримує менеджер',
+              ].map((item) => <li class="border-b border-dm-night-line py-3.5 first:pt-0 last:border-0">{item}</li>)
+            }
+          </ul>
+        </div>
+      </div>
+      <a href="/how-it-works" class="dm-link self-start text-white hover:text-dm-night-text">Як це працює, крок за кроком</a>
+    </div>
+  </section>
+
+  <!-- Catalog sources -->
+  <section class="dm-page dm-section grid items-center gap-x-16 gap-y-8 md:grid-cols-2">
+    <div class="flex flex-col gap-5">
+      <h2 class="dm-h2">Працює з вашим каталогом</h2>
+      <p class="dm-lead">Три способи підключити товари без нашої участі.</p>
+      <div class="flex flex-wrap gap-2.5">
+        {
+          ['Shopify', 'Товарний фід', 'Google Таблиці'].map((source) => (
+            <span class="rounded-xl border border-dm-line bg-white px-[18px] py-3 text-base font-medium">{source}</span>
+          ))
+        }
+      </div>
+    </div>
+    <div class="dm-card flex flex-col gap-3 p-7">
+      <h3 class="text-[22px] font-semibold">Інша CMS чи CRM? Підключимо.</h3>
+      <p class="text-base text-dm-ink2">Напишіть, з якою системою працюєте. Ми зробимо підключення для вашого магазину.</p>
+      <a href={INTEGRATION_REQUEST_URL} class="dm-btn-secondary mt-2 self-start">Залишити запит</a>
+    </div>
+  </section>
+
+  <!-- Live demo -->
+  <section id="demo" class="scroll-mt-4 border-y border-dm-line bg-white">
+    <div class="dm-page flex flex-col gap-10 py-16 md:py-[72px]">
+      <div class="grid gap-x-16 gap-y-8 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+        <div class="flex max-w-[640px] flex-col gap-3.5">
+          <h2 class="text-[clamp(26px,3.2vw,36px)] font-bold leading-[1.15] tracking-[-0.015em]">Напишіть демо-магазину</h2>
+          <p class="dm-lead">
+            Справжній AI-агент на тестовому каталозі. Спитайте про розмір, наявність чи доставку, як спитав би ваш клієнт.
+          </p>
+        </div>
+        <div class="flex flex-col gap-2.5">
+          <p class="text-[28px] font-bold tracking-[-0.01em]">Від {uah(MIN_PRICE)} грн на місяць</p>
+          <p class="text-base text-dm-ink2">14 днів або 200 розмов безкоштовно. Усі можливості в кожному тарифі.</p>
+          <a href="/pricing" class="dm-link self-start">Усі тарифи</a>
+        </div>
+      </div>
+      <div class="min-h-[640px]">
+        <DemoSection client:visible />
+      </div>
+    </div>
+  </section>
+
+  <Faq items={faq} />
+
+  <CtaBand
+    title="Спробуйте на власному Direct"
+    text="Підключіть магазин і подивіться, як AI-агент відповідав би вашим клієнтам. Спершу в режимі навчання, без ризику."
+  />
+</Base>

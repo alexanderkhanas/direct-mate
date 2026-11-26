@@ -1,0 +1,29 @@
+---
+import { FOOTER_NAV } from '../site';
+---
+
+<footer class="border-t border-dm-line bg-white">
+  <div class="dm-page flex flex-col gap-10 pb-8 pt-14">
+    <div class="grid grid-cols-1 gap-8 sm:grid-cols-3">
+      {
+        FOOTER_NAV.map((group) => (
+          <div class="flex flex-col gap-1">
+            <h2 class="mb-1.5 text-[15px] font-semibold">{group.title}</h2>
+            {group.items.map((item) => (
+              <a href={item.href} class="py-1.5 text-[15px] text-dm-ink2 no-underline hover:text-dm-ink">
+                {item.label}
+              </a>
+            ))}
+          </div>
+        ))
+      }
+    </div>
+    <div class="flex flex-wrap items-center justify-between gap-3 border-t border-dm-line pt-6">
+      <div class="flex items-center gap-2.5">
+        <img src="/logo-square.png" alt="" width="24" height="24" class="h-6 w-6 rounded-md" />
+        <span class="text-[15px] font-semibold">DirectMate</span>
+      </div>
+      <span class="text-sm text-dm-muted">© {new Date().getFullYear()} DirectMate</span>
+    </div>
+  </div>
+</footer>

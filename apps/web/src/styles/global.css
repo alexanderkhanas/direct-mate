@@ -1,0 +1,79 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-dm-bg font-sans text-dm-ink antialiased;
+    line-height: 1.5;
+  }
+  a {
+    color: #1d4ed8;
+  }
+  a:hover {
+    color: #1e40af;
+  }
+  :focus-visible {
+    outline: 2px solid #2563eb;
+    outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+  }
+}
+
+@layer components {
+  /* One page column: 1160 px, the designs' 24 px gutter (20 px on phones). */
+  .dm-page {
+    @apply mx-auto w-full max-w-page px-5 sm:px-6;
+  }
+  .dm-section {
+    @apply py-16 md:py-[88px];
+  }
+
+  .dm-h1 {
+    font-size: clamp(34px, 5vw, 60px);
+    line-height: 1.08;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+  }
+  .dm-h2 {
+    font-size: clamp(28px, 3.6vw, 42px);
+    line-height: 1.15;
+    font-weight: 700;
+    letter-spacing: -0.015em;
+    text-wrap: balance;
+  }
+  .dm-lead {
+    @apply text-lg text-dm-ink2;
+    text-wrap: pretty;
+  }
+
+  /* Buttons and links. Every one is at least 44 px tall. */
+  .dm-btn {
+    @apply inline-flex min-h-[44px] items-center justify-center rounded-xl px-5 py-3 text-base font-semibold no-underline transition-colors;
+  }
+  .dm-btn-primary {
+    @apply dm-btn bg-blue-600 text-white hover:bg-blue-700 hover:text-white;
+  }
+  .dm-btn-lg {
+    @apply rounded-[14px] px-[26px] py-[15px] text-[17px];
+  }
+  .dm-btn-secondary {
+    @apply dm-btn border border-dm-line2 bg-white text-dm-ink hover:border-dm-ink2 hover:text-dm-ink;
+  }
+  .dm-link {
+    @apply inline-flex min-h-[44px] items-center text-base font-medium;
+  }
+
+  .dm-card {
+    @apply rounded-[20px] border border-dm-line bg-white;
+  }
+}

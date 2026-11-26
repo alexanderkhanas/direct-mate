@@ -1,0 +1,44 @@
+---
+/** One plan on the pricing page: name, who it is for, price, limits, sign-up. */
+import { REGISTER_URL } from '../../site';
+import { limitLines, uah, type Plan } from '../../data/plans';
+
+interface Props {
+  plan: Plan;
+  /** Blue border and a primary button. */
+  featured?: boolean;
+}
+const { plan, featured = false } = Astro.props;
+---
+
+<div
+  class:list={[
+    'flex min-w-0 flex-col gap-5 rounded-3xl bg-white',
+    featured ? 'border-2 border-blue-600 p-[23px] sm:p-[31px]' : 'border border-dm-line p-6 sm:p-8',
+  ]}
+>
+  <div class="flex flex-col gap-1.5">
+    <h2 class="text-[22px] font-semibold leading-snug">{plan.name}</h2>
+    <p class="text-[15px] text-dm-muted">{plan.audience}</p>
+  </div>
+  <p class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+    <span class="text-[44px] font-bold leading-none tracking-[-0.02em]">{uah(plan.price)}</span>
+    <span class="text-base text-dm-muted">грн на місяць</span>
+  </p>
+  <ul class="flex flex-grow flex-col gap-2.5 text-base text-dm-ink2">
+    {
+      limitLines(plan.limits).map((item) => (
+        <li>
+          {item.before}<strong class="font-semibold text-dm-ink">{item.value}</strong>{item.after}
+        </li>
+      ))
+    }
+  </ul>
+  <a
+    href={REGISTER_URL}
+    data-cta={`pricing_${plan.id}`}
+    class:list={[featured ? 'dm-btn-primary' : 'dm-btn-secondary', 'py-3.5']}
+  >
+    Спробувати безкоштовно
+  </a>
+</div>

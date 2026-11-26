@@ -1,0 +1,85 @@
+---
+/**
+ * Every page: head (title, description, canonical, Open Graph, structured data), header, footer.
+ * `jsonLd` takes schema.org objects; FAQ blocks add their own (components/Faq.astro).
+ */
+import '../styles/global.css';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+import { SITE_NAME, SITE_URL } from '../site';
+
+interface Props {
+  title: string;
+  description: string;
+  jsonLd?: Record<string, unknown>[];
+  noindex?: boolean;
+  /** The page's language. The legal pages are in English. */
+  lang?: 'uk' | 'en';
+}
+
+const { title, description, jsonLd = [], noindex = false, lang = 'uk' } = Astro.props;
+const path = Astro.url.pathname.replace(/\.html$/, '').replace(/\/index$/, '').replace(/(.)\/$/, '$1') || '/';
+const canonical = new URL(path, SITE_URL).href;
+---
+
+<!doctype html>
+<html lang={lang}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    {noindex && <meta name="robots" content="noindex" />}
+    <meta name="theme-color" content="#FFFFFF" />
+    <link rel="icon" type="image/png" href="/logo-square.png" />
+    <link rel="apple-touch-icon" href="/logo-square.png" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content={SITE_NAME} />
+    <meta property="og:locale" content={lang === 'en' ? 'en_US' : 'uk_UA'} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta name="twitter:card" content="summary" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geologica:wght@300..700&display=swap" />
+
+    {jsonLd.map((data) => <script type="application/ld+json" set:html={JSON.stringify(data)} />)}
+
+    {
+      import.meta.env.PROD && (
+        <script
+          is:inline
+          defer
+          src="https://analytics.directmate.app/script.js"
+          data-website-id="025e1b25-96ab-437d-9672-4ceec58b4948"
+        />
+      )
+    }
+  </head>
+  <body>
+    <a
+      href="#main"
+      class="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-white focus:px-4 focus:py-3 focus:shadow-dm"
+      >Перейти до змісту</a
+    >
+    <Header />
+    <main id="main">
+      <slot />
+    </main>
+    <Footer />
+
+    <script>
+      import { analytics } from '../lib/analytics';
+
+      // Sign-up links carry data-cta="<where>" (header, hero, bottom_cta, …): one Umami event per click.
+      document.addEventListener('click', (event) => {
+        const link = (event.target as Element | null)?.closest<HTMLElement>('[data-cta]');
+        if (link) analytics.ctaClicked(link.dataset.cta ?? 'unknown', 'primary_cta');
+      });
+    </script>
+  </body>
+</html>

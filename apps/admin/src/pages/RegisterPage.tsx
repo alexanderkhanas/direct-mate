@@ -7,6 +7,7 @@ import { api } from '../lib/api';
 import { useT } from '../i18n';
 import { safeNext } from '../lib/next';
 import { Alert, Field, IconButton, SetupButton, TextInput } from '../components/setup/ui';
+import { SITE_URL } from '../lib/site';
 
 type RegisterError = { field: 'email' | 'password' | null; message: string };
 
@@ -63,14 +64,14 @@ export default function RegisterPage() {
     <div className="min-h-[100dvh] bg-white font-sans text-[15px] leading-[1.45] text-dm-ink antialiased lg:bg-dm-bg">
       <div className="mx-auto flex min-h-[100dvh] w-full flex-col lg:max-w-[440px] lg:justify-center lg:py-12">
         <div className="flex h-[60px] flex-none items-center pl-1.5 lg:h-auto lg:pb-3 lg:pl-0">
-          <Link
-            to="/welcome"
+          <a
+            href={SITE_URL}
             aria-label={t('common.back')}
             title={t('common.back')}
             className="inline-grid h-11 w-11 place-items-center rounded-xl text-dm-ink2 transition-colors hover:bg-dm-bubble focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-100 lg:-ml-2.5"
           >
             <ChevronLeft className="h-5 w-5" aria-hidden="true" />
-          </Link>
+          </a>
         </div>
 
         <form

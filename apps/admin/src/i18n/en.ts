@@ -53,35 +53,6 @@ export const en = {
   },
 
   // Landing page
-  landing: {
-    tagline: 'AI-powered Instagram sales',
-    hero_title: 'Turn Instagram DMs into a sales machine',
-    hero_subtitle: 'DirectMate is an AI assistant that handles customer conversations in Instagram Direct Messages — recommending products, sending images, and processing orders automatically.',
-    cta_create: 'Create your AI agent',
-    cta_signin: 'Sign in',
-    features_title: 'Everything you need to automate DM sales',
-    features_subtitle: 'One platform. Your catalog. AI that sells for you.',
-    feature_ai_title: 'AI Sales Assistant',
-    feature_ai_desc: 'Automatically responds to customer messages with product recommendations and images.',
-    feature_images_title: 'Product Images',
-    feature_images_desc: 'Sends product photos directly in the conversation so customers can see what they are buying.',
-    feature_orders_title: 'Order Automation',
-    feature_orders_desc: 'Collects delivery and payment details, places the order, and hands over to a manager when a person is needed.',
-    feature_analytics_title: 'Analytics Dashboard',
-    feature_analytics_desc: 'Track conversion rates, automation effectiveness, revenue, and response times in real-time.',
-    steps_title: 'Up and running in minutes',
-    steps_subtitle: 'Set it up yourself in 10–15 minutes — or we do it for you.',
-    step1_title: 'Connect your Instagram',
-    step1_desc: 'Connect your Instagram business account and add products — with your website feed link or a Google Sheet.',
-    step2_title: 'Tell it about your shop',
-    step2_desc: 'The AI drafts your delivery and payment notes from your website and asks only what is missing. Try the AI agent in a test chat.',
-    step3_title: 'Start selling automatically',
-    step3_desc: 'The AI handles conversations 24/7. You get notified when a human touch is needed.',
-    cta_bottom_title: 'Ready to automate your Instagram sales?',
-    cta_bottom_subtitle: 'Setup is free. Connect your store and let AI handle the conversations.',
-    cta_bottom_button: 'Get started free',
-    privacy: 'Privacy Policy',
-  },
 
   // Auth
   auth: {

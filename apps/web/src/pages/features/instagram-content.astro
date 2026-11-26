@@ -1,0 +1,260 @@
+---
+import Base from '../../layouts/Base.astro';
+import Bubble from '../../components/chat/Bubble.astro';
+import Group from '../../components/chat/Group.astro';
+import Photo from '../../components/chat/Photo.astro';
+import Caption from '../../components/chat/Caption.astro';
+import SectionHead from '../../components/SectionHead.astro';
+import Faq from '../../components/Faq.astro';
+import CtaBand from '../../components/CtaBand.astro';
+import { REGISTER_URL, SITE_URL } from '../../site';
+import trenchBeige from '../../assets/photos/trench-beige.jpg';
+import sweaterCream from '../../assets/photos/sweater-cream.jpg';
+import sweaterBrown from '../../assets/photos/sweater-brown.jpg';
+
+const title = 'AI-агент відповідає на сторіз, дописи й Reels в Instagram | DirectMate';
+const description =
+  'Клієнт відповів на сторіз чи переслав допис? AI-агент бачить цей контент, знаходить річ у вашому каталозі й відповідає. Сумнівні збіги підтверджуєте ви.';
+
+const jsonLd = [
+  {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'Головна', item: `${SITE_URL}/` },
+      {
+        '@type': 'ListItem',
+        position: 2,
+        name: 'Можливості: сторіз, дописи, Reels',
+        item: `${SITE_URL}/features/instagram-content`,
+      },
+    ],
+  },
+];
+
+const sees = [
+  ['Відповідь на сторіз', 'Зображення сторіз і текст на ньому: назву, артикул, ціну.'],
+  ['Пересланий допис чи Reels', 'Фото й підпис. З відео бере чотири найбільш різні кадри.'],
+  ['Коментар під дописом', "Сам допис і питання клієнта. Відповідь іде в Direct, під дописом з'являється коротка публічна."],
+  ['Допис іншого акаунта', 'Покаже найближчі моделі з вашого каталогу як схожі. За ту саму річ їх не видаватиме.'],
+];
+
+// The link ladder: three ways that confirm a link at once, two that wait for the owner.
+const ways: Array<{ title: string; text: string; status: string; confirmed: boolean }> = [
+  {
+    title: 'Артикул у підписі',
+    text: "Напишіть артикул у підписі до допису чи Reels, і зв'язок з'явиться сам.",
+    status: 'Підтверджено автоматично',
+    confirmed: true,
+  },
+  {
+    title: 'Те саме фото, що в каталозі',
+    text: 'Опублікували фото товару з каталогу? DirectMate впізнає його.',
+    status: 'Підтверджено автоматично',
+    confirmed: true,
+  },
+  {
+    title: 'Ви вказали самі',
+    text: 'На сторінці «Контент» в адмін-панелі: одна сторіз може вести до кількох товарів.',
+    status: 'Підтверджено вами',
+    confirmed: true,
+  },
+  {
+    title: 'Візуальна перевірка',
+    text: 'AI порівнює нову сторіз із фото каталогу й пропонує збіг разом із поясненням, чому так вирішив.',
+    status: 'Пропозиція, чекає на вас',
+    confirmed: false,
+  },
+  {
+    title: 'Клієнт обрав і замовив',
+    text: 'Клієнт відповів на сторіз і замовив певний товар. Це підказка, а не доказ, тому ми спитаємо вас.',
+    status: 'Пропозиція, чекає на вас',
+    confirmed: false,
+  },
+];
+
+const fetchFacts = [
+  ['Кожні 30 хвилин', 'DirectMate перевіряє ваші нові сторіз. Кожну встигає побачити задовго до того, як вона зникне.'],
+  ['Щогодини', 'Підтягує нові дописи й Reels разом із підписами.'],
+  ['Нічого вручну', 'Завантажувати контент не треба. Достатньо підключеного акаунта Instagram.'],
+];
+
+const faq = [
+  {
+    q: 'Чи потрібно позначати товари в Instagram?',
+    a: 'Ні. Достатньо артикула в підписі або одного підтвердження на сторінці «Контент».',
+  },
+  {
+    q: 'На сторіз кілька речей. Що відповість AI-агент?',
+    a: "Якщо зі сторіз пов'язано кілька товарів, він спитає клієнта, який саме цікавить.",
+  },
+  {
+    q: 'Чи відповідає на коментарі під Reels?',
+    a: 'Поки що лише на коментарі під дописами у стрічці. Reels, яким клієнт поділився в Direct, AI-агент бачить.',
+  },
+  {
+    q: "Чи може AI сам підтвердити зв'язок, який знайшов візуально?",
+    a: 'Ні. Візуальний збіг завжди залишається пропозицією, доки ви його не підтвердите.',
+  },
+];
+---
+
+<Base title={title} description={description} jsonLd={jsonLd}>
+  <!-- Hero -->
+  <section class="dm-page grid items-center gap-12 pb-16 pt-12 md:pb-20 md:pt-[72px] lg:grid-cols-[minmax(0,1fr)_minmax(0,440px)] lg:gap-16">
+    <div class="flex min-w-0 flex-col gap-[22px]">
+      <p class="text-base font-medium text-blue-700">Сторіз, дописи, Reels</p>
+      <h1 class="dm-h1 text-[clamp(34px,4.6vw,56px)]">Клієнт відповів на сторіз. AI-агент знає, про яку річ мова.</h1>
+      <p class="max-w-[560px] text-[19px] leading-[1.55] text-dm-ink2 text-pretty">
+        Більшість розмов у Direct починається з вашого контенту: відповідь на сторіз, пересланий допис, коментар. DirectMate
+        бачить цей контент і пов'язує його з товарами у вашому каталозі.
+      </p>
+      <div class="flex flex-wrap items-center gap-x-5 gap-y-3">
+        <a href={REGISTER_URL} data-cta="hero" class="dm-btn-primary dm-btn-lg">Спробувати безкоштовно</a>
+        <a href="/how-it-works" class="dm-link text-[17px]">Як це працює</a>
+      </div>
+    </div>
+
+    <!-- A Direct chat without the conversation header, as in the design. -->
+    <div class="flex w-full min-w-0 max-w-[440px] flex-col gap-2.5 justify-self-center rounded-3xl border border-dm-line bg-white p-5 shadow-dm lg:justify-self-end">
+      <Group side="customer">
+        <Caption>Відповідь на вашу сторіз</Caption>
+        <Photo src={trenchBeige} alt="Сторіз магазину: бежевий тренч із поясом" width={104} height={168} loading="eager" />
+        <Bubble from="customer" grouped>Ціна?</Bubble>
+      </Group>
+      <Group side="agent">
+        <Photo src={trenchBeige} alt="Фото з каталогу: бежевий тренч із поясом" width={112} height={140} loading="eager" />
+        <Bubble from="agent" grouped>Це бежевий тренч із поясом, 4 200 грн. Який розмір вам підібрати?</Bubble>
+      </Group>
+    </div>
+  </section>
+
+  <!-- What the AI agent sees -->
+  <section class="border-y border-dm-line bg-white">
+    <div class="dm-page flex flex-col gap-9 py-16 md:py-20">
+      <SectionHead title="Що бачить AI-агент" />
+      <div class="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+        {
+          sees.map(([cardTitle, text]) => (
+            <div class="flex flex-col gap-2.5 rounded-[20px] bg-dm-bg p-[26px]">
+              <h3 class="text-[19px] font-semibold leading-snug">{cardTitle}</h3>
+              <p class="text-base text-dm-ink2">{text}</p>
+            </div>
+          ))
+        }
+      </div>
+    </div>
+  </section>
+
+  <!-- How a story becomes a catalog product -->
+  <section class="dm-page dm-section flex flex-col gap-10">
+    <SectionHead
+      title="Як сторіз стає товаром з каталогу"
+      lead="П'ять способів пов'язати контент із товаром. Три дають точну відповідь одразу, два чекають на ваше слово."
+    />
+    <ol class="flex flex-col overflow-hidden rounded-3xl border border-dm-line bg-white">
+      {
+        ways.map((way) => (
+          <li class="flex flex-wrap items-center gap-x-6 gap-y-2.5 border-b border-dm-line px-5 py-[22px] last:border-0 sm:px-7">
+            <div class="flex min-w-0 flex-[1_1_420px] flex-col gap-1">
+              <h3 class="text-[19px] font-semibold leading-snug">{way.title}</h3>
+              <p class="text-base text-dm-ink2">{way.text}</p>
+            </div>
+            <span
+              class:list={[
+                'rounded-full px-3.5 py-1.5 text-sm font-medium',
+                way.confirmed ? 'bg-dm-green-bg text-dm-green' : 'bg-dm-amber-bg text-dm-amber-ink',
+              ]}
+            >
+              {way.status}
+            </span>
+          </li>
+        ))
+      }
+    </ol>
+  </section>
+
+  <!-- The owner has the last word -->
+  <section class="bg-dm-ink text-white">
+    <div class="dm-page dm-section grid items-center gap-x-16 gap-y-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,420px)]">
+      <div class="flex min-w-0 flex-col gap-[18px]">
+        <h2 class="dm-h2">Останнє слово за вами</h2>
+        <p class="text-lg text-dm-night-text">
+          Пропозиції ви переглядаєте на сторінці «Контент» або одним дотиком у Telegram. Відхилений зв'язок AI-агент більше не
+          використовує й не пропонує.
+        </p>
+        <p class="text-base text-dm-night-text">Питань у Telegram небагато: не більше п'яти на день.</p>
+      </div>
+
+      <!-- The question the owner gets in Telegram. A picture of it: the buttons do nothing here. -->
+      <div class="flex w-full min-w-0 max-w-[420px] flex-col gap-3.5 rounded-[20px] bg-dm-night-card p-5">
+        <span class="text-[13px] text-dm-night-text">Telegram, DirectMate</span>
+        <div class="flex items-center gap-3">
+          <Photo src={trenchBeige} alt="Сторіз: бежевий тренч" width={64} height={100} class="!rounded-[10px]" />
+          <svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#C5CCD8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="shrink-0">
+            <path d="M5 12h14M13 6l6 6-6 6" />
+          </svg>
+          <Photo src={trenchBeige} alt="Товар з каталогу: бежевий тренч із поясом" width={80} height={100} class="!rounded-[10px]" />
+        </div>
+        <p class="text-[15px]">Клієнтка відповіла на цю сторіз і замовила бежевий тренч із поясом. На сторіз саме він?</p>
+        <div class="flex gap-2">
+          <span class="flex min-h-[44px] flex-1 items-center justify-center rounded-[10px] bg-blue-600 text-[15px] font-semibold">Так, це він</span>
+          <span class="flex min-h-[44px] flex-1 items-center justify-center rounded-[10px] border border-[#55607A] text-[15px] font-semibold">Ні</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- No link yet -->
+  <section class="dm-page dm-section grid items-center gap-x-16 gap-y-10 lg:grid-cols-[minmax(0,440px)_minmax(0,1fr)]">
+    <div class="flex min-w-0 flex-col gap-4">
+      <h2 class="dm-h2">А якщо зв'язку ще немає?</h2>
+      <p class="dm-lead">
+        AI-агент не вгадує. Спершу читає текст на самому зображенні: назву, артикул, ціну. Якщо цього мало, чесно каже, що не може
+        визначити модель, і показує дві-три найближчі з каталогу як схожі.
+      </p>
+      <p class="text-base text-dm-muted">
+        Тим часом DirectMate запускає візуальну перевірку цієї сторіз, і наступного разу відповідь може бути точною.
+      </p>
+    </div>
+
+    <!-- The chat sits on the left on wide screens; on phones it follows the heading. -->
+    <div class="flex w-full min-w-0 max-w-[440px] flex-col gap-2.5 rounded-3xl border border-dm-line bg-white p-5 lg:order-first">
+      <Group side="customer">
+        <Caption>Відповідь на вашу сторіз</Caption>
+        <Photo src={sweaterCream} alt="Сторіз магазину: молочний в'язаний светр" width={84} height={132} />
+        <Bubble from="customer" grouped>Хочу такий светр</Bubble>
+      </Group>
+      <Group side="agent">
+        <div class="flex gap-1.5">
+          <Photo src={sweaterCream} alt="Фото з каталогу: молочний светр з косами" width={96} height={120} />
+          <Photo src={sweaterBrown} alt="Фото з каталогу: коричневий светр" width={96} height={120} />
+        </div>
+        <Bubble from="agent" grouped>
+          Не можу точно сказати, яка це модель. Ось дві найближчі з нашого каталогу. Котрась із них та, що ви шукаєте?
+        </Bubble>
+      </Group>
+    </div>
+  </section>
+
+  <!-- How content gets in -->
+  <section class="border-y border-dm-line bg-white">
+    <div class="dm-page grid gap-x-14 gap-y-8 py-16 md:grid-cols-2 md:py-[72px] lg:grid-cols-3">
+      {
+        fetchFacts.map(([fact, text]) => (
+          <div class="flex flex-col gap-2">
+            <p class="text-[34px] font-bold leading-tight tracking-[-0.01em]">{fact}</p>
+            <p class="text-base text-dm-ink2">{text}</p>
+          </div>
+        ))
+      }
+    </div>
+  </section>
+
+  <Faq items={faq} />
+
+  <CtaBand
+    title="Нехай кожна сторіз продає"
+    text="Підключіть Instagram і каталог. DirectMate сам знайде ваші сторіз, дописи й Reels."
+  />
+</Base>

@@ -1,0 +1,18 @@
+---
+/** Several pieces of one message on the same side: a caption, photos, a bubble (pass it `grouped`). */
+interface Props {
+  side: 'customer' | 'agent';
+  class?: string;
+}
+const { side, class: className } = Astro.props;
+---
+
+<div
+  class:list={[
+    'flex max-w-[86%] flex-col gap-1.5',
+    side === 'customer' ? 'items-start self-start' : 'items-end self-end',
+    className,
+  ]}
+>
+  <slot />
+</div>

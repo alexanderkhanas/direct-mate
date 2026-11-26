@@ -1,0 +1,24 @@
+---
+/** The blue sign-up band near the end of a page. Anything in the slot sits beside the button (a second link). */
+import { REGISTER_URL } from '../site';
+
+interface Props {
+  title: string;
+  text: string;
+  label?: string;
+}
+const { title, text, label = 'Спробувати безкоштовно' } = Astro.props;
+---
+
+<section class="bg-blue-600 text-white">
+  <div class="dm-page flex flex-col items-start gap-5 py-16 md:py-20">
+    <h2 class="max-w-[720px] text-[clamp(30px,4vw,48px)] font-bold leading-[1.1] tracking-[-0.02em] text-balance">{title}</h2>
+    <p class="max-w-[600px] text-[19px]">{text}</p>
+    <div class="mt-2 flex flex-wrap items-center gap-x-5 gap-y-3">
+      <a href={REGISTER_URL} data-cta="bottom_cta" class="dm-btn dm-btn-lg bg-white text-blue-700 hover:bg-dm-tint hover:text-blue-800">
+        {label}
+      </a>
+      <slot />
+    </div>
+  </div>
+</section>

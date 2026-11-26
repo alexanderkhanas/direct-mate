@@ -15,7 +15,8 @@ DirectMate should automate repetitive, low-risk interactions and escalate uncert
 ### Monorepo (npm workspaces)
 ```
 apps/api/        — NestJS backend (TypeORM, PostgreSQL, Vercel AI SDK v7 + OpenAI)
-apps/admin/      — React + Vite admin panel (TanStack Query, Tailwind, lucide-react)
+apps/admin/      — React + Vite admin panel (TanStack Query, Tailwind, lucide-react), on platform.directmate.app
+apps/web/        — The marketing site for directmate.app (Astro 7 + Tailwind). Its own package and lockfile, not a workspace
 packages/shared/ — Shared enums/types (compiled to JS before API uses it)
 infra/docker/    — Docker Compose (Postgres on port 5433)
 infra/production/ — Production compose and env template
@@ -260,7 +261,27 @@ in (XXL ≡ 2XL), so one table may hold two size systems (trousers 42–58 and j
 
 ### Demo widget, simulator, manual API
 `modules/demo/` (debounce buffer, rate limiter, daily budget per model), `modules/testing/` (admin
-Simulator page, Live DM console with photo upload), `POST /conversation/reply` (manual).
+Simulator page, Live DM console with photo upload), `POST /conversation/reply` (manual). The widget itself is in
+`apps/web/src/components/demo/`, on the site's home page.
+
+## Marketing site (`apps/web/`)
+
+Static Ukrainian pages, one per URL (`/`, `/how-it-works`, `/features/instagram-content`, `/pricing`,
+`/compare/manychat`) plus the English legal pages (`/privacy`, `/terms`, `/data-deletion`: Meta has these URLs). Design
+source: the «DirectMate Landing Pages» canvas. The admin no longer has a landing: signed-out users go to `/login`.
+- **Its own package**, outside the npm workspaces: Astro 7 brings Vite 8, and hoisted next to the admin's Vite 5 its
+  plugins resolve the wrong one. `npm install` inside `apps/web`. Astro 7 refuses Node below 22.23.4.
+- Pages use the admin's `dm-*` tokens (`tailwind.config.js`), shared pieces in `src/components/` (chat bubbles,
+  `Faq` with FAQPage data, `CtaBand`), `layouts/Base.astro` for head, header and footer. Sign-up and sign-in links go to
+  `PLATFORM_URL` (`src/site.ts`; `PUBLIC_PLATFORM_URL`, default localhost:5173 in dev).
+- The demo widget is a React island (`client:visible`), the only JS-heavy page. It calls `/api/demo/*`; `astro dev`
+  proxies `/api` and `/uploads` to localhost:3000.
+- Plan prices and limits are copied in `src/data/plans.ts`: change them with `subscription_plan_configs`.
+- **Production:** a `web` container (`infra/production/web.prod.Dockerfile`, nginx inside: `nginx/web.conf`) behind
+  `directmate.app/`. That host keeps the API's public routes (`/api`, `/channels`, `/auth`, `/internal`, `/uploads`,
+  `/static`, `/n8n`), and 301s the admin's old paths to platform.directmate.app, query kept (`conf.d/default.conf`: keep
+  its list in step with `App.tsx`). The admin is on `conf.d/platform.conf` with `/api` and `/uploads`; the API's links to
+  it come from `ADMIN_BASE_URL`, written out in the compose file. CI builds the site on Node 24 (`build-web`).
 
 ## Claude connector (`modules/mcp/`)
 
@@ -503,9 +524,10 @@ cd infra/docker && docker compose up -d
 # Run migrations
 cd apps/api && npx ts-node -r tsconfig-paths/register ../../node_modules/typeorm/cli.js migration:run -d src/database/data-source.ts
 
-# Start backend / admin (dev)
+# Start backend / admin / marketing site (dev)
 cd apps/api && npm run dev
 cd apps/admin && npm run dev
+cd apps/web && npm install && npm run dev     # http://localhost:4321, Node ≥ 22.23.4
 
 # Build shared package
 cd packages/shared && npm run build

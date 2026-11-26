@@ -1,14 +1,6 @@
-# Stage 1: Build (Debian-based — react-snap's puppeteer Chromium needs glibc)
+# Stage 1: Build. The admin is a plain SPA now (the landing moved to apps/web), so no prerender and no Chromium.
 FROM node:22-bookworm-slim AS builder
 WORKDIR /app
-
-# Chromium for react-snap's prerender pass. Point puppeteer at the apt
-# binary instead of letting it download its own — smaller image, glibc-clean.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends chromium ca-certificates fonts-liberation \
-    && rm -rf /var/lib/apt/lists/*
-ENV PUPPETEER_SKIP_DOWNLOAD=true \
-    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 COPY package*.json .npmrc ./
 COPY packages/shared/package*.json packages/shared/

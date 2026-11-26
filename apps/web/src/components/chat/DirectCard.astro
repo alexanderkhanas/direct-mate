@@ -1,0 +1,22 @@
+---
+/** A Direct conversation as Instagram shows it: who it is with, then the messages (Bubble, Group, Photo). */
+interface Props {
+  name: string;
+  subtitle?: string;
+  class?: string;
+}
+const { name, subtitle = 'Instagram Direct', class: className } = Astro.props;
+---
+
+<div class:list={['overflow-hidden rounded-3xl border border-dm-line bg-white shadow-dm', className]}>
+  <div class="flex items-center gap-3 border-b border-dm-line px-[18px] py-3.5">
+    <div aria-hidden="true" class="h-9 w-9 shrink-0 rounded-full bg-dm-avatar"></div>
+    <div class="flex min-w-0 flex-col">
+      <span class="text-[15px] font-semibold">{name}</span>
+      <span class="text-[13px] text-dm-muted">{subtitle}</span>
+    </div>
+  </div>
+  <div class="flex flex-col gap-2.5 p-4 sm:p-[18px]">
+    <slot />
+  </div>
+</div>

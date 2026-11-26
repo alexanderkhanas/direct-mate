@@ -7,6 +7,7 @@ import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { useT } from '../i18n';
 import { safeNext } from '../lib/next';
+import { SITE_URL } from '../lib/site';
 import { RecoveryCodes, TwoFactorSetupData, TwoFactorSetupForm, proofOf, twoFactorErrorText } from '../components/auth/TwoFactor';
 
 /** After the password: a login token, or the code step or 2FA setup the account owes first. */
@@ -110,10 +111,10 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <div className="w-full max-w-sm">
-        <Link to="/welcome" className="inline-flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-600 transition-colors mb-6">
+        <a href={SITE_URL} className="inline-flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-600 transition-colors mb-6">
           <ArrowLeft className="h-4 w-4" />
           {t('common.back')}
-        </Link>
+        </a>
         <div className="flex flex-col items-center mb-8">
           <img
             src="/logo-square.png"

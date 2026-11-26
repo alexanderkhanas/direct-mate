@@ -1,0 +1,30 @@
+---
+/**
+ * A photo in a chat (a story, a catalog photo). Shown at a fixed size and cropped by CSS (object-fit), so the
+ * file keeps its proportions; Astro writes 1× and 2× WebP versions.
+ */
+import { Image } from 'astro:assets';
+import type { ImageMetadata } from 'astro';
+
+interface Props {
+  src: ImageMetadata;
+  alt: string;
+  width: number;
+  height: number;
+  /** CSS object-position, e.g. "center 40%". */
+  position?: string;
+  class?: string;
+  loading?: 'lazy' | 'eager';
+}
+const { src, alt, width, height, position = 'center', class: className, loading = 'lazy' } = Astro.props;
+---
+
+<Image
+  src={src}
+  alt={alt}
+  widths={[width, width * 2]}
+  sizes={`${width}px`}
+  loading={loading}
+  class:list={['shrink-0 rounded-[14px] object-cover', className]}
+  style={`width:${width}px;height:${height}px;object-position:${position}`}
+/>

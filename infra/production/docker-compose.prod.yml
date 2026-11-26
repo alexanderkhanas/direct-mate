@@ -53,8 +53,11 @@ services:
       # "Upload attachment failure" 400. Was missing here, so the value
       # in .env never reached the container.
       APP_BASE_URL: https://${DOMAIN}
-      ADMIN_BASE_URL: https://${DOMAIN}
-      ADMIN_ORIGIN: https://${DOMAIN}
+      # The admin's own host (nginx/conf.d/platform.conf); ${DOMAIN} is the
+      # marketing site. Written out rather than read from .env, so an old
+      # ADMIN_BASE_URL left there can't point links back at the site.
+      ADMIN_BASE_URL: https://platform.directmate.app
+      ADMIN_ORIGIN: https://platform.directmate.app
       BACKEND_BASE_URL: http://api:3000
       N8N_ORDER_SYNC_WEBHOOK_URL: ${N8N_ORDER_SYNC_WEBHOOK_URL}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
@@ -104,6 +107,15 @@ services:
     networks:
       - internal
 
+  # The marketing site (apps/web), served at ${DOMAIN}/.
+  web:
+    build:
+      context: ../../
+      dockerfile: infra/production/web.prod.Dockerfile
+    restart: unless-stopped
+    networks:
+      - internal
+
   nginx:
     image: nginx:alpine
     restart: unless-stopped
@@ -128,6 +140,7 @@ services:
     depends_on:
       - api
       - admin
+      - web
     networks:
       - internal
 
